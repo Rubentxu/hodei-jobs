@@ -1,0 +1,63 @@
+[package]
+name = "hodei-jobs-grpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Internal dependencies
+hodei-jobs-domain = { workspace = true }
+hodei-jobs-application = { workspace = true }
+hodei-jobs-infrastructure = { workspace = true }
+hodei-jobs = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+
+# gRPC & Protocol Buffers
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic-reflection = { workspace = true }
+
+# Data & Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging & Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+dotenvy = { workspace = true }
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "worker"
+path = "src/bin/worker.rs"
+
+[dependencies.hostname]
+version = "0.4"
+
+[dependencies.num_cpus]
+version = "1.16"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+sqlx = { workspace = true }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }

@@ -1,0 +1,57 @@
+# Hodei Job Platform - Provider Configuration
+# Copy this file to providers.yaml and customize for your environment
+
+providers:
+  # Docker provider for local development
+  - name: docker-local
+    type: docker
+    priority: 10
+    max_workers: 5
+    tags:
+      - local
+      - development
+    config:
+      socket_path: /var/run/docker.sock
+      default_image: hodei-worker:latest
+      network: bridge
+
+  # Kubernetes provider for production
+  - name: k8s-production
+    type: kubernetes
+    priority: 100
+    max_workers: 50
+    tags:
+      - production
+      - cloud
+    config:
+      namespace: hodei-jobs
+      service_account: hodei-worker
+      default_image: hodei-worker:latest
+
+  # AWS Lambda provider for serverless workloads
+  - name: lambda-serverless
+    type: lambda
+    priority: 50
+    max_workers: 100
+    tags:
+      - serverless
+      - aws
+    config:
+      region: us-east-1
+      role_arn: arn:aws:iam::123456789:role/hodei-lambda-role
+      runtime: provided.al2
+      handler: bootstrap
+
+  # AWS Fargate provider for container workloads
+  - name: fargate-containers
+    type: fargate
+    priority: 75
+    max_workers: 20
+    tags:
+      - containers
+      - aws
+    config:
+      region: us-east-1
+      cluster_arn: arn:aws:ecs:us-east-1:123456789:cluster/hodei
+      execution_role_arn: arn:aws:iam::123456789:role/hodei-fargate-execution
+      default_image: hodei-worker:latest

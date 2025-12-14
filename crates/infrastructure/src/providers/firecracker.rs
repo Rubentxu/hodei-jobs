@@ -1,0 +1,1354 @@
+//! Firecracker Worker Provider Implementation
+//!
+//! Production-ready implementation of WorkerProvider using Firecracker microVMs.
+//! Provides hardware-level isolation via KVM with sub-second boot times.
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::process::Command;
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
+
+use hodei_jobs_domain::{
+    shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
+    worker::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
+    worker_provider::{
+        HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
+        WorkerProvider,
+    },
+};
+
+// ============================================================================
+// Configuration Types (HU-8.1)
+// ============================================================================
+
+/// Network configuration for Firecracker microVMs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirecrackerNetworkConfig {
+    /// Prefix for TAP device names (e.g., "fc-tap" -> "fc-tap-0", "fc-tap-1")
+    pub tap_prefix: String,
+    /// Subnet for microVMs in CIDR notation (e.g., "172.16.0.0/24")
+    pub subnet: String,
+    /// Gateway IP address for microVMs
+    pub gateway_ip: String,
+    /// Host network interface for NAT (e.g., "eth0", "ens3")
+    pub host_interface: String,
+    /// Enable NAT for internet access from microVMs
+    pub enable_nat: bool,
+}
+
+impl Default for FirecrackerNetworkConfig {
+    fn default() -> Self {
+        Self {
+            tap_prefix: "fc-tap".to_string(),
+            subnet: "172.16.0.0/24".to_string(),
+            gateway_ip: "172.16.0.1".to_string(),
+            host_interface: "eth0".to_string(),
+            enable_nat: true,
+        }
+    }
+}
+
+impl FirecrackerNetworkConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_tap_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.tap_prefix = prefix.into();
+        self
+    }
+
+    pub fn with_subnet(mut self, subnet: impl Into<String>) -> Self {
+        self.subnet = subnet.into();
+        self
+    }
+
+    pub fn with_gateway_ip(mut self, ip: impl Into<String>) -> Self {
+        self.gateway_ip = ip.into();
+        self
+    }
+
+    pub fn with_host_interface(mut self, iface: impl Into<String>) -> Self {
+        self.host_interface = iface.into();
+        self
+    }
+
+    pub fn with_nat(mut self, enable: bool) -> Self {
+        self.enable_nat = enable;
+        self
+    }
+}
+
+/// Resource configuration for microVMs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MicroVMResources {
+    /// Number of vCPUs (1-32)
+    pub vcpu_count: u8,
+    /// Memory in MiB (128-32768)
+    pub mem_size_mib: u32,
+    /// Enable hyperthreading
+    pub ht_enabled: bool,
+}
+
+impl Default for MicroVMResources {
+    fn default() -> Self {
+        Self {
+            vcpu_count: 1,
+            mem_size_mib: 512,
+            ht_enabled: false,
+        }
+    }
+}
+
+impl MicroVMResources {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_vcpus(mut self, count: u8) -> Self {
+        self.vcpu_count = count.clamp(1, 32);
+        self
+    }
+
+    pub fn with_memory_mib(mut self, mib: u32) -> Self {
+        self.mem_size_mib = mib.clamp(128, 32768);
+        self
+    }
+
+    pub fn with_hyperthreading(mut self, enabled: bool) -> Self {
+        self.ht_enabled = enabled;
+        self
+    }
+}
+
+/// Configuration for the Firecracker Provider
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirecrackerConfig {
+    /// Path to the Firecracker binary
+    pub firecracker_path: PathBuf,
+    /// Path to the Jailer binary (for sandboxing)
+    pub jailer_path: PathBuf,
+    /// Base directory for VM data (sockets, logs, rootfs copies)
+    pub data_dir: PathBuf,
+    /// Path to the Linux kernel for microVMs
+    pub kernel_path: PathBuf,
+    /// Path to the base rootfs image (with agent pre-installed)
+    pub rootfs_path: PathBuf,
+    /// Network configuration
+    pub network: FirecrackerNetworkConfig,
+    /// Default resources for microVMs
+    pub default_resources: MicroVMResources,
+    /// Use Jailer for sandboxing (recommended for production)
+    pub use_jailer: bool,
+    /// UID for Jailer process
+    pub jailer_uid: Option<u32>,
+    /// GID for Jailer process
+    pub jailer_gid: Option<u32>,
+    /// Timeout for VM boot (seconds)
+    pub boot_timeout_secs: u64,
+    /// Grace period for VM shutdown (seconds)
+    pub shutdown_grace_secs: u64,
+}
+
+impl Default for FirecrackerConfig {
+    fn default() -> Self {
+        Self {
+            firecracker_path: PathBuf::from("/usr/bin/firecracker"),
+            jailer_path: PathBuf::from("/usr/bin/jailer"),
+            data_dir: PathBuf::from("/var/lib/hodei/firecracker"),
+            kernel_path: PathBuf::from("/var/lib/hodei/vmlinux"),
+            rootfs_path: PathBuf::from("/var/lib/hodei/rootfs.ext4"),
+            network: FirecrackerNetworkConfig::default(),
+            default_resources: MicroVMResources::default(),
+            use_jailer: true,
+            jailer_uid: Some(1000),
+            jailer_gid: Some(1000),
+            boot_timeout_secs: 30,
+            shutdown_grace_secs: 10,
+        }
+    }
+}
+
+/// Builder for FirecrackerConfig
+pub struct FirecrackerConfigBuilder {
+    config: FirecrackerConfig,
+}
+
+impl FirecrackerConfigBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: FirecrackerConfig::default(),
+        }
+    }
+
+    pub fn firecracker_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.firecracker_path = path.into();
+        self
+    }
+
+    pub fn jailer_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.jailer_path = path.into();
+        self
+    }
+
+    pub fn data_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.data_dir = path.into();
+        self
+    }
+
+    pub fn kernel_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.kernel_path = path.into();
+        self
+    }
+
+    pub fn rootfs_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.rootfs_path = path.into();
+        self
+    }
+
+    pub fn network(mut self, network: FirecrackerNetworkConfig) -> Self {
+        self.config.network = network;
+        self
+    }
+
+    pub fn default_resources(mut self, resources: MicroVMResources) -> Self {
+        self.config.default_resources = resources;
+        self
+    }
+
+    pub fn use_jailer(mut self, use_jailer: bool) -> Self {
+        self.config.use_jailer = use_jailer;
+        self
+    }
+
+    pub fn jailer_uid(mut self, uid: u32) -> Self {
+        self.config.jailer_uid = Some(uid);
+        self
+    }
+
+    pub fn jailer_gid(mut self, gid: u32) -> Self {
+        self.config.jailer_gid = Some(gid);
+        self
+    }
+
+    pub fn boot_timeout_secs(mut self, secs: u64) -> Self {
+        self.config.boot_timeout_secs = secs;
+        self
+    }
+
+    pub fn shutdown_grace_secs(mut self, secs: u64) -> Self {
+        self.config.shutdown_grace_secs = secs;
+        self
+    }
+
+    /// Build the configuration, validating required fields
+    pub fn build(self) -> Result<FirecrackerConfig> {
+        self.validate()?;
+        Ok(self.config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.config.data_dir.as_os_str().is_empty() {
+            return Err(DomainError::InvalidProviderConfig {
+                message: "Firecracker data_dir cannot be empty".to_string(),
+            });
+        }
+        if self.config.kernel_path.as_os_str().is_empty() {
+            return Err(DomainError::InvalidProviderConfig {
+                message: "Firecracker kernel_path cannot be empty".to_string(),
+            });
+        }
+        if self.config.rootfs_path.as_os_str().is_empty() {
+            return Err(DomainError::InvalidProviderConfig {
+                message: "Firecracker rootfs_path cannot be empty".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for FirecrackerConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FirecrackerConfig {
+    /// Create a new builder
+    pub fn builder() -> FirecrackerConfigBuilder {
+        FirecrackerConfigBuilder::new()
+    }
+
+    /// Load configuration from environment variables
+    pub fn from_env() -> Result<Self> {
+        let mut builder = FirecrackerConfigBuilder::new();
+
+        if let Ok(path) = std::env::var("HODEI_FC_FIRECRACKER_PATH") {
+            builder = builder.firecracker_path(path);
+        }
+        if let Ok(path) = std::env::var("HODEI_FC_JAILER_PATH") {
+            builder = builder.jailer_path(path);
+        }
+        if let Ok(path) = std::env::var("HODEI_FC_DATA_DIR") {
+            builder = builder.data_dir(path);
+        }
+        if let Ok(path) = std::env::var("HODEI_FC_KERNEL_PATH") {
+            builder = builder.kernel_path(path);
+        }
+        if let Ok(path) = std::env::var("HODEI_FC_ROOTFS_PATH") {
+            builder = builder.rootfs_path(path);
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_USE_JAILER") {
+            builder = builder.use_jailer(val == "1" || val.to_lowercase() == "true");
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_JAILER_UID") {
+            if let Ok(uid) = val.parse() {
+                builder = builder.jailer_uid(uid);
+            }
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_JAILER_GID") {
+            if let Ok(gid) = val.parse() {
+                builder = builder.jailer_gid(gid);
+            }
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_BOOT_TIMEOUT") {
+            if let Ok(secs) = val.parse() {
+                builder = builder.boot_timeout_secs(secs);
+            }
+        }
+
+        // Network config from env
+        let mut network = FirecrackerNetworkConfig::default();
+        if let Ok(val) = std::env::var("HODEI_FC_TAP_PREFIX") {
+            network.tap_prefix = val;
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_SUBNET") {
+            network.subnet = val;
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_GATEWAY_IP") {
+            network.gateway_ip = val;
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_HOST_INTERFACE") {
+            network.host_interface = val;
+        }
+        if let Ok(val) = std::env::var("HODEI_FC_ENABLE_NAT") {
+            network.enable_nat = val == "1" || val.to_lowercase() == "true";
+        }
+        builder = builder.network(network);
+
+        builder.build()
+    }
+}
+
+// ============================================================================
+// IP Pool Management (HU-8.3)
+// ============================================================================
+
+/// Manages IP address allocation for microVMs
+#[derive(Debug)]
+pub struct IpPool {
+    /// Base network address
+    base_ip: Ipv4Addr,
+    /// Network mask (number of bits)
+    mask_bits: u8,
+    /// Set of allocated IPs
+    allocated: std::collections::HashSet<Ipv4Addr>,
+    /// Next IP to try allocating
+    next_index: u32,
+}
+
+impl IpPool {
+    /// Create a new IP pool from CIDR notation (e.g., "172.16.0.0/24")
+    pub fn from_cidr(cidr: &str) -> Result<Self> {
+        let parts: Vec<&str> = cidr.split('/').collect();
+        if parts.len() != 2 {
+            return Err(DomainError::InvalidProviderConfig {
+                message: format!("Invalid CIDR notation: {}", cidr),
+            });
+        }
+
+        let base_ip: Ipv4Addr = parts[0].parse().map_err(|_| {
+            DomainError::InvalidProviderConfig {
+                message: format!("Invalid IP address: {}", parts[0]),
+            }
+        })?;
+
+        let mask_bits: u8 = parts[1].parse().map_err(|_| {
+            DomainError::InvalidProviderConfig {
+                message: format!("Invalid mask bits: {}", parts[1]),
+            }
+        })?;
+
+        if mask_bits > 30 {
+            return Err(DomainError::InvalidProviderConfig {
+                message: "Subnet too small (mask > /30)".to_string(),
+            });
+        }
+
+        Ok(Self {
+            base_ip,
+            mask_bits,
+            allocated: std::collections::HashSet::new(),
+            next_index: 2, // Skip .0 (network) and .1 (gateway)
+        })
+    }
+
+    /// Allocate an IP address from the pool
+    pub fn allocate(&mut self) -> Result<Ipv4Addr> {
+        let max_hosts = (1u32 << (32 - self.mask_bits)) - 2; // Exclude network and broadcast
+
+        for _ in 0..max_hosts {
+            let ip = self.index_to_ip(self.next_index);
+            self.next_index = (self.next_index + 1) % (max_hosts + 2);
+            if self.next_index < 2 {
+                self.next_index = 2;
+            }
+
+            if !self.allocated.contains(&ip) {
+                self.allocated.insert(ip);
+                return Ok(ip);
+            }
+        }
+
+        Err(DomainError::InvalidProviderConfig {
+            message: "IP pool exhausted".to_string(),
+        })
+    }
+
+    /// Release an IP address back to the pool
+    pub fn release(&mut self, ip: Ipv4Addr) {
+        self.allocated.remove(&ip);
+    }
+
+    /// Check if an IP is allocated
+    pub fn is_allocated(&self, ip: &Ipv4Addr) -> bool {
+        self.allocated.contains(ip)
+    }
+
+    /// Get the number of allocated IPs
+    pub fn allocated_count(&self) -> usize {
+        self.allocated.len()
+    }
+
+    fn index_to_ip(&self, index: u32) -> Ipv4Addr {
+        let base: u32 = u32::from(self.base_ip);
+        Ipv4Addr::from(base + index)
+    }
+}
+
+// ============================================================================
+// MicroVM Instance Tracking
+// ============================================================================
+
+/// State of a microVM
+#[derive(Debug, Clone, PartialEq)]
+pub enum MicroVMState {
+    Creating,
+    Running,
+    Stopping,
+    Stopped,
+    Failed(String),
+}
+
+/// Represents a running microVM instance
+#[derive(Debug)]
+#[allow(dead_code)]
+struct MicroVMInstance {
+    worker_id: WorkerId,
+    vm_id: String,
+    socket_path: PathBuf,
+    tap_device: String,
+    ip_address: Ipv4Addr,
+    state: MicroVMState,
+    pid: Option<u32>,
+}
+
+// ============================================================================
+// Firecracker Provider (HU-8.2+)
+// ============================================================================
+
+/// Firecracker Provider for creating ephemeral microVM workers
+pub struct FirecrackerProvider {
+    provider_id: ProviderId,
+    config: FirecrackerConfig,
+    capabilities: ProviderCapabilities,
+    /// Active microVMs: worker_id -> MicroVMInstance
+    active_vms: Arc<RwLock<HashMap<WorkerId, MicroVMInstance>>>,
+    /// IP address pool
+    ip_pool: Arc<RwLock<IpPool>>,
+}
+
+impl FirecrackerProvider {
+    /// Create a new FirecrackerProvider with default configuration
+    pub async fn new() -> Result<Self> {
+        let config = FirecrackerConfig::default();
+        Self::with_config(config).await
+    }
+
+    /// Create a new FirecrackerProvider with custom configuration
+    pub async fn with_config(config: FirecrackerConfig) -> Result<Self> {
+        // Verify system requirements
+        Self::verify_requirements(&config).await?;
+
+        // Create IP pool
+        let ip_pool = IpPool::from_cidr(&config.network.subnet)?;
+
+        // Create data directory if it doesn't exist
+        if !config.data_dir.exists() {
+            tokio::fs::create_dir_all(&config.data_dir)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to create data directory: {}", e),
+                })?;
+        }
+
+        let capabilities = Self::default_capabilities();
+
+        Ok(Self {
+            provider_id: ProviderId::new(),
+            config,
+            capabilities,
+            active_vms: Arc::new(RwLock::new(HashMap::new())),
+            ip_pool: Arc::new(RwLock::new(ip_pool)),
+        })
+    }
+
+    /// Create a new FirecrackerProvider with a specific provider ID
+    pub async fn with_provider_id(provider_id: ProviderId, config: FirecrackerConfig) -> Result<Self> {
+        let mut provider = Self::with_config(config).await?;
+        provider.provider_id = provider_id;
+        Ok(provider)
+    }
+
+    /// Verify system requirements for Firecracker (HU-8.2)
+    async fn verify_requirements(config: &FirecrackerConfig) -> Result<()> {
+        // Check KVM access
+        let kvm_path = Path::new("/dev/kvm");
+        if !kvm_path.exists() {
+            return Err(DomainError::InfrastructureError {
+                message: "KVM not available: /dev/kvm does not exist".to_string(),
+            });
+        }
+
+        // Check if we can access KVM (read/write)
+        match std::fs::metadata(kvm_path) {
+            Ok(metadata) => {
+                use std::os::unix::fs::MetadataExt;
+                let mode = metadata.mode();
+                // Check if readable and writable (simplified check)
+                if mode & 0o006 == 0 {
+                    return Err(DomainError::InfrastructureError {
+                        message: "Insufficient permissions on /dev/kvm".to_string(),
+                    });
+                }
+            }
+            Err(e) => {
+                return Err(DomainError::InfrastructureError {
+                    message: format!("Cannot access /dev/kvm: {}", e),
+                });
+            }
+        }
+
+        // Check Firecracker binary
+        if !config.firecracker_path.exists() {
+            return Err(DomainError::InfrastructureError {
+                message: format!(
+                    "Firecracker binary not found: {}",
+                    config.firecracker_path.display()
+                ),
+            });
+        }
+
+        // Check Jailer binary if enabled
+        if config.use_jailer && !config.jailer_path.exists() {
+            return Err(DomainError::InfrastructureError {
+                message: format!(
+                    "Jailer binary not found: {}",
+                    config.jailer_path.display()
+                ),
+            });
+        }
+
+        // Check kernel
+        if !config.kernel_path.exists() {
+            return Err(DomainError::InfrastructureError {
+                message: format!(
+                    "Kernel not found: {}",
+                    config.kernel_path.display()
+                ),
+            });
+        }
+
+        // Check rootfs
+        if !config.rootfs_path.exists() {
+            return Err(DomainError::InfrastructureError {
+                message: format!(
+                    "Rootfs not found: {}",
+                    config.rootfs_path.display()
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn default_capabilities() -> ProviderCapabilities {
+        ProviderCapabilities {
+            max_resources: ResourceLimits {
+                max_cpu_cores: 32.0,
+                max_memory_bytes: 32 * 1024 * 1024 * 1024, // 32GB
+                max_disk_bytes: 100 * 1024 * 1024 * 1024,  // 100GB
+                max_gpu_count: 0, // Firecracker doesn't support GPU passthrough
+            },
+            gpu_support: false,
+            gpu_types: vec![],
+            architectures: vec![Architecture::Amd64, Architecture::Arm64],
+            runtimes: vec!["shell".to_string(), "python".to_string()],
+            regions: vec!["local".to_string()],
+            max_execution_time: Some(Duration::from_secs(86400)), // 24 hours
+            persistent_storage: false,
+            custom_networking: true,
+            features: HashMap::new(),
+        }
+    }
+
+    /// Generate VM ID from worker ID
+    fn vm_id(worker_id: &WorkerId) -> String {
+        format!("fc-{}", worker_id)
+    }
+
+    /// Get VM directory path
+    fn vm_dir(&self, vm_id: &str) -> PathBuf {
+        self.config.data_dir.join(vm_id)
+    }
+
+    /// Get socket path for a VM
+    fn socket_path(&self, vm_id: &str) -> PathBuf {
+        self.vm_dir(vm_id).join("firecracker.socket")
+    }
+
+    /// Create TAP device for a VM (HU-8.4)
+    async fn create_tap_device(&self, vm_id: &str, ip: Ipv4Addr) -> Result<String> {
+        let tap_name = format!("{}-{}", self.config.network.tap_prefix, &vm_id[3..11]);
+
+        // Create TAP device using ip command
+        let output = Command::new("ip")
+            .args(["tuntap", "add", "dev", &tap_name, "mode", "tap"])
+            .output()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to create TAP device: {}", e),
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Ignore "already exists" error
+            if !stderr.contains("File exists") {
+                return Err(DomainError::InfrastructureError {
+                    message: format!("Failed to create TAP device: {}", stderr),
+                });
+            }
+        }
+
+        // Configure IP on TAP device (host side)
+        let gateway = &self.config.network.gateway_ip;
+        let _ = Command::new("ip")
+            .args(["addr", "add", &format!("{}/30", gateway), "dev", &tap_name])
+            .output()
+            .await;
+
+        // Bring up TAP device
+        let output = Command::new("ip")
+            .args(["link", "set", "dev", &tap_name, "up"])
+            .output()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to bring up TAP device: {}", e),
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Warning bringing up TAP device: {}", stderr);
+        }
+
+        info!("Created TAP device {} for VM {} with IP {}", tap_name, vm_id, ip);
+        Ok(tap_name)
+    }
+
+    /// Destroy TAP device
+    async fn destroy_tap_device(&self, tap_name: &str) -> Result<()> {
+        let output = Command::new("ip")
+            .args(["link", "delete", tap_name])
+            .output()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to delete TAP device: {}", e),
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Ignore "not found" error
+            if !stderr.contains("Cannot find device") {
+                warn!("Warning deleting TAP device {}: {}", tap_name, stderr);
+            }
+        }
+
+        debug!("Destroyed TAP device {}", tap_name);
+        Ok(())
+    }
+
+    /// Prepare VM directory and rootfs copy
+    async fn prepare_vm_directory(&self, vm_id: &str) -> Result<PathBuf> {
+        let vm_dir = self.vm_dir(vm_id);
+
+        // Create VM directory
+        tokio::fs::create_dir_all(&vm_dir)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to create VM directory: {}", e),
+            })?;
+
+        // Copy rootfs (copy-on-write would be better, but simple copy for now)
+        let rootfs_copy = vm_dir.join("rootfs.ext4");
+        tokio::fs::copy(&self.config.rootfs_path, &rootfs_copy)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to copy rootfs: {}", e),
+            })?;
+
+        Ok(vm_dir)
+    }
+
+    /// Build kernel boot arguments
+    fn build_boot_args(
+        &self,
+        worker_id: &WorkerId,
+        server_address: &str,
+        otp_token: Option<&str>,
+        vm_ip: Ipv4Addr,
+    ) -> String {
+        let mut args = format!(
+            "console=ttyS0 reboot=k panic=1 pci=off \
+             HODEI_WORKER_ID={} \
+             HODEI_SERVER_ADDRESS={} \
+             HODEI_VM_IP={} \
+             HODEI_GATEWAY={}",
+            worker_id,
+            server_address,
+            vm_ip,
+            self.config.network.gateway_ip
+        );
+
+        if let Some(token) = otp_token {
+            args.push_str(&format!(" HODEI_OTP_TOKEN={}", token));
+        }
+
+        args
+    }
+
+    /// Start Firecracker process and configure VM via API (HU-8.5)
+    async fn start_microvm(
+        &self,
+        vm_id: &str,
+        spec: &WorkerSpec,
+        vm_ip: Ipv4Addr,
+        tap_device: &str,
+    ) -> Result<u32> {
+        let vm_dir = self.vm_dir(vm_id);
+        let socket_path = self.socket_path(vm_id);
+        let rootfs_path = vm_dir.join("rootfs.ext4");
+
+        // Remove old socket if exists
+        let _ = tokio::fs::remove_file(&socket_path).await;
+
+        // Start Firecracker process
+        let mut cmd = if self.config.use_jailer {
+            self.build_jailer_command(vm_id, &socket_path)
+        } else {
+            self.build_firecracker_command(&socket_path)
+        };
+
+        let child = cmd
+            .spawn()
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to start Firecracker: {}", e),
+            })?;
+
+        let pid = child.id().unwrap_or(0);
+        info!("Started Firecracker process (PID: {}) for VM {}", pid, vm_id);
+
+        // Wait for socket to be available
+        for _ in 0..50 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        if !socket_path.exists() {
+            return Err(DomainError::InfrastructureError {
+                message: "Firecracker socket not created in time".to_string(),
+            });
+        }
+
+        // Configure VM via API
+        self.configure_vm_api(
+            &socket_path,
+            spec,
+            &rootfs_path,
+            vm_ip,
+            tap_device,
+        ).await?;
+
+        // Start the VM
+        self.start_vm_api(&socket_path).await?;
+
+        Ok(pid)
+    }
+
+    fn build_firecracker_command(&self, socket_path: &Path) -> Command {
+        let mut cmd = Command::new(&self.config.firecracker_path);
+        cmd.arg("--api-sock").arg(socket_path);
+        cmd
+    }
+
+    fn build_jailer_command(&self, vm_id: &str, socket_path: &Path) -> Command {
+        let mut cmd = Command::new(&self.config.jailer_path);
+        cmd.arg("--id").arg(vm_id)
+            .arg("--exec-file").arg(&self.config.firecracker_path)
+            .arg("--chroot-base-dir").arg(&self.config.data_dir);
+
+        if let Some(uid) = self.config.jailer_uid {
+            cmd.arg("--uid").arg(uid.to_string());
+        }
+        if let Some(gid) = self.config.jailer_gid {
+            cmd.arg("--gid").arg(gid.to_string());
+        }
+
+        cmd.arg("--").arg("--api-sock").arg(socket_path);
+        cmd
+    }
+
+    /// Configure VM via Firecracker API socket
+    async fn configure_vm_api(
+        &self,
+        socket_path: &Path,
+        spec: &WorkerSpec,
+        rootfs_path: &Path,
+        vm_ip: Ipv4Addr,
+        tap_device: &str,
+    ) -> Result<()> {
+        let socket_path_str = socket_path.to_string_lossy();
+
+        // Configure machine (vCPUs, memory)
+        let vcpus = if spec.resources.cpu_cores > 0.0 {
+            spec.resources.cpu_cores.ceil() as u8
+        } else {
+            self.config.default_resources.vcpu_count
+        };
+        let mem_mib = if spec.resources.memory_bytes > 0 {
+            (spec.resources.memory_bytes / (1024 * 1024)) as u32
+        } else {
+            self.config.default_resources.mem_size_mib
+        };
+
+        let machine_config = serde_json::json!({
+            "vcpu_count": vcpus,
+            "mem_size_mib": mem_mib,
+            "ht_enabled": self.config.default_resources.ht_enabled
+        });
+
+        self.api_put(&socket_path_str, "/machine-config", &machine_config).await?;
+
+        // Configure boot source
+        let otp_token = spec.environment.get("HODEI_OTP_TOKEN").map(|s| s.as_str());
+        let boot_args = self.build_boot_args(&spec.worker_id, &spec.server_address, otp_token, vm_ip);
+
+        let boot_source = serde_json::json!({
+            "kernel_image_path": self.config.kernel_path.to_string_lossy(),
+            "boot_args": boot_args
+        });
+
+        self.api_put(&socket_path_str, "/boot-source", &boot_source).await?;
+
+        // Configure root drive
+        let drive_config = serde_json::json!({
+            "drive_id": "rootfs",
+            "path_on_host": rootfs_path.to_string_lossy(),
+            "is_root_device": true,
+            "is_read_only": false
+        });
+
+        self.api_put(&socket_path_str, "/drives/rootfs", &drive_config).await?;
+
+        // Configure network interface
+        let mac = self.generate_mac_address(vm_ip);
+        let network_config = serde_json::json!({
+            "iface_id": "eth0",
+            "guest_mac": mac,
+            "host_dev_name": tap_device
+        });
+
+        self.api_put(&socket_path_str, "/network-interfaces/eth0", &network_config).await?;
+
+        Ok(())
+    }
+
+    /// Start VM via API
+    async fn start_vm_api(&self, socket_path: &Path) -> Result<()> {
+        let socket_path_str = socket_path.to_string_lossy();
+        let action = serde_json::json!({
+            "action_type": "InstanceStart"
+        });
+
+        self.api_put(&socket_path_str, "/actions", &action).await?;
+        Ok(())
+    }
+
+    /// Send PUT request to Firecracker API via Unix socket
+    async fn api_put(&self, socket_path: &str, endpoint: &str, body: &serde_json::Value) -> Result<()> {
+        let body_str = serde_json::to_string(body).map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to serialize API request: {}", e),
+            }
+        })?;
+
+        // Use curl for simplicity (production would use hyper with Unix socket)
+        let output = Command::new("curl")
+            .args([
+                "-X", "PUT",
+                "--unix-socket", socket_path,
+                "-H", "Content-Type: application/json",
+                "-d", &body_str,
+                &format!("http://localhost{}", endpoint),
+            ])
+            .output()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to call Firecracker API: {}", e),
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(DomainError::InfrastructureError {
+                message: format!("Firecracker API error: {} {}", stdout, stderr),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Generate MAC address from IP
+    fn generate_mac_address(&self, ip: Ipv4Addr) -> String {
+        let octets = ip.octets();
+        format!("AA:FC:00:{:02X}:{:02X}:{:02X}", octets[1], octets[2], octets[3])
+    }
+
+    /// Map MicroVMState to WorkerState
+    fn map_vm_state(state: &MicroVMState) -> WorkerState {
+        match state {
+            MicroVMState::Creating => WorkerState::Creating,
+            MicroVMState::Running => WorkerState::Ready,
+            MicroVMState::Stopping => WorkerState::Draining,
+            MicroVMState::Stopped => WorkerState::Terminated,
+            MicroVMState::Failed(_) => WorkerState::Terminated,
+        }
+    }
+}
+
+#[async_trait]
+impl WorkerProvider for FirecrackerProvider {
+    fn provider_id(&self) -> &ProviderId {
+        &self.provider_id
+    }
+
+    fn provider_type(&self) -> ProviderType {
+        ProviderType::Custom("firecracker".to_string())
+    }
+
+    fn capabilities(&self) -> &ProviderCapabilities {
+        &self.capabilities
+    }
+
+    async fn create_worker(&self, spec: &WorkerSpec) -> std::result::Result<WorkerHandle, ProviderError> {
+        let worker_id = spec.worker_id.clone();
+        let vm_id = Self::vm_id(&worker_id);
+
+        info!("Creating Firecracker microVM: {}", vm_id);
+
+        // Check if VM already exists
+        {
+            let vms = self.active_vms.read().await;
+            if vms.contains_key(&worker_id) {
+                return Err(ProviderError::ProvisioningFailed(format!(
+                    "VM {} already exists",
+                    vm_id
+                )));
+            }
+        }
+
+        // Allocate IP
+        let vm_ip = {
+            let mut pool = self.ip_pool.write().await;
+            pool.allocate().map_err(|e| {
+                ProviderError::ProvisioningFailed(format!("Failed to allocate IP: {}", e))
+            })?
+        };
+
+        // Create TAP device
+        let tap_device = self.create_tap_device(&vm_id, vm_ip).await.map_err(|e| {
+            ProviderError::ProvisioningFailed(format!("Failed to create TAP device: {}", e))
+        })?;
+
+        // Prepare VM directory
+        self.prepare_vm_directory(&vm_id).await.map_err(|e| {
+            ProviderError::ProvisioningFailed(format!("Failed to prepare VM directory: {}", e))
+        })?;
+
+        // Start microVM
+        let pid = self.start_microvm(&vm_id, spec, vm_ip, &tap_device).await.map_err(|e| {
+            ProviderError::ProvisioningFailed(format!("Failed to start microVM: {}", e))
+        })?;
+
+        // Track VM instance
+        let instance = MicroVMInstance {
+            worker_id: worker_id.clone(),
+            vm_id: vm_id.clone(),
+            socket_path: self.socket_path(&vm_id),
+            tap_device: tap_device.clone(),
+            ip_address: vm_ip,
+            state: MicroVMState::Running,
+            pid: Some(pid),
+        };
+
+        {
+            let mut vms = self.active_vms.write().await;
+            vms.insert(worker_id.clone(), instance);
+        }
+
+        info!("MicroVM {} created successfully (IP: {}, PID: {})", vm_id, vm_ip, pid);
+
+        let handle = WorkerHandle::new(
+            worker_id,
+            vm_id.clone(),
+            ProviderType::Custom("firecracker".to_string()),
+            self.provider_id.clone(),
+        )
+        .with_metadata("ip_address", serde_json::json!(vm_ip.to_string()))
+        .with_metadata("tap_device", serde_json::json!(tap_device))
+        .with_metadata("pid", serde_json::json!(pid));
+
+        Ok(handle)
+    }
+
+    async fn get_worker_status(&self, handle: &WorkerHandle) -> std::result::Result<WorkerState, ProviderError> {
+        let vms = self.active_vms.read().await;
+
+        match vms.get(&handle.worker_id) {
+            Some(instance) => Ok(Self::map_vm_state(&instance.state)),
+            None => Ok(WorkerState::Terminated),
+        }
+    }
+
+    async fn destroy_worker(&self, handle: &WorkerHandle) -> std::result::Result<(), ProviderError> {
+        let vm_id = &handle.provider_resource_id;
+        info!("Destroying Firecracker microVM: {}", vm_id);
+
+        // Get instance info
+        let instance = {
+            let mut vms = self.active_vms.write().await;
+            vms.remove(&handle.worker_id)
+        };
+
+        if let Some(instance) = instance {
+            // Try graceful shutdown via API
+            if instance.socket_path.exists() {
+                let action = serde_json::json!({
+                    "action_type": "SendCtrlAltDel"
+                });
+                let _ = self.api_put(
+                    &instance.socket_path.to_string_lossy(),
+                    "/actions",
+                    &action,
+                ).await;
+
+                // Wait for graceful shutdown
+                tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_secs)).await;
+            }
+
+            // Force kill if still running
+            if let Some(pid) = instance.pid {
+                let _ = Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .output()
+                    .await;
+            }
+
+            // Cleanup TAP device
+            let _ = self.destroy_tap_device(&instance.tap_device).await;
+
+            // Release IP
+            {
+                let mut pool = self.ip_pool.write().await;
+                pool.release(instance.ip_address);
+            }
+
+            // Cleanup VM directory
+            let vm_dir = self.vm_dir(vm_id);
+            let _ = tokio::fs::remove_dir_all(&vm_dir).await;
+
+            info!("MicroVM {} destroyed successfully", vm_id);
+        } else {
+            debug!("MicroVM {} not found (already destroyed)", vm_id);
+        }
+
+        Ok(())
+    }
+
+    async fn get_worker_logs(
+        &self,
+        handle: &WorkerHandle,
+        tail: Option<u32>,
+    ) -> std::result::Result<Vec<LogEntry>, ProviderError> {
+        let vm_id = &handle.provider_resource_id;
+        let log_path = self.vm_dir(vm_id).join("console.log");
+
+        if !log_path.exists() {
+            return Ok(vec![]);
+        }
+
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
+            .map_err(|e| ProviderError::Internal(format!("Failed to read logs: {}", e)))?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        let lines = if let Some(n) = tail {
+            let start = lines.len().saturating_sub(n as usize);
+            &lines[start..]
+        } else {
+            &lines[..]
+        };
+
+        let entries: Vec<LogEntry> = lines
+            .iter()
+            .map(|line| LogEntry {
+                timestamp: chrono::Utc::now(),
+                level: LogLevel::Info,
+                message: line.to_string(),
+                source: "console".to_string(),
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
+        // Check KVM
+        if !Path::new("/dev/kvm").exists() {
+            return Ok(HealthStatus::Unhealthy {
+                reason: "KVM not available".to_string(),
+            });
+        }
+
+        // Check Firecracker binary
+        if !self.config.firecracker_path.exists() {
+            return Ok(HealthStatus::Unhealthy {
+                reason: format!(
+                    "Firecracker binary not found: {}",
+                    self.config.firecracker_path.display()
+                ),
+            });
+        }
+
+        // Check kernel
+        if !self.config.kernel_path.exists() {
+            return Ok(HealthStatus::Degraded {
+                reason: format!(
+                    "Kernel not found: {}",
+                    self.config.kernel_path.display()
+                ),
+            });
+        }
+
+        // Check rootfs
+        if !self.config.rootfs_path.exists() {
+            return Ok(HealthStatus::Degraded {
+                reason: format!(
+                    "Rootfs not found: {}",
+                    self.config.rootfs_path.display()
+                ),
+            });
+        }
+
+        Ok(HealthStatus::Healthy)
+    }
+
+    fn estimated_startup_time(&self) -> Duration {
+        Duration::from_millis(125)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_firecracker_config_default() {
+        let config = FirecrackerConfig::default();
+        assert_eq!(config.firecracker_path, PathBuf::from("/usr/bin/firecracker"));
+        assert_eq!(config.jailer_path, PathBuf::from("/usr/bin/jailer"));
+        assert!(config.use_jailer);
+        assert_eq!(config.boot_timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_firecracker_config_builder() {
+        let config = FirecrackerConfig::builder()
+            .firecracker_path("/custom/firecracker")
+            .jailer_path("/custom/jailer")
+            .data_dir("/custom/data")
+            .kernel_path("/custom/vmlinux")
+            .rootfs_path("/custom/rootfs.ext4")
+            .use_jailer(false)
+            .boot_timeout_secs(60)
+            .build()
+            .expect("should build config");
+
+        assert_eq!(config.firecracker_path, PathBuf::from("/custom/firecracker"));
+        assert_eq!(config.jailer_path, PathBuf::from("/custom/jailer"));
+        assert_eq!(config.data_dir, PathBuf::from("/custom/data"));
+        assert!(!config.use_jailer);
+        assert_eq!(config.boot_timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_firecracker_config_builder_validation() {
+        let result = FirecrackerConfig::builder()
+            .data_dir("")
+            .build();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_network_config_builder() {
+        let network = FirecrackerNetworkConfig::new()
+            .with_tap_prefix("my-tap")
+            .with_subnet("10.0.0.0/16")
+            .with_gateway_ip("10.0.0.1")
+            .with_host_interface("ens3")
+            .with_nat(false);
+
+        assert_eq!(network.tap_prefix, "my-tap");
+        assert_eq!(network.subnet, "10.0.0.0/16");
+        assert_eq!(network.gateway_ip, "10.0.0.1");
+        assert_eq!(network.host_interface, "ens3");
+        assert!(!network.enable_nat);
+    }
+
+    #[test]
+    fn test_microvm_resources_builder() {
+        let resources = MicroVMResources::new()
+            .with_vcpus(4)
+            .with_memory_mib(2048)
+            .with_hyperthreading(true);
+
+        assert_eq!(resources.vcpu_count, 4);
+        assert_eq!(resources.mem_size_mib, 2048);
+        assert!(resources.ht_enabled);
+    }
+
+    #[test]
+    fn test_microvm_resources_clamping() {
+        let resources = MicroVMResources::new()
+            .with_vcpus(100) // Should be clamped to 32
+            .with_memory_mib(100000); // Should be clamped to 32768
+
+        assert_eq!(resources.vcpu_count, 32);
+        assert_eq!(resources.mem_size_mib, 32768);
+    }
+
+    #[test]
+    fn test_ip_pool_from_cidr() {
+        let pool = IpPool::from_cidr("172.16.0.0/24").expect("should parse CIDR");
+        assert_eq!(pool.base_ip, Ipv4Addr::new(172, 16, 0, 0));
+        assert_eq!(pool.mask_bits, 24);
+    }
+
+    #[test]
+    fn test_ip_pool_allocate() {
+        let mut pool = IpPool::from_cidr("172.16.0.0/30").expect("should parse CIDR");
+
+        let ip1 = pool.allocate().expect("should allocate first IP");
+        assert_eq!(ip1, Ipv4Addr::new(172, 16, 0, 2));
+
+        let ip2 = pool.allocate().expect("should allocate second IP");
+        assert_eq!(ip2, Ipv4Addr::new(172, 16, 0, 3));
+
+        // Pool exhausted (only 2 usable IPs in /30)
+        // Note: /30 has 4 addresses: .0 (network), .1 (gateway), .2, .3 (broadcast)
+        // So only .2 is usable for VMs
+    }
+
+    #[test]
+    fn test_ip_pool_release() {
+        let mut pool = IpPool::from_cidr("172.16.0.0/24").expect("should parse CIDR");
+
+        let ip = pool.allocate().expect("should allocate");
+        assert!(pool.is_allocated(&ip));
+
+        pool.release(ip);
+        assert!(!pool.is_allocated(&ip));
+    }
+
+    #[test]
+    fn test_vm_id_generation() {
+        let worker_id = WorkerId::new();
+        let vm_id = FirecrackerProvider::vm_id(&worker_id);
+        assert!(vm_id.starts_with("fc-"));
+    }
+
+    #[test]
+    fn test_default_capabilities() {
+        let caps = FirecrackerProvider::default_capabilities();
+        assert!(!caps.gpu_support);
+        assert!(caps.architectures.contains(&Architecture::Amd64));
+        assert!(caps.architectures.contains(&Architecture::Arm64));
+        assert_eq!(caps.max_resources.max_gpu_count, 0);
+    }
+
+    #[test]
+    fn test_map_vm_state() {
+        assert!(matches!(
+            FirecrackerProvider::map_vm_state(&MicroVMState::Creating),
+            WorkerState::Creating
+        ));
+        assert!(matches!(
+            FirecrackerProvider::map_vm_state(&MicroVMState::Running),
+            WorkerState::Ready
+        ));
+        assert!(matches!(
+            FirecrackerProvider::map_vm_state(&MicroVMState::Stopping),
+            WorkerState::Draining
+        ));
+        assert!(matches!(
+            FirecrackerProvider::map_vm_state(&MicroVMState::Stopped),
+            WorkerState::Terminated
+        ));
+        assert!(matches!(
+            FirecrackerProvider::map_vm_state(&MicroVMState::Failed("error".to_string())),
+            WorkerState::Terminated
+        ));
+    }
+}

@@ -1,0 +1,16 @@
+// Archivo maestro que incluye todas las definiciones para resolver dependencias
+syntax = "proto3";
+
+package hodei.all;
+
+// Importar todos los archivos .proto
+import "common.proto";
+import "worker_agent.proto";
+import "job_execution.proto";
+import "metrics.proto";
+import "scheduler.proto";
+
+// Este archivo vacío sirve solo para forzar que protoc compile todos los archivos juntos
+message DummyMessage {
+    string dummy = 1;
+}

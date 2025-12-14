@@ -1,0 +1,283 @@
+// Job Execution Service - Ejecución de jobs y eventos de dominio
+syntax = "proto3";
+
+package hodei.job;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// Definición completa del job
+message JobDefinition {
+    JobId job_id = 1;
+    string name = 2;
+    string description = 3;
+    string command = 4;  // Comando a ejecutar
+    repeated string arguments = 5;
+    map<string, string> environment = 6;
+    hodei.common.ResourceRequirements requirements = 7;
+    hodei.common.SchedulingInfo scheduling = 8;
+    hodei.common.LabelSelector selector = 9;
+    hodei.common.Affinity affinity = 10;
+    repeated hodei.common.Toleration tolerations = 11;
+    hodei.common.TimeoutConfig timeout_config = 12;
+    repeated string dependencies = 13;  // Jobs que deben completarse antes
+    map<string, string> metadata = 14;
+}
+
+// Información de ejecución
+message ExecutionInfo {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    WorkerId assigned_worker_id = 3;
+    hodei.common.ExecutionState state = 4;
+    hodei.common.JobStatus status = 5;
+    google.protobuf.Timestamp start_time = 6;
+    google.protobuf.Timestamp end_time = 7;
+    google.protobuf.Duration duration = 8;
+    int32 progress_percentage = 9;
+    map<string, string> execution_metadata = 10;
+}
+
+// Eventos de dominio del ciclo de vida
+message DomainEvent {
+    string event_id = 1;
+    string event_type = 2;  // JobCreated, JobQueued, JobAssigned, JobStarted, etc.
+    ExecutionId execution_id = 3;
+    google.protobuf.Timestamp timestamp = 4;
+    string source = 5;  // worker_id, scheduler_name, etc.
+    map<string, string> properties = 6;
+    string correlation_id = 7;
+    string causation_id = 8;
+}
+
+// Eventos específicos del ciclo de vida de ejecución
+message JobCreatedEvent {
+    JobDefinition job = 1;
+    string created_by = 2;
+}
+
+message JobQueuedEvent {
+    JobId job_id = 1;
+    hodei.common.SchedulingInfo scheduling_info = 2;
+    string queue_position = 3;
+}
+
+message JobAssignedEvent {
+    JobId job_id = 1;
+    WorkerId assigned_worker = 2;
+    hodei.common.ResourceAllocation allocation = 3;
+    string assignment_reason = 4;
+}
+
+message JobStartedEvent {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    WorkerId worker_id = 3;
+    google.protobuf.Timestamp actual_start_time = 4;
+    map<string, string> startup_metadata = 5;
+}
+
+message JobProgressEvent {
+    ExecutionId execution_id = 1;
+    int32 progress_percentage = 2;
+    string current_stage = 3;
+    string stage_description = 4;
+    map<string, string> progress_metadata = 5;
+    google.protobuf.Timestamp timestamp = 6;
+}
+
+message JobCompletedEvent {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp completion_time = 3;
+    int32 exit_code = 4;
+    string output_summary = 5;
+    map<string, string> completion_metadata = 6;
+}
+
+message JobFailedEvent {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp failure_time = 3;
+    string failure_reason = 4;
+    string error_message = 5;
+    int32 exit_code = 6;
+    bool retryable = 7;
+    map<string, string> failure_metadata = 8;
+}
+
+message JobCancelledEvent {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp cancellation_time = 3;
+    string cancellation_reason = 4;
+    string cancelled_by = 5;
+}
+
+message JobTimeoutEvent {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp timeout_time = 3;
+    google.protobuf.Duration timeout_duration = 4;
+    string timeout_reason = 5;
+}
+
+// Asignación de recursos
+message ResourceAllocation {
+    WorkerId worker_id = 1;
+    hodei.common.ResourceRequirements allocated_resources = 2;
+    google.protobuf.Timestamp allocation_time = 3;
+    google.protobuf.Timestamp deallocation_time = 4;
+}
+
+// Request para crear job
+message CreateJobRequest {
+    JobDefinition job = 1;
+    bool submit_immediately = 2;
+}
+
+message CreateJobResponse {
+    bool success = 1;
+    string message = 2;
+    JobId job_id = 3;
+    google.protobuf.Timestamp created_at = 4;
+}
+
+// Request para obtener job
+message GetJobRequest {
+    JobId job_id = 1;
+}
+
+message GetJobResponse {
+    JobDefinition job = 1;
+    ExecutionInfo latest_execution = 2;
+    repeated DomainEvent events = 3;
+}
+
+// Request para asignar job
+message AssignJobRequest {
+    JobId job_id = 1;
+    WorkerId worker_id = 2;
+    string assigner = 3;
+}
+
+message AssignJobResponse {
+    bool success = 1;
+    string message = 2;
+    ExecutionId execution_id = 3;
+    google.protobuf.Timestamp assigned_at = 4;
+}
+
+// Request para iniciar job
+message StartJobRequest {
+    ExecutionId execution_id = 1;
+    WorkerId worker_id = 2;
+}
+
+message StartJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp started_at = 3;
+}
+
+// Request para actualizar progreso
+message UpdateJobProgressRequest {
+    ExecutionId execution_id = 1;
+    int32 progress_percentage = 2;
+    string current_stage = 3;
+    string stage_description = 4;
+    map<string, string> progress_metadata = 5;
+}
+
+message UpdateJobProgressResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp updated_at = 3;
+}
+
+// Request para completar job
+message CompleteJobRequest {
+    ExecutionId execution_id = 1;
+    int32 exit_code = 2;
+    string output_summary = 3;
+    map<string, string> completion_metadata = 4;
+}
+
+message CompleteJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp completed_at = 3;
+}
+
+// Request para fallar job
+message FailJobRequest {
+    ExecutionId execution_id = 1;
+    string failure_reason = 2;
+    string error_message = 3;
+    int32 exit_code = 4;
+    bool retryable = 5;
+    map<string, string> failure_metadata = 6;
+}
+
+message FailJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp failed_at = 3;
+}
+
+// Request para cancelar job
+message CancelJobRequest {
+    ExecutionId execution_id = 1;
+    string cancellation_reason = 2;
+    string cancelled_by = 3;
+}
+
+message CancelJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp cancelled_at = 3;
+}
+
+// Stream para eventos de ejecución
+message ExecutionEventStream {
+    DomainEvent event = 1;
+}
+
+// Request para obtener eventos de ejecución
+message GetExecutionEventsRequest {
+    ExecutionId execution_id = 1;
+    google.protobuf.Timestamp from_timestamp = 2;
+    google.protobuf.Timestamp to_timestamp = 3;
+    repeated string event_types = 4;
+}
+
+message GetExecutionEventsResponse {
+    repeated DomainEvent events = 1;
+    int32 total_events = 2;
+}
+
+// Servicios gRPC
+service JobExecutionService {
+    // Gestión básica de jobs
+    rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
+    rpc GetJob(GetJobRequest) returns (GetJobResponse);
+    rpc AssignJob(AssignJobRequest) returns (AssignJobResponse);
+    
+    // Ciclo de vida de ejecución
+    rpc StartJob(StartJobRequest) returns (StartJobResponse);
+    rpc UpdateJobProgress(UpdateJobProgressRequest) returns (UpdateJobProgressResponse);
+    rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse);
+    rpc FailJob(FailJobRequest) returns (FailJobResponse);
+    rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+    
+    // Eventos y streaming
+    rpc GetExecutionEvents(GetExecutionEventsRequest) returns (GetExecutionEventsResponse);
+    rpc ExecutionEventStream(stream ExecutionEventRequest) returns (stream ExecutionEventStream);
+}
+
+message ExecutionEventRequest {
+    ExecutionId execution_id = 1;
+    repeated string event_types = 2;
+    bool include_completed = 3;
+}

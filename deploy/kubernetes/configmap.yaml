@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hodei-provider-config
+  namespace: hodei-system
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: config
+data:
+  # Kubernetes Provider Configuration
+  HODEI_K8S_ENABLED: "1"
+  HODEI_K8S_NAMESPACE: "hodei-workers"
+  HODEI_K8S_SERVICE_ACCOUNT: "hodei-worker"
+  
+  # Default resource limits for worker pods
+  HODEI_K8S_DEFAULT_CPU_REQUEST: "100m"
+  HODEI_K8S_DEFAULT_MEMORY_REQUEST: "128Mi"
+  HODEI_K8S_DEFAULT_CPU_LIMIT: "1000m"
+  HODEI_K8S_DEFAULT_MEMORY_LIMIT: "512Mi"
+  
+  # Worker image (override as needed)
+  HODEI_WORKER_IMAGE: "hodei-worker:latest"

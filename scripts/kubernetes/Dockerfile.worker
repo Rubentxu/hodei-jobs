@@ -1,0 +1,51 @@
+# Hodei Worker Kubernetes Image
+# Optimized for Kubernetes deployments with health checks and graceful shutdown
+
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+FROM rust:1.83-slim-bookworm AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY proto ./proto
+
+# Build release binary
+RUN cargo build --release -p hodei-jobs-cli
+
+# =============================================================================
+# Stage 2: Runtime (Distroless for minimal attack surface)
+# =============================================================================
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/hodei-cli /usr/local/bin/hodei-worker
+
+# Use non-root user (provided by distroless:nonroot)
+USER nonroot:nonroot
+
+# Environment variables (overridden at runtime via Pod spec)
+ENV HODEI_WORKER_ID=""
+ENV HODEI_SERVER_ADDRESS=""
+ENV HODEI_OTP_TOKEN=""
+ENV HODEI_LOG_LEVEL="info"
+ENV RUST_LOG="info"
+
+# Expose metrics port (if enabled)
+EXPOSE 9090
+
+# Default command
+ENTRYPOINT ["/usr/local/bin/hodei-worker"]
+CMD ["worker", "start"]

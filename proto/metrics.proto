@@ -1,0 +1,286 @@
+// Metrics Service - Métricas temporales y observabilidad
+syntax = "proto3";
+
+package hodei.metrics;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// Punto de métrica temporal
+message MetricPoint {
+    google.protobuf.Timestamp timestamp = 1;
+    double value = 2;
+    map<string, string> labels = 3;  // Etiquetas adicionales para la métrica
+}
+
+// Serie temporal de métricas
+message TimeSeries {
+    string metric_name = 1;
+    string metric_type = 2;  // counter, gauge, histogram, summary
+    repeated MetricPoint points = 3;
+    map<string, string> metric_labels = 4;  // Labels estáticas de la métrica
+}
+
+// Métricas del sistema (CPU, memoria, disco)
+message SystemMetrics {
+    WorkerId worker_id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+    
+    // CPU metrics
+    double cpu_usage_percent = 3;
+    double cpu_cores_used = 4;
+    double cpu_cores_total = 5;
+    repeated double cpu_cores_per_process = 6;  // Top procesos por uso de CPU
+    
+    // Memory metrics
+    int64 memory_used_bytes = 7;
+    int64 memory_total_bytes = 8;
+    double memory_usage_percent = 9;
+    repeated ProcessMemoryInfo process_memory = 10;  // Memoria por proceso
+    
+    // Disk metrics
+    int64 disk_used_bytes = 11;
+    int64 disk_total_bytes = 12;
+    double disk_usage_percent = 13;
+    repeated DiskUsageInfo disk_usage = 14;  // Uso por filesystem
+    
+    // Network metrics (opcional)
+    int64 network_bytes_sent = 15;
+    int64 network_bytes_recv = 16;
+    double network_usage_percent = 17;
+    
+    // Load metrics
+    double load_average_1min = 18;
+    double load_average_5min = 19;
+    double load_average_15min = 20;
+}
+
+// Información de memoria por proceso
+message ProcessMemoryInfo {
+    int32 pid = 1;
+    string process_name = 2;
+    int64 memory_used_bytes = 3;
+    double memory_usage_percent = 4;
+}
+
+// Información de uso de disco
+message DiskUsageInfo {
+    string filesystem = 1;
+    string mount_point = 2;
+    int64 used_bytes = 3;
+    int64 total_bytes = 4;
+    double usage_percent = 5;
+}
+
+// Métricas de ejecución de job
+message JobExecutionMetrics {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp timestamp = 3;
+    
+    // Execution progress
+    int32 progress_percentage = 4;
+    string current_stage = 5;
+    
+    // Resource usage during execution
+    double cpu_usage_percent = 6;
+    int64 memory_used_bytes = 7;
+    int64 disk_io_bytes = 8;
+    int64 network_io_bytes = 9;
+    
+    // Performance metrics
+    google.protobuf.Duration execution_duration = 10;
+    google.protobuf.Duration estimated_remaining = 11;
+    
+    // Stage-specific metrics
+    map<string, StageMetrics> stage_metrics = 12;
+}
+
+// Métricas específicas de etapa
+message StageMetrics {
+    string stage_name = 1;
+    google.protobuf.Timestamp stage_start = 2;
+    google.protobuf.Duration stage_duration = 3;
+    double stage_progress_percent = 4;
+    map<string, string> stage_metadata = 5;
+}
+
+// Agregación de métricas por ventana de tiempo
+message MetricAggregation {
+    string metric_name = 1;
+    string aggregation_type = 2;  // avg, min, max, sum, count, percentile
+    double value = 3;
+    google.protobuf.Timestamp window_start = 4;
+    google.protobuf.Duration window_duration = 5;
+    map<string, string> labels = 6;
+}
+
+// Request para métricas del sistema
+message GetSystemMetricsRequest {
+    WorkerId worker_id = 1;
+    google.protobuf.Timestamp from_timestamp = 2;
+    google.protobuf.Timestamp to_timestamp = 3;
+    repeated string metric_types = 4;  // cpu, memory, disk, network, load
+    google.protobuf.Duration interval = 5;  // Intervalo de agregación
+}
+
+message GetSystemMetricsResponse {
+    repeated SystemMetrics metrics = 1;
+    repeated MetricAggregation aggregations = 2;
+    int32 total_points = 3;
+}
+
+// Request para métricas de ejecución
+message GetJobExecutionMetricsRequest {
+    ExecutionId execution_id = 1;
+    google.protobuf.Timestamp from_timestamp = 2;
+    google.protobuf.Timestamp to_timestamp = 3;
+    google.protobuf.Duration interval = 4;
+}
+
+message GetJobExecutionMetricsResponse {
+    repeated JobExecutionMetrics metrics = 1;
+    repeated MetricAggregation aggregations = 2;
+    int32 total_points = 3;
+}
+
+// Request para métricas agregadas
+message GetAggregatedMetricsRequest {
+    string metric_name = 1;
+    repeated WorkerId worker_ids = 2;
+    google.protobuf.Timestamp from_timestamp = 3;
+    google.protobuf.Timestamp to_timestamp = 4;
+    google.protobuf.Duration window_size = 5;
+    string aggregation_type = 6;  // avg, min, max, sum, count, percentile
+    repeated string group_by_labels = 7;  // Labels para agrupar métricas
+}
+
+message GetAggregatedMetricsResponse {
+    repeated MetricAggregation aggregations = 1;
+    map<string, int32> worker_counts = 2;  // Conteo de workers por grupo
+}
+
+// Stream para métricas en tiempo real
+message RealTimeMetricsRequest {
+    WorkerId worker_id = 1;
+    repeated string metric_types = 2;
+    google.protobuf.Duration update_interval = 3;
+    int32 max_points = 4;  // Máximo número de puntos a mantener
+}
+
+message RealTimeMetricsStream {
+    SystemMetrics system_metrics = 1;
+    repeated JobExecutionMetrics job_metrics = 2;
+    google.protobuf.Timestamp stream_timestamp = 3;
+}
+
+// Request para métricas históricas
+message GetHistoricalMetricsRequest {
+    string metric_name = 1;
+    repeated WorkerId worker_ids = 2;
+    google.protobuf.Timestamp from_timestamp = 3;
+    google.protobuf.Timestamp to_timestamp = 4;
+    google.protobuf.Duration resolution = 5;  // 1s, 1m, 5m, 1h, etc.
+    string aggregation = 6;  // avg, min, max
+}
+
+message GetHistoricalMetricsResponse {
+    repeated TimeSeries time_series = 1;
+    google.protobuf.Timestamp data_start = 2;
+    google.protobuf.Timestamp data_end = 3;
+    int32 total_data_points = 4;
+}
+
+// Request para métricas de salud del sistema
+message GetHealthMetricsRequest {
+    repeated WorkerId worker_ids = 1;
+    google.protobuf.Duration lookback_period = 2;
+}
+
+message WorkerHealthMetrics {
+    WorkerId worker_id = 1;
+    double cpu_usage_avg = 2;
+    double memory_usage_avg = 3;
+    double disk_usage_avg = 4;
+    double load_average_avg = 5;
+    int32 heartbeat_misses = 6;
+    google.protobuf.Duration uptime = 7;
+    bool is_healthy = 8;
+    repeated string health_issues = 9;
+}
+
+message GetHealthMetricsResponse {
+    repeated WorkerHealthMetrics worker_health = 1;
+    SystemMetrics overall_system_metrics = 2;
+    google.protobuf.Timestamp report_timestamp = 3;
+}
+
+// Alertas de métricas
+message MetricAlert {
+    string alert_id = 1;
+    string alert_name = 2;
+    string severity = 3;  // info, warning, critical
+    string metric_name = 4;
+    string condition = 5;  // Descripción de la condición que triggerea la alerta
+    double current_value = 6;
+    double threshold_value = 7;
+    WorkerId affected_worker = 8;
+    ExecutionId affected_execution = 9;
+    google.protobuf.Timestamp triggered_at = 10;
+    string description = 11;
+}
+
+message CreateAlertRequest {
+    string alert_name = 2;
+    string metric_name = 3;
+    string condition = 4;  // >, <, >=, <=, ==, !=
+    double threshold_value = 5;
+    string severity = 6;
+    repeated WorkerId worker_filter = 7;
+    google.protobuf.Duration evaluation_interval = 8;
+    bool enabled = 9;
+}
+
+message CreateAlertResponse {
+    bool success = 1;
+    string alert_id = 2;
+    string message = 3;
+}
+
+message GetAlertsRequest {
+    repeated string alert_ids = 1;
+    string severity_filter = 2;
+    bool active_only = 3;
+}
+
+message GetAlertsResponse {
+    repeated MetricAlert alerts = 1;
+}
+
+// Servicios gRPC
+service MetricsService {
+    // Métricas del sistema
+    rpc GetSystemMetrics(GetSystemMetricsRequest) returns (GetSystemMetricsResponse);
+    rpc GetJobExecutionMetrics(GetJobExecutionMetricsRequest) returns (GetJobExecutionMetricsResponse);
+    rpc GetAggregatedMetrics(GetAggregatedMetricsRequest) returns (GetAggregatedMetricsResponse);
+    
+    // Streaming de métricas
+    rpc RealTimeMetricsStream(RealTimeMetricsRequest) returns (stream RealTimeMetricsStream);
+    
+    // Métricas históricas
+    rpc GetHistoricalMetrics(GetHistoricalMetricsRequest) returns (GetHistoricalMetricsResponse);
+    
+    // Salud del sistema
+    rpc GetHealthMetrics(GetHealthMetricsRequest) returns (GetHealthMetricsResponse);
+    
+    // Alertas
+    rpc CreateAlert(CreateAlertRequest) returns (CreateAlertResponse);
+    rpc GetAlerts(GetAlertsRequest) returns (GetAlertsResponse);
+    rpc MetricAlertStream(AlertStreamRequest) returns (stream MetricAlert);
+}
+
+message AlertStreamRequest {
+    repeated string alert_ids = 1;
+    string severity_filter = 2;
+}

@@ -1,0 +1,246 @@
+syntax = "proto3";
+
+package hodei.providers;
+
+import "common.proto";
+
+// Service for managing provider configurations
+service ProviderManagementService {
+    // Register a new provider
+    rpc RegisterProvider(RegisterProviderRequest) returns (RegisterProviderResponse);
+    
+    // Get provider by ID
+    rpc GetProvider(GetProviderRequest) returns (GetProviderResponse);
+    
+    // Get provider by name
+    rpc GetProviderByName(GetProviderByNameRequest) returns (GetProviderResponse);
+    
+    // List all providers
+    rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+    
+    // Update provider configuration
+    rpc UpdateProvider(UpdateProviderRequest) returns (UpdateProviderResponse);
+    
+    // Delete provider
+    rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
+    
+    // Enable provider
+    rpc EnableProvider(EnableProviderRequest) returns (EnableProviderResponse);
+    
+    // Disable provider
+    rpc DisableProvider(DisableProviderRequest) returns (DisableProviderResponse);
+    
+    // Get provider statistics
+    rpc GetProviderStats(GetProviderStatsRequest) returns (GetProviderStatsResponse);
+}
+
+// Provider type enumeration
+enum ProviderType {
+    PROVIDER_TYPE_UNSPECIFIED = 0;
+    PROVIDER_TYPE_DOCKER = 1;
+    PROVIDER_TYPE_KUBERNETES = 2;
+    PROVIDER_TYPE_FARGATE = 3;
+    PROVIDER_TYPE_CLOUD_RUN = 4;
+    PROVIDER_TYPE_CONTAINER_APPS = 5;
+    PROVIDER_TYPE_LAMBDA = 6;
+    PROVIDER_TYPE_CLOUD_FUNCTIONS = 7;
+    PROVIDER_TYPE_AZURE_FUNCTIONS = 8;
+    PROVIDER_TYPE_EC2 = 9;
+    PROVIDER_TYPE_COMPUTE_ENGINE = 10;
+    PROVIDER_TYPE_AZURE_VMS = 11;
+    PROVIDER_TYPE_BARE_METAL = 12;
+    PROVIDER_TYPE_CUSTOM = 99;
+}
+
+// Provider status enumeration
+enum ProviderStatus {
+    PROVIDER_STATUS_UNSPECIFIED = 0;
+    PROVIDER_STATUS_ACTIVE = 1;
+    PROVIDER_STATUS_MAINTENANCE = 2;
+    PROVIDER_STATUS_DISABLED = 3;
+    PROVIDER_STATUS_OVERLOADED = 4;
+    PROVIDER_STATUS_UNHEALTHY = 5;
+    PROVIDER_STATUS_DEGRADED = 6;
+}
+
+// Provider configuration message
+message ProviderConfig {
+    string id = 1;
+    string name = 2;
+    ProviderType provider_type = 3;
+    ProviderStatus status = 4;
+    int32 priority = 5;
+    uint32 max_workers = 6;
+    uint32 active_workers = 7;
+    ProviderCapabilities capabilities = 8;
+    ProviderTypeConfig type_config = 9;
+    repeated string tags = 10;
+    map<string, string> metadata = 11;
+    string created_at = 12;
+    string updated_at = 13;
+}
+
+// Provider capabilities
+message ProviderCapabilities {
+    ResourceLimits max_resources = 1;
+    bool gpu_support = 2;
+    repeated string gpu_types = 3;
+    repeated string architectures = 4;
+    repeated string runtimes = 5;
+    repeated string regions = 6;
+    optional uint64 max_execution_time_seconds = 7;
+    bool persistent_storage = 8;
+    bool custom_networking = 9;
+}
+
+// Resource limits
+message ResourceLimits {
+    double max_cpu_cores = 1;
+    int64 max_memory_bytes = 2;
+    int64 max_disk_bytes = 3;
+    uint32 max_gpu_count = 4;
+}
+
+// Provider type specific configuration
+message ProviderTypeConfig {
+    oneof config {
+        DockerConfig docker = 1;
+        KubernetesConfig kubernetes = 2;
+        LambdaConfig lambda = 3;
+        Ec2Config ec2 = 4;
+    }
+}
+
+// Docker specific configuration
+message DockerConfig {
+    string socket_path = 1;
+    string default_image = 2;
+    string network_mode = 3;
+    repeated string dns_servers = 4;
+    map<string, string> labels = 5;
+}
+
+// Kubernetes specific configuration
+message KubernetesConfig {
+    optional string kubeconfig_path = 1;
+    string namespace = 2;
+    string service_account = 3;
+    string image_pull_secret = 4;
+    map<string, string> node_selector = 5;
+}
+
+// Lambda specific configuration
+message LambdaConfig {
+    string region = 1;
+    string function_name = 2;
+    string runtime = 3;
+    string handler = 4;
+    uint32 timeout_seconds = 5;
+    uint32 memory_mb = 6;
+}
+
+// EC2 specific configuration
+message Ec2Config {
+    string region = 1;
+    string instance_type = 2;
+    string ami_id = 3;
+    string key_name = 4;
+    repeated string security_group_ids = 5;
+    string subnet_id = 6;
+}
+
+// Register provider request
+message RegisterProviderRequest {
+    string name = 1;
+    ProviderType provider_type = 2;
+    ProviderTypeConfig type_config = 3;
+    optional int32 priority = 4;
+    optional uint32 max_workers = 5;
+    repeated string tags = 6;
+    map<string, string> metadata = 7;
+}
+
+// Register provider response
+message RegisterProviderResponse {
+    ProviderConfig provider = 1;
+}
+
+// Get provider request
+message GetProviderRequest {
+    string provider_id = 1;
+}
+
+// Get provider by name request
+message GetProviderByNameRequest {
+    string name = 1;
+}
+
+// Get provider response
+message GetProviderResponse {
+    optional ProviderConfig provider = 1;
+}
+
+// List providers request
+message ListProvidersRequest {
+    optional ProviderType provider_type = 1;
+    optional ProviderStatus status = 2;
+    optional bool only_with_capacity = 3;
+}
+
+// List providers response
+message ListProvidersResponse {
+    repeated ProviderConfig providers = 1;
+}
+
+// Update provider request
+message UpdateProviderRequest {
+    ProviderConfig provider = 1;
+}
+
+// Update provider response
+message UpdateProviderResponse {
+    ProviderConfig provider = 1;
+}
+
+// Delete provider request
+message DeleteProviderRequest {
+    string provider_id = 1;
+}
+
+// Delete provider response
+message DeleteProviderResponse {
+    bool success = 1;
+}
+
+// Enable provider request
+message EnableProviderRequest {
+    string provider_id = 1;
+}
+
+// Enable provider response
+message EnableProviderResponse {
+    ProviderConfig provider = 1;
+}
+
+// Disable provider request
+message DisableProviderRequest {
+    string provider_id = 1;
+}
+
+// Disable provider response
+message DisableProviderResponse {
+    ProviderConfig provider = 1;
+}
+
+// Get provider stats request
+message GetProviderStatsRequest {}
+
+// Get provider stats response
+message GetProviderStatsResponse {
+    uint32 total_providers = 1;
+    uint32 enabled_providers = 2;
+    uint32 providers_with_capacity = 3;
+    uint32 total_max_workers = 4;
+    uint32 total_active_workers = 5;
+    double utilization_percent = 6;
+}

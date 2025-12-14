@@ -1,0 +1,826 @@
+// Archivo único que contiene todas las definiciones del sistema gRPC Worker Agent
+syntax = "proto3";
+
+package hodei;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// =============================================================================
+// TIPOS COMUNES Y ESTRUCTURAS BASE
+// =============================================================================
+
+// Identificadores únicos
+message JobId {
+    string value = 1;
+}
+
+message WorkerId {
+    string value = 1;
+}
+
+message ProviderId {
+    string value = 1;
+}
+
+message ExecutionId {
+    string value = 1;
+}
+
+// Estados del sistema
+enum JobStatus {
+    JOB_STATUS_PENDING = 0;
+    JOB_STATUS_QUEUED = 1;
+    JOB_STATUS_ASSIGNED = 2;
+    JOB_STATUS_RUNNING = 3;
+    JOB_STATUS_COMPLETED = 4;
+    JOB_STATUS_FAILED = 5;
+    JOB_STATUS_CANCELLED = 6;
+    JOB_STATUS_TIMEOUT = 7;
+}
+
+enum WorkerStatus {
+    WORKER_STATUS_OFFLINE = 0;
+    WORKER_STATUS_REGISTERING = 1;
+    WORKER_STATUS_AVAILABLE = 2;
+    JOB_STATUS_BUSY = 3;
+    WORKER_STATUS_DRAINING = 4;
+    WORKER_STATUS_ERROR = 5;
+}
+
+enum ExecutionState {
+    EXECUTION_STATE_CREATED = 0;
+    EXECUTION_STATE_STARTING = 1;
+    EXECUTION_STATE_RUNNING = 2;
+    EXECUTION_STATE_COMPLETING = 3;
+    EXECUTION_STATE_COMPLETED = 4;
+    EXECUTION_STATE_FAILED = 5;
+    EXECUTION_STATE_CANCELLED = 6;
+    EXECUTION_STATE_TIMEOUT = 7;
+}
+
+enum PriorityLevel {
+    PRIORITY_LOW = 0;
+    PRIORITY_NORMAL = 1;
+    PRIORITY_HIGH = 2;
+    PRIORITY_CRITICAL = 3;
+}
+
+// Capacidad de recursos
+message ResourceCapacity {
+    double cpu_cores = 1;        // Núcleos de CPU disponibles
+    int64 memory_bytes = 2;      // Memoria RAM en bytes
+    int64 disk_bytes = 3;        // Almacenamiento en disco
+    int32 gpu_count = 4;         // Número de GPUs
+    map<string, int64> custom_resources = 5;  // Recursos custom
+}
+
+// Uso actual de recursos
+message ResourceUsage {
+    double cpu_cores = 1;        // CPU en uso (0.0 - 1.0)
+    int64 memory_bytes = 2;      // Memoria RAM en uso
+    int64 disk_bytes = 3;        // Almacenamiento en uso
+    int32 gpu_count = 4;         // GPUs en uso
+    map<string, int64> custom_usage = 5;  // Uso de recursos custom
+}
+
+// Requerimientos de recursos
+message ResourceRequirements {
+    double cpu_cores = 1;        // CPU requerida
+    int64 memory_bytes = 2;      // Memoria RAM requerida
+    int64 disk_bytes = 3;        // Almacenamiento requerido
+    int32 gpu_count = 4;         // GPUs requeridas
+    map<string, int64> custom_required = 5;  // Recursos custom requeridos
+}
+
+// Asignación de recursos
+message ResourceAllocation {
+    JobId job_id = 1;
+    WorkerId worker_id = 2;
+    ResourceUsage allocated = 3;
+    google.protobuf.Timestamp allocated_at = 4;
+}
+
+// Selectores y filtros (inspirados en Kubernetes)
+message LabelSelector {
+    map<string, string> match_labels = 1;
+    repeated LabelSelectorRequirement match_expressions = 2;
+}
+
+message LabelSelectorRequirement {
+    string key = 1;
+    string operator = 2;  // In, NotIn, Exists, DoesNotExist
+    repeated string values = 3;
+}
+
+message NodeSelector {
+    map<string, string> node_labels = 1;
+}
+
+message Affinity {
+    NodeAffinity node_affinity = 1;
+    PodAffinity pod_affinity = 2;
+    PodAntiAffinity pod_anti_affinity = 3;
+}
+
+message NodeAffinity {
+    repeated LabelSelectorRequirement preferred_during_scheduling = 1;
+    LabelSelectorRequiredDuringScheduling required_during_scheduling = 2;
+}
+
+message LabelSelectorRequiredDuringScheduling {
+    LabelSelector label_selector = 1;
+}
+
+message PodAffinity {
+    repeated LabelSelectorRequirement preferred_during_scheduling = 1;
+    repeated LabelSelectorRequiredDuringScheduling required_during_scheduling = 2;
+}
+
+message PodAntiAffinity {
+    repeated LabelSelectorRequirement preferred_during_scheduling = 1;
+    repeated LabelSelectorRequiredDuringScheduling required_during_scheduling = 2;
+}
+
+message Toleration {
+    string key = 1;
+    string operator = 2;  // Exists, Equal
+    string value = 3;
+    google.protobuf.Duration toleration_seconds = 4;
+}
+
+message Taint {
+    string key = 1;
+    string value = 2;
+    string effect = 3;  // NoSchedule, PreferNoSchedule, NoExecute
+}
+
+// Información de timeouts
+message TimeoutConfig {
+    google.protobuf.Duration execution_timeout = 1;     // Timeout total de ejecución
+    google.protobuf.Duration heartbeat_timeout = 2;     // Timeout de heartbeat
+    google.protobuf.Duration cleanup_timeout = 3;       // Timeout de limpieza
+}
+
+// Información de scheduling
+message SchedulingInfo {
+    PriorityLevel priority = 1;
+    string scheduler_name = 2;  // Nombre del scheduler (para multiple schedulers)
+    google.protobuf.Duration deadline = 3;  // Deadline para el job
+    bool preemption_allowed = 4;
+}
+
+// =============================================================================
+// WORKER AGENT SERVICE
+// =============================================================================
+
+// Información del worker agent
+message WorkerInfo {
+    WorkerId worker_id = 1;
+    string name = 2;
+    string version = 3;
+    string hostname = 4;
+    string ip_address = 5;
+    string os_info = 6;
+    string architecture = 7;
+    ResourceCapacity capacity = 8;
+    repeated string capabilities = 9;  // Capacidades especiales del worker
+    repeated Taint taints = 10;
+    map<string, string> labels = 11;
+    repeated Toleration tolerations = 12;
+    Affinity affinity = 13;
+    google.protobuf.Timestamp start_time = 14;
+}
+
+// Estado del worker
+message WorkerStatusUpdate {
+    WorkerId worker_id = 1;
+    WorkerStatus status = 2;
+    ResourceUsage current_usage = 3;
+    int32 active_jobs = 4;
+    repeated string running_job_ids = 5;
+    google.protobuf.Timestamp timestamp = 6;
+}
+
+// Información de scheduling del worker
+message WorkerSchedulingInfo {
+    WorkerId worker_id = 1;
+    NodeSelector node_selector = 2;
+    Affinity affinity = 3;
+    repeated Toleration tolerations = 4;
+    double score = 5;  // Score del scheduler (0-100)
+    repeated string reason = 6;  // Razones del scoring
+}
+
+// Criterios de filtrado para workers (inspirado en Kubernetes selectors)
+message WorkerFilterCriteria {
+    LabelSelector label_selector = 1;
+    NodeSelector node_selector = 2;
+    ResourceRequirements min_resources = 3;
+    repeated string required_capabilities = 4;
+    repeated Taint required_taints = 5;
+    repeated string allowed_schedulers = 6;
+    google.protobuf.Duration max_age = 7;  // Máximo tiempo desde el último heartbeat
+    WorkerStatus required_status = 8;
+}
+
+// Heartbeat message
+message WorkerHeartbeat {
+    WorkerId worker_id = 1;
+    WorkerStatus status = 2;
+    ResourceUsage usage = 3;
+    int32 active_jobs = 4;
+    repeated string running_job_ids = 5;
+    google.protobuf.Timestamp timestamp = 6;
+}
+
+// Worker registration (PRD v6.0: con OTP token)
+message RegisterWorkerRequest {
+    string auth_token = 1;           // OTP token for authentication
+    WorkerInfo worker_info = 2;
+    string session_id = 3;           // Optional: for reconnection
+}
+
+message RegisterWorkerResponse {
+    WorkerId worker_id = 1;
+    bool success = 2;
+    string message = 3;
+    string session_id = 4;           // Session ID for reconnection
+    google.protobuf.Timestamp registration_time = 5;
+}
+
+// PRD v6.0: Mensajes del Worker al Servidor (Connect stream)
+message WorkerMessage {
+    oneof payload {
+        WorkerHeartbeat heartbeat = 1;
+        LogEntry log = 2;
+        JobResultMessage result = 3;
+        ResourceUsageMessage stats = 4;
+        WorkerStatusNotification status = 5;
+    }
+}
+
+message LogEntry {
+    string job_id = 1;
+    string line = 2;
+    bool is_stderr = 3;
+    google.protobuf.Timestamp timestamp = 4;
+}
+
+message JobResultMessage {
+    string job_id = 1;
+    int32 exit_code = 2;
+    bool success = 3;
+    string error_message = 4;
+    google.protobuf.Timestamp completed_at = 5;
+}
+
+message ResourceUsageMessage {
+    double cpu_percent = 1;
+    int64 memory_bytes = 2;
+    int64 disk_bytes = 3;
+}
+
+message WorkerStatusNotification {
+    WorkerStatus status = 1;
+    string reason = 2;
+}
+
+// PRD v6.0: Mensajes del Servidor al Worker (Connect stream)
+message ServerMessage {
+    oneof payload {
+        RunJobCommand run_job = 1;
+        CancelJobCommand cancel = 2;
+        AckMessage ack = 3;
+        KeepAliveMessage keep_alive = 4;
+    }
+}
+
+message RunJobCommand {
+    string job_id = 1;
+    CommandSpec command = 2;
+    map<string, string> env = 3;
+    repeated ArtifactInput inputs = 4;
+    repeated ArtifactOutput outputs = 5;
+    int64 timeout_ms = 6;
+    string working_dir = 7;
+}
+
+message CommandSpec {
+    oneof command_type {
+        ShellCommand shell = 1;
+        ScriptCommand script = 2;
+    }
+}
+
+message ShellCommand {
+    string cmd = 1;
+    repeated string args = 2;
+}
+
+message ScriptCommand {
+    string interpreter = 1;
+    string content = 2;
+}
+
+message ArtifactInput {
+    string url = 1;
+    string dest_path = 2;
+}
+
+message ArtifactOutput {
+    string src_path = 1;
+    string url = 2;
+}
+
+message CancelJobCommand {
+    string job_id = 1;
+    bool force = 2;
+}
+
+message AckMessage {
+    string message_id = 1;
+    bool success = 2;
+}
+
+message KeepAliveMessage {
+    google.protobuf.Timestamp timestamp = 1;
+}
+
+// Worker management
+message UpdateWorkerStatusRequest {
+    WorkerId worker_id = 1;
+    WorkerStatus status = 2;
+    ResourceUsage usage = 3;
+    int32 active_jobs = 4;
+    repeated string running_job_ids = 5;
+}
+
+message UpdateWorkerStatusResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp timestamp = 3;
+}
+
+message UnregisterWorkerRequest {
+    WorkerId worker_id = 1;
+    string reason = 2;
+}
+
+message UnregisterWorkerResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp timestamp = 3;
+}
+
+// =============================================================================
+// JOB EXECUTION SERVICE
+// =============================================================================
+
+// Definición completa del job
+message JobDefinition {
+    JobId job_id = 1;
+    string name = 2;
+    string description = 3;
+    string command = 4;  // Comando a ejecutar
+    repeated string arguments = 5;
+    map<string, string> environment = 6;
+    ResourceRequirements requirements = 7;
+    SchedulingInfo scheduling = 8;
+    LabelSelector selector = 9;
+    repeated Toleration tolerations = 10;
+    TimeoutConfig timeout = 11;
+    repeated string tags = 12;  // Tags para categorización
+}
+
+// Estado de ejecución del job
+message JobExecution {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    WorkerId worker_id = 3;
+    ExecutionState state = 4;
+    JobStatus job_status = 5;
+    google.protobuf.Timestamp start_time = 6;
+    google.protobuf.Timestamp end_time = 7;
+    int32 retry_count = 8;
+    string exit_code = 9;
+    string error_message = 10;
+    map<string, string> metadata = 11;
+}
+
+// Asignación de job
+message JobAssignment {
+    JobId job_id = 1;
+    WorkerId worker_id = 2;
+    ExecutionId execution_id = 3;
+    ResourceAllocation allocation = 4;
+    google.protobuf.Timestamp assigned_at = 5;
+}
+
+// Progress update
+message JobProgress {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    int32 progress_percentage = 3;  // 0-100
+    string current_stage = 4;
+    string message = 5;
+    google.protobuf.Timestamp timestamp = 6;
+    map<string, string> stage_metadata = 7;
+}
+
+// Completion/Failure
+message JobCompletion {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp completion_time = 3;
+    string exit_code = 4;
+    string output = 5;
+    string error_output = 6;
+    map<string, string> completion_metadata = 7;
+}
+
+message JobFailure {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp failure_time = 3;
+    string error_type = 4;
+    string error_message = 5;
+    string stack_trace = 6;
+    bool retryable = 7;
+}
+
+message JobCancellation {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp cancellation_time = 3;
+    string reason = 4;
+    string cancelled_by = 5;
+}
+
+message JobTimeout {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    google.protobuf.Timestamp timeout_time = 3;
+    string timeout_reason = 4;
+}
+
+// Job queue operations
+message QueueJobRequest {
+    JobDefinition job_definition = 1;
+    string queued_by = 2;
+}
+
+message QueueJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp queued_at = 3;
+}
+
+message AssignJobRequest {
+    JobId job_id = 1;
+    WorkerId worker_id = 2;
+}
+
+message AssignJobResponse {
+    bool success = 1;
+    string message = 2;
+    ExecutionId execution_id = 3;
+    google.protobuf.Timestamp assigned_at = 4;
+}
+
+message StartJobRequest {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    WorkerId worker_id = 3;
+}
+
+message StartJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp started_at = 3;
+}
+
+message UpdateProgressRequest {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    int32 progress_percentage = 3;
+    string current_stage = 4;
+    string message = 5;
+}
+
+message UpdateProgressResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp updated_at = 3;
+}
+
+message CompleteJobRequest {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    string exit_code = 3;
+    string output = 4;
+    string error_output = 5;
+}
+
+message CompleteJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp completed_at = 3;
+}
+
+message FailJobRequest {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    string error_type = 3;
+    string error_message = 4;
+    bool retryable = 5;
+}
+
+message FailJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp failed_at = 3;
+}
+
+message CancelJobRequest {
+    ExecutionId execution_id = 1;
+    JobId job_id = 2;
+    string reason = 3;
+}
+
+message CancelJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp cancelled_at = 3;
+}
+
+// =============================================================================
+// METRICS SERVICE
+// =============================================================================
+
+// Métricas básicas
+message CPUUsage {
+    double usage_percent = 1;  // 0.0 - 100.0
+    double load_average_1min = 2;
+    double load_average_5min = 3;
+    double load_average_15min = 4;
+}
+
+message MemoryUsage {
+    int64 total_bytes = 1;
+    int64 used_bytes = 2;
+    int64 available_bytes = 3;
+    double usage_percent = 4;
+}
+
+message DiskUsage {
+    int64 total_bytes = 1;
+    int64 used_bytes = 2;
+    int64 available_bytes = 3;
+    double usage_percent = 4;
+    string mount_point = 5;
+}
+
+message NetworkUsage {
+    int64 bytes_sent = 1;
+    int64 bytes_received = 2;
+    int64 packets_sent = 3;
+    int64 packets_received = 4;
+}
+
+message CustomMetric {
+    string name = 1;
+    string value = 2;
+    string unit = 3;
+}
+
+// Métricas en tiempo real
+message RealTimeMetrics {
+    WorkerId worker_id = 1;
+    CPUUsage cpu = 2;
+    MemoryUsage memory = 3;
+    repeated DiskUsage disk = 4;
+    NetworkUsage network = 5;
+    repeated CustomMetric custom = 6;
+    google.protobuf.Timestamp timestamp = 7;
+}
+
+// Métricas agregadas
+message AggregatedMetrics {
+    WorkerId worker_id = 1;
+    ExecutionId execution_id = 2;
+    JobId job_id = 3;
+    google.protobuf.Timestamp window_start = 4;
+    google.protobuf.Timestamp window_end = 5;
+    double avg_cpu_usage = 6;
+    double max_cpu_usage = 7;
+    double avg_memory_usage = 8;
+    double max_memory_usage = 9;
+    int64 total_network_sent = 10;
+    int64 total_network_received = 11;
+}
+
+// Series temporales
+message TimeSeriesMetrics {
+    WorkerId worker_id = 1;
+    google.protobuf.Timestamp from_timestamp = 2;
+    google.protobuf.Timestamp to_timestamp = 3;
+    repeated RealTimeMetrics data_points = 4;
+}
+
+message MetricsQuery {
+    WorkerId worker_id = 1;
+    ExecutionId execution_id = 2;
+    google.protobuf.Timestamp from_timestamp = 3;
+    google.protobuf.Timestamp to_timestamp = 4;
+    repeated string metric_types = 5;  // cpu, memory, disk, network, custom
+}
+
+// Streaming de métricas
+message MetricsStreamRequest {
+    WorkerId worker_id = 1;
+    repeated string metric_types = 2;
+    google.protobuf.Duration interval = 3;  // Frecuencia de envío
+}
+
+message MetricsStreamResponse {
+    RealTimeMetrics metrics = 1;
+    google.protobuf.Timestamp stream_timestamp = 2;
+}
+
+// =============================================================================
+// SCHEDULER SERVICE
+// =============================================================================
+
+// Decisión de scheduling
+message SchedulingDecision {
+    JobId job_id = 1;
+    WorkerId selected_worker_id = 2;
+    ExecutionId execution_id = 3;
+    double score = 4;  // Score final del worker seleccionado
+    repeated string reasons = 5;  // Razones de la decisión
+    google.protobuf.Timestamp decision_time = 6;
+    ResourceAllocation allocation = 7;
+}
+
+// Estado de la cola
+message QueueStatus {
+    int32 pending_jobs = 1;
+    int32 running_jobs = 2;
+    int32 completed_jobs = 3;
+    int32 failed_jobs = 4;
+    int32 cancelled_jobs = 5;
+    google.protobuf.Timestamp last_updated = 6;
+}
+
+// Worker disponible para scheduling
+message AvailableWorker {
+    WorkerId worker_id = 1;
+    WorkerSchedulingInfo scheduling_info = 2;
+    ResourceUsage current_usage = 3;
+    WorkerStatus status = 4;
+    google.protobuf.Timestamp last_heartbeat = 5;
+}
+
+// Configuración del scheduler
+message SchedulerConfig {
+    string scheduler_name = 1;
+    repeated string enabled_plugins = 2;  // Plugins de filtering y scoring habilitados
+    map<string, string> plugin_config = 3;  // Configuración de plugins
+    google.protobuf.Duration requeue_delay = 4;  // Delay antes de reencolar jobs fallidos
+    bool preemption_enabled = 5;
+}
+
+// Scheduling request
+message ScheduleJobRequest {
+    JobDefinition job_definition = 1;
+    string requested_by = 2;
+}
+
+message ScheduleJobResponse {
+    bool success = 1;
+    string message = 2;
+    SchedulingDecision decision = 3;
+    google.protobuf.Timestamp scheduled_at = 4;
+}
+
+// Get scheduling decision
+message GetSchedulingDecisionRequest {
+    JobId job_id = 1;
+}
+
+message GetSchedulingDecisionResponse {
+    SchedulingDecision decision = 1;
+}
+
+// Configure scheduler
+message ConfigureSchedulerRequest {
+    SchedulerConfig config = 1;
+}
+
+message ConfigureSchedulerResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp configured_at = 3;
+}
+
+// Queue status
+message GetQueueStatusRequest {
+    string scheduler_name = 1;
+}
+
+message GetQueueStatusResponse {
+    QueueStatus status = 1;
+}
+
+// Available workers
+message GetAvailableWorkersRequest {
+    WorkerFilterCriteria filter = 1;
+    string scheduler_name = 2;
+}
+
+message GetAvailableWorkersResponse {
+    repeated AvailableWorker workers = 1;
+}
+
+// =============================================================================
+// SERVICES DEFINITION
+// =============================================================================
+
+service WorkerAgentService {
+    // PRD v6.0: Registro inicial con OTP token
+    rpc Register(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+    
+    // PRD v6.0: Canal bidireccional principal
+    rpc WorkerStream(stream WorkerMessage) returns (stream ServerMessage);
+    
+    // Legacy endpoints
+    rpc UpdateWorkerStatus(UpdateWorkerStatusRequest) returns (UpdateWorkerStatusResponse);
+    rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);
+}
+
+service JobExecutionService {
+    rpc QueueJob(QueueJobRequest) returns (QueueJobResponse);
+    rpc AssignJob(AssignJobRequest) returns (AssignJobResponse);
+    rpc StartJob(StartJobRequest) returns (StartJobResponse);
+    rpc UpdateProgress(UpdateProgressRequest) returns (UpdateProgressResponse);
+    rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse);
+    rpc FailJob(FailJobRequest) returns (FailJobResponse);
+    rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+    rpc ExecutionEventStream(ExecutionId) returns (stream JobExecution);
+}
+
+service MetricsService {
+    rpc StreamMetrics(MetricsStreamRequest) returns (stream MetricsStreamResponse);
+    rpc GetAggregatedMetrics(MetricsQuery) returns (AggregatedMetrics);
+    rpc GetTimeSeriesMetrics(MetricsQuery) returns (TimeSeriesMetrics);
+}
+
+service SchedulerService {
+    rpc ScheduleJob(ScheduleJobRequest) returns (ScheduleJobResponse);
+    rpc GetSchedulingDecision(GetSchedulingDecisionRequest) returns (GetSchedulingDecisionResponse);
+    rpc ConfigureScheduler(ConfigureSchedulerRequest) returns (ConfigureSchedulerResponse);
+    rpc GetQueueStatus(GetQueueStatusRequest) returns (GetQueueStatusResponse);
+    rpc GetAvailableWorkers(GetAvailableWorkersRequest) returns (GetAvailableWorkersResponse);
+    rpc SchedulingDecisionStream(JobId) returns (stream SchedulingDecision);
+}
+
+// =============================================================================
+// LOG STREAMING SERVICE (PRD v6.0 - Section 10.8)
+// =============================================================================
+
+// Request to subscribe to job logs
+message SubscribeLogsRequest {
+    string job_id = 1;
+    bool include_history = 2;  // Include buffered logs from start
+    int32 tail_lines = 3;      // If > 0, only get last N lines of history
+}
+
+// Log entry streamed to client
+message JobLogEntry {
+    string job_id = 1;
+    string line = 2;
+    bool is_stderr = 3;
+    google.protobuf.Timestamp timestamp = 4;
+    int64 sequence = 5;        // Sequence number for ordering
+}
+
+// Get historical logs (non-streaming)
+message GetLogsRequest {
+    string job_id = 1;
+    int32 limit = 2;           // Max lines to return
+    int64 since_sequence = 3;  // Get logs after this sequence
+}
+
+message GetLogsResponse {
+    repeated JobLogEntry entries = 1;
+    bool has_more = 2;
+}
+
+service LogStreamService {
+    // Subscribe to real-time logs for a job (PRD 10.8)
+    rpc SubscribeLogs(SubscribeLogsRequest) returns (stream JobLogEntry);
+    
+    // Get historical logs (non-streaming)
+    rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
+}

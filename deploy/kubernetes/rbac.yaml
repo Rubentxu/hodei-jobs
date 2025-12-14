@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hodei-worker
+  namespace: hodei-workers
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: worker
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hodei-control-plane
+  namespace: hodei-system
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: control-plane
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hodei-provider
+  namespace: hodei-workers
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: provider
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hodei-provider
+  namespace: hodei-workers
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: provider
+subjects:
+- kind: ServiceAccount
+  name: hodei-control-plane
+  namespace: hodei-system
+roleRef:
+  kind: Role
+  name: hodei-provider
+  apiGroup: rbac.authorization.k8s.io

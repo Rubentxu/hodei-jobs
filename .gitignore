@@ -1,0 +1,79 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+
+# Test artifacts
+*.profraw
+*.profdata
+coverage/
+lcov.info
+
+# Docker
+docker-compose.override.yml
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+
+# Firecracker
+*.ext4
+*.img
+vmlinux*
+/var/lib/hodei/
+
+# Data directories
+data/
+/tmp/
+
+# Generated files
+*.generated.*
+
+# Proto generated (if not committed)
+# Uncomment if you regenerate protos
+# crates/*/src/proto/
+
+# Secrets
+*.pem
+*.key
+*.crt
+secrets/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Debug
+debug/
+*.dSYM/
+docs/epics
+docs/alineamiento
+docs/providers
+docs/PRD*

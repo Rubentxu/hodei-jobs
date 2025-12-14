@@ -1,0 +1,267 @@
+// Worker Agent Service - PRD v6.0 Aligned
+// Registro con OTP, Connect bidireccional, ciclo de vida de workers
+syntax = "proto3";
+
+package hodei.worker;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// Información del worker agent
+message WorkerInfo {
+    WorkerId worker_id = 1;
+    string name = 2;
+    string version = 3;
+    string hostname = 4;
+    string ip_address = 5;
+    string os_info = 6;
+    string architecture = 7;
+    hodei.common.ResourceCapacity capacity = 8;
+    repeated string capabilities = 9;  // Capacidades especiales del worker
+    repeated hodei.common.Taint taints = 10;
+    map<string, string> labels = 11;
+    repeated hodei.common.Toleration tolerations = 12;
+    hodei.common.Affinity affinity = 13;
+    google.protobuf.Timestamp start_time = 14;
+}
+
+// Estado del worker
+message WorkerStatusUpdate {
+    WorkerId worker_id = 1;
+    hodei.common.WorkerStatus status = 2;
+    hodei.common.ResourceUsage current_usage = 3;
+    int32 active_jobs = 4;
+    repeated string running_job_ids = 5;
+    google.protobuf.Timestamp timestamp = 6;
+}
+
+// Información de scheduling del worker
+message WorkerSchedulingInfo {
+    WorkerId worker_id = 1;
+    hodei.common.NodeSelector node_selector = 2;
+    hodei.common.Affinity affinity = 3;
+    repeated hodei.common.Toleration tolerations = 4;
+    double score = 5;  // Score del scheduler (0-100)
+    repeated string reason = 6;  // Razones del scoring
+}
+
+// Criterios de filtrado para workers (inspirado en Kubernetes selectors)
+message WorkerFilterCriteria {
+    hodei.common.LabelSelector label_selector = 1;
+    hodei.common.NodeSelector node_selector = 2;
+    hodei.common.ResourceRequirements min_resources = 3;
+    repeated string required_capabilities = 4;
+    repeated hodei.common.Taint required_taints = 5;
+    repeated string allowed_schedulers = 6;
+    google.protobuf.Duration max_age = 7;  // Máximo tiempo desde el último heartbeat
+    hodei.common.WorkerStatus required_status = 8;
+}
+
+// Request de registro de worker (PRD v6.0: con OTP token)
+message RegisterWorkerRequest {
+    string auth_token = 1;           // OTP token for authentication
+    WorkerInfo worker_info = 2;
+    string session_id = 3;           // Optional: for reconnection
+    hodei.common.TimeoutConfig timeout_config = 4;
+}
+
+message RegisterWorkerResponse {
+    bool success = 1;
+    string message = 2;
+    WorkerId assigned_worker_id = 3;
+    string session_id = 4;           // Session ID for reconnection
+    google.protobuf.Timestamp registration_time = 5;
+    string scheduler_name = 6;
+}
+
+// PRD v6.0: Mensajes del Worker al Servidor (Connect stream)
+message WorkerMessage {
+    oneof payload {
+        WorkerHeartbeatRequest heartbeat = 1;
+        LogEntry log = 2;
+        JobResultMessage result = 3;
+        ResourceUsageMessage stats = 4;
+        WorkerStatusMessage status = 5;
+    }
+}
+
+message LogEntry {
+    string job_id = 1;
+    string line = 2;
+    bool is_stderr = 3;
+    google.protobuf.Timestamp timestamp = 4;
+}
+
+message JobResultMessage {
+    string job_id = 1;
+    int32 exit_code = 2;
+    bool success = 3;
+    string error_message = 4;
+    google.protobuf.Timestamp completed_at = 5;
+}
+
+message ResourceUsageMessage {
+    double cpu_percent = 1;
+    int64 memory_bytes = 2;
+    int64 disk_bytes = 3;
+}
+
+message WorkerStatusMessage {
+    hodei.common.WorkerStatus status = 1;
+    string reason = 2;
+}
+
+// PRD v6.0: Mensajes del Servidor al Worker (Connect stream)
+message ServerMessage {
+    oneof payload {
+        RunJobMessage run_job = 1;
+        CancelJobMessage cancel = 2;
+        AckMessage ack = 3;
+        KeepAliveMessage keep_alive = 4;
+    }
+}
+
+message RunJobMessage {
+    string job_id = 1;
+    CommandSpec command = 2;
+    map<string, string> env = 3;
+    repeated ArtifactInput inputs = 4;
+    repeated ArtifactOutput outputs = 5;
+    int64 timeout_ms = 6;
+    string working_dir = 7;
+}
+
+message CommandSpec {
+    oneof command_type {
+        ShellCommand shell = 1;
+        ScriptCommand script = 2;
+    }
+}
+
+message ShellCommand {
+    string cmd = 1;
+    repeated string args = 2;
+}
+
+message ScriptCommand {
+    string interpreter = 1;
+    string content = 2;
+}
+
+message ArtifactInput {
+    string url = 1;
+    string dest_path = 2;
+}
+
+message ArtifactOutput {
+    string src_path = 1;
+    string url = 2;
+}
+
+message CancelJobMessage {
+    string job_id = 1;
+    bool force = 2;
+}
+
+message AckMessage {
+    string message_id = 1;
+    bool success = 2;
+}
+
+message KeepAliveMessage {
+    google.protobuf.Timestamp timestamp = 1;
+}
+
+// Heartbeat request/response
+message WorkerHeartbeatRequest {
+    WorkerId worker_id = 1;
+    hodei.common.ResourceUsage current_usage = 2;
+    hodei.common.WorkerStatus status = 3;
+    repeated string active_job_ids = 4;
+    map<string, string> metrics = 5;  // Métricas adicionales del worker
+    google.protobuf.Timestamp timestamp = 6;
+}
+
+message WorkerHeartbeatResponse {
+    bool success = 1;
+    string message = 2;
+    repeated string assigned_jobs = 3;  // Jobs asignados durante el heartbeat
+    google.protobuf.Timestamp next_heartbeat = 4;
+    hodei.common.TimeoutConfig updated_timeouts = 5;
+}
+
+// Request para obtener workers disponibles
+message GetAvailableWorkersRequest {
+    hodei.common.ResourceRequirements min_requirements = 1;
+    WorkerFilterCriteria filter_criteria = 2;
+    int32 max_results = 3;
+    string scheduler_name = 4;
+}
+
+message GetAvailableWorkersResponse {
+    repeated WorkerSchedulingInfo workers = 1;
+    int32 total_available = 2;
+}
+
+// Drenado de worker (preparar para shutdown)
+message DrainWorkerRequest {
+    WorkerId worker_id = 1;
+    bool force = 2;  // Forzar drenaje incluso con jobs en ejecución
+    google.protobuf.Duration grace_period = 3;
+}
+
+message DrainWorkerResponse {
+    bool success = 1;
+    string message = 2;
+    repeated string job_ids_affected = 3;
+    google.protobuf.Timestamp drain_deadline = 4;
+}
+
+// Unregister worker
+message UnregisterWorkerRequest {
+    WorkerId worker_id = 1;
+    bool force = 2;
+    string reason = 3;
+}
+
+message UnregisterWorkerResponse {
+    bool success = 1;
+    string message = 2;
+    int32 jobs_migrated = 3;
+}
+
+// Streaming para actualizaciones de estado de workers
+message WorkerStatusStreamUpdate {
+    WorkerId worker_id = 1;
+    hodei.common.WorkerStatus old_status = 2;
+    hodei.common.WorkerStatus new_status = 3;
+    google.protobuf.Timestamp timestamp = 4;
+    string reason = 5;
+}
+
+// Servicios gRPC (PRD v6.0 Aligned)
+service WorkerAgentService {
+    // PRD v6.0: Registro inicial con OTP token
+    rpc Register(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+    
+    // PRD v6.0: Canal bidireccional principal
+    rpc Connect(stream WorkerMessage) returns (stream ServerMessage);
+    
+    // Legacy: Obtener workers disponibles para scheduling
+    rpc GetAvailableWorkers(GetAvailableWorkersRequest) returns (GetAvailableWorkersResponse);
+    
+    // Legacy: Drenar worker (preparar para shutdown)
+    rpc DrainWorker(DrainWorkerRequest) returns (DrainWorkerResponse);
+    
+    // Legacy: Desregistrar worker
+    rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);
+    
+    // Legacy: Stream para actualizaciones de estado de workers
+    rpc WorkerStatusStream(WorkerStatusStreamRequest) returns (stream WorkerStatusStreamUpdate);
+}
+
+message WorkerStatusStreamRequest {
+    repeated WorkerId worker_ids = 1;
+    hodei.common.WorkerStatus status_filter = 2;
+}

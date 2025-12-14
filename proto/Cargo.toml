@@ -1,0 +1,49 @@
+[package]
+name = "hodei-jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "hodei_jobs"
+path = "src/lib.rs"
+
+[dependencies]
+# gRPC & Protocol Buffers
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+# Data & Serialization
+serde = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# HTTP utilities for tonic
+http = { workspace = true }
+async-trait = { workspace = true }
+
+# Async streaming utilities
+async-stream = { workspace = true }
+rand = { workspace = true }
+tokio-stream = { workspace = true }
+tokio = { workspace = true }
+futures-core = { workspace = true }
+pin-project-lite = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+mockall = { workspace = true }
+assert_matches = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
+prost-build = { workspace = true }
+
+[features]
+default = []
+reflection = []

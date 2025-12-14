@@ -1,0 +1,156 @@
+// Tipos comunes y estructuras base para el sistema gRPC Worker Agent
+syntax = "proto3";
+
+package hodei.common;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// Identificadores únicos
+message JobId {
+    string value = 1;
+}
+
+message WorkerId {
+    string value = 1;
+}
+
+message ProviderId {
+    string value = 1;
+}
+
+message ExecutionId {
+    string value = 1;
+}
+
+// Estados del sistema
+enum JobStatus {
+    JOB_STATUS_PENDING = 0;
+    JOB_STATUS_QUEUED = 1;
+    JOB_STATUS_ASSIGNED = 2;
+    JOB_STATUS_RUNNING = 3;
+    JOB_STATUS_COMPLETED = 4;
+    JOB_STATUS_FAILED = 5;
+    JOB_STATUS_CANCELLED = 6;
+    JOB_STATUS_TIMEOUT = 7;
+}
+
+enum WorkerStatus {
+    WORKER_STATUS_OFFLINE = 0;
+    WORKER_STATUS_REGISTERING = 1;
+    WORKER_STATUS_AVAILABLE = 2;
+    JOB_STATUS_BUSY = 3;
+    WORKER_STATUS_DRAINING = 4;
+    WORKER_STATUS_ERROR = 5;
+}
+
+enum ExecutionState {
+    EXECUTION_STATE_CREATED = 0;
+    EXECUTION_STATE_STARTING = 1;
+    EXECUTION_STATE_RUNNING = 2;
+    EXECUTION_STATE_PROGRESSING = 3;
+    EXECUTION_STATE_COMPLETING = 4;
+    EXECUTION_STATE_COMPLETED = 5;
+    EXECUTION_STATE_FAILED = 6;
+    EXECUTION_STATE_CANCELLED = 7;
+}
+
+enum PriorityLevel {
+    PRIORITY_LOW = 0;
+    PRIORITY_NORMAL = 1;
+    PRIORITY_HIGH = 2;
+    PRIORITY_CRITICAL = 3;
+    PRIORITY_SYSTEM = 4;
+}
+
+// Recursos del sistema
+message ResourceRequirements {
+    double cpu_cores = 1;           // Cores de CPU requeridos
+    int64 memory_bytes = 2;          // Memoria en bytes
+    int64 disk_bytes = 3;            // Almacenamiento en bytes
+    repeated string gpu_types = 4;   // Tipos de GPU requeridos (opcional)
+    int32 gpu_count = 5;             // Cantidad de GPUs (opcional)
+}
+
+message ResourceUsage {
+    double cpu_cores_used = 1;           // CPU cores actualmente en uso
+    int64 memory_bytes_used = 2;         // Memoria actualmente en uso
+    int64 disk_bytes_used = 3;           // Almacenamiento actualmente en uso
+    repeated string gpu_types_used = 4;  // GPUs actualmente en uso
+    int32 gpu_count_used = 5;            // Cantidad de GPUs en uso
+}
+
+message ResourceCapacity {
+    double cpu_cores_total = 1;          // Total CPU cores disponibles
+    int64 memory_bytes_total = 2;        // Total memoria disponible
+    int64 disk_bytes_total = 3;          // Total almacenamiento disponible
+    repeated string gpu_types_total = 4; // Tipos de GPU disponibles
+    int32 gpu_count_total = 5;           // Total GPUs disponibles
+}
+
+// Etiquetas y selectores (inspirado en Kubernetes labels)
+message LabelSelector {
+    map<string, string> match_labels = 1;
+    repeated LabelSelectorRequirement match_expressions = 2;
+}
+
+message LabelSelectorRequirement {
+    string key = 1;
+    string operator = 2;  // In, NotIn, Exists, DoesNotExist, Gt, Lt
+    repeated string values = 3;
+}
+
+message NodeSelector {
+    map<string, string> node_labels = 1;  // Etiquetas requeridas en el worker
+}
+
+// Afinidad y anti-afinidad (como Kubernetes)
+message Affinity {
+    NodeAffinity node_affinity = 1;
+    PodAffinity pod_affinity = 2;
+    PodAntiAffinity pod_anti_affinity = 3;
+}
+
+message NodeAffinity {
+    repeated LabelSelector preferred_during_scheduling_ignored_during_execution = 1;
+    repeated LabelSelectorRequirement required_during_scheduling_ignored_during_execution = 2;
+}
+
+message PodAffinity {
+    repeated LabelSelector preferred_during_scheduling_ignored_during_execution = 1;
+    repeated LabelSelectorRequirement required_during_scheduling_ignored_during_execution = 2;
+}
+
+message PodAntiAffinity {
+    repeated LabelSelector preferred_during_scheduling_ignored_during_execution = 1;
+    repeated LabelSelectorRequirement required_during_scheduling_ignored_during_execution = 2;
+}
+
+// Toleraciones (como Kubernetes taints/tolerations)
+message Toleration {
+    string key = 1;
+    string operator = 2;  // Exists, Equal
+    string value = 3;
+    google.protobuf.Duration toleration_seconds = 4;
+}
+
+message Taint {
+    string key = 1;
+    string value = 2;
+    string effect = 3;  // NoSchedule, PreferNoSchedule, NoExecute
+}
+
+// Información de timeouts
+message TimeoutConfig {
+    google.protobuf.Duration execution_timeout = 1;     // Timeout total de ejecución
+    google.protobuf.Duration heartbeat_timeout = 2;     // Timeout de heartbeat
+    google.protobuf.Duration cleanup_timeout = 3;       // Timeout de limpieza
+}
+
+// Información de scheduling
+message SchedulingInfo {
+    PriorityLevel priority = 1;
+    string scheduler_name = 2;  // Nombre del scheduler (para multiple schedulers)
+    google.protobuf.Duration deadline = 3;  // Deadline para el job
+    bool preemption_allowed = 4;
+}

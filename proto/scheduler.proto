@@ -1,0 +1,331 @@
+// Scheduler Service - Motor de scheduling inspirado en Kubernetes
+syntax = "proto3";
+
+package hodei.scheduler;
+
+import "common.proto";
+import "worker_agent.proto";
+import "job_execution.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// Configuración del scheduler
+message SchedulerConfig {
+    string scheduler_name = 1;
+    string scheduler_type = 2;  // default, priority, custom
+    repeated string supported_job_types = 3;
+    hodei.common.TimeoutConfig timeout_config = 4;
+    SchedulingPolicy policy = 5;
+    repeated string enabled_plugins = 6;  // Plugins de scheduling habilitados
+}
+
+// Política de scheduling
+message SchedulingPolicy {
+    string algorithm = 1;  // round_robin, fair_share, binpacking, spread, custom
+    map<string, string> policy_config = 2;
+    bool enable_preemption = 3;
+    bool enable_requeue = 4;
+    google.protobuf.Duration default_timeout = 5;
+    int32 max_concurrent_schedules = 6;
+}
+
+// Resultado del filtrado de workers
+message WorkerFilterResult {
+    WorkerId worker_id = 1;
+    bool passes_filters = 2;
+    repeated string failed_reasons = 3;
+    hodei.common.ResourceAllocation estimated_allocation = 4;
+    map<string, string> filter_metadata = 5;
+}
+
+// Resultado del scoring de workers
+message WorkerScoreResult {
+    WorkerId worker_id = 1;
+    double score = 2;  // 0-100
+    repeated ScoringBreakdown scoring_breakdown = 3;
+    hodei.common.ResourceAllocation final_allocation = 4;
+    string selected_reason = 5;
+}
+
+message ScoringBreakdown {
+    string criteria_name = 2;
+    double weight = 3;
+    double score = 4;
+    double weighted_score = 5;
+    string description = 6;
+}
+
+// Decisión de scheduling
+message SchedulingDecision {
+    JobId job_id = 1;
+    WorkerId selected_worker = 2;
+    ExecutionId execution_id = 3;
+    double confidence_score = 4;
+    repeated WorkerFilterResult filter_results = 5;
+    repeated WorkerScoreResult scoring_results = 6;
+    SchedulingDecisionMetadata metadata = 7;
+}
+
+message SchedulingDecisionMetadata {
+    google.protobuf.Timestamp decision_time = 1;
+    google.protobuf.Duration filtering_duration = 2;
+    google.protobuf.Duration scoring_duration = 3;
+    string scheduler_name = 4;
+    int32 workers_considered = 5;
+    repeated string decision_factors = 6;
+}
+
+// Request para scheduler un job
+message ScheduleJobRequest {
+    JobId job_id = 1;
+    string scheduler_name = 2;
+    SchedulingPreferences preferences = 3;
+    bool dry_run = 4;  // Solo simular, no asignar realmente
+}
+
+message SchedulingPreferences {
+    repeated string preferred_workers = 1;
+    repeated string excluded_workers = 2;
+    hodei.common.LabelSelector preferred_labels = 3;
+    double min_score_threshold = 4;
+    bool allow_cross_zone = 5;  // Permitir scheduling entre zonas
+    google.protobuf.Duration deadline = 6;
+}
+
+message ScheduleJobResponse {
+    bool success = 1;
+    string message = 2;
+    SchedulingDecision decision = 3;
+    google.protobuf.Timestamp scheduled_at = 4;
+}
+
+// Request para encontrar workers disponibles
+message FindAvailableWorkersRequest {
+    hodei.common.ResourceRequirements requirements = 1;
+    hodei.worker.WorkerFilterCriteria filter_criteria = 2;
+    string scheduler_name = 3;
+    int32 max_results = 4;
+}
+
+message FindAvailableWorkersResponse {
+    repeated WorkerScoreResult candidate_workers = 1;
+    int32 total_available = 2;
+    repeated string exclusion_reasons = 3;
+}
+
+// Plugins de scheduling (extensibilidad como Kubernetes)
+message SchedulerPlugin {
+    string plugin_name = 1;
+    string plugin_type = 2;  // filter, score, bind, reserve, permit
+    string plugin_config = 3;
+    bool enabled = 4;
+    int32 priority = 5;
+}
+
+message PluginConfig {
+    string plugin_name = 1;
+    map<string, string> configuration = 2;
+}
+
+// Queue de jobs pendientes
+message JobQueueInfo {
+    string queue_name = 1;
+    repeated JobSchedulingInfo pending_jobs = 2;
+    int32 total_pending = 3;
+    google.protobuf.Duration average_wait_time = 4;
+    string queue_priority = 5;
+}
+
+message JobSchedulingInfo {
+    JobId job_id = 1;
+    hodei.common.SchedulingInfo scheduling_info = 2;
+    google.protobuf.Timestamp queued_at = 3;
+    google.protobuf.Timestamp estimated_start = 4;
+    int32 queue_position = 5;
+    string queue_name = 6;
+}
+
+// Estado del scheduler
+message SchedulerStatus {
+    string scheduler_name = 1;
+    hodei.common.WorkerStatus status = 2;
+    int32 total_workers = 3;
+    int32 available_workers = 4;
+    int32 busy_workers = 5;
+    int32 pending_jobs = 6;
+    int32 scheduled_jobs = 7;
+    google.protobuf.Timestamp last_scheduling_cycle = 8;
+    SchedulingPerformanceMetrics performance = 9;
+}
+
+message SchedulingPerformanceMetrics {
+    google.protobuf.Duration average_scheduling_time = 1;
+    double scheduling_success_rate = 2;
+    int32 jobs_scheduled_per_minute = 3;
+    google.protobuf.Duration average_job_wait_time = 4;
+    double resource_utilization = 5;
+}
+
+// Request para requeue de job
+message RequeueJobRequest {
+    JobId job_id = 1;
+    string reason = 2;
+    google.protobuf.Duration delay = 3;
+    int32 max_attempts = 4;
+}
+
+message RequeueJobResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp requeue_time = 3;
+    int32 new_queue_position = 4;
+}
+
+// Request para preemption
+message PreemptJobsRequest {
+    WorkerId worker_id = 1;
+    repeated ExecutionId jobs_to_preempt = 2;
+    string preemption_reason = 3;
+    google.protobuf.Duration grace_period = 4;
+}
+
+message PreemptionResult {
+    ExecutionId execution_id = 1;
+    bool success = 2;
+    string message = 3;
+    google.protobuf.Timestamp preempted_at = 4;
+    string preempted_to = 5;  // Worker o queue destino
+}
+
+message PreemptJobsResponse {
+    bool success = 1;
+    string message = 2;
+    repeated PreemptionResult results = 3;
+    repeated JobId jobs_requeued = 4;
+}
+
+// Request para balanceo de carga
+message RebalanceLoadRequest {
+    string scheduler_name = 1;
+    RebalanceStrategy strategy = 2;
+    repeated WorkerId target_workers = 3;
+    google.protobuf.Duration max_rebalance_duration = 4;
+}
+
+message RebalanceStrategy {
+    string strategy_type = 1;  // aggressive, conservative, minimal
+    double load_threshold = 2;  // Umbral de desbalance para trigger rebalance
+    bool preserve_job_affinity = 3;
+    bool allow_job_migration = 4;
+}
+
+message RebalanceJob {
+    ExecutionId execution_id = 1;
+    WorkerId current_worker = 2;
+    WorkerId target_worker = 3;
+    double expected_improvement = 4;
+    string rebalance_reason = 5;
+}
+
+message RebalanceLoadResponse {
+    bool success = 1;
+    string message = 2;
+    repeated RebalanceJob jobs_to_rebalance = 3;
+    google.protobuf.Duration estimated_duration = 4;
+    double expected_load_improvement = 5;
+}
+
+// Streaming para decisiones de scheduling
+message SchedulingDecisionStream {
+    SchedulingDecision decision = 1;
+    string event_type = 2;  // job_scheduled, scheduling_failed, worker_assigned
+    google.protobuf.Timestamp timestamp = 3;
+}
+
+// Servicios gRPC
+service SchedulerService {
+    // Scheduling principal
+    rpc ScheduleJob(ScheduleJobRequest) returns (ScheduleJobResponse);
+    rpc FindAvailableWorkers(FindAvailableWorkersRequest) returns (FindAvailableWorkersResponse);
+    
+    // Gestión de queues
+    rpc GetJobQueueInfo(JobQueueInfoRequest) returns (JobQueueInfoResponse);
+    rpc RequeueJob(RequeueJobRequest) returns (RequeueJobResponse);
+    
+    // Gestión de scheduler
+    rpc RegisterScheduler(RegisterSchedulerRequest) returns (RegisterSchedulerResponse);
+    rpc GetSchedulerStatus(SchedulerStatusRequest) returns (SchedulerStatusResponse);
+    rpc UpdateSchedulerConfig(UpdateSchedulerConfigRequest) returns (UpdateSchedulerConfigResponse);
+    
+    // Plugins
+    rpc RegisterPlugin(RegisterPluginRequest) returns (RegisterPluginResponse);
+    rpc GetRegisteredPlugins(GetPluginsRequest) returns (GetPluginsResponse);
+    
+    // Preemption y rebalance
+    rpc PreemptJobs(PreemptJobsRequest) returns (PreemptJobsResponse);
+    rpc RebalanceLoad(RebalanceLoadRequest) returns (RebalanceLoadResponse);
+    
+    // Streaming
+    rpc SchedulingDecisionStream(DecisionStreamRequest) returns (stream SchedulingDecisionStream);
+}
+
+message JobQueueInfoRequest {
+    string queue_name = 1;
+    bool include_estimates = 2;
+}
+
+message JobQueueInfoResponse {
+    JobQueueInfo queue_info = 1;
+}
+
+message RegisterSchedulerRequest {
+    SchedulerConfig config = 1;
+}
+
+message RegisterSchedulerResponse {
+    bool success = 1;
+    string message = 2;
+    string scheduler_id = 3;
+}
+
+message SchedulerStatusRequest {
+    string scheduler_name = 1;
+}
+
+message SchedulerStatusResponse {
+    SchedulerStatus status = 1;
+}
+
+message UpdateSchedulerConfigRequest {
+    string scheduler_name = 1;
+    SchedulerConfig new_config = 2;
+}
+
+message UpdateSchedulerConfigResponse {
+    bool success = 1;
+    string message = 2;
+    SchedulerConfig updated_config = 3;
+}
+
+message RegisterPluginRequest {
+    SchedulerPlugin plugin = 1;
+}
+
+message RegisterPluginResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message GetPluginsRequest {
+    string scheduler_name = 1;
+    string plugin_type = 2;
+}
+
+message GetPluginsResponse {
+    repeated SchedulerPlugin plugins = 1;
+}
+
+message DecisionStreamRequest {
+    string scheduler_name = 1;
+    repeated string event_types = 2;
+}
