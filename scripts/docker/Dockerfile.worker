@@ -20,8 +20,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY proto ./proto
 
-# Build release binary
-RUN cargo build --release -p hodei-jobs-cli
+# Build release binary (worker from grpc crate)
+RUN cargo build --release -p hodei-jobs-grpc --bin worker
 
 # =============================================================================
 # Stage 2: Runtime
@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/hodei-cli /usr/local/bin/hodei-worker
+COPY --from=builder /app/target/release/worker /usr/local/bin/hodei-worker
 
 # Create directories
 RUN mkdir -p /var/log/hodei /var/lib/hodei \
@@ -59,6 +59,6 @@ ENV RUST_LOG="info"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Default command
+# Default command - the worker binary connects to the server
 ENTRYPOINT ["/usr/local/bin/hodei-worker"]
-CMD ["worker", "start"]
+CMD []

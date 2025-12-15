@@ -1,0 +1,25 @@
+# Hodei Worker Docker Image - Development version
+# Uses pre-built binary from host for faster iteration
+
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy pre-built binary from host
+# Build with: cargo build --release -p hodei-jobs-grpc --bin worker
+COPY target/release/worker /usr/local/bin/hodei-worker
+
+# Environment variables
+ENV HODEI_SERVER="http://host.docker.internal:50051"
+ENV HODEI_TOKEN=""
+ENV RUST_LOG="info,hodei=debug"
+
+# The worker connects to the server and waits for jobs
+ENTRYPOINT ["/usr/local/bin/hodei-worker"]

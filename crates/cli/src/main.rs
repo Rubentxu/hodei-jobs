@@ -107,7 +107,7 @@ async fn handle_worker(channel: Channel, action: WorkerAction) -> Result<(), Box
         WorkerAction::Register { name, hostname } => {
             // PRD v6.0: Register requires auth_token (for CLI, use empty for testing)
             let request = RegisterWorkerRequest {
-                auth_token: std::env::var("HODEI_TOKEN").unwrap_or_default(),
+                auth_token: std::env::var("HODEI_OTP_TOKEN").unwrap_or_default(),
                 session_id: String::new(),
                 worker_info: Some(WorkerInfo {
                     worker_id: None,

@@ -576,14 +576,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Parse config from environment
-    let auth_token = env::var("HODEI_TOKEN").unwrap_or_default();
+    let auth_token = env::var("HODEI_OTP_TOKEN").unwrap_or_default();
     if auth_token.is_empty() {
-        warn!("HODEI_TOKEN not set - registration may fail without OTP");
+        warn!("HODEI_OTP_TOKEN not set - registration may fail without OTP");
     }
     
+    // Read server address - support both HODEI_SERVER_ADDRESS (from providers) and HODEI_SERVER (legacy)
+    let server_addr = env::var("HODEI_SERVER_ADDRESS")
+        .or_else(|_| env::var("HODEI_SERVER"))
+        .unwrap_or_else(|_| "http://localhost:50051".to_string());
+    
+    // Read worker ID - support both HODEI_WORKER_ID (from providers) and WORKER_ID (legacy)
+    let worker_id = env::var("HODEI_WORKER_ID")
+        .or_else(|_| env::var("WORKER_ID"))
+        .unwrap_or_else(|_| WorkerConfig::default().worker_id);
+    
     let config = WorkerConfig {
-        server_addr: env::var("HODEI_SERVER").unwrap_or_else(|_| "http://localhost:50051".to_string()),
-        worker_id: env::var("WORKER_ID").unwrap_or_else(|_| WorkerConfig::default().worker_id),
+        server_addr,
+        worker_id,
         worker_name: env::var("WORKER_NAME").unwrap_or_else(|_| WorkerConfig::default().worker_name),
         auth_token,
         ..Default::default()

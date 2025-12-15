@@ -383,11 +383,16 @@ impl WorkerAgentServiceImpl {
         };
         let worker_id = Self::parse_worker_uuid(worker_id)?;
 
-        let worker = registry
-            .get(&worker_id)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::not_found("Worker not found in registry"))?;
+        // Worker may not exist in registry if it's registering directly without provisioning
+        // This is valid for workers that connect independently (e.g., external workers)
+        let worker = match registry.get(&worker_id).await {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                info!("Worker {} not in registry, allowing direct registration", worker_id);
+                return Ok(());
+            }
+            Err(e) => return Err(Status::internal(e.to_string())),
+        };
 
         if matches!(worker.state(), WorkerState::Creating) {
             registry

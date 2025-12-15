@@ -105,7 +105,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
     async fn provision_worker(
         &self,
         provider_id: &ProviderId,
-        spec: WorkerSpec,
+        mut spec: WorkerSpec,
     ) -> Result<ProvisioningResult> {
         info!(
             "Provisioning worker via provider {} with image {}",
@@ -132,25 +132,31 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             });
         }
 
-        // Create worker via provider
+        // Generate OTP token BEFORE creating the container
+        // This way the token can be passed to the worker via environment variables
+        let worker_id = spec.worker_id.clone();
+        let otp_token = self
+            .token_store
+            .issue(&worker_id, self.config.otp_ttl)
+            .await?;
+
+        // Add OTP token to worker environment so it can authenticate with the server
+        spec.environment.insert(
+            "HODEI_OTP_TOKEN".to_string(),
+            otp_token.to_string(),
+        );
+
+        info!("Generated OTP for worker {}, creating container", worker_id);
+
+        // Create worker via provider (now with OTP token in environment)
         let handle = provider.create_worker(&spec).await.map_err(|e| {
             DomainError::WorkerProvisioningFailed {
                 message: e.to_string(),
             }
         })?;
 
-        let worker_id = handle.worker_id.clone();
-
         // Register in registry
         let worker = self.registry.register(handle, spec).await?;
-
-        info!("Worker {} registered, generating OTP", worker_id);
-
-        // Generate OTP token
-        let otp_token = self
-            .token_store
-            .issue(&worker_id, self.config.otp_ttl)
-            .await?;
 
         info!(
             "Worker {} provisioned successfully with OTP",

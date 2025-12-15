@@ -106,21 +106,79 @@ impl DockerProviderBuilder {
     }
 
     async fn create_docker_client(config: &DockerConfig) -> Result<Docker> {
-        let client = if config.socket_path == "/var/run/docker.sock" {
-            Docker::connect_with_socket_defaults()
-        } else {
-            Docker::connect_with_socket(&config.socket_path, 120, bollard::API_DEFAULT_VERSION)
+        // Try multiple socket locations in order of preference:
+        // 1. Configured socket path
+        // 2. DOCKER_HOST environment variable
+        // 3. Docker Desktop socket (~/.docker/desktop/docker.sock)
+        // 4. Default socket (/var/run/docker.sock)
+        
+        let socket_paths = Self::get_socket_paths(config);
+        
+        for socket_path in &socket_paths {
+            debug!("Trying Docker socket: {}", socket_path);
+            
+            let client_result = if socket_path == "/var/run/docker.sock" {
+                Docker::connect_with_socket_defaults()
+            } else {
+                Docker::connect_with_socket(socket_path, 120, bollard::API_DEFAULT_VERSION)
+            };
+            
+            match client_result {
+                Ok(client) => {
+                    if client.ping().await.is_ok() {
+                        info!("Docker client connected successfully via {}", socket_path);
+                        return Ok(client);
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to connect to {}: {}", socket_path, e);
+                }
+            }
         }
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to connect to Docker: {}", e),
-        })?;
-
-        client.ping().await.map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to ping Docker daemon: {}", e),
-        })?;
-
-        info!("Docker client connected successfully");
-        Ok(client)
+        
+        Err(DomainError::InfrastructureError {
+            message: format!(
+                "Failed to connect to Docker daemon. Tried sockets: {:?}",
+                socket_paths
+            ),
+        })
+    }
+    
+    fn get_socket_paths(config: &DockerConfig) -> Vec<String> {
+        let mut paths = Vec::new();
+        
+        // 1. Configured socket path (if not default)
+        if config.socket_path != "/var/run/docker.sock" {
+            paths.push(config.socket_path.clone());
+        }
+        
+        // 2. DOCKER_HOST environment variable
+        if let Ok(docker_host) = std::env::var("DOCKER_HOST") {
+            if let Some(path) = docker_host.strip_prefix("unix://") {
+                paths.push(path.to_string());
+            }
+        }
+        
+        // 3. Docker Desktop socket (Linux)
+        if let Ok(home) = std::env::var("HOME") {
+            let desktop_socket = format!("{}/.docker/desktop/docker.sock", home);
+            if std::path::Path::new(&desktop_socket).exists() {
+                paths.push(desktop_socket);
+            }
+        }
+        
+        // 4. Podman socket (rootless)
+        if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
+            let podman_socket = format!("{}/podman/podman.sock", xdg_runtime);
+            if std::path::Path::new(&podman_socket).exists() {
+                paths.push(podman_socket);
+            }
+        }
+        
+        // 5. Default Docker socket
+        paths.push("/var/run/docker.sock".to_string());
+        
+        paths
     }
 
     fn default_capabilities() -> ProviderCapabilities {
@@ -317,7 +375,7 @@ impl WorkerProvider for DockerProvider {
 
         let inspect = self
             .client
-            .inspect_container(container_id, None)
+            .inspect_container(container_id, None::<bollard::container::InspectContainerOptions>)
             .await
             .map_err(|e| ProviderError::WorkerNotFound(format!("Container not found: {}", e)))?;
 
