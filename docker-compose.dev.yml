@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: hodei-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hodei
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hodei"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hodei-network
+
+  # Hodei gRPC Server (opcional - para desarrollo local se puede correr con cargo)
+  # Descomenta si prefieres correr el servidor en Docker
+  # server:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.server
+  #   container_name: hodei-server
+  #   environment:
+  #     HODEI_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei
+  #     HODEI_DEV_MODE: "1"
+  #     HODEI_DOCKER_ENABLED: "1"
+  #     GRPC_PORT: "50051"
+  #     REST_PORT: "8080"
+  #   ports:
+  #     - "50051:50051"
+  #     - "8080:8080"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - hodei-network
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  postgres_data:
+
+networks:
+  hodei-network:
+    driver: bridge

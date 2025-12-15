@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #2b6cee;
+  --color-primary-dark: #1a4fb0;
+  --color-background-light: #f6f6f8;
+  --color-background-dark: #101622;
+  --color-surface-dark: #1c2536;
+  --color-surface-darker: #161d2b;
+  --color-card-dark: #161b26;
+  --color-border-dark: #232936;
+  --color-console-bg: #0d1117;
+  --color-success: #10b981;
+  --color-warning: #fa6238;
+  --color-danger: #ef4444;
+  --color-pending: #94a3b8;
+  
+  --font-display: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+/* Custom scrollbar hiding for clean UI */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Log scrollbar */
+.log-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.log-scroll::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+.log-scroll::-webkit-scrollbar-thumb {
+  background: #232f48;
+  border-radius: 3px;
+}
+.log-scroll::-webkit-scrollbar-thumb:hover {
+  background: #3a4a6b;
+}
+
+/* iOS-style toggle */
+.ios-toggle {
+  appearance: none;
+  width: 3.25rem;
+  height: 2rem;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  position: relative;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.2s;
+}
+.ios-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(2rem - 4px);
+  height: calc(2rem - 4px);
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+}
+.ios-toggle:checked {
+  background: var(--color-primary);
+}
+.ios-toggle:checked::after {
+  transform: translateX(1.25rem);
+}
+
+/* Material Symbols filled variant */
+.material-symbols-outlined.filled {
+  font-variation-settings: 'FILL' 1;
+}
