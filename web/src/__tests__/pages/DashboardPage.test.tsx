@@ -50,9 +50,10 @@ describe('DashboardPage', () => {
       renderWithRouter(<DashboardPage />)
       
       expect(screen.getByText('dataset')).toBeInTheDocument()
-      expect(screen.getByText('sync')).toBeInTheDocument()
-      expect(screen.getByText('error')).toBeInTheDocument()
-      expect(screen.getByText('check_circle')).toBeInTheDocument()
+      // sync icon appears multiple times (stats card + job cards)
+      expect(screen.getAllByText('sync').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getAllByText('error').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getAllByText('check_circle').length).toBeGreaterThanOrEqual(1)
     })
   })
 

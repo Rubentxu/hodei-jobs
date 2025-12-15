@@ -1,0 +1,16 @@
+version: v2
+plugins:
+  - local: protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=none
+  - local: protoc-gen-connect-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=none
+inputs:
+  - proto_file: ../proto/hodei_all_in_one.proto
+  - proto_file: ../proto/provider_management.proto
+  - proto_file: ../proto/common.proto

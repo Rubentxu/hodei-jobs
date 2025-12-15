@@ -40,24 +40,27 @@ describe('JobHistoryPage', () => {
     it('renders all filter chips', () => {
       renderWithRouter(<JobHistoryPage />)
       
-      expect(screen.getByText('All Jobs')).toBeInTheDocument()
-      expect(screen.getByText('Running')).toBeInTheDocument()
-      expect(screen.getByText('Failed')).toBeInTheDocument()
-      expect(screen.getByText('Succeeded')).toBeInTheDocument()
-      expect(screen.getByText('Pending')).toBeInTheDocument()
+      // Filter chips are buttons
+      expect(screen.getByRole('button', { name: /All Jobs/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Running/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Failed/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Succeeded/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Pending/i })).toBeInTheDocument()
     })
 
     it('All Jobs is active by default', () => {
       renderWithRouter(<JobHistoryPage />)
       
-      const allChip = screen.getByText('All Jobs').closest('button')
+      const allChip = screen.getByRole('button', { name: /All Jobs/i })
       expect(allChip).toHaveClass('bg-primary')
     })
 
     it('filters jobs when clicking Failed chip', () => {
       renderWithRouter(<JobHistoryPage />)
       
-      fireEvent.click(screen.getByText('Failed'))
+      // Get the Failed button in the filter chips section
+      const failedChip = screen.getByRole('button', { name: /Failed/i })
+      fireEvent.click(failedChip)
       
       // Should show only failed jobs
       expect(screen.getByText('Job #5020')).toBeInTheDocument()

@@ -73,8 +73,8 @@ secrets/
 # Debug
 debug/
 *.dSYM/
-docs/epics
-docs/alineamiento
-docs/providers
-docs/PRD*
-web-stich/
+
+# Web frontend
+web/node_modules
+web/bun.lock
+web/dist

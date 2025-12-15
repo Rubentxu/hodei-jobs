@@ -6,6 +6,36 @@ afterEach(() => {
   cleanup()
 })
 
+// Mock @bufbuild/protobuf to avoid ESM issues in tests
+vi.mock('@bufbuild/protobuf', () => ({
+  create: vi.fn((_schema: unknown, data: unknown) => data),
+}))
+
+// Mock the generated protobuf files
+vi.mock('@/gen/hodei_all_in_one_pb', () => ({
+  JobDefinitionSchema: {},
+  JobIdSchema: {},
+}))
+
+// Mock the connect clients
+vi.mock('@/lib/connect', () => ({
+  transport: {},
+  jobClient: {
+    queueJob: vi.fn().mockResolvedValue({ success: true }),
+    cancelJob: vi.fn().mockResolvedValue({ success: true }),
+  },
+  logClient: {
+    getLogs: vi.fn().mockResolvedValue({ entries: [] }),
+    subscribeLogs: vi.fn(),
+  },
+  metricsClient: {
+    getAggregatedMetrics: vi.fn().mockResolvedValue({}),
+  },
+  schedulerClient: {
+    getQueueStatus: vi.fn().mockResolvedValue({}),
+  },
+}))
+
 // Mock window.matchMedia for responsive tests
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

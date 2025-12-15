@@ -1,3 +1,4 @@
+import { useQueueJob } from '@/hooks/useJobs'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -8,6 +9,9 @@ interface EnvVar {
 
 export function NewJobPage() {
   const navigate = useNavigate()
+  const { mutate: queueJob, isPending } = useQueueJob()
+
+  const [jobName, setJobName] = useState('')
   const [commandType, setCommandType] = useState('shell')
   const [script, setScript] = useState('')
   const [containerImage, setContainerImage] = useState('')
@@ -32,9 +36,22 @@ export function NewJobPage() {
   }
 
   const handleSubmit = () => {
-    // TODO: Submit to API
-    console.log('Submitting job...')
-    navigate('/jobs')
+    if (!jobName || !script) return
+
+    queueJob({
+      name: jobName,
+      command: script,
+      // Map other fields as needed for the backend
+      // For now, mapping mainly name and command which are required by our hook
+    }, {
+      onSuccess: () => {
+        navigate('/jobs')
+      },
+      onError: (error) => {
+        console.error('Failed to queue job:', error)
+        // Optionally show toast/alert here
+      }
+    })
   }
 
   return (
@@ -55,6 +72,24 @@ export function NewJobPage() {
 
       {/* Main Content Form */}
       <main className="flex-1 flex flex-col gap-6 p-4 pb-32">
+        {/* Basic Info Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
+            <span className="material-symbols-outlined text-primary">badge</span>
+            <h3 className="text-base font-bold text-slate-800 dark:text-slate-200">Basic Info</h3>
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-slate-600 dark:text-slate-400">Job Name</label>
+            <input
+              type="text"
+              value={jobName}
+              onChange={(e) => setJobName(e.target.value)}
+              className="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600"
+              placeholder="e.g. Data Processing Pipeline"
+            />
+          </div>
+        </section>
+
         {/* Core Execution Section */}
         <section className="space-y-4">
           <div className="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
@@ -232,21 +267,19 @@ export function NewJobPage() {
             <div className="flex bg-white dark:bg-surface-dark p-1 rounded-lg border border-slate-200 dark:border-slate-700">
               <button
                 onClick={() => setArchitecture('x86_64')}
-                className={`flex-1 py-1.5 text-sm font-medium rounded transition-all ${
-                  architecture === 'x86_64'
+                className={`flex-1 py-1.5 text-sm font-medium rounded transition-all ${architecture === 'x86_64'
                     ? 'text-white bg-primary shadow-sm'
                     : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
+                  }`}
               >
                 x86_64
               </button>
               <button
                 onClick={() => setArchitecture('arm64')}
-                className={`flex-1 py-1.5 text-sm font-medium rounded transition-all ${
-                  architecture === 'arm64'
+                className={`flex-1 py-1.5 text-sm font-medium rounded transition-all ${architecture === 'arm64'
                     ? 'text-white bg-primary shadow-sm'
                     : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
+                  }`}
               >
                 arm64
               </button>
@@ -349,31 +382,28 @@ export function NewJobPage() {
             <div className="grid grid-cols-3 gap-2 bg-white dark:bg-surface-dark p-1.5 rounded-lg border border-slate-200 dark:border-slate-700">
               <button
                 onClick={() => setPriority('low')}
-                className={`flex items-center justify-center gap-1 py-2 text-xs font-medium rounded transition-all ${
-                  priority === 'low'
+                className={`flex items-center justify-center gap-1 py-2 text-xs font-medium rounded transition-all ${priority === 'low'
                     ? 'text-white bg-primary shadow-sm ring-1 ring-black/5'
                     : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-                }`}
+                  }`}
               >
                 <div className="w-2 h-2 rounded-full bg-emerald-500"></div> Low
               </button>
               <button
                 onClick={() => setPriority('normal')}
-                className={`flex items-center justify-center gap-1 py-2 text-xs font-medium rounded transition-all ${
-                  priority === 'normal'
+                className={`flex items-center justify-center gap-1 py-2 text-xs font-medium rounded transition-all ${priority === 'normal'
                     ? 'text-white bg-primary shadow-sm ring-1 ring-black/5'
                     : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-                }`}
+                  }`}
               >
                 <div className={`w-2 h-2 rounded-full ${priority === 'normal' ? 'bg-white' : 'bg-slate-400'}`}></div> Normal
               </button>
               <button
                 onClick={() => setPriority('high')}
-                className={`flex items-center justify-center gap-1 py-2 text-xs font-medium rounded transition-all ${
-                  priority === 'high'
+                className={`flex items-center justify-center gap-1 py-2 text-xs font-medium rounded transition-all ${priority === 'high'
                     ? 'text-white bg-primary shadow-sm ring-1 ring-black/5'
                     : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-                }`}
+                  }`}
               >
                 <div className="w-2 h-2 rounded-full bg-red-500"></div> High
               </button>
@@ -400,10 +430,15 @@ export function NewJobPage() {
       <footer className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-background-light/90 dark:bg-background-dark/90 backdrop-blur-md border-t dark:border-slate-800 z-40">
         <button
           onClick={handleSubmit}
-          className="w-full bg-primary hover:bg-blue-600 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+          disabled={!jobName || !script || isPending}
+          className="w-full bg-primary hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
         >
-          <span className="material-symbols-outlined text-[20px]">schedule_send</span>
-          Schedule Job
+          {isPending ? (
+            <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
+          ) : (
+            <span className="material-symbols-outlined text-[20px]">schedule_send</span>
+          )}
+          {isPending ? 'Scheduling...' : 'Schedule Job'}
         </button>
       </footer>
     </div>

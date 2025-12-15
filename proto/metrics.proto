@@ -24,7 +24,7 @@ message TimeSeries {
 
 // Métricas del sistema (CPU, memoria, disco)
 message SystemMetrics {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     google.protobuf.Timestamp timestamp = 2;
     
     // CPU metrics
@@ -75,8 +75,8 @@ message DiskUsageInfo {
 
 // Métricas de ejecución de job
 message JobExecutionMetrics {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp timestamp = 3;
     
     // Execution progress
@@ -118,7 +118,7 @@ message MetricAggregation {
 
 // Request para métricas del sistema
 message GetSystemMetricsRequest {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     google.protobuf.Timestamp from_timestamp = 2;
     google.protobuf.Timestamp to_timestamp = 3;
     repeated string metric_types = 4;  // cpu, memory, disk, network, load
@@ -133,7 +133,7 @@ message GetSystemMetricsResponse {
 
 // Request para métricas de ejecución
 message GetJobExecutionMetricsRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     google.protobuf.Timestamp from_timestamp = 2;
     google.protobuf.Timestamp to_timestamp = 3;
     google.protobuf.Duration interval = 4;
@@ -148,7 +148,7 @@ message GetJobExecutionMetricsResponse {
 // Request para métricas agregadas
 message GetAggregatedMetricsRequest {
     string metric_name = 1;
-    repeated WorkerId worker_ids = 2;
+    repeated hodei.common.WorkerId worker_ids = 2;
     google.protobuf.Timestamp from_timestamp = 3;
     google.protobuf.Timestamp to_timestamp = 4;
     google.protobuf.Duration window_size = 5;
@@ -163,7 +163,7 @@ message GetAggregatedMetricsResponse {
 
 // Stream para métricas en tiempo real
 message RealTimeMetricsRequest {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     repeated string metric_types = 2;
     google.protobuf.Duration update_interval = 3;
     int32 max_points = 4;  // Máximo número de puntos a mantener
@@ -178,7 +178,7 @@ message RealTimeMetricsStream {
 // Request para métricas históricas
 message GetHistoricalMetricsRequest {
     string metric_name = 1;
-    repeated WorkerId worker_ids = 2;
+    repeated hodei.common.WorkerId worker_ids = 2;
     google.protobuf.Timestamp from_timestamp = 3;
     google.protobuf.Timestamp to_timestamp = 4;
     google.protobuf.Duration resolution = 5;  // 1s, 1m, 5m, 1h, etc.
@@ -194,12 +194,12 @@ message GetHistoricalMetricsResponse {
 
 // Request para métricas de salud del sistema
 message GetHealthMetricsRequest {
-    repeated WorkerId worker_ids = 1;
+    repeated hodei.common.WorkerId worker_ids = 1;
     google.protobuf.Duration lookback_period = 2;
 }
 
 message WorkerHealthMetrics {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     double cpu_usage_avg = 2;
     double memory_usage_avg = 3;
     double disk_usage_avg = 4;
@@ -225,8 +225,8 @@ message MetricAlert {
     string condition = 5;  // Descripción de la condición que triggerea la alerta
     double current_value = 6;
     double threshold_value = 7;
-    WorkerId affected_worker = 8;
-    ExecutionId affected_execution = 9;
+    hodei.common.WorkerId affected_worker = 8;
+    hodei.common.ExecutionId affected_execution = 9;
     google.protobuf.Timestamp triggered_at = 10;
     string description = 11;
 }
@@ -237,7 +237,7 @@ message CreateAlertRequest {
     string condition = 4;  // >, <, >=, <=, ==, !=
     double threshold_value = 5;
     string severity = 6;
-    repeated WorkerId worker_filter = 7;
+    repeated hodei.common.WorkerId worker_filter = 7;
     google.protobuf.Duration evaluation_interval = 8;
     bool enabled = 9;
 }

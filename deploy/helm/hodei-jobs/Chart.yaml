@@ -1,0 +1,23 @@
+apiVersion: v2
+name: hodei-jobs
+description: Hodei Jobs Platform - Distributed job execution with pluggable worker providers
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - jobs
+  - distributed
+  - kubernetes
+  - docker
+  - grpc
+maintainers:
+  - name: Rubentxu
+    url: https://github.com/Rubentxu
+home: https://github.com/Rubentxu/hodei-jobs
+sources:
+  - https://github.com/Rubentxu/hodei-jobs
+dependencies:
+  - name: postgresql
+    version: "13.2.24"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled

@@ -6,8 +6,8 @@ use crate::shared_kernel::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::Duration;
 use std::fmt;
+use std::time::Duration;
 
 /// Tipo de comando a ejecutar (PRD v6.0)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -15,7 +15,10 @@ pub enum CommandType {
     /// Comando shell con argumentos
     Shell { cmd: String, args: Vec<String> },
     /// Script inline con interprete
-    Script { interpreter: String, content: String },
+    Script {
+        interpreter: String,
+        content: String,
+    },
 }
 
 impl CommandType {
@@ -51,7 +54,10 @@ impl CommandType {
                 v.extend(args.clone());
                 v
             }
-            CommandType::Script { interpreter, content } => {
+            CommandType::Script {
+                interpreter,
+                content,
+            } => {
                 vec![interpreter.clone(), "-c".to_string(), content.clone()]
             }
         }
@@ -87,7 +93,11 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    pub fn new(key: impl Into<String>, operator: ConstraintOperator, value: impl Into<String>) -> Self {
+    pub fn new(
+        key: impl Into<String>,
+        operator: ConstraintOperator,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             key: key.into(),
             operator,
@@ -452,9 +462,9 @@ impl Job {
 
     /// Verifica si el job puede ser reintentado
     pub fn can_retry(&self) -> bool {
-        self.attempts < self.max_attempts && 
-        matches!(self.state, JobState::Failed | JobState::Timeout) &&
-        self.spec.preferences.allow_retry
+        self.attempts < self.max_attempts
+            && matches!(self.state, JobState::Failed | JobState::Timeout)
+            && self.spec.preferences.allow_retry
     }
 
     /// Prepara el job para un nuevo intento
@@ -474,7 +484,7 @@ impl Job {
         self.result = None;
         self.error_message = None;
         self.attempts += 1;
-        
+
         Ok(())
     }
 
@@ -491,7 +501,12 @@ impl Job {
     /// Obtiene la duración de ejecución
     pub fn execution_duration(&self) -> Option<Duration> {
         if let (Some(started), Some(completed)) = (self.started_at, self.completed_at) {
-            Some(completed.signed_duration_since(started).to_std().unwrap_or_default())
+            Some(
+                completed
+                    .signed_duration_since(started)
+                    .to_std()
+                    .unwrap_or_default(),
+            )
         } else {
             None
         }
@@ -500,7 +515,7 @@ impl Job {
 
 impl Aggregate for Job {
     type Id = JobId;
-    
+
     fn aggregate_id(&self) -> &Self::Id {
         &self.id
     }
@@ -530,11 +545,7 @@ pub struct ExecutionContext {
 }
 
 impl ExecutionContext {
-    pub fn new(
-        job_id: JobId,
-        provider_id: ProviderId,
-        provider_execution_id: String,
-    ) -> Self {
+    pub fn new(job_id: JobId, provider_id: ProviderId, provider_execution_id: String) -> Self {
         Self {
             job_id,
             provider_id,
@@ -551,7 +562,7 @@ impl ExecutionContext {
     /// Actualiza el estado de la ejecución
     pub fn update_status(&mut self, status: ExecutionStatus) {
         self.status = status.clone();
-        
+
         match status {
             ExecutionStatus::Running if self.started_at.is_none() => {
                 self.started_at = Some(Utc::now());
@@ -573,6 +584,8 @@ pub trait JobRepository: Send + Sync {
     async fn find_by_id(&self, job_id: &JobId) -> Result<Option<Job>>;
     async fn find_by_state(&self, state: &JobState) -> Result<Vec<Job>>;
     async fn find_pending(&self) -> Result<Vec<Job>>;
+    async fn find_all(&self, limit: usize, offset: usize) -> Result<(Vec<Job>, usize)>;
+    async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>>;
     async fn delete(&self, job_id: &JobId) -> Result<()>;
     async fn update(&self, job: &Job) -> Result<()>;
 }
@@ -610,7 +623,9 @@ impl JobStatusTracker {
             .job_repository
             .find_by_id(job_id)
             .await?
-            .ok_or_else(|| DomainError::JobNotFound { job_id: job_id.clone() })?;
+            .ok_or_else(|| DomainError::JobNotFound {
+                job_id: job_id.clone(),
+            })?;
 
         // Actualizar contexto de ejecución si existe
         if let Some(ref mut context) = job.execution_context {
@@ -644,17 +659,23 @@ impl JobStatusTracker {
     }
 
     /// Obtiene el estado actual de un job
-    pub async fn get_job_status(&self, job_id: &JobId) -> Result<Option<(JobState, Option<JobResult>)>> {
+    pub async fn get_job_status(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<(JobState, Option<JobResult>)>> {
         let job = self.job_repository.find_by_id(job_id).await?;
-        
+
         Ok(job.map(|job| (job.state, job.result)))
     }
 
     /// Limpia jobs expirados
     pub async fn cleanup_expired_jobs(&self) -> Result<Vec<JobId>> {
         let mut expired_job_ids = Vec::new();
-        
-        let pending_jobs = self.job_repository.find_by_state(&JobState::Pending).await?;
+
+        let pending_jobs = self
+            .job_repository
+            .find_by_state(&JobState::Pending)
+            .await?;
         for job in pending_jobs {
             if job.has_expired() {
                 expired_job_ids.push(job.id.clone());

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/hodei-logo.png" alt="Hodei Jobs Logo" width="200" />
+  <img src="docs/assets/hodei-jobs.png" alt="Hodei Jobs Logo" width="800" />
 </p>
 
 <h1 align="center">Hodei Jobs Platform</h1>

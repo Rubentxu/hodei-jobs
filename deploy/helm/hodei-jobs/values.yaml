@@ -1,0 +1,203 @@
+# =============================================================================
+# Hodei Jobs Platform - Helm Values
+# =============================================================================
+# Default configuration values for the Hodei Jobs Helm chart.
+# Override these values in your own values file or via --set flags.
+# =============================================================================
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# =============================================================================
+# API Server (gRPC Backend)
+# =============================================================================
+api:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: hodei-server
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 50051
+    annotations: {}
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  
+  env:
+    HODEI_DEV_MODE: "0"
+    HODEI_DOCKER_ENABLED: "0"
+    HODEI_K8S_ENABLED: "1"
+    RUST_LOG: "info,hodei=debug"
+  
+  # Secret environment variables (reference existing secrets)
+  envFrom: []
+  
+  # Pod annotations
+  podAnnotations: {}
+  
+  # Node selector
+  nodeSelector: {}
+  
+  # Tolerations
+  tolerations: []
+  
+  # Affinity rules
+  affinity: {}
+  
+  # Service account
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  
+  # RBAC for Kubernetes provider
+  rbac:
+    create: true
+    rules:
+      - apiGroups: [""]
+        resources: ["pods", "pods/log"]
+        verbs: ["get", "list", "watch", "create", "delete"]
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get", "create", "delete"]
+
+# =============================================================================
+# Web Dashboard (Frontend)
+# =============================================================================
+web:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: hodei-web
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+  
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  
+  # Ingress configuration
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    hosts:
+      - host: hodei.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# =============================================================================
+# PostgreSQL Database
+# =============================================================================
+postgresql:
+  enabled: true
+  auth:
+    username: hodei
+    password: ""  # Set via --set or secrets
+    database: hodei
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+# External database (if postgresql.enabled=false)
+externalDatabase:
+  host: ""
+  port: 5432
+  user: hodei
+  password: ""
+  database: hodei
+  existingSecret: ""
+  existingSecretPasswordKey: ""
+
+# =============================================================================
+# Worker Configuration
+# =============================================================================
+worker:
+  image:
+    repository: hodei-worker
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  # Namespace for worker pods
+  namespace: hodei-workers
+  
+  # Default resources for worker pods
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# =============================================================================
+# Monitoring (Optional)
+# =============================================================================
+monitoring:
+  enabled: false
+  
+  prometheus:
+    enabled: false
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+  
+  grafana:
+    enabled: false
+    dashboards:
+      enabled: false
+
+# =============================================================================
+# Security
+# =============================================================================
+security:
+  # OTP secret for worker authentication
+  otpSecret: ""  # Set via --set or secrets
+  existingOtpSecret: ""
+  existingOtpSecretKey: "otp-secret"
+  
+  # Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  
+  # Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL

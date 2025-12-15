@@ -58,7 +58,10 @@ impl JobController {
         let decision = self.scheduler.make_decision(ctx).await?;
 
         match decision {
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::AssignToWorker { worker_id, .. } => {
+            hodei_jobs_domain::job_scheduler::SchedulingDecision::AssignToWorker {
+                worker_id,
+                ..
+            } => {
                 self.assign_and_dispatch(&mut job, &worker_id).await?;
                 self.job_repository.update(&job).await?;
                 Ok(1)
@@ -77,23 +80,21 @@ impl JobController {
         }
     }
 
-    async fn assign_and_dispatch(&self, job: &mut hodei_jobs_domain::job_execution::Job, worker_id: &WorkerId) -> Result<()> {
-        let worker = self
-            .worker_registry
-            .get(worker_id)
-            .await?
-            .ok_or_else(|| DomainError::WorkerNotFound {
+    async fn assign_and_dispatch(
+        &self,
+        job: &mut hodei_jobs_domain::job_execution::Job,
+        worker_id: &WorkerId,
+    ) -> Result<()> {
+        let worker = self.worker_registry.get(worker_id).await?.ok_or_else(|| {
+            DomainError::WorkerNotFound {
                 worker_id: worker_id.clone(),
-            })?;
+            }
+        })?;
 
         let provider_id = worker.handle().provider_id.clone();
         let provider_execution_id = Uuid::new_v4().to_string();
 
-        let exec_ctx = ExecutionContext::new(
-            job.id.clone(),
-            provider_id,
-            provider_execution_id,
-        );
+        let exec_ctx = ExecutionContext::new(job.id.clone(), provider_id, provider_execution_id);
 
         job.submit_to_provider(worker.handle().provider_id.clone(), exec_ctx)?;
         job.mark_running()?;
@@ -102,7 +103,11 @@ impl JobController {
             .assign_to_job(worker_id, job.id.clone())
             .await?;
 
-        if let Err(e) = self.worker_command_sender.send_run_job(worker_id, job).await {
+        if let Err(e) = self
+            .worker_command_sender
+            .send_run_job(worker_id, job)
+            .await
+        {
             let _ = self.worker_registry.release_from_job(worker_id).await;
             job.state = JobState::Failed;
             job.error_message = Some(format!("dispatch_failed: {}", e));
@@ -146,6 +151,14 @@ mod tests {
 
         async fn find_pending(&self) -> Result<Vec<Job>> {
             Ok(vec![])
+        }
+
+        async fn find_all(&self, _limit: usize, _offset: usize) -> Result<(Vec<Job>, usize)> {
+            Ok((vec![], 0))
+        }
+
+        async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
+            Ok(None)
         }
 
         async fn delete(&self, _job_id: &JobId) -> Result<()> {
@@ -223,11 +236,17 @@ mod tests {
             Ok(())
         }
 
-        async fn get(&self, worker_id: &WorkerId) -> Result<Option<hodei_jobs_domain::worker::Worker>> {
+        async fn get(
+            &self,
+            worker_id: &WorkerId,
+        ) -> Result<Option<hodei_jobs_domain::worker::Worker>> {
             Ok(self.workers.read().await.get(worker_id).cloned())
         }
 
-        async fn find(&self, _filter: &WorkerFilter) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
+        async fn find(
+            &self,
+            _filter: &WorkerFilter,
+        ) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(self.workers.read().await.values().cloned().collect())
         }
 
@@ -242,15 +261,20 @@ mod tests {
                 .collect())
         }
 
-        async fn find_by_provider(&self, _provider_id: &ProviderId) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
+        async fn find_by_provider(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(vec![])
         }
 
         async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
             let mut workers = self.workers.write().await;
-            let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-                worker_id: worker_id.clone(),
-            })?;
+            let worker = workers
+                .get_mut(worker_id)
+                .ok_or_else(|| DomainError::WorkerNotFound {
+                    worker_id: worker_id.clone(),
+                })?;
 
             match state {
                 WorkerState::Creating => {}
@@ -276,23 +300,30 @@ mod tests {
 
         async fn assign_to_job(&self, worker_id: &WorkerId, job_id: JobId) -> Result<()> {
             let mut workers = self.workers.write().await;
-            let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-                worker_id: worker_id.clone(),
-            })?;
+            let worker = workers
+                .get_mut(worker_id)
+                .ok_or_else(|| DomainError::WorkerNotFound {
+                    worker_id: worker_id.clone(),
+                })?;
             worker.assign_job(job_id)?;
             Ok(())
         }
 
         async fn release_from_job(&self, worker_id: &WorkerId) -> Result<()> {
             let mut workers = self.workers.write().await;
-            let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-                worker_id: worker_id.clone(),
-            })?;
+            let worker = workers
+                .get_mut(worker_id)
+                .ok_or_else(|| DomainError::WorkerNotFound {
+                    worker_id: worker_id.clone(),
+                })?;
             worker.complete_job()?;
             Ok(())
         }
 
-        async fn find_unhealthy(&self, _timeout: std::time::Duration) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
+        async fn find_unhealthy(
+            &self,
+            _timeout: std::time::Duration,
+        ) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(vec![])
         }
 
@@ -353,15 +384,27 @@ mod tests {
             ProviderType::Docker,
             ProviderId::new(),
         );
-        let mut spec = DomainWorkerSpec::new("hodei-worker:latest".to_string(), "http://localhost:50051".to_string());
+        let mut spec = DomainWorkerSpec::new(
+            "hodei-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
         spec.worker_id = worker_id.clone();
 
         registry.register(handle, spec).await.unwrap();
-        registry.update_state(&worker_id, WorkerState::Connecting).await.unwrap();
-        registry.update_state(&worker_id, WorkerState::Ready).await.unwrap();
+        registry
+            .update_state(&worker_id, WorkerState::Connecting)
+            .await
+            .unwrap();
+        registry
+            .update_state(&worker_id, WorkerState::Ready)
+            .await
+            .unwrap();
 
         let job_id = JobId::new();
-        let job = Job::new(job_id.clone(), JobSpec::new(vec!["echo".to_string(), "hi".to_string()]));
+        let job = Job::new(
+            job_id.clone(),
+            JobSpec::new(vec!["echo".to_string(), "hi".to_string()]),
+        );
         job_repo.save(&job).await.unwrap();
         queue.enqueue(job).await.unwrap();
 
@@ -377,7 +420,10 @@ mod tests {
         assert_eq!(processed, 1);
 
         let updated = job_repo.find_by_id(&job_id).await.unwrap().unwrap();
-        assert!(matches!(updated.state, JobState::Running | JobState::Failed));
+        assert!(matches!(
+            updated.state,
+            JobState::Running | JobState::Failed
+        ));
 
         let sent = sender.sent.read().await;
         assert_eq!(sent.len(), 1);
@@ -385,6 +431,9 @@ mod tests {
         assert_eq!(sent[0].1, job_id);
 
         let worker = registry.get(&worker_id).await.unwrap().unwrap();
-        assert!(matches!(worker.state(), WorkerState::Busy | WorkerState::Ready));
+        assert!(matches!(
+            worker.state(),
+            WorkerState::Busy | WorkerState::Ready
+        ));
     }
 }

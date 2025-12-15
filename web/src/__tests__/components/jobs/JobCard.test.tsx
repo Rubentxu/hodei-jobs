@@ -95,7 +95,8 @@ describe('JobCard', () => {
     )
     
     expect(screen.getByText('Pending')).toBeInTheDocument()
-    expect(screen.getByText('schedule')).toBeInTheDocument()
+    // Multiple schedule icons exist (status icon + time icon), check at least one exists
+    expect(screen.getAllByText('schedule').length).toBeGreaterThanOrEqual(1)
   })
 
   it('renders progress bar for RUNNING jobs', () => {

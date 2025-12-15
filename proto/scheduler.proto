@@ -31,7 +31,7 @@ message SchedulingPolicy {
 
 // Resultado del filtrado de workers
 message WorkerFilterResult {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     bool passes_filters = 2;
     repeated string failed_reasons = 3;
     hodei.common.ResourceAllocation estimated_allocation = 4;
@@ -40,7 +40,7 @@ message WorkerFilterResult {
 
 // Resultado del scoring de workers
 message WorkerScoreResult {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     double score = 2;  // 0-100
     repeated ScoringBreakdown scoring_breakdown = 3;
     hodei.common.ResourceAllocation final_allocation = 4;
@@ -57,9 +57,9 @@ message ScoringBreakdown {
 
 // Decisión de scheduling
 message SchedulingDecision {
-    JobId job_id = 1;
-    WorkerId selected_worker = 2;
-    ExecutionId execution_id = 3;
+    hodei.common.JobId job_id = 1;
+    hodei.common.WorkerId selected_worker = 2;
+    hodei.common.ExecutionId execution_id = 3;
     double confidence_score = 4;
     repeated WorkerFilterResult filter_results = 5;
     repeated WorkerScoreResult scoring_results = 6;
@@ -77,7 +77,7 @@ message SchedulingDecisionMetadata {
 
 // Request para scheduler un job
 message ScheduleJobRequest {
-    JobId job_id = 1;
+    hodei.common.JobId job_id = 1;
     string scheduler_name = 2;
     SchedulingPreferences preferences = 3;
     bool dry_run = 4;  // Solo simular, no asignar realmente
@@ -137,7 +137,7 @@ message JobQueueInfo {
 }
 
 message JobSchedulingInfo {
-    JobId job_id = 1;
+    hodei.common.JobId job_id = 1;
     hodei.common.SchedulingInfo scheduling_info = 2;
     google.protobuf.Timestamp queued_at = 3;
     google.protobuf.Timestamp estimated_start = 4;
@@ -168,7 +168,7 @@ message SchedulingPerformanceMetrics {
 
 // Request para requeue de job
 message RequeueJobRequest {
-    JobId job_id = 1;
+    hodei.common.JobId job_id = 1;
     string reason = 2;
     google.protobuf.Duration delay = 3;
     int32 max_attempts = 4;
@@ -183,14 +183,14 @@ message RequeueJobResponse {
 
 // Request para preemption
 message PreemptJobsRequest {
-    WorkerId worker_id = 1;
-    repeated ExecutionId jobs_to_preempt = 2;
+    hodei.common.WorkerId worker_id = 1;
+    repeated hodei.common.ExecutionId jobs_to_preempt = 2;
     string preemption_reason = 3;
     google.protobuf.Duration grace_period = 4;
 }
 
 message PreemptionResult {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     bool success = 2;
     string message = 3;
     google.protobuf.Timestamp preempted_at = 4;
@@ -201,14 +201,14 @@ message PreemptJobsResponse {
     bool success = 1;
     string message = 2;
     repeated PreemptionResult results = 3;
-    repeated JobId jobs_requeued = 4;
+    repeated hodei.common.JobId jobs_requeued = 4;
 }
 
 // Request para balanceo de carga
 message RebalanceLoadRequest {
     string scheduler_name = 1;
     RebalanceStrategy strategy = 2;
-    repeated WorkerId target_workers = 3;
+    repeated hodei.common.WorkerId target_workers = 3;
     google.protobuf.Duration max_rebalance_duration = 4;
 }
 
@@ -220,9 +220,9 @@ message RebalanceStrategy {
 }
 
 message RebalanceJob {
-    ExecutionId execution_id = 1;
-    WorkerId current_worker = 2;
-    WorkerId target_worker = 3;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.WorkerId current_worker = 2;
+    hodei.common.WorkerId target_worker = 3;
     double expected_improvement = 4;
     string rebalance_reason = 5;
 }

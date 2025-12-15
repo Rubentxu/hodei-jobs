@@ -2,17 +2,22 @@
 // Adaptadores de persistencia para bases de datos, archivos, etc.
 
 use hodei_jobs_domain::job_execution::{Job, JobQueue, JobRepository, JobSpec};
-use hodei_jobs_domain::job_template::{JobTemplate, JobTemplateId, JobTemplateRepository, JobTemplateStatus};
+use hodei_jobs_domain::job_template::{
+    JobTemplate, JobTemplateId, JobTemplateRepository, JobTemplateStatus,
+};
 use hodei_jobs_domain::provider_config::{ProviderConfig, ProviderConfigRepository};
-use hodei_jobs_domain::shared_kernel::{Result, JobId, ProviderId, ProviderStatus, DomainError};
+use hodei_jobs_domain::shared_kernel::{DomainError, JobId, ProviderId, ProviderStatus, Result};
 use hodei_jobs_domain::worker::ProviderType;
 use serde::{Deserialize, Serialize};
+use sqlx::{
+    Row,
+    postgres::{PgPool, PgPoolOptions},
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use tokio::sync::RwLock;
 use std::sync::Arc;
-use sqlx::{Row, postgres::{PgPool, PgPoolOptions}};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// Configuración de persistencia
@@ -74,10 +79,10 @@ impl JobRepository for PersistentJobRepository {
     async fn save(&self, job: &Job) -> Result<()> {
         // Cargar jobs existentes
         let mut jobs = self.load_jobs().await?;
-        
+
         // Agregar/actualizar job
         jobs.insert(job.id.clone(), job.clone());
-        
+
         // Guardar
         self.save_jobs(&jobs).await?;
         Ok(())
@@ -88,9 +93,13 @@ impl JobRepository for PersistentJobRepository {
         Ok(jobs.get(job_id).cloned())
     }
 
-    async fn find_by_state(&self, state: &hodei_jobs_domain::shared_kernel::JobState) -> Result<Vec<Job>> {
+    async fn find_by_state(
+        &self,
+        state: &hodei_jobs_domain::shared_kernel::JobState,
+    ) -> Result<Vec<Job>> {
         let jobs = self.load_jobs().await?;
-        Ok(jobs.values()
+        Ok(jobs
+            .values()
             .filter(|job| &job.state == state)
             .cloned()
             .collect())
@@ -98,10 +107,42 @@ impl JobRepository for PersistentJobRepository {
 
     async fn find_pending(&self) -> Result<Vec<Job>> {
         let jobs = self.load_jobs().await?;
-        Ok(jobs.values()
-            .filter(|job| matches!(job.state, hodei_jobs_domain::shared_kernel::JobState::Pending))
+        Ok(jobs
+            .values()
+            .filter(|job| {
+                matches!(
+                    job.state,
+                    hodei_jobs_domain::shared_kernel::JobState::Pending
+                )
+            })
             .cloned()
             .collect())
+    }
+
+    async fn find_all(&self, limit: usize, offset: usize) -> Result<(Vec<Job>, usize)> {
+        let jobs = self.load_jobs().await?;
+        let total = jobs.len();
+        let mut sorted_jobs: Vec<Job> = jobs.values().cloned().collect();
+        // Sort by created_at desc
+        sorted_jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        Ok((
+            sorted_jobs.into_iter().skip(offset).take(limit).collect(),
+            total,
+        ))
+    }
+
+    async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>> {
+        let jobs = self.load_jobs().await?;
+        Ok(jobs
+            .values()
+            .find(|job| {
+                job.execution_context
+                    .as_ref()
+                    .map(|ctx| ctx.provider_execution_id == execution_id)
+                    .unwrap_or(false)
+            })
+            .cloned())
     }
 
     async fn delete(&self, job_id: &JobId) -> Result<()> {
@@ -119,19 +160,22 @@ impl JobRepository for PersistentJobRepository {
 impl PersistentJobRepository {
     async fn load_jobs(&self) -> Result<std::collections::HashMap<JobId, Job>> {
         let file_path = self.persistence.jobs_file_path();
-        
+
         if !Path::new(&file_path).exists() {
             return Ok(std::collections::HashMap::new());
         }
 
-        let content = fs::read_to_string(&file_path)
-            .map_err(|e| hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
+        let content = fs::read_to_string(&file_path).map_err(|e| {
+            hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
                 message: format!("Failed to read jobs file: {}", e),
-            })?;
+            }
+        })?;
 
-        let jobs: std::collections::HashMap<JobId, Job> = serde_json::from_str(&content)
-            .map_err(|e| hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
-                message: format!("Failed to parse jobs file: {}", e),
+        let jobs: std::collections::HashMap<JobId, Job> =
+            serde_json::from_str(&content).map_err(|e| {
+                hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Failed to parse jobs file: {}", e),
+                }
             })?;
 
         Ok(jobs)
@@ -139,16 +183,18 @@ impl PersistentJobRepository {
 
     async fn save_jobs(&self, jobs: &std::collections::HashMap<JobId, Job>) -> Result<()> {
         let file_path = self.persistence.jobs_file_path();
-        
-        let content = serde_json::to_string_pretty(jobs)
-            .map_err(|e| hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
-                message: format!("Failed to serialize jobs: {}", e),
-            })?;
 
-        fs::write(&file_path, content)
-            .map_err(|e| hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
+        let content = serde_json::to_string_pretty(jobs).map_err(|e| {
+            hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Failed to serialize jobs: {}", e),
+            }
+        })?;
+
+        fs::write(&file_path, content).map_err(|e| {
+            hodei_jobs_domain::shared_kernel::DomainError::InfrastructureError {
                 message: format!("Failed to write jobs file: {}", e),
-            })?;
+            }
+        })?;
 
         Ok(())
     }
@@ -181,8 +227,8 @@ impl FileBasedProviderConfigRepository {
             return Ok(HashMap::new());
         }
 
-        let content = fs::read_to_string(&file_path)
-            .map_err(|e| DomainError::InfrastructureError {
+        let content =
+            fs::read_to_string(&file_path).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to read providers file: {}", e),
             })?;
 
@@ -190,8 +236,8 @@ impl FileBasedProviderConfigRepository {
             return Ok(HashMap::new());
         }
 
-        let configs: HashMap<ProviderId, ProviderConfig> = serde_json::from_str(&content)
-            .map_err(|e| DomainError::InfrastructureError {
+        let configs: HashMap<ProviderId, ProviderConfig> =
+            serde_json::from_str(&content).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to parse providers file: {}", e),
             })?;
 
@@ -202,15 +248,15 @@ impl FileBasedProviderConfigRepository {
     async fn save_configs(&self, configs: &HashMap<ProviderId, ProviderConfig>) -> Result<()> {
         let file_path = self.persistence.providers_file_path();
 
-        let content = serde_json::to_string_pretty(configs)
-            .map_err(|e| DomainError::InfrastructureError {
+        let content = serde_json::to_string_pretty(configs).map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to serialize providers: {}", e),
-            })?;
+            }
+        })?;
 
-        fs::write(&file_path, content)
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to write providers file: {}", e),
-            })?;
+        fs::write(&file_path, content).map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to write providers file: {}", e),
+        })?;
 
         Ok(())
     }
@@ -300,7 +346,6 @@ impl ProviderConfigRepository for FileBasedProviderConfigRepository {
     }
 }
 
-
 // ============================================================================
 // PostgreSQL Job Repository
 // ============================================================================
@@ -331,7 +376,6 @@ impl PostgresJobRepository {
         Ok(Self { pool })
     }
 
-
     /// Ejecutar migraciones para crear tablas de jobs
     pub async fn run_migrations(&self) -> Result<()> {
         sqlx::query(
@@ -351,7 +395,7 @@ impl PostgresJobRepository {
                 error_message TEXT,
                 metadata JSONB NOT NULL DEFAULT '{}'
             );
-            "#
+            "#,
         )
         .execute(&self.pool)
         .await
@@ -405,29 +449,33 @@ impl PostgresJobRepository {
 #[async_trait::async_trait]
 impl JobRepository for PostgresJobRepository {
     async fn save(&self, job: &Job) -> Result<()> {
-        let spec_json = serde_json::to_value(&job.spec)
-            .map_err(|e| DomainError::InfrastructureError {
+        let spec_json =
+            serde_json::to_value(&job.spec).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize job spec: {}", e),
             })?;
-        
+
         let context_json = if let Some(ctx) = &job.execution_context {
-            Some(serde_json::to_value(ctx).map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to serialize execution context: {}", e),
-            })?)
+            Some(
+                serde_json::to_value(ctx).map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to serialize execution context: {}", e),
+                })?,
+            )
         } else {
             None
         };
 
         let result_json = if let Some(res) = &job.result {
-            Some(serde_json::to_value(res).map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to serialize result: {}", e),
-            })?)
+            Some(
+                serde_json::to_value(res).map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to serialize result: {}", e),
+                })?,
+            )
         } else {
             None
         };
 
-        let metadata_json = serde_json::to_value(&job.metadata)
-            .map_err(|e| DomainError::InfrastructureError {
+        let metadata_json =
+            serde_json::to_value(&job.metadata).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize metadata: {}", e),
             })?;
 
@@ -452,7 +500,7 @@ impl JobRepository for PostgresJobRepository {
                 result = EXCLUDED.result,
                 error_message = EXCLUDED.error_message,
                 metadata = EXCLUDED.metadata
-            "#
+            "#,
         )
         .bind(job.id.0)
         .bind(spec_json)
@@ -483,7 +531,7 @@ impl JobRepository for PostgresJobRepository {
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(job_id.0)
         .fetch_optional(&self.pool)
@@ -499,7 +547,10 @@ impl JobRepository for PostgresJobRepository {
         }
     }
 
-    async fn find_by_state(&self, state: &hodei_jobs_domain::shared_kernel::JobState) -> Result<Vec<Job>> {
+    async fn find_by_state(
+        &self,
+        state: &hodei_jobs_domain::shared_kernel::JobState,
+    ) -> Result<Vec<Job>> {
         let rows = sqlx::query(
             r#"
             SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
@@ -507,7 +558,7 @@ impl JobRepository for PostgresJobRepository {
             FROM jobs
             WHERE state = $1
             ORDER BY created_at ASC
-            "#
+            "#,
         )
         .bind(Self::state_to_string(state))
         .fetch_all(&self.pool)
@@ -524,7 +575,63 @@ impl JobRepository for PostgresJobRepository {
     }
 
     async fn find_pending(&self) -> Result<Vec<Job>> {
-        self.find_by_state(&hodei_jobs_domain::shared_kernel::JobState::Pending).await
+        self.find_by_state(&hodei_jobs_domain::shared_kernel::JobState::Pending)
+            .await
+    }
+
+    async fn find_all(&self, limit: usize, offset: usize) -> Result<(Vec<Job>, usize)> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to count jobs: {}", e),
+            })?;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+                   created_at, started_at, completed_at, result, error_message, metadata
+            FROM jobs
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            "#,
+        )
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to find all jobs: {}", e),
+        })?;
+
+        let mut jobs = Vec::new();
+        for row in rows {
+            jobs.push(map_row_to_job(row)?);
+        }
+        Ok((jobs, count as usize))
+    }
+
+    async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+                   created_at, started_at, completed_at, result, error_message, metadata
+            FROM jobs
+            WHERE execution_context ->> 'provider_execution_id' = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to find job by execution id: {}", e),
+        })?;
+
+        if let Some(row) = row {
+            Ok(Some(map_row_to_job(row)?))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn delete(&self, job_id: &JobId) -> Result<()> {
@@ -544,43 +651,101 @@ impl JobRepository for PostgresJobRepository {
 }
 
 fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
-    let id: uuid::Uuid = row.try_get("id").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let spec_value: serde_json::Value = row.try_get("spec").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let state_str: String = row.try_get("state").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let provider_id_uuid: Option<uuid::Uuid> = row.try_get("selected_provider_id").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let context_value: Option<serde_json::Value> = row.try_get("execution_context").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let attempts: i32 = row.try_get("attempts").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let max_attempts: i32 = row.try_get("max_attempts").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let started_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("started_at").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let completed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("completed_at").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let result_value: Option<serde_json::Value> = row.try_get("result").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let error_message: Option<String> = row.try_get("error_message").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
-    let metadata_value: serde_json::Value = row.try_get("metadata").map_err(|e| DomainError::InfrastructureError { message: e.to_string() })?;
+    let id: uuid::Uuid = row
+        .try_get("id")
+        .map_err(|e| DomainError::InfrastructureError {
+            message: e.to_string(),
+        })?;
+    let spec_value: serde_json::Value =
+        row.try_get("spec")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let state_str: String = row
+        .try_get("state")
+        .map_err(|e| DomainError::InfrastructureError {
+            message: e.to_string(),
+        })?;
+    let provider_id_uuid: Option<uuid::Uuid> =
+        row.try_get("selected_provider_id")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let context_value: Option<serde_json::Value> =
+        row.try_get("execution_context")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let attempts: i32 = row
+        .try_get("attempts")
+        .map_err(|e| DomainError::InfrastructureError {
+            message: e.to_string(),
+        })?;
+    let max_attempts: i32 =
+        row.try_get("max_attempts")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let created_at: chrono::DateTime<chrono::Utc> =
+        row.try_get("created_at")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let started_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("started_at")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let completed_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("completed_at")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let result_value: Option<serde_json::Value> =
+        row.try_get("result")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let error_message: Option<String> =
+        row.try_get("error_message")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+    let metadata_value: serde_json::Value =
+        row.try_get("metadata")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
 
-    let spec = serde_json::from_value(spec_value).map_err(|e| DomainError::InfrastructureError {
-        message: format!("Failed to deserialize job spec: {}", e),
-    })?;
+    let spec =
+        serde_json::from_value(spec_value).map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to deserialize job spec: {}", e),
+        })?;
 
     let execution_context = if let Some(v) = context_value {
-        Some(serde_json::from_value(v).map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to deserialize execution context: {}", e),
-        })?)
+        Some(
+            serde_json::from_value(v).map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to deserialize execution context: {}", e),
+            })?,
+        )
     } else {
         None
     };
 
     let result = if let Some(v) = result_value {
-        Some(serde_json::from_value(v).map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to deserialize result: {}", e),
-        })?)
+        Some(
+            serde_json::from_value(v).map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to deserialize result: {}", e),
+            })?,
+        )
     } else {
         None
     };
 
-    let metadata = serde_json::from_value(metadata_value).map_err(|e| DomainError::InfrastructureError {
-        message: format!("Failed to deserialize metadata: {}", e),
-    })?;
+    let metadata =
+        serde_json::from_value(metadata_value).map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to deserialize metadata: {}", e),
+        })?;
 
     Ok(Job {
         id: JobId(id),
@@ -645,12 +810,14 @@ impl PostgresJobQueue {
                 message: format!("Failed to create job_queue unique index: {}", e),
             })?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_queue_enqueued_at ON job_queue(enqueued_at);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create job_queue enqueued_at index: {}", e),
-            })?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_job_queue_enqueued_at ON job_queue(enqueued_at);",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create job_queue enqueued_at index: {}", e),
+        })?;
 
         Ok(())
     }
@@ -699,9 +866,13 @@ impl JobQueue for PostgresJobQueue {
     }
 
     async fn dequeue(&self) -> Result<Option<Job>> {
-        let mut tx = self.pool.begin().await.map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to begin transaction: {}", e),
-        })?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to begin transaction: {}", e),
+            })?;
 
         loop {
             let item = sqlx::query(
@@ -720,22 +891,24 @@ impl JobQueue for PostgresJobQueue {
             })?;
 
             let Some(item) = item else {
-                tx.commit().await.map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to commit transaction: {}", e),
-                })?;
+                tx.commit()
+                    .await
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to commit transaction: {}", e),
+                    })?;
                 return Ok(None);
             };
 
-            let queue_id: i64 = item
-                .try_get("id")
-                .map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to read queue id: {}", e),
-                })?;
-            let job_id: uuid::Uuid = item
-                .try_get("job_id")
-                .map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to read job_id from queue: {}", e),
-                })?;
+            let queue_id: i64 =
+                item.try_get("id")
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to read queue id: {}", e),
+                    })?;
+            let job_id: uuid::Uuid =
+                item.try_get("job_id")
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to read job_id from queue: {}", e),
+                    })?;
 
             let state_row = sqlx::query("SELECT state FROM jobs WHERE id = $1")
                 .bind(job_id)
@@ -756,11 +929,12 @@ impl JobQueue for PostgresJobQueue {
                 continue;
             };
 
-            let state_str: String = state_row
-                .try_get("state")
-                .map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to read job state: {}", e),
-                })?;
+            let state_str: String =
+                state_row
+                    .try_get("state")
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to read job state: {}", e),
+                    })?;
 
             if state_str != "PENDING" {
                 sqlx::query("DELETE FROM job_queue WHERE id = $1")
@@ -783,9 +957,11 @@ impl JobQueue for PostgresJobQueue {
 
             let job = self.fetch_job_by_id(&mut *tx, job_id).await?;
 
-            tx.commit().await.map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to commit transaction: {}", e),
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to commit transaction: {}", e),
+                })?;
 
             return Ok(Some(job));
         }
@@ -812,11 +988,11 @@ impl JobQueue for PostgresJobQueue {
             return Ok(None);
         };
 
-        let job_id: uuid::Uuid = row
-            .try_get("job_id")
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to read job_id from queue: {}", e),
-            })?;
+        let job_id: uuid::Uuid =
+            row.try_get("job_id")
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to read job_id from queue: {}", e),
+                })?;
 
         let job = self.fetch_job_by_id(&self.pool, job_id).await?;
         Ok(Some(job))
@@ -831,15 +1007,17 @@ impl JobQueue for PostgresJobQueue {
             WHERE j.state = 'PENDING'
             "#,
         )
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to get job queue length: {}", e),
-            })?;
-
-        let count: i64 = row.try_get("count").map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to read job queue count: {}", e),
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to get job queue length: {}", e),
         })?;
+
+        let count: i64 = row
+            .try_get("count")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to read job queue count: {}", e),
+            })?;
 
         Ok(count.max(0) as usize)
     }
@@ -860,15 +1038,13 @@ impl JobQueue for PostgresJobQueue {
     }
 }
 
-
-
 // ============================================================================
 // PostgreSQL Worker Registry
 // ============================================================================
 
-use hodei_jobs_domain::worker_registry::{WorkerRegistry, WorkerRegistryStats, WorkerFilter};
-use hodei_jobs_domain::worker::{Worker, WorkerHandle, WorkerSpec};
 use hodei_jobs_domain::shared_kernel::{WorkerId, WorkerState};
+use hodei_jobs_domain::worker::{Worker, WorkerHandle, WorkerSpec};
+use hodei_jobs_domain::worker_registry::{WorkerFilter, WorkerRegistry, WorkerRegistryStats};
 
 // =========================================================================
 // PostgreSQL Worker Bootstrap Token Store (OTP)
@@ -1006,27 +1182,33 @@ impl WorkerBootstrapTokenStore for PostgresWorkerBootstrapTokenStore {
             });
         };
 
-        let db_worker_id: Uuid = row.try_get("worker_id").map_err(|e| DomainError::InfrastructureError {
-            message: e.to_string(),
-        })?;
+        let db_worker_id: Uuid =
+            row.try_get("worker_id")
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: e.to_string(),
+                })?;
         if db_worker_id != worker_id.0 {
             return Err(DomainError::InvalidOtpToken {
                 message: "Token does not match worker_id".to_string(),
             });
         }
 
-        let consumed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("consumed_at").map_err(|e| DomainError::InfrastructureError {
-            message: e.to_string(),
-        })?;
+        let consumed_at: Option<chrono::DateTime<chrono::Utc>> = row
+            .try_get("consumed_at")
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
         if consumed_at.is_some() {
             return Err(DomainError::InvalidOtpToken {
                 message: "Token already used".to_string(),
             });
         }
 
-        let expires_at: chrono::DateTime<chrono::Utc> = row.try_get("expires_at").map_err(|e| DomainError::InfrastructureError {
-            message: e.to_string(),
-        })?;
+        let expires_at: chrono::DateTime<chrono::Utc> =
+            row.try_get("expires_at")
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: e.to_string(),
+                })?;
         if expires_at <= now {
             return Err(DomainError::InvalidOtpToken {
                 message: "Token expired".to_string(),
@@ -1067,7 +1249,7 @@ pub struct PostgresWorkerRegistry {
 impl PostgresWorkerRegistry {
     /// Crear nuevo repositorio con pool existente
     pub fn new(pool: PgPool) -> Self {
-        Self { 
+        Self {
             pool,
             heartbeat_timeout: std::time::Duration::from_secs(60),
         }
@@ -1089,7 +1271,7 @@ impl PostgresWorkerRegistry {
                 message: format!("Failed to connect to database: {}", e),
             })?;
 
-        Ok(Self { 
+        Ok(Self {
             pool,
             heartbeat_timeout: std::time::Duration::from_secs(60),
         })
@@ -1112,7 +1294,7 @@ impl PostgresWorkerRegistry {
                 created_at TIMESTAMPTZ NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL
             );
-            "#
+            "#,
         )
         .execute(&self.pool)
         .await
@@ -1134,12 +1316,14 @@ impl PostgresWorkerRegistry {
                 message: format!("Failed to create workers state index: {}", e),
             })?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_workers_last_heartbeat ON workers(last_heartbeat);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create workers last_heartbeat index: {}", e),
-            })?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_workers_last_heartbeat ON workers(last_heartbeat);",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create workers last_heartbeat index: {}", e),
+        })?;
 
         Ok(())
     }
@@ -1176,13 +1360,13 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         let worker = Worker::new(handle.clone(), spec.clone());
         let worker_id = worker.id();
 
-        let handle_json = serde_json::to_value(&handle)
-            .map_err(|e| DomainError::InfrastructureError {
+        let handle_json =
+            serde_json::to_value(&handle).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize worker handle: {}", e),
             })?;
 
-        let spec_json = serde_json::to_value(&spec)
-            .map_err(|e| DomainError::InfrastructureError {
+        let spec_json =
+            serde_json::to_value(&spec).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize worker spec: {}", e),
             })?;
 
@@ -1192,11 +1376,13 @@ impl WorkerRegistry for PostgresWorkerRegistry {
                 (id, provider_id, provider_type, handle, spec, state, current_job_id, 
                  jobs_executed, last_heartbeat, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            "#
+            "#,
         )
         .bind(worker.id().0)
         .bind(worker.provider_id().as_uuid())
-        .bind(PostgresProviderConfigRepository::provider_type_to_string(worker.provider_type()))
+        .bind(PostgresProviderConfigRepository::provider_type_to_string(
+            worker.provider_type(),
+        ))
         .bind(handle_json)
         .bind(spec_json)
         .bind(Self::state_to_string(worker.state()))
@@ -1209,7 +1395,9 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         .await
         .map_err(|e| {
             if e.to_string().contains("duplicate key") {
-                DomainError::WorkerAlreadyExists { worker_id: worker_id.clone() }
+                DomainError::WorkerAlreadyExists {
+                    worker_id: worker_id.clone(),
+                }
             } else {
                 DomainError::InfrastructureError {
                     message: format!("Failed to register worker: {}", e),
@@ -1244,7 +1432,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             SELECT id, handle, spec, state, current_job_id, jobs_executed, 
                    last_heartbeat, created_at, updated_at
             FROM workers WHERE id = $1
-            "#
+            "#,
         )
         .bind(worker_id.0)
         .fetch_optional(&self.pool)
@@ -1262,10 +1450,12 @@ impl WorkerRegistry for PostgresWorkerRegistry {
 
     async fn find(&self, filter: &WorkerFilter) -> Result<Vec<Worker>> {
         // Basic query construction (this could be optimized with a query builder)
-        let mut query = String::from("SELECT id, handle, spec, state, current_job_id, jobs_executed, last_heartbeat, created_at, updated_at FROM workers WHERE 1=1");
-        
+        let mut query = String::from(
+            "SELECT id, handle, spec, state, current_job_id, jobs_executed, last_heartbeat, created_at, updated_at FROM workers WHERE 1=1",
+        );
+
         // TODO: Implement actual filtering logic by extending the query dynamically
-        // For MVP/Test simplicity, we'll fetch all and filter in memory if needed, 
+        // For MVP/Test simplicity, we'll fetch all and filter in memory if needed,
         // but for production query builder is better.
         // Let's implement partial filtering at SQL level for efficiency.
 
@@ -1289,7 +1479,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         let mut workers = Vec::new();
         for row in rows {
             let worker = map_row_to_worker(row)?;
-            
+
             // Apply memory filters for complex logic not easy in SQL (like idle_for based on last_heartbeat)
             // This is a hybrid approach.
             if let Some(idle_duration) = filter.idle_for {
@@ -1319,21 +1509,20 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     }
 
     async fn find_by_provider(&self, provider_id: &ProviderId) -> Result<Vec<Worker>> {
-        self.find(&WorkerFilter::new().with_provider_id(provider_id.clone())).await
+        self.find(&WorkerFilter::new().with_provider_id(provider_id.clone()))
+            .await
     }
 
     async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
-        let result = sqlx::query(
-            "UPDATE workers SET state = $1, updated_at = $2 WHERE id = $3"
-        )
-        .bind(Self::state_to_string(&state))
-        .bind(chrono::Utc::now())
-        .bind(worker_id.0)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to update worker state: {}", e),
-        })?;
+        let result = sqlx::query("UPDATE workers SET state = $1, updated_at = $2 WHERE id = $3")
+            .bind(Self::state_to_string(&state))
+            .bind(chrono::Utc::now())
+            .bind(worker_id.0)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to update worker state: {}", e),
+            })?;
 
         if result.rows_affected() == 0 {
             return Err(DomainError::WorkerNotFound {
@@ -1345,16 +1534,15 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     }
 
     async fn heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
-        let result = sqlx::query(
-            "UPDATE workers SET last_heartbeat = $1, updated_at = $1 WHERE id = $2"
-        )
-        .bind(chrono::Utc::now())
-        .bind(worker_id.0)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to update heartbeat: {}", e),
-        })?;
+        let result =
+            sqlx::query("UPDATE workers SET last_heartbeat = $1, updated_at = $1 WHERE id = $2")
+                .bind(chrono::Utc::now())
+                .bind(worker_id.0)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to update heartbeat: {}", e),
+                })?;
 
         if result.rows_affected() == 0 {
             return Err(DomainError::WorkerNotFound {
@@ -1367,7 +1555,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
 
     async fn assign_to_job(&self, worker_id: &WorkerId, job_id: JobId) -> Result<()> {
         let result = sqlx::query(
-            "UPDATE workers SET current_job_id = $1, state = 'BUSY', updated_at = $2 WHERE id = $3"
+            "UPDATE workers SET current_job_id = $1, state = 'BUSY', updated_at = $2 WHERE id = $3",
         )
         .bind(job_id.0)
         .bind(chrono::Utc::now())
@@ -1418,7 +1606,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             FROM workers 
             WHERE state != 'TERMINATED' 
             AND last_heartbeat < NOW() - make_interval(secs => $1)
-            "#
+            "#,
         )
         .bind(timeout_seconds as f64)
         .fetch_all(&self.pool)
@@ -1443,7 +1631,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
                    last_heartbeat, created_at, updated_at
             FROM workers 
             WHERE state != 'TERMINATED'
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
@@ -1463,14 +1651,12 @@ impl WorkerRegistry for PostgresWorkerRegistry {
 
     async fn stats(&self) -> Result<WorkerRegistryStats> {
         // This should be done with aggregations in SQL for performance
-        let rows = sqlx::query(
-            "SELECT state, provider_type, provider_id FROM workers"
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to fetch stats: {}", e),
-        })?;
+        let rows = sqlx::query("SELECT state, provider_type, provider_id FROM workers")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to fetch stats: {}", e),
+            })?;
 
         let mut stats = WorkerRegistryStats::default();
         stats.total_workers = rows.len();
@@ -1489,8 +1675,16 @@ impl WorkerRegistry for PostgresWorkerRegistry {
                 _ => {}
             }
 
-            *stats.workers_by_type.entry(PostgresProviderConfigRepository::string_to_provider_type(&provider_type_str)).or_insert(0) += 1;
-            *stats.workers_by_provider.entry(ProviderId::from_uuid(provider_id_uuid)).or_insert(0) += 1;
+            *stats
+                .workers_by_type
+                .entry(PostgresProviderConfigRepository::string_to_provider_type(
+                    &provider_type_str,
+                ))
+                .or_insert(0) += 1;
+            *stats
+                .workers_by_provider
+                .entry(ProviderId::from_uuid(provider_id_uuid))
+                .or_insert(0) += 1;
         }
 
         Ok(stats)
@@ -1523,7 +1717,7 @@ fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
     // WAIT, I see `Worker` fields are private. I cannot set them directly.
     // I will use `serde_json::from_value` trick if `Worker` derives Deserialize!
     // Yes, `Worker` derives `Deserialize`.
-    
+
     let id: uuid::Uuid = row.get("id");
     let handle_val: serde_json::Value = row.get("handle");
     let spec_val: serde_json::Value = row.get("spec");
@@ -1548,14 +1742,13 @@ fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
         "updated_at": updated_at
     });
 
-    let worker: Worker = serde_json::from_value(worker_json).map_err(|e| DomainError::InfrastructureError {
-        message: format!("Failed to deserialize worker from DB row: {}", e),
-    })?;
+    let worker: Worker =
+        serde_json::from_value(worker_json).map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to deserialize worker from DB row: {}", e),
+        })?;
 
     Ok(worker)
 }
-
-
 
 /// Configuración de la base de datos PostgreSQL
 #[derive(Debug, Clone)]
@@ -1628,12 +1821,14 @@ impl PostgresProviderConfigRepository {
             message: format!("Failed to create provider_configs table: {}", e),
         })?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_provider_configs_name ON provider_configs(name);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create provider_configs name index: {}", e),
-            })?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_provider_configs_name ON provider_configs(name);",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create provider_configs name index: {}", e),
+        })?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_provider_configs_type ON provider_configs(provider_type);")
             .execute(&self.pool)
@@ -1642,12 +1837,14 @@ impl PostgresProviderConfigRepository {
                 message: format!("Failed to create provider_configs type index: {}", e),
             })?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_provider_configs_status ON provider_configs(status);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create provider_configs status index: {}", e),
-            })?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_provider_configs_status ON provider_configs(status);",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create provider_configs status index: {}", e),
+        })?;
 
         Ok(())
     }
@@ -1722,20 +1919,23 @@ impl PostgresProviderConfigRepository {
 #[async_trait::async_trait]
 impl ProviderConfigRepository for PostgresProviderConfigRepository {
     async fn save(&self, config: &ProviderConfig) -> Result<()> {
-        let capabilities_json = serde_json::to_value(&config.capabilities)
-            .map_err(|e| DomainError::InfrastructureError {
+        let capabilities_json = serde_json::to_value(&config.capabilities).map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to serialize capabilities: {}", e),
-            })?;
+            }
+        })?;
 
-        let type_config_json = serde_json::to_value(&config.type_config)
-            .map_err(|e| DomainError::InfrastructureError {
+        let type_config_json = serde_json::to_value(&config.type_config).map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to serialize type_config: {}", e),
-            })?;
+            }
+        })?;
 
-        let metadata_json = serde_json::to_value(&config.metadata)
-            .map_err(|e| DomainError::InfrastructureError {
+        let metadata_json = serde_json::to_value(&config.metadata).map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to serialize metadata: {}", e),
-            })?;
+            }
+        })?;
 
         sqlx::query(
             r#"
@@ -1953,13 +2153,14 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     }
 
     async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM provider_configs WHERE name = $1")
-            .bind(name)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to check if provider exists: {}", e),
-            })?;
+        let result: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM provider_configs WHERE name = $1")
+                .bind(name)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to check if provider exists: {}", e),
+                })?;
 
         Ok(result.0 > 0)
     }
@@ -1989,14 +2190,18 @@ impl PostgresProviderConfigRepository {
                 message: format!("Failed to deserialize capabilities: {}", e),
             })?;
 
-        let type_config: ProviderTypeConfig = serde_json::from_value(type_config_json)
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to deserialize type_config: {}", e),
+        let type_config: ProviderTypeConfig =
+            serde_json::from_value(type_config_json).map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: format!("Failed to deserialize type_config: {}", e),
+                }
             })?;
 
-        let metadata: HashMap<String, String> = serde_json::from_value(metadata_json)
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to deserialize metadata: {}", e),
+        let metadata: HashMap<String, String> =
+            serde_json::from_value(metadata_json).map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: format!("Failed to deserialize metadata: {}", e),
+                }
             })?;
 
         Ok(ProviderConfig {
@@ -2105,11 +2310,10 @@ impl PostgresJobTemplateRepository {
         let success_count: i64 = row.get("success_count");
         let failure_count: i64 = row.get("failure_count");
 
-        let spec: JobSpec = serde_json::from_value(spec_json).map_err(|e| {
-            DomainError::InfrastructureError {
+        let spec: JobSpec =
+            serde_json::from_value(spec_json).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to deserialize job spec: {}", e),
-            }
-        })?;
+            })?;
 
         let labels: HashMap<String, String> =
             serde_json::from_value(labels_json).unwrap_or_default();
@@ -2135,11 +2339,10 @@ impl PostgresJobTemplateRepository {
 #[async_trait::async_trait]
 impl JobTemplateRepository for PostgresJobTemplateRepository {
     async fn save(&self, template: &JobTemplate) -> Result<()> {
-        let spec_json = serde_json::to_value(&template.spec).map_err(|e| {
-            DomainError::InfrastructureError {
+        let spec_json =
+            serde_json::to_value(&template.spec).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize job spec: {}", e),
-            }
-        })?;
+            })?;
 
         let labels_json = serde_json::to_value(&template.labels).map_err(|e| {
             DomainError::InfrastructureError {
@@ -2178,11 +2381,10 @@ impl JobTemplateRepository for PostgresJobTemplateRepository {
     }
 
     async fn update(&self, template: &JobTemplate) -> Result<()> {
-        let spec_json = serde_json::to_value(&template.spec).map_err(|e| {
-            DomainError::InfrastructureError {
+        let spec_json =
+            serde_json::to_value(&template.spec).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize job spec: {}", e),
-            }
-        })?;
+            })?;
 
         let labels_json = serde_json::to_value(&template.labels).map_err(|e| {
             DomainError::InfrastructureError {
@@ -2274,16 +2476,14 @@ impl JobTemplateRepository for PostgresJobTemplateRepository {
     }
 
     async fn find_by_label(&self, key: &str, value: &str) -> Result<Vec<JobTemplate>> {
-        let rows = sqlx::query(
-            "SELECT * FROM job_templates WHERE labels->>$1 = $2 ORDER BY name",
-        )
-        .bind(key)
-        .bind(value)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to find job templates by label: {}", e),
-        })?;
+        let rows = sqlx::query("SELECT * FROM job_templates WHERE labels->>$1 = $2 ORDER BY name")
+            .bind(key)
+            .bind(value)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to find job templates by label: {}", e),
+            })?;
 
         rows.iter().map(|r| self.row_to_template(r)).collect()
     }

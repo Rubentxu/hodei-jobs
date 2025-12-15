@@ -59,7 +59,9 @@ impl JobOrchestrator {
         let provider_id = provider.provider_id().clone();
         info!("Registering provider: {}", provider_id);
 
-        self.lifecycle_manager.register_provider(provider.clone()).await;
+        self.lifecycle_manager
+            .register_provider(provider.clone())
+            .await;
         self.providers.write().await.insert(provider_id, provider);
     }
 
@@ -79,9 +81,13 @@ impl JobOrchestrator {
             Err(e) => {
                 warn!("Failed to schedule job immediately: {}", e);
                 // Enqueue for later processing
-                let job = self.job_repository.find_by_id(&job_id).await?.ok_or_else(|| {
-                    DomainError::JobNotFound { job_id: job_id.clone() }
-                })?;
+                let job = self
+                    .job_repository
+                    .find_by_id(&job_id)
+                    .await?
+                    .ok_or_else(|| DomainError::JobNotFound {
+                        job_id: job_id.clone(),
+                    })?;
                 self.job_queue.enqueue(job).await?;
             }
         }
@@ -147,14 +153,21 @@ impl JobOrchestrator {
             SchedulingDecision::AssignToWorker { job_id, worker_id } => {
                 self.assign_job_to_worker(&job_id, &worker_id).await?;
             }
-            SchedulingDecision::ProvisionWorker { job_id, provider_id } => {
+            SchedulingDecision::ProvisionWorker {
+                job_id,
+                provider_id,
+            } => {
                 self.provision_and_assign(&job_id, &provider_id).await?;
             }
             SchedulingDecision::Enqueue { job_id, reason } => {
                 debug!("Job {} enqueued: {}", job_id, reason);
-                let job = self.job_repository.find_by_id(&job_id).await?.ok_or_else(|| {
-                    DomainError::JobNotFound { job_id: job_id.clone() }
-                })?;
+                let job = self
+                    .job_repository
+                    .find_by_id(&job_id)
+                    .await?
+                    .ok_or_else(|| DomainError::JobNotFound {
+                        job_id: job_id.clone(),
+                    })?;
                 self.job_queue.enqueue(job).await?;
             }
             SchedulingDecision::Reject { job_id, reason } => {
@@ -174,7 +187,9 @@ impl JobOrchestrator {
         info!("Assigning job {} to worker {}", job_id, worker_id);
 
         // Update worker state
-        self.registry.assign_to_job(worker_id, job_id.clone()).await?;
+        self.registry
+            .assign_to_job(worker_id, job_id.clone())
+            .await?;
 
         // Update job state
         if let Some(mut job) = self.job_repository.find_by_id(job_id).await? {
@@ -191,7 +206,10 @@ impl JobOrchestrator {
 
         // Provision worker
         let spec = self.default_worker_spec.clone();
-        let worker = self.lifecycle_manager.provision_worker(provider_id, spec).await?;
+        let worker = self
+            .lifecycle_manager
+            .provision_worker(provider_id, spec)
+            .await?;
 
         // Wait for worker to be ready (simplified - in practice would use events)
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -241,7 +259,11 @@ impl JobOrchestrator {
         result.terminated_workers = cleanup_result.terminated.len();
 
         // Process queue if we have capacity
-        if self.lifecycle_manager.should_scale_up(self.job_queue.len().await?).await {
+        if self
+            .lifecycle_manager
+            .should_scale_up(self.job_queue.len().await?)
+            .await
+        {
             result.jobs_processed = self.process_queue().await?;
         }
 
@@ -283,9 +305,9 @@ mod tests {
     use super::*;
     use hodei_jobs_domain::job_execution::JobSpec;
     use std::collections::HashMap as StdHashMap;
-    use tokio::sync::RwLock as TokioRwLock;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use tokio::sync::RwLock as TokioRwLock;
 
     // Simple mock implementations for testing
     struct MockJobRepository {
@@ -317,6 +339,14 @@ mod tests {
 
         async fn find_pending(&self) -> Result<Vec<Job>> {
             Ok(vec![])
+        }
+
+        async fn find_all(&self, _limit: usize, _offset: usize) -> Result<(Vec<Job>, usize)> {
+            Ok((vec![], 0))
+        }
+
+        async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
+            Ok(None)
         }
 
         async fn delete(&self, _job_id: &JobId) -> Result<()> {
@@ -374,25 +404,42 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkerRegistry for MockWorkerRegistry {
-        async fn register(&self, _handle: hodei_jobs_domain::worker::WorkerHandle, _spec: WorkerSpec) -> Result<hodei_jobs_domain::worker::Worker> {
+        async fn register(
+            &self,
+            _handle: hodei_jobs_domain::worker::WorkerHandle,
+            _spec: WorkerSpec,
+        ) -> Result<hodei_jobs_domain::worker::Worker> {
             unimplemented!()
         }
         async fn unregister(&self, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }
-        async fn get(&self, _worker_id: &WorkerId) -> Result<Option<hodei_jobs_domain::worker::Worker>> {
+        async fn get(
+            &self,
+            _worker_id: &WorkerId,
+        ) -> Result<Option<hodei_jobs_domain::worker::Worker>> {
             Ok(None)
         }
-        async fn find(&self, _filter: &hodei_jobs_domain::worker_registry::WorkerFilter) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
+        async fn find(
+            &self,
+            _filter: &hodei_jobs_domain::worker_registry::WorkerFilter,
+        ) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(vec![])
         }
         async fn find_available(&self) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(vec![])
         }
-        async fn find_by_provider(&self, _provider_id: &ProviderId) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
+        async fn find_by_provider(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(vec![])
         }
-        async fn update_state(&self, _worker_id: &WorkerId, _state: hodei_jobs_domain::shared_kernel::WorkerState) -> Result<()> {
+        async fn update_state(
+            &self,
+            _worker_id: &WorkerId,
+            _state: hodei_jobs_domain::shared_kernel::WorkerState,
+        ) -> Result<()> {
             Ok(())
         }
         async fn heartbeat(&self, _worker_id: &WorkerId) -> Result<()> {
@@ -404,7 +451,10 @@ mod tests {
         async fn release_from_job(&self, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }
-        async fn find_unhealthy(&self, _timeout: Duration) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
+        async fn find_unhealthy(
+            &self,
+            _timeout: Duration,
+        ) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {
             Ok(vec![])
         }
         async fn find_for_termination(&self) -> Result<Vec<hodei_jobs_domain::worker::Worker>> {

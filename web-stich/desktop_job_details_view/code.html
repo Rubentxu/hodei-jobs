@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Job Details View</title>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Theme Configuration -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#2b6cee",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#101622",
+                        "surface-dark": "#1c2533",
+                        "surface-highlight": "#283245",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"],
+                        "mono": ["JetBrains Mono", "monospace"],
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<!-- Google Fonts & Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Hide scrollbar for clean horizontal scroll */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        .pulsing-dot {
+            animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        }
+        
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(43, 108, 238, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(43, 108, 238, 0); }
+            100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(43, 108, 238, 0); }
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-white h-screen flex flex-col overflow-hidden">
+<!-- Top App Bar -->
+<header class="flex items-center justify-between p-4 bg-background-light dark:bg-background-dark border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
+<button class="flex items-center justify-center w-10 h-10 rounded-full hover:bg-slate-200 dark:hover:bg-surface-highlight transition-colors text-slate-600 dark:text-slate-300">
+<span class="material-symbols-outlined">arrow_back</span>
+</button>
+<h1 class="text-base font-bold tracking-tight">Job Details</h1>
+<button class="flex items-center justify-center w-10 h-10 rounded-full hover:bg-slate-200 dark:hover:bg-surface-highlight transition-colors text-slate-600 dark:text-slate-300">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 overflow-y-auto overflow-x-hidden relative w-full">
+<!-- Job Header Section -->
+<div class="px-5 pt-6 pb-2">
+<div class="flex items-start justify-between mb-2">
+<h2 class="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">#JOB-4921</h2>
+<div class="flex items-center gap-2 bg-primary/20 text-primary px-3 py-1 rounded-full">
+<div class="w-2 h-2 rounded-full bg-primary pulsing-dot"></div>
+<span class="text-xs font-bold uppercase tracking-wide">Running</span>
+</div>
+</div>
+<!-- Metadata Chips -->
+<div class="flex gap-2 flex-wrap mt-3">
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-200 dark:bg-surface-highlight border border-transparent dark:border-slate-700">
+<span class="material-symbols-outlined text-[16px] text-slate-500 dark:text-slate-400">account_tree</span>
+<span class="text-xs font-medium text-slate-700 dark:text-slate-300">DataPipeline</span>
+</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-200 dark:bg-surface-highlight border border-transparent dark:border-slate-700">
+<span class="material-symbols-outlined text-[16px] text-slate-500 dark:text-slate-400">timer</span>
+<span class="text-xs font-medium text-slate-700 dark:text-slate-300">4m 12s</span>
+</div>
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-200 dark:bg-surface-highlight border border-transparent dark:border-slate-700">
+<span class="material-symbols-outlined text-[16px] text-slate-500 dark:text-slate-400">person</span>
+<span class="text-xs font-medium text-slate-700 dark:text-slate-300">admin</span>
+</div>
+</div>
+</div>
+<!-- Segmented Control (Tabs) -->
+<div class="px-5 py-4 sticky top-0 bg-background-light dark:bg-background-dark z-10">
+<div class="flex p-1 bg-slate-200 dark:bg-surface-dark rounded-lg">
+<label class="flex-1 cursor-pointer">
+<input checked="" class="peer sr-only" name="tabs" type="radio"/>
+<div class="flex items-center justify-center py-2 text-sm font-medium rounded-md text-slate-500 dark:text-slate-400 peer-checked:bg-white dark:peer-checked:bg-primary peer-checked:text-primary dark:peer-checked:text-white peer-checked:shadow-sm transition-all">
+                        Overview
+                    </div>
+</label>
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="tabs" type="radio"/>
+<div class="flex items-center justify-center py-2 text-sm font-medium rounded-md text-slate-500 dark:text-slate-400 peer-checked:bg-white dark:peer-checked:bg-primary peer-checked:text-primary dark:peer-checked:text-white peer-checked:shadow-sm transition-all">
+                        Config
+                    </div>
+</label>
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="tabs" type="radio"/>
+<div class="flex items-center justify-center py-2 text-sm font-medium rounded-md text-slate-500 dark:text-slate-400 peer-checked:bg-white dark:peer-checked:bg-primary peer-checked:text-primary dark:peer-checked:text-white peer-checked:shadow-sm transition-all">
+                        Logs
+                    </div>
+</label>
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="tabs" type="radio"/>
+<div class="flex items-center justify-center py-2 text-sm font-medium rounded-md text-slate-500 dark:text-slate-400 peer-checked:bg-white dark:peer-checked:bg-primary peer-checked:text-primary dark:peer-checked:text-white peer-checked:shadow-sm transition-all">
+                        Res
+                    </div>
+</label>
+</div>
+</div>
+<!-- Tab Content: Overview -->
+<div class="px-5 pb-24 space-y-6">
+<!-- Execution Timeline -->
+<section>
+<h3 class="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3">Timeline</h3>
+<div class="bg-white dark:bg-surface-dark rounded-xl p-5 shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="relative pl-4 border-l-2 border-slate-200 dark:border-slate-700 space-y-6">
+<!-- Step 1 -->
+<div class="relative">
+<div class="absolute -left-[23px] bg-green-500 h-4 w-4 rounded-full border-4 border-white dark:border-surface-dark box-content"></div>
+<div class="flex justify-between items-center">
+<span class="text-sm font-medium text-slate-900 dark:text-white">Job Queued</span>
+<span class="text-xs text-slate-500">10:42 AM</span>
+</div>
+</div>
+<!-- Step 2 -->
+<div class="relative">
+<div class="absolute -left-[23px] bg-green-500 h-4 w-4 rounded-full border-4 border-white dark:border-surface-dark box-content"></div>
+<div class="flex justify-between items-center">
+<span class="text-sm font-medium text-slate-900 dark:text-white">Image Pulled</span>
+<span class="text-xs text-slate-500">10:43 AM</span>
+</div>
+<p class="text-xs text-slate-500 mt-1 font-mono">python:3.9-slim</p>
+</div>
+<!-- Step 3 (Current) -->
+<div class="relative">
+<div class="absolute -left-[23px] bg-primary h-4 w-4 rounded-full border-4 border-white dark:border-surface-dark box-content shadow-[0_0_0_4px_rgba(43,108,238,0.2)]"></div>
+<div class="flex justify-between items-center">
+<span class="text-sm font-bold text-primary">Running Script</span>
+<span class="text-xs text-primary font-medium">Now</span>
+</div>
+<p class="text-xs text-slate-500 mt-1">Executing main entrypoint...</p>
+</div>
+<!-- Step 4 (Future) -->
+<div class="relative opacity-50">
+<div class="absolute -left-[23px] bg-slate-300 dark:bg-slate-600 h-4 w-4 rounded-full border-4 border-white dark:border-surface-dark box-content"></div>
+<div class="flex justify-between items-center">
+<span class="text-sm font-medium text-slate-900 dark:text-white">Cleanup</span>
+<span class="text-xs text-slate-500">--:--</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Resource Snapshot -->
+<section>
+<div class="flex justify-between items-end mb-3">
+<h3 class="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Live Resources</h3>
+<span class="text-xs text-primary cursor-pointer hover:underline">View History</span>
+</div>
+<div class="grid grid-cols-2 gap-3">
+<!-- CPU Card -->
+<div class="bg-white dark:bg-surface-dark rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-purple-500 text-lg">memory</span>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">CPU Usage</span>
+</div>
+<div class="flex items-end gap-2">
+<span class="text-2xl font-bold text-slate-900 dark:text-white">42%</span>
+<span class="text-xs text-slate-500 mb-1">/ 2 Cores</span>
+</div>
+<!-- Simple visual bar for CPU -->
+<div class="w-full h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full mt-3 overflow-hidden">
+<div class="h-full bg-purple-500 rounded-full w-[42%]"></div>
+</div>
+</div>
+<!-- RAM Card -->
+<div class="bg-white dark:bg-surface-dark rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-orange-500 text-lg">database</span>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Memory</span>
+</div>
+<div class="flex items-end gap-2">
+<span class="text-2xl font-bold text-slate-900 dark:text-white">1.2<span class="text-base font-normal text-slate-500">GB</span></span>
+</div>
+<!-- Simple visual bar for RAM -->
+<div class="w-full h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full mt-3 overflow-hidden">
+<div class="h-full bg-orange-500 rounded-full w-[65%]"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Quick Logs Preview -->
+<section>
+<div class="flex justify-between items-center mb-3">
+<h3 class="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Latest Logs</h3>
+<span class="material-symbols-outlined text-slate-500 text-sm animate-spin">sync</span>
+</div>
+<div class="bg-[#0d1117] rounded-xl p-4 font-mono text-xs overflow-hidden border border-slate-800 shadow-inner">
+<div class="space-y-1 text-slate-400">
+<div class="flex gap-2">
+<span class="text-slate-600 select-none">104</span>
+<span>[INFO] Connection established to db_primary</span>
+</div>
+<div class="flex gap-2">
+<span class="text-slate-600 select-none">105</span>
+<span>[INFO] Processing batch #4921...</span>
+</div>
+<div class="flex gap-2">
+<span class="text-slate-600 select-none">106</span>
+<span class="text-yellow-400">[WARN] High latency detected on node-04</span>
+</div>
+<div class="flex gap-2">
+<span class="text-slate-600 select-none">107</span>
+<span class="text-white typewriter">_</span>
+</div>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- Bottom Action Bar -->
+<footer class="shrink-0 p-4 pb-6 bg-white dark:bg-background-dark border-t border-slate-200 dark:border-slate-800 z-20">
+<div class="flex gap-3">
+<button class="flex-1 h-12 flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-transparent text-slate-700 dark:text-white font-semibold text-sm hover:bg-slate-50 dark:hover:bg-surface-highlight transition-colors">
+<span class="material-symbols-outlined text-[20px]">terminal</span>
+                SSH Access
+            </button>
+<button class="flex-1 h-12 flex items-center justify-center gap-2 rounded-lg bg-red-500/10 text-red-600 dark:text-red-400 border border-transparent font-bold text-sm hover:bg-red-500/20 transition-colors">
+<span class="material-symbols-outlined text-[20px]">cancel</span>
+                Cancel Job
+            </button>
+</div>
+</footer>
+</body></html>

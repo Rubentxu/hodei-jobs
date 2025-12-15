@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/hodei-logo.png" alt="Hodei Jobs Logo" width="200" />
+  <img src="docs/assets/hodei-jobs.png" alt="Hodei Jobs Logo" width="800" />
 </p>
 
 <h1 align="center">Hodei Jobs Platform</h1>
@@ -51,16 +51,17 @@
 
 ## ✨ Features
 
-| Feature | Description |
-|---------|-------------|
-| **Automatic Worker Provisioning** | Workers are created on-demand when jobs are queued |
-| **Multiple Providers** | Docker containers, Kubernetes pods, or Firecracker microVMs |
-| **OTP Authentication** | Secure one-time password authentication for workers |
-| **Real-time Logs** | Stream job logs as they're generated |
-| **Job Lifecycle Management** | Queue, monitor, cancel, and retry jobs |
-| **gRPC API** | High-performance API with bidirectional streaming |
-| **REST API** | HTTP endpoints for easy integration |
-| **Horizontal Scaling** | Run multiple server instances for high availability |
+
+| Feature                           | Description                                                 |
+| --------------------------------- | ----------------------------------------------------------- |
+| **Automatic Worker Provisioning** | Workers are created on-demand when jobs are queued          |
+| **Multiple Providers**            | Docker containers, Kubernetes pods, or Firecracker microVMs |
+| **OTP Authentication**            | Secure one-time password authentication for workers         |
+| **Real-time Logs**                | Stream job logs as they're generated                        |
+| **Job Lifecycle Management**      | Queue, monitor, cancel, and retry jobs                      |
+| **gRPC API**                      | High-performance API with bidirectional streaming           |
+| **REST API**                      | HTTP endpoints for easy integration                         |
+| **Horizontal Scaling**            | Run multiple server instances for high availability         |
 
 ---
 
@@ -215,12 +216,13 @@ sudo cargo run --bin server -p hodei-jobs-grpc
 
 ## 📚 Documentation
 
-| Document | Description |
-|----------|-------------|
-| [**GETTING_STARTED.md**](GETTING_STARTED.md) | Complete setup guide with examples |
+
+| Document                                         | Description                           |
+| ------------------------------------------------ | ------------------------------------- |
+| [**GETTING_STARTED.md**](GETTING_STARTED.md)     | Complete setup guide with examples    |
 | [**docs/architecture.md**](docs/architecture.md) | DDD architecture and design decisions |
-| [**docs/development.md**](docs/development.md) | Development guide for contributors |
-| [**docs/use-cases.md**](docs/use-cases.md) | Use cases and sequence diagrams |
+| [**docs/development.md**](docs/development.md)   | Development guide for contributors    |
+| [**docs/use-cases.md**](docs/use-cases.md)       | Use cases and sequence diagrams       |
 
 ---
 
@@ -286,27 +288,29 @@ cargo fmt --all
 
 ## 📊 Project Status
 
-| Component | Status |
-|-----------|--------|
-| Core Platform | ✅ Production Ready |
-| Docker Provider | ✅ Stable |
-| Kubernetes Provider | ✅ Stable |
-| Firecracker Provider | 🔶 Beta |
-| REST API | ✅ Stable |
-| gRPC API | ✅ Stable |
-| Web UI | 🔜 Planned |
+
+| Component            | Status              |
+| -------------------- | ------------------- |
+| Core Platform        | ✅ Production Ready |
+| Docker Provider      | ✅ Stable           |
+| Kubernetes Provider  | ✅ Stable           |
+| Firecracker Provider | 🔶 Beta             |
+| REST API             | ✅ Stable           |
+| gRPC API             | ✅ Stable           |
+| Web Dashboard        | ✅ Production Ready |
+| Helm Chart           | ✅ Available        |
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] Web dashboard for job monitoring
-- [ ] Job scheduling (cron-like)
-- [ ] Job dependencies and workflows
-- [ ] Prometheus metrics endpoint
-- [ ] OpenTelemetry tracing
-- [ ] Multi-region support
-- [ ] Job result caching
+- [X]  Web dashboard for job monitoring
+- [ ]  Job scheduling (cron-like)
+- [ ]  Job dependencies and workflows
+- [ ]  Prometheus metrics endpoint
+- [ ]  OpenTelemetry tracing
+- [ ]  Multi-region support
+- [ ]  Job result caching
 
 ---
 

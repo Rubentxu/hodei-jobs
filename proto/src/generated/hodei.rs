@@ -710,6 +710,60 @@ pub struct JobTimeout {
     #[prost(string, tag = "4")]
     pub timeout_reason: ::prost::alloc::string::String,
 }
+/// Get Job Request
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetJobRequest {
+    #[prost(message, optional, tag = "1")]
+    pub job_id: ::core::option::Option<JobId>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetJobResponse {
+    #[prost(message, optional, tag = "1")]
+    pub job: ::core::option::Option<JobDefinition>,
+    #[prost(enumeration = "JobStatus", tag = "2")]
+    pub status: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub executions: ::prost::alloc::vec::Vec<JobExecution>,
+}
+/// Request para listar jobs
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListJobsRequest {
+    #[prost(int32, tag = "1")]
+    pub limit: i32,
+    #[prost(int32, tag = "2")]
+    pub offset: i32,
+    /// Filtros opcionales
+    #[prost(enumeration = "JobStatus", optional, tag = "3")]
+    pub status: ::core::option::Option<i32>,
+    #[prost(string, optional, tag = "4")]
+    pub search_term: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListJobsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub jobs: ::prost::alloc::vec::Vec<JobSummary>,
+    #[prost(int32, tag = "2")]
+    pub total_count: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct JobSummary {
+    #[prost(message, optional, tag = "1")]
+    pub job_id: ::core::option::Option<JobId>,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "JobStatus", tag = "3")]
+    pub status: i32,
+    #[prost(message, optional, tag = "4")]
+    pub created_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "5")]
+    pub started_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "6")]
+    pub completed_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "7")]
+    pub duration: ::core::option::Option<::prost_types::Duration>,
+    #[prost(int32, tag = "8")]
+    pub progress_percentage: i32,
+}
 /// Job queue operations
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QueueJobRequest {
@@ -2004,6 +2058,51 @@ pub mod job_execution_service_client {
                 .insert(GrpcMethod::new("hodei.JobExecutionService", "QueueJob"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_job(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetJobRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetJobResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/hodei.JobExecutionService/GetJob",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("hodei.JobExecutionService", "GetJob"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_jobs(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListJobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListJobsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/hodei.JobExecutionService/ListJobs",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("hodei.JobExecutionService", "ListJobs"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn assign_job(
             &mut self,
             request: impl tonic::IntoRequest<super::AssignJobRequest>,
@@ -2196,6 +2295,17 @@ pub mod job_execution_service_server {
             tonic::Response<super::QueueJobResponse>,
             tonic::Status,
         >;
+        async fn get_job(
+            &self,
+            request: tonic::Request<super::GetJobRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetJobResponse>, tonic::Status>;
+        async fn list_jobs(
+            &self,
+            request: tonic::Request<super::ListJobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListJobsResponse>,
+            tonic::Status,
+        >;
         async fn assign_job(
             &self,
             request: tonic::Request<super::AssignJobRequest>,
@@ -2355,6 +2465,96 @@ pub mod job_execution_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = QueueJobSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/hodei.JobExecutionService/GetJob" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetJobSvc<T: JobExecutionService>(pub Arc<T>);
+                    impl<
+                        T: JobExecutionService,
+                    > tonic::server::UnaryService<super::GetJobRequest>
+                    for GetJobSvc<T> {
+                        type Response = super::GetJobResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetJobRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as JobExecutionService>::get_job(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetJobSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/hodei.JobExecutionService/ListJobs" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListJobsSvc<T: JobExecutionService>(pub Arc<T>);
+                    impl<
+                        T: JobExecutionService,
+                    > tonic::server::UnaryService<super::ListJobsRequest>
+                    for ListJobsSvc<T> {
+                        type Response = super::ListJobsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListJobsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as JobExecutionService>::list_jobs(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListJobsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

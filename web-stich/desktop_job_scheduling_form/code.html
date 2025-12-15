@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>New Job Schedule</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#2b6cee",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#101622",
+                        "surface-dark": "#1A2332", // Slightly lighter than background-dark for cards/inputs
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"],
+                        "mono": ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        /* Custom scrollbar for better mobile/desktop feel if needed */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-white font-display antialiased overflow-x-hidden selection:bg-primary/30">
+<div class="relative flex flex-col min-h-screen w-full max-w-md mx-auto shadow-2xl bg-background-light dark:bg-background-dark border-x dark:border-slate-800">
+<!-- Top App Bar -->
+<header class="sticky top-0 z-50 flex items-center justify-between px-4 py-3 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-md border-b dark:border-slate-800">
+<button class="flex items-center justify-center p-2 -ml-2 text-slate-500 dark:text-slate-400 hover:text-primary transition-colors rounded-full hover:bg-slate-200 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined text-[24px]">close</span>
+</button>
+<h1 class="text-lg font-bold tracking-tight text-center flex-1">New Job Schedule</h1>
+<button class="text-primary text-sm font-bold px-2 py-1 rounded hover:bg-primary/10 transition-colors">
+                Reset
+            </button>
+</header>
+<!-- Main Content Form -->
+<main class="flex-1 flex flex-col gap-6 p-4 pb-32">
+<!-- Core Execution Section -->
+<section class="space-y-4">
+<div class="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
+<span class="material-symbols-outlined text-primary">terminal</span>
+<h3 class="text-base font-bold text-slate-800 dark:text-slate-200">Core Execution</h3>
+</div>
+<div class="space-y-4">
+<!-- Command Type -->
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Command Type</label>
+<div class="relative">
+<select class="w-full appearance-none rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-3 px-4 pr-10 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all">
+<option value="shell">Shell Command</option>
+<option value="docker">Docker Exec</option>
+<option value="python">Python Script</option>
+<option value="node">Node.js Script</option>
+</select>
+<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-500">
+<span class="material-symbols-outlined">expand_more</span>
+</div>
+</div>
+</div>
+<!-- Script Content -->
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Command / Script Content</label>
+<textarea class="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white p-4 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all min-h-[140px] leading-relaxed" placeholder="# Enter your script here
+echo 'Starting job execution...'"></textarea>
+</div>
+</div>
+</section>
+<!-- Environment & Image -->
+<section class="space-y-4">
+<div class="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
+<span class="material-symbols-outlined text-primary">layers</span>
+<h3 class="text-base font-bold text-slate-800 dark:text-slate-200">Environment &amp; Image</h3>
+</div>
+<div class="space-y-4">
+<!-- Docker Image -->
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Container Image</label>
+<div class="relative">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-slate-500 text-[20px]">deployed_code</span>
+</div>
+<input class="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-3 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600" placeholder="e.g. ubuntu:latest" type="text"/>
+</div>
+</div>
+<!-- Env Vars -->
+<div class="flex flex-col gap-3">
+<div class="flex justify-between items-center">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Environment Variables</label>
+<button class="text-xs font-semibold text-primary hover:text-primary/80 flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">add</span> Add Variable
+                            </button>
+</div>
+<!-- Added Item Example -->
+<div class="flex items-center gap-2">
+<input class="flex-1 min-w-0 rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white py-2 px-3 focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Key" type="text" value="API_KEY"/>
+<span class="text-slate-500">=</span>
+<input class="flex-1 min-w-0 rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white py-2 px-3 focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Value" type="password" value="********"/>
+<button class="text-slate-400 hover:text-red-500 transition-colors p-1">
+<span class="material-symbols-outlined text-[20px]">remove_circle</span>
+</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Resources Grid -->
+<section class="space-y-4">
+<div class="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
+<span class="material-symbols-outlined text-primary">memory</span>
+<h3 class="text-base font-bold text-slate-800 dark:text-slate-200">Resources</h3>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="flex flex-col gap-1.5">
+<label class="text-xs font-medium text-slate-500 dark:text-slate-400">CPU Cores</label>
+<input class="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-2.5 px-3 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary" type="number" value="2"/>
+</div>
+<div class="flex flex-col gap-1.5">
+<label class="text-xs font-medium text-slate-500 dark:text-slate-400">Memory (MB)</label>
+<input class="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-2.5 px-3 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary" type="number" value="4096"/>
+</div>
+<div class="flex flex-col gap-1.5">
+<label class="text-xs font-medium text-slate-500 dark:text-slate-400">Storage (MB)</label>
+<input class="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-2.5 px-3 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary" type="number" value="1024"/>
+</div>
+<div class="flex flex-col gap-1.5">
+<label class="text-xs font-medium text-slate-500 dark:text-slate-400">Timeout (ms)</label>
+<input class="w-full rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-2.5 px-3 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary" type="number" value="30000"/>
+</div>
+</div>
+<div class="flex items-center justify-between bg-white dark:bg-surface-dark p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+<div class="flex flex-col">
+<span class="text-sm font-medium text-slate-900 dark:text-white">GPU Required</span>
+<span class="text-xs text-slate-500">Enable hardware acceleration</span>
+</div>
+<label class="relative inline-flex items-center cursor-pointer">
+<input class="sr-only peer" type="checkbox" value=""/>
+<div class="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 dark:peer-focus:ring-primary/30 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+</label>
+</div>
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Architecture</label>
+<div class="flex bg-white dark:bg-surface-dark p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+<button class="flex-1 py-1.5 text-sm font-medium rounded text-white bg-primary shadow-sm transition-all">x86_64</button>
+<button class="flex-1 py-1.5 text-sm font-medium rounded text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all">arm64</button>
+</div>
+</div>
+</section>
+<!-- I/O & Logic -->
+<section class="space-y-4">
+<div class="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
+<span class="material-symbols-outlined text-primary">hub</span>
+<h3 class="text-base font-bold text-slate-800 dark:text-slate-200">I/O &amp; Constraints</h3>
+</div>
+<div class="flex flex-col divide-y divide-slate-200 dark:divide-slate-800 border-y border-slate-200 dark:border-slate-800">
+<!-- Inputs -->
+<div class="py-3 flex justify-between items-center group cursor-pointer">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-slate-400">input</span>
+<div>
+<p class="text-sm font-medium text-slate-900 dark:text-white">Job Inputs</p>
+<p class="text-xs text-slate-500">0 items configured</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-slate-400 group-hover:text-primary transition-colors">chevron_right</span>
+</div>
+<!-- Outputs -->
+<div class="py-3 flex justify-between items-center group cursor-pointer">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-slate-400">output</span>
+<div>
+<p class="text-sm font-medium text-slate-900 dark:text-white">Job Outputs</p>
+<p class="text-xs text-slate-500">2 items configured</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-slate-400 group-hover:text-primary transition-colors">chevron_right</span>
+</div>
+<!-- Constraints -->
+<div class="py-3 flex justify-between items-center group cursor-pointer">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-slate-400">rule</span>
+<div>
+<p class="text-sm font-medium text-slate-900 dark:text-white">Placement Constraints</p>
+<p class="text-xs text-slate-500">Optional region or node tags</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-slate-400 group-hover:text-primary transition-colors">chevron_right</span>
+</div>
+</div>
+</section>
+<!-- Preferences -->
+<section class="space-y-4">
+<div class="flex items-center gap-2 pb-2 border-b dark:border-slate-800">
+<span class="material-symbols-outlined text-primary">tune</span>
+<h3 class="text-base font-bold text-slate-800 dark:text-slate-200">Preferences</h3>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<!-- Provider -->
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Provider</label>
+<div class="relative">
+<select class="w-full appearance-none rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-2.5 px-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all">
+<option value="">Any</option>
+<option value="aws">AWS</option>
+<option value="gcp">GCP</option>
+</select>
+<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
+<span class="material-symbols-outlined text-[20px]">expand_more</span>
+</div>
+</div>
+</div>
+<!-- Region -->
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Region</label>
+<div class="relative">
+<select class="w-full appearance-none rounded-lg bg-white dark:bg-surface-dark border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white py-2.5 px-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all">
+<option value="">Auto</option>
+<option value="us-east">US East</option>
+<option value="eu-west">EU West</option>
+</select>
+<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
+<span class="material-symbols-outlined text-[20px]">expand_more</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Priority Segmented Control -->
+<div class="flex flex-col gap-2">
+<label class="text-sm font-medium text-slate-600 dark:text-slate-400">Job Priority</label>
+<div class="grid grid-cols-3 gap-2 bg-white dark:bg-surface-dark p-1.5 rounded-lg border border-slate-200 dark:border-slate-700">
+<button class="flex items-center justify-center gap-1 py-2 text-xs font-medium rounded text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
+<div class="w-2 h-2 rounded-full bg-emerald-500"></div> Low
+                        </button>
+<button class="flex items-center justify-center gap-1 py-2 text-xs font-bold rounded text-white bg-primary shadow-sm transition-all ring-1 ring-black/5">
+<div class="w-2 h-2 rounded-full bg-white"></div> Normal
+                        </button>
+<button class="flex items-center justify-center gap-1 py-2 text-xs font-medium rounded text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
+<div class="w-2 h-2 rounded-full bg-red-500"></div> High
+                        </button>
+</div>
+</div>
+<!-- Allow Retry Switch -->
+<div class="flex items-center justify-between pt-2">
+<div class="flex flex-col">
+<span class="text-sm font-medium text-slate-900 dark:text-white">Allow Retry</span>
+<span class="text-xs text-slate-500">Retry on failure up to 3 times</span>
+</div>
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox" value=""/>
+<div class="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 dark:peer-focus:ring-primary/30 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+</label>
+</div>
+</section>
+</main>
+<!-- Fixed Footer -->
+<footer class="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-background-light/90 dark:bg-background-dark/90 backdrop-blur-md border-t dark:border-slate-800 z-40">
+<button class="w-full bg-primary hover:bg-blue-600 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+<span class="material-symbols-outlined text-[20px]">schedule_send</span>
+                Schedule Job
+            </button>
+</footer>
+</div>
+</body></html>

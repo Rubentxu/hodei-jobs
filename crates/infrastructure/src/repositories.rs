@@ -1,7 +1,7 @@
 // In-memory Repositories
 // Implementaciones en memoria para MVP
 
-use hodei_jobs_domain::job_execution::{Job, JobRepository, JobQueue};
+use hodei_jobs_domain::job_execution::{Job, JobQueue, JobRepository};
 use hodei_jobs_domain::shared_kernel::{JobId, Result};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -40,9 +40,13 @@ impl JobRepository for InMemoryJobRepository {
         Ok(jobs.get(job_id).cloned())
     }
 
-    async fn find_by_state(&self, state: &hodei_jobs_domain::shared_kernel::JobState) -> Result<Vec<Job>> {
+    async fn find_by_state(
+        &self,
+        state: &hodei_jobs_domain::shared_kernel::JobState,
+    ) -> Result<Vec<Job>> {
         let jobs = self.jobs.read().await;
-        Ok(jobs.values()
+        Ok(jobs
+            .values()
             .filter(|job| &job.state == state)
             .cloned()
             .collect())
@@ -50,10 +54,40 @@ impl JobRepository for InMemoryJobRepository {
 
     async fn find_pending(&self) -> Result<Vec<Job>> {
         let jobs = self.jobs.read().await;
-        Ok(jobs.values()
-            .filter(|job| matches!(job.state, hodei_jobs_domain::shared_kernel::JobState::Pending))
+        Ok(jobs
+            .values()
+            .filter(|job| {
+                matches!(
+                    job.state,
+                    hodei_jobs_domain::shared_kernel::JobState::Pending
+                )
+            })
             .cloned()
             .collect())
+    }
+
+    async fn find_all(&self, limit: usize, offset: usize) -> Result<(Vec<Job>, usize)> {
+        let jobs = self.jobs.read().await;
+        let total = jobs.len();
+        let mut sorted_jobs: Vec<Job> = jobs.values().cloned().collect();
+        // Sort by created_at desc
+        sorted_jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        let page = sorted_jobs.into_iter().skip(offset).take(limit).collect();
+        Ok((page, total))
+    }
+
+    async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>> {
+        let jobs = self.jobs.read().await;
+        Ok(jobs
+            .values()
+            .find(|job| {
+                job.execution_context
+                    .as_ref()
+                    .map(|ctx| ctx.provider_execution_id == execution_id)
+                    .unwrap_or(false)
+            })
+            .cloned())
     }
 
     async fn delete(&self, job_id: &JobId) -> Result<()> {
@@ -264,14 +298,16 @@ impl WorkerRegistry for InMemoryWorkerRegistry {
 
     async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
         let mut workers = self.workers.write().await;
-        let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-            worker_id: worker_id.clone(),
-        })?;
+        let worker = workers
+            .get_mut(worker_id)
+            .ok_or_else(|| DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            })?;
 
         debug!("Updating worker {} state to {:?}", worker_id, state);
 
         match state {
-            WorkerState::Creating => {},  // Estado inicial
+            WorkerState::Creating => {} // Estado inicial
             WorkerState::Connecting => worker.mark_connecting()?,
             WorkerState::Ready => worker.mark_ready()?,
             WorkerState::Draining => worker.mark_draining()?,
@@ -290,9 +326,11 @@ impl WorkerRegistry for InMemoryWorkerRegistry {
 
     async fn heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
         let mut workers = self.workers.write().await;
-        let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-            worker_id: worker_id.clone(),
-        })?;
+        let worker = workers
+            .get_mut(worker_id)
+            .ok_or_else(|| DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            })?;
 
         worker.update_heartbeat();
         debug!("Heartbeat received for worker: {}", worker_id);
@@ -301,9 +339,11 @@ impl WorkerRegistry for InMemoryWorkerRegistry {
 
     async fn assign_to_job(&self, worker_id: &WorkerId, job_id: JobId) -> Result<()> {
         let mut workers = self.workers.write().await;
-        let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-            worker_id: worker_id.clone(),
-        })?;
+        let worker = workers
+            .get_mut(worker_id)
+            .ok_or_else(|| DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            })?;
 
         worker.assign_job(job_id.clone())?;
         info!("Assigned worker {} to job {}", worker_id, job_id);
@@ -312,9 +352,11 @@ impl WorkerRegistry for InMemoryWorkerRegistry {
 
     async fn release_from_job(&self, worker_id: &WorkerId) -> Result<()> {
         let mut workers = self.workers.write().await;
-        let worker = workers.get_mut(worker_id).ok_or_else(|| DomainError::WorkerNotFound {
-            worker_id: worker_id.clone(),
-        })?;
+        let worker = workers
+            .get_mut(worker_id)
+            .ok_or_else(|| DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            })?;
 
         worker.complete_job()?;
         info!("Released worker {} from job", worker_id);
@@ -353,7 +395,7 @@ impl WorkerRegistry for InMemoryWorkerRegistry {
             match worker.state() {
                 WorkerState::Ready => stats.ready_workers += 1,
                 WorkerState::Busy => stats.busy_workers += 1,
-                WorkerState::Draining => stats.idle_workers += 1,  // Draining cuenta como idle
+                WorkerState::Draining => stats.idle_workers += 1, // Draining cuenta como idle
                 WorkerState::Terminating => stats.terminating_workers += 1,
                 _ => {}
             }

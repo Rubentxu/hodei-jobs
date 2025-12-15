@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: .
+    name: buf.build/hodei/platform
+deps:
+  - buf.build/googleapis/googleapis
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE

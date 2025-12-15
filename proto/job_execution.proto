@@ -9,7 +9,7 @@ import "google/protobuf/duration.proto";
 
 // Definición completa del job
 message JobDefinition {
-    JobId job_id = 1;
+    hodei.common.hodei.common.JobId job_id = 1;
     string name = 2;
     string description = 3;
     string command = 4;  // Comando a ejecutar
@@ -27,9 +27,9 @@ message JobDefinition {
 
 // Información de ejecución
 message ExecutionInfo {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
-    WorkerId assigned_worker_id = 3;
+    hodei.common.hodei.common.ExecutionId execution_id = 1;
+    hodei.common.hodei.common.JobId job_id = 2;
+    hodei.common.hodei.common.WorkerId assigned_worker_id = 3;
     hodei.common.ExecutionState state = 4;
     hodei.common.JobStatus status = 5;
     google.protobuf.Timestamp start_time = 6;
@@ -43,7 +43,7 @@ message ExecutionInfo {
 message DomainEvent {
     string event_id = 1;
     string event_type = 2;  // JobCreated, JobQueued, JobAssigned, JobStarted, etc.
-    ExecutionId execution_id = 3;
+    hodei.common.hodei.common.ExecutionId execution_id = 3;
     google.protobuf.Timestamp timestamp = 4;
     string source = 5;  // worker_id, scheduler_name, etc.
     map<string, string> properties = 6;
@@ -58,28 +58,28 @@ message JobCreatedEvent {
 }
 
 message JobQueuedEvent {
-    JobId job_id = 1;
+    hodei.common.JobId job_id = 1;
     hodei.common.SchedulingInfo scheduling_info = 2;
     string queue_position = 3;
 }
 
 message JobAssignedEvent {
-    JobId job_id = 1;
-    WorkerId assigned_worker = 2;
+    hodei.common.JobId job_id = 1;
+    hodei.common.WorkerId assigned_worker = 2;
     hodei.common.ResourceAllocation allocation = 3;
     string assignment_reason = 4;
 }
 
 message JobStartedEvent {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
-    WorkerId worker_id = 3;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
+    hodei.common.WorkerId worker_id = 3;
     google.protobuf.Timestamp actual_start_time = 4;
     map<string, string> startup_metadata = 5;
 }
 
 message JobProgressEvent {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     int32 progress_percentage = 2;
     string current_stage = 3;
     string stage_description = 4;
@@ -88,8 +88,8 @@ message JobProgressEvent {
 }
 
 message JobCompletedEvent {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp completion_time = 3;
     int32 exit_code = 4;
     string output_summary = 5;
@@ -97,8 +97,8 @@ message JobCompletedEvent {
 }
 
 message JobFailedEvent {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp failure_time = 3;
     string failure_reason = 4;
     string error_message = 5;
@@ -108,16 +108,16 @@ message JobFailedEvent {
 }
 
 message JobCancelledEvent {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp cancellation_time = 3;
     string cancellation_reason = 4;
     string cancelled_by = 5;
 }
 
 message JobTimeoutEvent {
-    ExecutionId execution_id = 1;
-    JobId job_id = 2;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp timeout_time = 3;
     google.protobuf.Duration timeout_duration = 4;
     string timeout_reason = 5;
@@ -125,7 +125,7 @@ message JobTimeoutEvent {
 
 // Asignación de recursos
 message ResourceAllocation {
-    WorkerId worker_id = 1;
+    hodei.common.WorkerId worker_id = 1;
     hodei.common.ResourceRequirements allocated_resources = 2;
     google.protobuf.Timestamp allocation_time = 3;
     google.protobuf.Timestamp deallocation_time = 4;
@@ -140,13 +140,13 @@ message CreateJobRequest {
 message CreateJobResponse {
     bool success = 1;
     string message = 2;
-    JobId job_id = 3;
+    hodei.common.JobId job_id = 3;
     google.protobuf.Timestamp created_at = 4;
 }
 
 // Request para obtener job
 message GetJobRequest {
-    JobId job_id = 1;
+    hodei.common.JobId job_id = 1;
 }
 
 message GetJobResponse {
@@ -155,24 +155,49 @@ message GetJobResponse {
     repeated DomainEvent events = 3;
 }
 
+// Request para listar jobs
+message ListJobsRequest {
+    int32 limit = 1;
+    int32 offset = 2;
+    // Filtros opcionales
+    optional hodei.common.JobStatus status = 3;
+    optional string search_term = 4;
+}
+
+message ListJobsResponse {
+    repeated JobSummary jobs = 1;
+    int32 total_count = 2;
+}
+
+message JobSummary {
+    hodei.common.JobId job_id = 1;
+    string name = 2;
+    hodei.common.JobStatus status = 3;
+    google.protobuf.Timestamp created_at = 4;
+    optional google.protobuf.Timestamp started_at = 5;
+    optional google.protobuf.Timestamp completed_at = 6;
+    optional google.protobuf.Duration duration = 7;
+    int32 progress_percentage = 8;
+}
+
 // Request para asignar job
 message AssignJobRequest {
-    JobId job_id = 1;
-    WorkerId worker_id = 2;
+    hodei.common.JobId job_id = 1;
+    hodei.common.WorkerId worker_id = 2;
     string assigner = 3;
 }
 
 message AssignJobResponse {
     bool success = 1;
     string message = 2;
-    ExecutionId execution_id = 3;
+    hodei.common.ExecutionId execution_id = 3;
     google.protobuf.Timestamp assigned_at = 4;
 }
 
 // Request para iniciar job
 message StartJobRequest {
-    ExecutionId execution_id = 1;
-    WorkerId worker_id = 2;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.WorkerId worker_id = 2;
 }
 
 message StartJobResponse {
@@ -183,7 +208,7 @@ message StartJobResponse {
 
 // Request para actualizar progreso
 message UpdateJobProgressRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     int32 progress_percentage = 2;
     string current_stage = 3;
     string stage_description = 4;
@@ -198,7 +223,7 @@ message UpdateJobProgressResponse {
 
 // Request para completar job
 message CompleteJobRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     int32 exit_code = 2;
     string output_summary = 3;
     map<string, string> completion_metadata = 4;
@@ -212,7 +237,7 @@ message CompleteJobResponse {
 
 // Request para fallar job
 message FailJobRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     string failure_reason = 2;
     string error_message = 3;
     int32 exit_code = 4;
@@ -228,7 +253,7 @@ message FailJobResponse {
 
 // Request para cancelar job
 message CancelJobRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     string cancellation_reason = 2;
     string cancelled_by = 3;
 }
@@ -246,7 +271,7 @@ message ExecutionEventStream {
 
 // Request para obtener eventos de ejecución
 message GetExecutionEventsRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     google.protobuf.Timestamp from_timestamp = 2;
     google.protobuf.Timestamp to_timestamp = 3;
     repeated string event_types = 4;
@@ -262,6 +287,7 @@ service JobExecutionService {
     // Gestión básica de jobs
     rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
     rpc GetJob(GetJobRequest) returns (GetJobResponse);
+    rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
     rpc AssignJob(AssignJobRequest) returns (AssignJobResponse);
     
     // Ciclo de vida de ejecución
@@ -277,7 +303,7 @@ service JobExecutionService {
 }
 
 message ExecutionEventRequest {
-    ExecutionId execution_id = 1;
+    hodei.common.ExecutionId execution_id = 1;
     repeated string event_types = 2;
     bool include_completed = 3;
 }

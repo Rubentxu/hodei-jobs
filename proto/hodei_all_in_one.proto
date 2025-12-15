@@ -464,6 +464,42 @@ message JobTimeout {
     string timeout_reason = 4;
 }
 
+// Get Job Request
+message GetJobRequest {
+    JobId job_id = 1;
+}
+
+message GetJobResponse {
+    JobDefinition job = 1;
+    JobStatus status = 2;
+    repeated JobExecution executions = 3;
+}
+
+// Request para listar jobs
+message ListJobsRequest {
+    int32 limit = 1;
+    int32 offset = 2;
+    // Filtros opcionales
+    optional JobStatus status = 3;
+    optional string search_term = 4;
+}
+
+message ListJobsResponse {
+    repeated JobSummary jobs = 1;
+    int32 total_count = 2;
+}
+
+message JobSummary {
+    JobId job_id = 1;
+    string name = 2;
+    JobStatus status = 3;
+    google.protobuf.Timestamp created_at = 4;
+    optional google.protobuf.Timestamp started_at = 5;
+    optional google.protobuf.Timestamp completed_at = 6;
+    optional google.protobuf.Duration duration = 7;
+    int32 progress_percentage = 8;
+}
+
 // Job queue operations
 message QueueJobRequest {
     JobDefinition job_definition = 1;
@@ -761,6 +797,8 @@ service WorkerAgentService {
 
 service JobExecutionService {
     rpc QueueJob(QueueJobRequest) returns (QueueJobResponse);
+    rpc GetJob(GetJobRequest) returns (GetJobResponse);
+    rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
     rpc AssignJob(AssignJobRequest) returns (AssignJobResponse);
     rpc StartJob(StartJobRequest) returns (StartJobResponse);
     rpc UpdateProgress(UpdateProgressRequest) returns (UpdateProgressResponse);

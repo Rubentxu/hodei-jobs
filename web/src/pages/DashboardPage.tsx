@@ -1,6 +1,39 @@
+import { useJobs } from '@/hooks/useJobs'
+import { useSystemMetrics } from '@/hooks/useMetrics'
+import { formatDistanceToNow } from 'date-fns'
 import { Link } from 'react-router-dom'
 
 export function DashboardPage() {
+  const { data: metrics, isLoading: loadingMetrics } = useSystemMetrics()
+  const { data: recentJobs, isLoading: loadingJobs } = useJobs({ limit: 5, offset: 0 })
+
+  // Map JobStatus (string from useJobs) to UI status
+  const getUiStatus = (status: string): 'running' | 'success' | 'failed' => {
+    switch (status) {
+      case 'RUNNING':
+      case 'PENDING':
+      case 'ASSIGNED': // Added ASSIGNED
+        return 'running'
+      case 'SUCCEEDED': // useJobs uses SUCCEEDED, not COMPLETED
+        return 'success'
+      case 'FAILED':
+      case 'CANCELLED':
+      case 'TIMEOUT':
+        return 'failed'
+      default:
+        return 'running' // Default fallback
+    }
+  }
+
+  const formatTime = (date?: Date) => {
+    if (!date) return '-'
+    try {
+      return formatDistanceToNow(date, { addSuffix: true })
+    } catch (e) {
+      return '-'
+    }
+  }
+
   return (
     <>
       {/* Header */}
@@ -27,10 +60,30 @@ export function DashboardPage() {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-3 p-4">
-        <StatsCard icon="dataset" label="Total Jobs" value="1,240" />
-        <StatsCard icon="sync" label="Running" value="12" variant="primary" spinning />
-        <StatsCard icon="error" label="Failed" value="23" variant="error" />
-        <StatsCard icon="check_circle" label="Success" value="1,205" variant="success" />
+        <StatsCard
+          icon="dataset"
+          label="Total Jobs"
+          value={loadingMetrics ? '...' : metrics?.totalJobs.toLocaleString() || '0'}
+        />
+        <StatsCard
+          icon="sync"
+          label="Running"
+          value={loadingMetrics ? '...' : metrics?.runningJobs.toLocaleString() || '0'}
+          variant="primary"
+          spinning={metrics?.runningJobs ? metrics.runningJobs > 0 : false}
+        />
+        <StatsCard
+          icon="error"
+          label="Failed"
+          value={loadingMetrics ? '...' : metrics?.failedJobs.toLocaleString() || '0'}
+          variant="error"
+        />
+        <StatsCard
+          icon="check_circle"
+          label="Success"
+          value={loadingMetrics ? '...' : metrics?.succeededJobs.toLocaleString() || '0'}
+          variant="success"
+        />
       </div>
 
       {/* System Health */}
@@ -41,9 +94,11 @@ export function DashboardPage() {
               <h3 className="text-base font-bold text-gray-900 dark:text-white">System Health</h3>
               <p className="text-xs text-gray-500 dark:text-gray-400">CPU Load (24h)</p>
             </div>
-            <span className="text-lg font-bold text-success">98%</span>
+            <span className="text-lg font-bold text-success">
+              {loadingMetrics ? '...' : `${metrics?.cpuLoad.toFixed(1) || 0}%`}
+            </span>
           </div>
-          
+
           {/* SVG Chart placeholder */}
           <div className="h-24 mb-4 relative">
             <svg className="w-full h-full" viewBox="0 0 300 80" preserveAspectRatio="none">
@@ -69,14 +124,18 @@ export function DashboardPage() {
           <div className="flex justify-between items-center pt-3 border-t border-gray-100 dark:border-border-dark">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${loadingMetrics ? 'bg-gray-400' : 'bg-emerald-400'} opacity-75`}></span>
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${loadingMetrics ? 'bg-gray-500' : 'bg-emerald-500'}`}></span>
               </span>
-              <span className="text-xs text-gray-600 dark:text-gray-300">2 Online</span>
+              <span className="text-xs text-gray-600 dark:text-gray-300">
+                {loadingMetrics ? '...' : `${metrics?.activeNodes || 0} Online`}
+              </span>
             </div>
             <div className="flex items-center gap-2">
               <span className="material-symbols-outlined text-amber-500 text-sm">schedule</span>
-              <span className="text-xs text-gray-600 dark:text-gray-300">Queue: 3</span>
+              <span className="text-xs text-gray-600 dark:text-gray-300">
+                Queue: {loadingMetrics ? '...' : metrics?.queueSize || 0}
+              </span>
             </div>
           </div>
         </div>
@@ -90,24 +149,24 @@ export function DashboardPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-          <RecentJobCard
-            id="1024"
-            name="Backend Build"
-            status="running"
-            time="2 min ago"
-          />
-          <RecentJobCard
-            id="1023"
-            name="Deploy Staging"
-            status="success"
-            time="15 min ago"
-          />
-          <RecentJobCard
-            id="1022"
-            name="Integration Tests"
-            status="failed"
-            time="1 hour ago"
-          />
+          {loadingJobs ? (
+            // Loading Skeleton
+            [1, 2, 3].map(i => (
+              <div key={i} className="h-16 bg-gray-100 dark:bg-card-dark rounded-xl animate-pulse"></div>
+            ))
+          ) : recentJobs?.length === 0 ? (
+            <div className="text-center py-4 text-gray-500 text-xs">No recent jobs</div>
+          ) : (
+            recentJobs?.map(job => (
+              <RecentJobCard
+                key={job.id}
+                id={job.id}
+                name={job.name}
+                status={getUiStatus(job.status)}
+                time={formatTime(job.startedAtRaw)}
+              />
+            ))
+          )}
         </div>
       </div>
 
