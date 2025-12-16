@@ -3,7 +3,9 @@
 //! Main entry point for the gRPC server.
 
 use hodei_jobs::{
-    FILE_DESCRIPTOR_SET, job_execution_service_server::JobExecutionServiceServer,
+    FILE_DESCRIPTOR_SET, 
+    audit_service_server::AuditServiceServer,
+    job_execution_service_server::JobExecutionServiceServer,
     log_stream_service_server::LogStreamServiceServer,
     metrics_service_server::MetricsServiceServer,
     providers::provider_management_service_server::ProviderManagementServiceServer,
@@ -21,8 +23,8 @@ use hodei_jobs_application::worker_provisioning_impl::{
 use hodei_jobs_domain::shared_kernel::ProviderId;
 use hodei_jobs_domain::worker_provider::WorkerProvider;
 use hodei_jobs_grpc::services::{
-    JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc, MetricsServiceImpl,
-    ProviderManagementServiceImpl, SchedulerServiceImpl, WorkerAgentServiceImpl,
+    AuditServiceImpl, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc, 
+    MetricsServiceImpl, ProviderManagementServiceImpl, SchedulerServiceImpl, WorkerAgentServiceImpl,
 };
 use hodei_jobs_infrastructure::persistence::{
     PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
@@ -140,7 +142,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         as std::sync::Arc<dyn hodei_jobs_domain::audit::AuditRepository>;
 
     // Create Audit Service (Story 3.2)
-    let audit_service = AuditService::new(audit_repository);
+    let audit_service = AuditService::new(audit_repository.clone());
+    
+    // Create Audit gRPC Service (Story 15.8)
+    let audit_grpc_service = AuditServiceImpl::new(audit_repository);
 
     // Create Event Bus
     let event_bus_impl =
@@ -340,6 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ SchedulerService");
     info!("  ✓ ProviderManagementService");
     info!("  ✓ LogStreamService (PRD v6.0)");
+    info!("  ✓ AuditService (EPIC-15 Story 15.8)");
     info!("  ✓ Reflection Service");
     info!("  ✓ Event Bus (Postgres)");
 
@@ -503,6 +509,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             context_interceptor,
         ))
         .add_service(LogStreamServiceServer::new(log_grpc_service))
+        .add_service(AuditServiceServer::new(audit_grpc_service))
         .serve(addr)
         .await?;
 

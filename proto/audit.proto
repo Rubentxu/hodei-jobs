@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package hodei.audit;
+
+import "google/protobuf/timestamp.proto";
+
+// AuditService provides access to audit logs for compliance and debugging
+service AuditService {
+    // Get audit logs with filters and pagination
+    rpc GetAuditLogs(GetAuditLogsRequest) returns (GetAuditLogsResponse);
+    
+    // Get audit logs by correlation ID (for tracing a specific operation)
+    rpc GetAuditLogsByCorrelation(GetByCorrelationRequest) returns (GetAuditLogsResponse);
+    
+    // Get count of events grouped by type
+    rpc GetEventCounts(GetEventCountsRequest) returns (GetEventCountsResponse);
+}
+
+message GetAuditLogsRequest {
+    // Filter by event type (e.g., "JobCreated", "WorkerRegistered")
+    optional string event_type = 1;
+    
+    // Filter by actor (user/service that triggered the event)
+    optional string actor = 2;
+    
+    // Filter by start time (inclusive)
+    optional google.protobuf.Timestamp start_time = 3;
+    
+    // Filter by end time (inclusive)
+    optional google.protobuf.Timestamp end_time = 4;
+    
+    // Maximum number of results to return (default: 100, max: 1000)
+    int32 limit = 5;
+    
+    // Offset for pagination
+    int32 offset = 6;
+}
+
+message GetByCorrelationRequest {
+    // The correlation ID to search for
+    string correlation_id = 1;
+}
+
+message GetAuditLogsResponse {
+    // The audit log entries
+    repeated AuditLogEntry logs = 1;
+    
+    // Total count of matching entries (for pagination)
+    int64 total_count = 2;
+    
+    // Whether there are more results available
+    bool has_more = 3;
+}
+
+message AuditLogEntry {
+    // Unique identifier for this log entry
+    string id = 1;
+    
+    // Correlation ID for tracing related operations
+    optional string correlation_id = 2;
+    
+    // Type of event (e.g., "JobCreated", "WorkerRegistered")
+    string event_type = 3;
+    
+    // JSON payload with event details
+    string payload_json = 4;
+    
+    // When the event occurred
+    google.protobuf.Timestamp occurred_at = 5;
+    
+    // Actor (user/service) that triggered the event
+    optional string actor = 6;
+}
+
+message GetEventCountsRequest {
+    // Optional: filter by time range
+    optional google.protobuf.Timestamp start_time = 1;
+    optional google.protobuf.Timestamp end_time = 2;
+}
+
+message GetEventCountsResponse {
+    // Event counts grouped by type
+    repeated EventTypeCount counts = 1;
+    
+    // Total number of events
+    int64 total_events = 2;
+}
+
+message EventTypeCount {
+    // Event type name
+    string event_type = 1;
+    
+    // Number of events of this type
+    int64 count = 2;
+}

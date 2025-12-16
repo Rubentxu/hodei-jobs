@@ -9,6 +9,7 @@ import "worker_agent.proto";
 import "job_execution.proto";
 import "metrics.proto";
 import "scheduler.proto";
+import "audit.proto";
 
 // Este archivo vacío sirve solo para forzar que protoc compile todos los archivos juntos
 message DummyMessage {

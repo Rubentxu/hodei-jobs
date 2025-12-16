@@ -862,3 +862,69 @@ service LogStreamService {
     // Get historical logs (non-streaming)
     rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
 }
+
+// =============================================================================
+// AUDIT SERVICE (EPIC-15 Story 15.8)
+// =============================================================================
+
+// Request to get audit logs with filters
+message GetAuditLogsRequest {
+    optional string event_type = 1;
+    optional string actor = 2;
+    optional google.protobuf.Timestamp start_time = 3;
+    optional google.protobuf.Timestamp end_time = 4;
+    int32 limit = 5;
+    int32 offset = 6;
+}
+
+// Request to get audit logs by correlation ID
+message GetAuditLogsByCorrelationRequest {
+    string correlation_id = 1;
+}
+
+// Response with audit logs
+message GetAuditLogsResponse {
+    repeated AuditLogEntry logs = 1;
+    int64 total_count = 2;
+    bool has_more = 3;
+}
+
+// Single audit log entry
+message AuditLogEntry {
+    string id = 1;
+    optional string correlation_id = 2;
+    string event_type = 3;
+    string payload_json = 4;
+    google.protobuf.Timestamp occurred_at = 5;
+    optional string actor = 6;
+}
+
+// Request to get event counts
+message GetEventCountsRequest {
+    optional google.protobuf.Timestamp start_time = 1;
+    optional google.protobuf.Timestamp end_time = 2;
+}
+
+// Response with event counts
+message GetEventCountsResponse {
+    repeated AuditEventTypeCount counts = 1;
+    int64 total_events = 2;
+}
+
+// Event type with count
+message AuditEventTypeCount {
+    string event_type = 1;
+    int64 count = 2;
+}
+
+// AuditService provides access to audit logs for compliance and debugging
+service AuditService {
+    // Get audit logs with filters and pagination
+    rpc GetAuditLogs(GetAuditLogsRequest) returns (GetAuditLogsResponse);
+    
+    // Get audit logs by correlation ID (for tracing a specific operation)
+    rpc GetAuditLogsByCorrelation(GetAuditLogsByCorrelationRequest) returns (GetAuditLogsResponse);
+    
+    // Get count of events grouped by type
+    rpc GetEventCounts(GetEventCountsRequest) returns (GetEventCountsResponse);
+}
