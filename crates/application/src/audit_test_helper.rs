@@ -2,9 +2,15 @@
 //!
 //! Proporciona helpers para verificar que los eventos de dominio esperados
 //! fueron publicados durante la ejecución de casos de uso.
+//!
+//! Soporta dos modos:
+//! - In-memory: Para tests unitarios rápidos
+//! - Database-backed: Para tests de integración con PostgreSQL
 
+use hodei_jobs_domain::audit::{AuditLog, AuditRepository};
 use hodei_jobs_domain::events::DomainEvent;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Helper para capturar y validar eventos en tests
 #[derive(Clone)]
@@ -168,6 +174,176 @@ impl AuditTestHelper {
 impl Default for AuditTestHelper {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Error types for AuditTestHelper operations
+#[derive(Debug, thiserror::Error)]
+pub enum AuditTestError {
+    #[error("Timeout waiting for audit log: correlation_id={correlation_id}, event_type={event_type}")]
+    Timeout {
+        correlation_id: String,
+        event_type: String,
+    },
+    #[error("Repository error: {0}")]
+    RepositoryError(String),
+    #[error("Event not found: {0}")]
+    EventNotFound(String),
+}
+
+/// Database-backed audit test helper for integration tests
+/// 
+/// Provides methods to wait for and validate audit logs stored in PostgreSQL.
+pub struct DbAuditTestHelper {
+    repository: Arc<dyn AuditRepository>,
+}
+
+impl DbAuditTestHelper {
+    /// Create a new helper with the given repository
+    pub fn new(repository: Arc<dyn AuditRepository>) -> Self {
+        Self { repository }
+    }
+
+    /// Wait for an audit log with the given correlation_id and event_type
+    /// 
+    /// Polls the database with exponential backoff until the log is found
+    /// or the timeout is reached.
+    /// 
+    /// # Arguments
+    /// * `correlation_id` - The correlation ID to search for
+    /// * `event_type` - The event type to match
+    /// * `timeout` - Maximum time to wait
+    /// 
+    /// # Returns
+    /// The matching AuditLog or an error if timeout is reached
+    pub async fn wait_for_audit_log(
+        &self,
+        correlation_id: &str,
+        event_type: &str,
+        timeout: Duration,
+    ) -> Result<AuditLog, AuditTestError> {
+        let start = Instant::now();
+        let mut interval = Duration::from_millis(50);
+        let max_interval = Duration::from_millis(500);
+
+        while start.elapsed() < timeout {
+            match self.find_event(correlation_id, event_type).await {
+                Ok(Some(log)) => return Ok(log),
+                Ok(None) => {
+                    tokio::time::sleep(interval).await;
+                    // Exponential backoff with cap
+                    interval = std::cmp::min(interval * 2, max_interval);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(AuditTestError::Timeout {
+            correlation_id: correlation_id.to_string(),
+            event_type: event_type.to_string(),
+        })
+    }
+
+    /// Find a specific event by correlation_id and event_type
+    async fn find_event(
+        &self,
+        correlation_id: &str,
+        event_type: &str,
+    ) -> Result<Option<AuditLog>, AuditTestError> {
+        let logs = self
+            .repository
+            .find_by_correlation_id(correlation_id)
+            .await
+            .map_err(|e| AuditTestError::RepositoryError(e.to_string()))?;
+
+        Ok(logs.into_iter().find(|log| log.event_type == event_type))
+    }
+
+    /// Wait for all events in the sequence to appear (in any order)
+    pub async fn wait_for_events(
+        &self,
+        correlation_id: &str,
+        event_types: &[&str],
+        timeout: Duration,
+    ) -> Result<Vec<AuditLog>, AuditTestError> {
+        let start = Instant::now();
+        let mut interval = Duration::from_millis(50);
+        let max_interval = Duration::from_millis(500);
+
+        while start.elapsed() < timeout {
+            let logs = self
+                .repository
+                .find_by_correlation_id(correlation_id)
+                .await
+                .map_err(|e| AuditTestError::RepositoryError(e.to_string()))?;
+
+            let found_types: Vec<&str> = logs.iter().map(|l| l.event_type.as_str()).collect();
+            let all_found = event_types.iter().all(|et| found_types.contains(et));
+
+            if all_found {
+                return Ok(logs
+                    .into_iter()
+                    .filter(|l| event_types.contains(&l.event_type.as_str()))
+                    .collect());
+            }
+
+            tokio::time::sleep(interval).await;
+            interval = std::cmp::min(interval * 2, max_interval);
+        }
+
+        Err(AuditTestError::Timeout {
+            correlation_id: correlation_id.to_string(),
+            event_type: event_types.join(", "),
+        })
+    }
+
+    /// Assert that an event sequence exists for the given correlation_id
+    pub async fn assert_event_sequence(
+        &self,
+        correlation_id: &str,
+        expected_sequence: &[&str],
+        timeout: Duration,
+    ) -> Result<(), AuditTestError> {
+        let logs = self.wait_for_events(correlation_id, expected_sequence, timeout).await?;
+        
+        // Sort by occurred_at to verify order
+        let mut sorted_logs = logs;
+        sorted_logs.sort_by_key(|l| l.occurred_at);
+        
+        let actual_types: Vec<&str> = sorted_logs.iter().map(|l| l.event_type.as_str()).collect();
+        
+        for (i, expected) in expected_sequence.iter().enumerate() {
+            if i >= actual_types.len() || actual_types[i] != *expected {
+                return Err(AuditTestError::EventNotFound(format!(
+                    "Expected event '{}' at position {}, got {:?}",
+                    expected, i, actual_types
+                )));
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Assert that no events exist for the given correlation_id
+    pub async fn assert_no_events(
+        &self,
+        correlation_id: &str,
+    ) -> Result<(), AuditTestError> {
+        let logs = self
+            .repository
+            .find_by_correlation_id(correlation_id)
+            .await
+            .map_err(|e| AuditTestError::RepositoryError(e.to_string()))?;
+
+        if !logs.is_empty() {
+            return Err(AuditTestError::EventNotFound(format!(
+                "Expected no events but found {}: {:?}",
+                logs.len(),
+                logs.iter().map(|l| &l.event_type).collect::<Vec<_>>()
+            )));
+        }
+
+        Ok(())
     }
 }
 
