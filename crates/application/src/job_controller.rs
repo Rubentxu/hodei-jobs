@@ -1,5 +1,8 @@
 use crate::smart_scheduler::{SchedulerConfig, SchedulingService};
 use crate::worker_command_sender::WorkerCommandSender;
+use chrono::Utc;
+use hodei_jobs_domain::event_bus::EventBus;
+use hodei_jobs_domain::events::DomainEvent;
 use hodei_jobs_domain::job_execution::{ExecutionContext, JobQueue, JobRepository};
 use hodei_jobs_domain::job_scheduler::SchedulingContext;
 use hodei_jobs_domain::shared_kernel::{DomainError, JobState, Result, WorkerId};
@@ -13,6 +16,7 @@ pub struct JobController {
     worker_registry: Arc<dyn WorkerRegistry>,
     scheduler: SchedulingService,
     worker_command_sender: Arc<dyn WorkerCommandSender>,
+    event_bus: Arc<dyn EventBus>,
 }
 
 impl JobController {
@@ -22,6 +26,7 @@ impl JobController {
         worker_registry: Arc<dyn WorkerRegistry>,
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
+        event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
             job_queue,
@@ -29,6 +34,7 @@ impl JobController {
             worker_registry,
             scheduler: SchedulingService::new(scheduler_config),
             worker_command_sender,
+            event_bus,
         }
     }
 
@@ -97,7 +103,34 @@ impl JobController {
         let exec_ctx = ExecutionContext::new(job.id.clone(), provider_id, provider_execution_id);
 
         job.submit_to_provider(worker.handle().provider_id.clone(), exec_ctx)?;
+        let old_state = job.state.clone();
         job.mark_running()?;
+
+        // Publish JobAssigned event
+        let assigned_event = DomainEvent::JobAssigned {
+            job_id: job.id.clone(),
+            worker_id: worker_id.clone(),
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: Some("job-controller".to_string()),
+        };
+        if let Err(e) = self.event_bus.publish(&assigned_event).await {
+            tracing::error!("Failed to publish JobAssigned event: {}", e);
+        }
+
+        // Publish JobStatusChanged event
+        let event = DomainEvent::JobStatusChanged {
+            job_id: job.id.clone(),
+            old_state,
+            new_state: JobState::Running,
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: Some("job-controller".to_string()),
+        };
+
+        if let Err(e) = self.event_bus.publish(&event).await {
+            tracing::error!("Failed to publish JobStatusChanged (Running) event: {}", e);
+        }
 
         self.worker_registry
             .assign_to_job(worker_id, job.id.clone())
@@ -359,6 +392,38 @@ mod tests {
         sent: Arc<RwLock<Vec<(WorkerId, JobId)>>>,
     }
 
+    use futures::stream::BoxStream;
+    use hodei_jobs_domain::DomainEvent;
+    use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
+    struct MockEventBus {
+        published: Arc<std::sync::Mutex<Vec<DomainEvent>>>,
+    }
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+    #[async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            self.published.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<
+            BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>,
+            EventBusError,
+        > {
+            Err(EventBusError::SubscribeError(
+                "Mock not implemented".to_string(),
+            ))
+        }
+    }
+
     #[async_trait]
     impl WorkerCommandSender for MockWorkerCommandSender {
         async fn send_run_job(&self, worker_id: &WorkerId, job: &Job) -> Result<()> {
@@ -385,7 +450,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut spec = DomainWorkerSpec::new(
-            "hodei-worker:latest".to_string(),
+            "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
         spec.worker_id = worker_id.clone();
@@ -408,12 +473,14 @@ mod tests {
         job_repo.save(&job).await.unwrap();
         queue.enqueue(job).await.unwrap();
 
+        let bus = Arc::new(MockEventBus::new());
         let controller = JobController::new(
             queue,
             job_repo.clone(),
             registry.clone(),
             SchedulerConfig::default(),
             sender.clone(),
+            bus,
         );
 
         let processed = controller.run_once().await.unwrap();

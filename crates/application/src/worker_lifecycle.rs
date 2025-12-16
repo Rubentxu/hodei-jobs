@@ -5,7 +5,10 @@
 //! - Auto-scaling basado en demanda
 //! - Terminación de workers idle/unhealthy
 
+use chrono::Utc;
 use hodei_jobs_domain::{
+    event_bus::EventBus,
+    events::{DomainEvent, TerminationReason},
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
     worker::{Worker, WorkerSpec},
     worker_provider::WorkerProvider,
@@ -56,17 +59,20 @@ pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
     providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
     config: WorkerLifecycleConfig,
+    event_bus: Arc<dyn EventBus>,
 }
 
 impl WorkerLifecycleManager {
     pub fn new(
         registry: Arc<dyn WorkerRegistry>,
         config: WorkerLifecycleConfig,
+        event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
             registry,
             providers: Arc::new(RwLock::new(HashMap::new())),
             config,
+            event_bus,
         }
     }
 
@@ -140,6 +146,19 @@ impl WorkerLifecycleManager {
                 warn!("Failed to unregister worker {}: {}", worker.id(), e);
             }
 
+            // Publish WorkerTerminated event
+            let event = DomainEvent::WorkerTerminated {
+                worker_id: worker.id().clone(),
+                provider_id: worker.provider_id().clone(),
+                reason: TerminationReason::IdleTimeout,
+                occurred_at: Utc::now(),
+                correlation_id: None,
+                actor: Some("lifecycle-manager".to_string()),
+            };
+            if let Err(e) = self.event_bus.publish(&event).await {
+                warn!("Failed to publish WorkerTerminated event: {}", e);
+            }
+
             result.terminated.push(worker.id().clone());
         }
 
@@ -176,7 +195,20 @@ impl WorkerLifecycleManager {
             })?;
 
         // Register in registry
-        let worker = self.registry.register(handle, spec).await?;
+        let worker = self.registry.register(handle, spec.clone()).await?;
+
+        // Publish WorkerProvisioned event
+        let event = DomainEvent::WorkerProvisioned {
+            worker_id: worker.id().clone(),
+            provider_id: provider_id.clone(),
+            spec_summary: format!("image={}, server={}", spec.image, spec.server_address),
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: Some("lifecycle-manager".to_string()),
+        };
+        if let Err(e) = self.event_bus.publish(&event).await {
+            warn!("Failed to publish WorkerProvisioned event: {}", e);
+        }
 
         info!("Worker {} provisioned successfully", worker.id());
         Ok(worker)
@@ -253,9 +285,39 @@ pub struct CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream::BoxStream;
+    use hodei_jobs_domain::event_bus::EventBusError;
     use hodei_jobs_domain::worker::WorkerHandle;
     use std::collections::HashMap as StdHashMap;
+    use std::sync::Mutex;
     use tokio::sync::RwLock as TokioRwLock;
+
+    struct MockEventBus {
+        published: Arc<Mutex<Vec<DomainEvent>>>,
+    }
+
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            self.published.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>, EventBusError> {
+            Err(EventBusError::SubscribeError("Mock not implemented".to_string()))
+        }
+    }
 
     struct MockWorkerRegistry {
         workers: Arc<TokioRwLock<StdHashMap<WorkerId, Worker>>>,
@@ -355,14 +417,16 @@ mod tests {
     async fn test_lifecycle_manager_creation() {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
-        let _manager = WorkerLifecycleManager::new(registry, config);
+        let event_bus = Arc::new(MockEventBus::new());
+        let _manager = WorkerLifecycleManager::new(registry, config, event_bus);
     }
 
     #[tokio::test]
     async fn test_should_scale_up_when_no_workers() {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
-        let manager = WorkerLifecycleManager::new(registry, config);
+        let event_bus = Arc::new(MockEventBus::new());
+        let manager = WorkerLifecycleManager::new(registry, config, event_bus);
 
         assert!(manager.should_scale_up(1).await);
     }

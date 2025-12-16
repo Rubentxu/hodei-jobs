@@ -9,6 +9,7 @@
 //! gRPC Request → [grpc adapter] → Application Service → Domain → Response
 //! ```
 
+pub mod interceptors;
 pub mod services;
 pub mod worker_command_sender;
 

@@ -8,6 +8,7 @@ use crate::{
     worker_lifecycle::{WorkerLifecycleConfig, WorkerLifecycleManager},
 };
 use hodei_jobs_domain::{
+    event_bus::EventBus,
     job_execution::{Job, JobQueue, JobRepository},
     job_scheduler::{ProviderInfo, SchedulingContext, SchedulingDecision},
     shared_kernel::{DomainError, JobId, JobState, ProviderId, Result, WorkerId},
@@ -37,15 +38,16 @@ impl JobOrchestrator {
         job_queue: Arc<dyn JobQueue>,
         scheduler_config: SchedulerConfig,
         lifecycle_config: WorkerLifecycleConfig,
+        event_bus: Arc<dyn EventBus>,
     ) -> Self {
         let default_worker_spec = WorkerSpec::new(
-            "hodei-worker:latest".to_string(),
+            "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
 
         Self {
             scheduler: SchedulingService::new(scheduler_config),
-            lifecycle_manager: WorkerLifecycleManager::new(registry.clone(), lifecycle_config),
+            lifecycle_manager: WorkerLifecycleManager::new(registry.clone(), lifecycle_config, event_bus),
             registry,
             job_repository,
             job_queue,
@@ -303,11 +305,29 @@ pub struct OrchestratorStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream::BoxStream;
+    use hodei_jobs_domain::event_bus::EventBusError;
+    use hodei_jobs_domain::events::DomainEvent;
     use hodei_jobs_domain::job_execution::JobSpec;
     use std::collections::HashMap as StdHashMap;
     use std::collections::VecDeque;
     use std::sync::Mutex;
     use tokio::sync::RwLock as TokioRwLock;
+
+    struct MockEventBus;
+
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, _event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            Ok(())
+        }
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>, EventBusError> {
+            Err(EventBusError::SubscribeError("Mock".to_string()))
+        }
+    }
 
     // Simple mock implementations for testing
     struct MockJobRepository {
@@ -473,6 +493,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
+        let event_bus = Arc::new(MockEventBus);
 
         let _orchestrator = JobOrchestrator::new(
             registry,
@@ -480,6 +501,7 @@ mod tests {
             job_queue,
             SchedulerConfig::default(),
             WorkerLifecycleConfig::default(),
+            event_bus,
         );
     }
 
@@ -488,6 +510,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
+        let event_bus = Arc::new(MockEventBus);
 
         let orchestrator = JobOrchestrator::new(
             registry,
@@ -495,6 +518,7 @@ mod tests {
             job_queue.clone(),
             SchedulerConfig::default(),
             WorkerLifecycleConfig::default(),
+            event_bus,
         );
 
         let job = Job::new(JobId::new(), JobSpec::new(vec!["echo".to_string()]));
@@ -510,6 +534,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
+        let event_bus = Arc::new(MockEventBus);
 
         let orchestrator = JobOrchestrator::new(
             registry,
@@ -517,6 +542,7 @@ mod tests {
             job_queue,
             SchedulerConfig::default(),
             WorkerLifecycleConfig::default(),
+            event_bus,
         );
 
         let stats = orchestrator.stats().await.unwrap();

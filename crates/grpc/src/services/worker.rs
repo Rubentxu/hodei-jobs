@@ -7,27 +7,27 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio::sync::{RwLock, mpsc};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use hodei_jobs::{
-    worker_agent_service_server::WorkerAgentService,
-    RegisterWorkerRequest, RegisterWorkerResponse,
-    UpdateWorkerStatusRequest, UpdateWorkerStatusResponse,
-    UnregisterWorkerRequest, UnregisterWorkerResponse,
-    WorkerMessage, ServerMessage, WorkerId, WorkerInfo,
-    AckMessage, LogEntry,
-    server_message::Payload as ServerPayload,
+    AckMessage, LogEntry, RegisterWorkerRequest, RegisterWorkerResponse, ServerMessage,
+    UnregisterWorkerRequest, UnregisterWorkerResponse, UpdateWorkerStatusRequest,
+    UpdateWorkerStatusResponse, WorkerInfo, WorkerMessage,
+    server_message::Payload as ServerPayload, worker_agent_service_server::WorkerAgentService,
     worker_message::Payload as WorkerPayload,
 };
 
-use hodei_jobs_domain::shared_kernel::WorkerState;
+use chrono::Utc;
+use hodei_jobs_domain::event_bus::EventBus;
+use hodei_jobs_domain::events::DomainEvent;
 use hodei_jobs_domain::job_execution::JobRepository;
+use hodei_jobs_domain::otp_token_store::{OtpToken, WorkerBootstrapTokenStore};
+use hodei_jobs_domain::shared_kernel::WorkerState;
 use hodei_jobs_domain::shared_kernel::{JobId, JobResult, JobState};
 use hodei_jobs_domain::worker_registry::WorkerRegistry;
-use hodei_jobs_domain::otp_token_store::{OtpToken, WorkerBootstrapTokenStore};
 
 use super::log_stream::LogStreamService;
 
@@ -60,8 +60,10 @@ pub struct WorkerAgentServiceImpl {
     worker_registry: Option<Arc<dyn WorkerRegistry>>,
     job_repository: Option<Arc<dyn JobRepository>>,
     token_store: Option<Arc<dyn WorkerBootstrapTokenStore>>,
-    /// Log streaming service for forwarding logs to clients
+    /// Channel para log streaming
     log_service: Option<LogStreamService>,
+    /// Event Bus para publicar eventos de dominio
+    event_bus: Option<Arc<dyn EventBus>>,
 }
 
 impl Default for WorkerAgentServiceImpl {
@@ -73,12 +75,12 @@ impl Default for WorkerAgentServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_jobs_infrastructure::persistence::{DatabaseConfig, PostgresWorkerRegistry};
-    use hodei_jobs_infrastructure::repositories::{InMemoryJobRepository, InMemoryWorkerRegistry};
     use hodei_jobs_domain::job_execution::{ExecutionContext, Job, JobSpec};
     use hodei_jobs_domain::shared_kernel::{ProviderId, WorkerId};
     use hodei_jobs_domain::worker::{ProviderType, WorkerHandle, WorkerSpec};
-    use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+    use hodei_jobs_infrastructure::persistence::{DatabaseConfig, PostgresWorkerRegistry};
+    use hodei_jobs_infrastructure::repositories::{InMemoryJobRepository, InMemoryWorkerRegistry};
+    use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
     use testcontainers_modules::postgres::Postgres;
     use tokio::sync::OnceCell;
 
@@ -86,8 +88,41 @@ mod tests {
         _container: ContainerAsync<Postgres>,
         connection_string: String,
     }
-
     static POSTGRES_CONTEXT: OnceCell<PostgresTestContext> = OnceCell::const_new();
+
+    use futures::stream::BoxStream;
+    use hodei_jobs_domain::DomainEvent;
+    use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
+    use std::sync::Mutex;
+
+    struct MockEventBus {
+        published: Arc<Mutex<Vec<DomainEvent>>>,
+    }
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+    #[tonic::async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            self.published.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<
+            BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>,
+            EventBusError,
+        > {
+            Err(EventBusError::SubscribeError(
+                "Mock not implemented".to_string(),
+            ))
+        }
+    }
 
     async fn get_postgres_context() -> &'static PostgresTestContext {
         POSTGRES_CONTEXT
@@ -126,7 +161,9 @@ mod tests {
         let reg = PostgresWorkerRegistry::connect(&cfg)
             .await
             .expect("Failed to connect to Postgres");
-        reg.run_migrations().await.expect("Failed to run migrations");
+        reg.run_migrations()
+            .await
+            .expect("Failed to run migrations");
         reg
     }
 
@@ -145,7 +182,10 @@ mod tests {
             provider_id,
         );
 
-        let mut spec = WorkerSpec::new("hodei-worker:latest".to_string(), "http://localhost:50051".to_string());
+        let mut spec = WorkerSpec::new(
+            "hodei-jobs-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
         spec.worker_id = worker_id.clone();
 
         registry
@@ -153,8 +193,12 @@ mod tests {
             .await
             .expect("Failed to register worker in registry");
 
-        let service = WorkerAgentServiceImpl::with_registry(Arc::new(registry));
-        let otp = service.generate_otp(&worker_id_uuid.to_string()).await.expect("generate_otp should succeed");
+        let bus = Arc::new(MockEventBus::new());
+        let service = WorkerAgentServiceImpl::with_registry(Arc::new(registry), bus);
+        let otp = service
+            .generate_otp(&worker_id_uuid.to_string())
+            .await
+            .expect("generate_otp should succeed");
 
         let req = RegisterWorkerRequest {
             auth_token: otp,
@@ -178,7 +222,10 @@ mod tests {
             .await
             .expect("registry get")
             .expect("worker exists");
-        assert!(matches!(w.state(), WorkerState::Creating | WorkerState::Connecting));
+        assert!(matches!(
+            w.state(),
+            WorkerState::Creating | WorkerState::Connecting
+        ));
 
         service
             .on_worker_heartbeat(&worker_id_uuid.to_string())
@@ -199,10 +246,12 @@ mod tests {
         let worker_registry = Arc::new(InMemoryWorkerRegistry::new());
         let log_service = LogStreamService::new();
 
+        let bus = Arc::new(MockEventBus::new());
         let service = WorkerAgentServiceImpl::with_registry_job_repository_and_log_service(
             worker_registry.clone(),
             job_repository.clone(),
             log_service,
+            bus,
         );
 
         let worker_uuid = uuid::Uuid::new_v4();
@@ -215,7 +264,7 @@ mod tests {
             provider_id,
         );
         let mut spec = WorkerSpec::new(
-            "hodei-worker:latest".to_string(),
+            "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
         spec.worker_id = worker_id.clone();
@@ -235,7 +284,10 @@ mod tests {
 
         let job_uuid = uuid::Uuid::new_v4();
         let job_id = JobId(job_uuid);
-        let mut job = Job::new(job_id.clone(), JobSpec::new(vec!["echo".to_string(), "hi".to_string()]));
+        let mut job = Job::new(
+            job_id.clone(),
+            JobSpec::new(vec!["echo".to_string(), "hi".to_string()]),
+        );
         let exec_ctx = ExecutionContext::new(
             job_id.clone(),
             ProviderId::new(),
@@ -290,10 +342,14 @@ impl WorkerAgentServiceImpl {
             job_repository: None,
             token_store: None,
             log_service: None,
+            event_bus: None,
         }
     }
 
-    pub fn with_registry(worker_registry: Arc<dyn WorkerRegistry>) -> Self {
+    pub fn with_registry(
+        worker_registry: Arc<dyn WorkerRegistry>,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
             otp_tokens: Arc::new(RwLock::new(HashMap::new())),
@@ -302,12 +358,14 @@ impl WorkerAgentServiceImpl {
             job_repository: None,
             token_store: None,
             log_service: None,
+            event_bus: Some(event_bus),
         }
     }
 
     pub fn with_registry_and_log_service(
         worker_registry: Arc<dyn WorkerRegistry>,
         log_service: LogStreamService,
+        event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -317,6 +375,7 @@ impl WorkerAgentServiceImpl {
             job_repository: None,
             token_store: None,
             log_service: Some(log_service),
+            event_bus: Some(event_bus),
         }
     }
 
@@ -324,6 +383,7 @@ impl WorkerAgentServiceImpl {
         worker_registry: Arc<dyn WorkerRegistry>,
         job_repository: Arc<dyn JobRepository>,
         log_service: LogStreamService,
+        event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -333,6 +393,7 @@ impl WorkerAgentServiceImpl {
             job_repository: Some(job_repository),
             token_store: None,
             log_service: Some(log_service),
+            event_bus: Some(event_bus),
         }
     }
 
@@ -341,6 +402,7 @@ impl WorkerAgentServiceImpl {
         job_repository: Arc<dyn JobRepository>,
         token_store: Arc<dyn WorkerBootstrapTokenStore>,
         log_service: LogStreamService,
+        event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -350,10 +412,13 @@ impl WorkerAgentServiceImpl {
             job_repository: Some(job_repository),
             token_store: Some(token_store),
             log_service: Some(log_service),
+            event_bus: Some(event_bus),
         }
     }
 
-    fn parse_worker_uuid(worker_id: &str) -> Result<hodei_jobs_domain::shared_kernel::WorkerId, Status> {
+    fn parse_worker_uuid(
+        worker_id: &str,
+    ) -> Result<hodei_jobs_domain::shared_kernel::WorkerId, Status> {
         let id = uuid::Uuid::parse_str(worker_id)
             .map_err(|_| Status::invalid_argument("worker_id must be a UUID"))?;
         Ok(hodei_jobs_domain::shared_kernel::WorkerId(id))
@@ -388,7 +453,10 @@ impl WorkerAgentServiceImpl {
         let worker = match registry.get(&worker_id).await {
             Ok(Some(w)) => w,
             Ok(None) => {
-                info!("Worker {} not in registry, allowing direct registration", worker_id);
+                info!(
+                    "Worker {} not in registry, allowing direct registration",
+                    worker_id
+                );
                 return Ok(());
             }
             Err(e) => return Err(Status::internal(e.to_string())),
@@ -447,7 +515,34 @@ impl WorkerAgentServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        if matches!(job.state, JobState::Succeeded | JobState::Failed | JobState::Timeout | JobState::Cancelled) {
+        // Publicar evento JobStatusChanged
+        if let Some(event_bus) = &self.event_bus {
+            let new_state = if result.success {
+                JobState::Succeeded
+            } else {
+                JobState::Failed
+            };
+
+            let event = DomainEvent::JobStatusChanged {
+                job_id: job.id.clone(),
+                old_state: JobState::Running, // Asumimos que estaba running
+                new_state,
+                occurred_at: Utc::now(),
+                correlation_id: None,
+                actor: None,
+            };
+            if let Err(e) = event_bus.publish(&event).await {
+                warn!(
+                    "Failed to publish JobStatusChanged event in on_job_result: {}",
+                    e
+                );
+            }
+        }
+
+        if matches!(
+            job.state,
+            JobState::Succeeded | JobState::Failed | JobState::Timeout | JobState::Cancelled
+        ) {
             registry
                 .release_from_job(&worker_id)
                 .await
@@ -474,11 +569,29 @@ impl WorkerAgentServiceImpl {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("Worker not found in registry"))?;
 
-        if matches!(worker.state(), WorkerState::Creating | WorkerState::Connecting) {
+        if matches!(
+            worker.state(),
+            WorkerState::Creating | WorkerState::Connecting
+        ) {
             registry
                 .update_state(&worker_id, WorkerState::Ready)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
+
+            // Publicar evento WorkerStatusChanged
+            if let Some(event_bus) = &self.event_bus {
+                let event = DomainEvent::WorkerStatusChanged {
+                    worker_id: worker.id().clone(),
+                    old_status: WorkerState::Connecting, // Asumimos que venía de Connecting/Creating
+                    new_status: WorkerState::Ready,
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                };
+                if let Err(e) = event_bus.publish(&event).await {
+                    warn!("Failed to publish WorkerStatusChanged event: {}", e);
+                }
+            }
         }
 
         Ok(())
@@ -508,17 +621,24 @@ impl WorkerAgentServiceImpl {
     }
 
     /// Valida un OTP token
-    /// 
+    ///
     /// En modo desarrollo (HODEI_DEV_MODE=1), acepta tokens con prefijo "dev-"
-    async fn validate_otp(&self, token: &str, worker_id_from_request: &str) -> Result<String, Status> {
+    async fn validate_otp(
+        &self,
+        token: &str,
+        worker_id_from_request: &str,
+    ) -> Result<String, Status> {
         let _worker_id = Self::parse_worker_uuid(worker_id_from_request)?;
 
         // Modo desarrollo: solo en debug builds (nunca en release)
-        let dev_mode = cfg!(debug_assertions)
-            && std::env::var("HODEI_DEV_MODE").unwrap_or_default() == "1";
+        let dev_mode =
+            cfg!(debug_assertions) && std::env::var("HODEI_DEV_MODE").unwrap_or_default() == "1";
 
         if dev_mode && (token.is_empty() || token.starts_with("dev-")) {
-            info!("Development mode: accepting token for worker {}", worker_id_from_request);
+            info!(
+                "Development mode: accepting token for worker {}",
+                worker_id_from_request
+            );
             return Ok(worker_id_from_request.to_string());
         }
 
@@ -535,7 +655,7 @@ impl WorkerAgentServiceImpl {
         }
 
         let mut tokens = self.otp_tokens.write().await;
-        
+
         let otp = tokens.get_mut(token).ok_or_else(|| {
             if dev_mode {
                 warn!("Invalid OTP token in dev mode. Use 'dev-<any>' or set HODEI_DEV_MODE=1");
@@ -563,15 +683,20 @@ impl WorkerAgentServiceImpl {
     }
 
     /// Envía un mensaje a un worker específico
-    pub async fn send_to_worker(&self, worker_id: &str, message: ServerMessage) -> Result<(), Status> {
+    pub async fn send_to_worker(
+        &self,
+        worker_id: &str,
+        message: ServerMessage,
+    ) -> Result<(), Status> {
         let channels = self.worker_channels.read().await;
-        let sender = channels.get(worker_id).ok_or_else(|| {
-            Status::not_found(format!("Worker {} not connected", worker_id))
-        })?;
+        let sender = channels
+            .get(worker_id)
+            .ok_or_else(|| Status::not_found(format!("Worker {} not connected", worker_id)))?;
 
-        sender.send(Ok(message)).await.map_err(|e| {
-            Status::internal(format!("Failed to send message to worker: {}", e))
-        })
+        sender
+            .send(Ok(message))
+            .await
+            .map_err(|e| Status::internal(format!("Failed to send message to worker: {}", e)))
     }
 }
 
@@ -583,19 +708,23 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         request: Request<RegisterWorkerRequest>,
     ) -> Result<Response<RegisterWorkerResponse>, Status> {
         let req = request.into_inner();
-        
-        let worker_info = req.worker_info.ok_or_else(|| {
-            Status::invalid_argument("worker_info is required")
-        })?;
+
+        let worker_info = req
+            .worker_info
+            .ok_or_else(|| Status::invalid_argument("worker_info is required"))?;
 
         // Obtener worker_id del request para validación
-        let worker_id_from_request = worker_info.worker_id.clone()
+        let worker_id_from_request = worker_info
+            .worker_id
+            .clone()
             .map(|id| id.value)
             .unwrap_or_else(|| format!("worker-{}", uuid::Uuid::new_v4()));
 
         // Validar OTP token
-        let validated_worker_id = self.validate_otp(&req.auth_token, &worker_id_from_request).await?;
-        
+        let validated_worker_id = self
+            .validate_otp(&req.auth_token, &worker_id_from_request)
+            .await?;
+
         let worker_id = validated_worker_id;
 
         self.on_worker_registered(&worker_id).await?;
@@ -607,7 +736,10 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             req.session_id.clone()
         };
 
-        info!("Worker {} registered with session {}", worker_id, session_id);
+        info!(
+            "Worker {} registered with session {}",
+            worker_id, session_id
+        );
 
         let registered = RegisteredWorker {
             info: worker_info,
@@ -615,14 +747,33 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             status: 0,
         };
 
-        self.workers.write().await.insert(worker_id.clone(), registered);
+        self.workers
+            .write()
+            .await
+            .insert(worker_id.clone(), registered);
+
+        // Publicar evento WorkerRegistered
+        if let Some(event_bus) = &self.event_bus {
+            let event = DomainEvent::WorkerRegistered {
+                worker_id: hodei_jobs_domain::shared_kernel::WorkerId(
+                    uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
+                ),
+                provider_id: hodei_jobs_domain::shared_kernel::ProviderId::new(),
+                occurred_at: Utc::now(),
+                correlation_id: None,
+                actor: None,
+            };
+            if let Err(e) = event_bus.publish(&event).await {
+                warn!("Failed to publish WorkerRegistered event: {}", e);
+            }
+        }
 
         Ok(Response::new(RegisterWorkerResponse {
-            worker_id: Some(WorkerId { value: worker_id }),
+            worker_id: Some(hodei_jobs::WorkerId { value: worker_id }),
             success: true,
             message: "Worker registered successfully".to_string(),
-            session_id,
-            registration_time: None,
+            session_id: session_id.clone(),
+            registration_time: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
         }))
     }
 
@@ -640,7 +791,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
 
         // Canal para enviar mensajes al worker (Result para compatibilidad con tonic)
         let (tx, rx) = mpsc::channel::<Result<ServerMessage, Status>>(100);
-        
+
         // Variable para trackear el worker_id de esta conexión
         let worker_id_holder: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let worker_id_for_cleanup = worker_id_holder.clone();
@@ -662,10 +813,12 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         if holder.is_none() {
                                             *holder = Some(wid.value.clone());
                                             // Registrar canal
-                                            worker_channels.write().await
+                                            worker_channels
+                                                .write()
+                                                .await
                                                 .insert(wid.value.clone(), tx_clone.clone());
                                         }
-                                        
+
                                         // Enviar ACK
                                         let ack = ServerMessage {
                                             payload: Some(ServerPayload::Ack(AckMessage {
@@ -675,7 +828,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         };
                                         let _ = tx_clone.send(Ok(ack)).await;
 
-                                        let _ = registry_service.on_worker_heartbeat(&wid.value).await;
+                                        let _ =
+                                            registry_service.on_worker_heartbeat(&wid.value).await;
                                     }
                                 }
                                 WorkerPayload::Log(log) => {
@@ -685,7 +839,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                     } else {
                                         info!("[{}] stdout: {}", log.job_id, log.line);
                                     }
-                                    
+
                                     // Forward to LogStreamService for client subscribers
                                     if let Some(ref svc) = log_service {
                                         let entry = LogEntry {
@@ -698,26 +852,35 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                     }
                                 }
                                 WorkerPayload::Result(result) => {
-                                    info!("✅ Job {} completed: exit_code={}, success={}", 
-                                        result.job_id, result.exit_code, result.success);
+                                    info!(
+                                        "✅ Job {} completed: exit_code={}, success={}",
+                                        result.job_id, result.exit_code, result.success
+                                    );
 
                                     if let Some(wid) = worker_id_for_result.read().await.clone() {
-                                        if let Err(e) = registry_service.on_job_result(&wid, &result).await {
+                                        if let Err(e) =
+                                            registry_service.on_job_result(&wid, &result).await
+                                        {
                                             error!("Failed to persist job result: {}", e);
                                         }
                                     }
-                                    
+
                                     // Close log subscribers when job completes
                                     if let Some(ref svc) = log_service {
                                         svc.close_subscribers(&result.job_id).await;
                                     }
                                 }
                                 WorkerPayload::Stats(stats) => {
-                                    info!("Worker stats: cpu={}%, mem={} bytes", 
-                                        stats.cpu_percent, stats.memory_bytes);
+                                    info!(
+                                        "Worker stats: cpu={}%, mem={} bytes",
+                                        stats.cpu_percent, stats.memory_bytes
+                                    );
                                 }
                                 WorkerPayload::Status(status) => {
-                                    info!("Worker status: {:?}, reason: {}", status.status, status.reason);
+                                    info!(
+                                        "Worker status: {:?}, reason: {}",
+                                        status.status, status.reason
+                                    );
                                 }
                             }
                         }
@@ -733,6 +896,23 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             if let Some(wid) = worker_id_for_cleanup.read().await.clone() {
                 warn!("Worker {} disconnected", wid);
                 worker_channels.write().await.remove(&wid);
+
+                // Publish WorkerDisconnected event
+                if let Some(event_bus) = &registry_service.event_bus {
+                    let worker_id = hodei_jobs_domain::shared_kernel::WorkerId(
+                        uuid::Uuid::parse_str(&wid).unwrap_or_default(),
+                    );
+                    let event = DomainEvent::WorkerDisconnected {
+                        worker_id,
+                        last_heartbeat: None,
+                        occurred_at: Utc::now(),
+                        correlation_id: None,
+                        actor: None,
+                    };
+                    if let Err(e) = event_bus.publish(&event).await {
+                        warn!("Failed to publish WorkerDisconnected event: {}", e);
+                    }
+                }
             }
         });
 
@@ -747,9 +927,10 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         request: Request<UpdateWorkerStatusRequest>,
     ) -> Result<Response<UpdateWorkerStatusResponse>, Status> {
         let req = request.into_inner();
-        let worker_id = req.worker_id.ok_or_else(|| {
-            Status::invalid_argument("worker_id is required")
-        })?.value;
+        let worker_id = req
+            .worker_id
+            .ok_or_else(|| Status::invalid_argument("worker_id is required"))?
+            .value;
 
         let mut workers = self.workers.write().await;
         if let Some(worker) = workers.get_mut(&worker_id) {
@@ -770,19 +951,44 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         request: Request<UnregisterWorkerRequest>,
     ) -> Result<Response<UnregisterWorkerResponse>, Status> {
         let req = request.into_inner();
-        let worker_id = req.worker_id.ok_or_else(|| {
-            Status::invalid_argument("worker_id is required")
-        })?.value;
+        let worker_id = req
+            .worker_id
+            .ok_or_else(|| Status::invalid_argument("worker_id is required"))?
+            .value;
 
         info!("Unregistering worker: {}", worker_id);
-        
+
         // Remover worker y su canal
         let removed = self.workers.write().await.remove(&worker_id);
         self.worker_channels.write().await.remove(&worker_id);
 
+        // Publish WorkerTerminated event if worker was found
+        if removed.is_some() {
+            if let Some(event_bus) = &self.event_bus {
+                let wid = hodei_jobs_domain::shared_kernel::WorkerId(
+                    uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
+                );
+                let event = DomainEvent::WorkerTerminated {
+                    worker_id: wid,
+                    provider_id: hodei_jobs_domain::shared_kernel::ProviderId::new(),
+                    reason: hodei_jobs_domain::events::TerminationReason::Unregistered,
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                };
+                if let Err(e) = event_bus.publish(&event).await {
+                    warn!("Failed to publish WorkerTerminated event: {}", e);
+                }
+            }
+        }
+
         Ok(Response::new(UnregisterWorkerResponse {
             success: removed.is_some(),
-            message: if removed.is_some() { "Unregistered".to_string() } else { "Not found".to_string() },
+            message: if removed.is_some() {
+                "Unregistered".to_string()
+            } else {
+                "Not found".to_string()
+            },
             timestamp: None,
         }))
     }
