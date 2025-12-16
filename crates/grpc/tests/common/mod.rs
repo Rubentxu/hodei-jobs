@@ -481,6 +481,7 @@ impl TestServer {
                 SchedulerConfig::default(),
                 sender,
                 event_bus.clone(),
+                None,
             ));
 
             let handle = tokio::spawn(async move {

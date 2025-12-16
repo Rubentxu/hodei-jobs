@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use hodei_jobs_domain::audit::{AuditLog, AuditQuery, AuditQueryResult, AuditRepository, EventTypeCount};
+use hodei_jobs_domain::audit::{
+    AuditLog, AuditQuery, AuditQueryResult, AuditRepository, EventTypeCount,
+};
 use hodei_jobs_domain::shared_kernel::{DomainError, Result};
 use sqlx::{Row, postgres::PgPool};
 
@@ -24,12 +26,6 @@ impl PostgresAuditRepository {
                 occurred_at TIMESTAMPTZ NOT NULL,
                 actor VARCHAR(255)
             );
-            
-            CREATE INDEX IF NOT EXISTS idx_audit_correlation_id ON audit_logs(correlation_id);
-            CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_logs(event_type);
-            CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_logs(occurred_at);
-            CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor);
-            CREATE INDEX IF NOT EXISTS idx_audit_event_date ON audit_logs(event_type, occurred_at);
             "#,
         )
         .execute(&self.pool)
@@ -37,6 +33,43 @@ impl PostgresAuditRepository {
         .map_err(|e| DomainError::InfrastructureError {
             message: format!("Failed to create audit_logs table: {}", e),
         })?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_correlation_id ON audit_logs(correlation_id);",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create audit_logs correlation_id index: {}", e),
+        })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_logs(event_type);")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to create audit_logs event_type index: {}", e),
+            })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_logs(occurred_at);")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to create audit_logs occurred_at index: {}", e),
+            })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor);")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to create audit_logs actor index: {}", e),
+            })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_event_date ON audit_logs(event_type, occurred_at);")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to create audit_logs event_date index: {}", e),
+            })?;
 
         Ok(())
     }
@@ -97,15 +130,14 @@ impl AuditRepository for PostgresAuditRepository {
         limit: i64,
         offset: i64,
     ) -> Result<AuditQueryResult> {
-        let count_row = sqlx::query(
-            "SELECT COUNT(*) as count FROM audit_logs WHERE event_type = $1",
-        )
-        .bind(event_type)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to count audit logs: {}", e),
-        })?;
+        let count_row =
+            sqlx::query("SELECT COUNT(*) as count FROM audit_logs WHERE event_type = $1")
+                .bind(event_type)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to count audit logs: {}", e),
+                })?;
         let total_count: i64 = count_row.get("count");
 
         let rows = sqlx::query(
@@ -178,15 +210,13 @@ impl AuditRepository for PostgresAuditRepository {
         limit: i64,
         offset: i64,
     ) -> Result<AuditQueryResult> {
-        let count_row = sqlx::query(
-            "SELECT COUNT(*) as count FROM audit_logs WHERE actor = $1",
-        )
-        .bind(actor)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to count audit logs: {}", e),
-        })?;
+        let count_row = sqlx::query("SELECT COUNT(*) as count FROM audit_logs WHERE actor = $1")
+            .bind(actor)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to count audit logs: {}", e),
+            })?;
         let total_count: i64 = count_row.get("count");
 
         let rows = sqlx::query(
@@ -245,7 +275,9 @@ impl AuditRepository for PostgresAuditRepository {
         let count_sql = format!("SELECT COUNT(*) as count FROM audit_logs {}", where_clause);
         let select_sql = format!(
             "SELECT * FROM audit_logs {} ORDER BY occurred_at DESC LIMIT ${} OFFSET ${}",
-            where_clause, param_idx, param_idx + 1
+            where_clause,
+            param_idx,
+            param_idx + 1
         );
 
         // Build count query
@@ -263,12 +295,11 @@ impl AuditRepository for PostgresAuditRepository {
             count_query = count_query.bind(et);
         }
 
-        let count_row = count_query
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
+        let count_row = count_query.fetch_one(&self.pool).await.map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to count audit logs: {}", e),
-            })?;
+            }
+        })?;
         let total_count: i64 = count_row.get("count");
 
         // Build select query
@@ -287,12 +318,11 @@ impl AuditRepository for PostgresAuditRepository {
         }
         select_query = select_query.bind(limit).bind(offset);
 
-        let rows = select_query
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
+        let rows = select_query.fetch_all(&self.pool).await.map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to query audit logs: {}", e),
-            })?;
+            }
+        })?;
 
         let logs: Vec<AuditLog> = rows.iter().map(Self::row_to_audit_log).collect();
         let has_more = (offset + logs.len() as i64) < total_count;

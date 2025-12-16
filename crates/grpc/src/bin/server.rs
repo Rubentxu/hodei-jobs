@@ -3,8 +3,7 @@
 //! Main entry point for the gRPC server.
 
 use hodei_jobs::{
-    FILE_DESCRIPTOR_SET, 
-    audit_service_server::AuditServiceServer,
+    FILE_DESCRIPTOR_SET, audit_service_server::AuditServiceServer,
     job_execution_service_server::JobExecutionServiceServer,
     log_stream_service_server::LogStreamServiceServer,
     metrics_service_server::MetricsServiceServer,
@@ -24,8 +23,9 @@ use hodei_jobs_application::worker_provisioning_impl::{
 use hodei_jobs_domain::shared_kernel::ProviderId;
 use hodei_jobs_domain::worker_provider::WorkerProvider;
 use hodei_jobs_grpc::services::{
-    AuditServiceImpl, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc, 
-    MetricsServiceImpl, ProviderManagementServiceImpl, SchedulerServiceImpl, WorkerAgentServiceImpl,
+    AuditServiceImpl, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc,
+    MetricsServiceImpl, ProviderManagementServiceImpl, SchedulerServiceImpl,
+    WorkerAgentServiceImpl,
 };
 use hodei_jobs_infrastructure::persistence::{
     PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
@@ -144,23 +144,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Audit Service (Story 3.2)
     let audit_service = AuditService::new(audit_repository.clone());
-    
+
     // Create Audit gRPC Service (Story 15.8)
     let audit_grpc_service = AuditServiceImpl::new(audit_repository.clone());
-    
+
     // Create Audit Cleanup Service (Story 15.9)
     let audit_cleanup_config = AuditRetentionConfig::from_env();
     let audit_cleanup_service = std::sync::Arc::new(AuditCleanupService::new(
         audit_repository,
         audit_cleanup_config.clone(),
     ));
-    
+
     // Start background cleanup task
     if audit_cleanup_config.enabled {
         info!(
             "  ✓ Audit cleanup enabled (retention: {} days, interval: {:?})",
-            audit_cleanup_config.retention_days,
-            audit_cleanup_config.cleanup_interval
+            audit_cleanup_config.retention_days, audit_cleanup_config.cleanup_interval
         );
         audit_cleanup_service.clone().start_background_cleanup();
     } else {
@@ -224,6 +223,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create provisioning service with Docker provider (HU-6.6)
     let provisioning_enabled =
         env::var("HODEI_PROVISIONING_ENABLED").unwrap_or_else(|_| "1".to_string()) == "1";
+
+    // Keep track of provisioning service to inject into controller
+    let mut provisioning_service_for_controller: Option<
+        std::sync::Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>,
+    > = None;
 
     let scheduler_service = if provisioning_enabled {
         // Initialize providers map
@@ -321,6 +325,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService,
                 >;
 
+            // Save for controller
+            provisioning_service_for_controller = Some(provisioning_service.clone());
+
             info!("  ✓ WorkerProvisioningService configured");
 
             SchedulerServiceImpl::with_provisioning(
@@ -351,6 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SchedulerConfig::default(),
         )
     };
+
     let log_grpc_service = LogStreamServiceGrpc::new(log_stream_service);
 
     // Create reflection service
@@ -396,6 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SchedulerConfig::default(),
             sender,
             event_bus.clone(),
+            provisioning_service_for_controller,
         ));
 
         let interval = Duration::from_millis(controller_interval_ms);
@@ -505,7 +514,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The context_interceptor extracts/generates correlation_id and actor from headers
     // and makes them available via RequestContextExt::get_context()
     info!("  ✓ Context interceptor enabled (correlation_id, actor propagation)");
-    
+
     Server::builder()
         .accept_http1(true)
         .layer(cors)

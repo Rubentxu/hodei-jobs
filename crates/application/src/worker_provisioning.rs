@@ -55,6 +55,9 @@ pub trait WorkerProvisioningService: Send + Sync {
 
     /// Get the default worker spec for a provider
     fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec>;
+
+    /// List all available providers
+    async fn list_providers(&self) -> Result<Vec<ProviderId>>;
 }
 
 #[cfg(test)]
@@ -85,7 +88,10 @@ mod tests {
             provider_id: &ProviderId,
             spec: WorkerSpec,
         ) -> Result<ProvisioningResult> {
-            self.provisions.lock().await.push((provider_id.clone(), spec.clone()));
+            self.provisions
+                .lock()
+                .await
+                .push((provider_id.clone(), spec.clone()));
             Ok(ProvisioningResult::new(
                 spec.worker_id,
                 uuid::Uuid::new_v4().to_string(),
@@ -102,6 +108,10 @@ mod tests {
                 "hodei-jobs-worker:latest".to_string(),
                 "http://localhost:50051".to_string(),
             ))
+        }
+
+        async fn list_providers(&self) -> Result<Vec<ProviderId>> {
+            Ok(self.available_providers.clone())
         }
     }
 
@@ -130,7 +140,12 @@ mod tests {
         let service = MockProvisioningService::new(vec![provider_id.clone()]);
 
         assert!(service.is_provider_available(&provider_id).await.unwrap());
-        assert!(!service.is_provider_available(&other_provider).await.unwrap());
+        assert!(
+            !service
+                .is_provider_available(&other_provider)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

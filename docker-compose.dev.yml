@@ -1,52 +1,166 @@
+# =============================================================================
+# Hodei Jobs Platform - Development Docker Compose
+# =============================================================================
+# Optimized for rapid development with hot reload, debugging, and fast iteration
+#
+# Usage:
+#   just dev-db          # Start database only
+#   just dev             # Start full development environment
+#   just logs            # View logs
+#   just logs-backend    ##
+# Environment View backend logs
+ variables (create .env file):
+#   POSTGRES_PASSWORD=postgres
+#   HODEI_DEV_MODE=1
+# =============================================================================
+
+version: '3.8'
+
 services:
-  # PostgreSQL Database
+  # ===========================================================================
+  # PostgreSQL Database (Development)
+  # ===========================================================================
   postgres:
     image: postgres:16-alpine
     container_name: hodei-jobs-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: hodei
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_dev_data:/var/lib/postgresql/data
       - ./scripts/sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d hodei"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 5
+      start_period: 10s
     networks:
-      - hodei-jobs-network
+      - hodei-dev-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=100
+      -c log_min_duration_statement=100
+      -c log_statement=all
+      -c shared_preload_libraries=pg_stat_statements
 
-  # Hodei gRPC Server (opcional - para desarrollo local se puede correr con cargo)
-  # Descomenta si prefieres correr el servidor en Docker
-  # server:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.server
-  #   container_name: hodei-jobs-server
-  #   environment:
-  #     HODEI_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei
-  #     HODEI_DEV_MODE: "1"
-  #     HODEI_DOCKER_ENABLED: "1"
-  #     GRPC_PORT: "50051"
-  #     REST_PORT: "8080"
-  #   ports:
-  #     - "50051:50051"
-  #     - "8080:8080"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - hodei-jobs-network
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock
+  # ===========================================================================
+  # Prometheus (Development Monitoring - Optional)
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: hodei-jobs-prometheus
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    volumes:
+      - ./deploy/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_dev_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=7d'
+    ports:
+      - "9090:9090"
+    networks:
+      - hodei-dev-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
+  # ===========================================================================
+  # Grafana (Development Dashboards - Optional)
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: hodei-jobs-grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: "grafana-piechart-panel"
+    volumes:
+      - grafana_dev_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - hodei-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ===========================================================================
+  # pgAdmin (PostgreSQL Admin - Optional)
+  # ===========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: hodei-jobs-pgadmin
+    restart: unless-stopped
+    profiles:
+      - admin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@hodei.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_dev_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - hodei-dev-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+# Named volumes for persistent development data
 volumes:
-  postgres_data:
+  postgres_dev_data:
+    driver: local
+  prometheus_dev_data:
+    driver: local
+  grafana_dev_data:
+    driver: local
+  pgadmin_dev_data:
+    driver: local
 
+# Development network
 networks:
-  hodei-jobs-network:
+  hodei-dev-network:
     driver: bridge
+    name: hodei-dev-network

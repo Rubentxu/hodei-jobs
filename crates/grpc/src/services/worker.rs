@@ -331,6 +331,108 @@ mod tests {
         assert!(matches!(worker.state(), WorkerState::Ready));
         assert!(worker.current_job_id().is_none());
     }
+    #[tokio::test]
+    async fn test_job_result_publishes_event_with_correlation_id() {
+        let job_repository = Arc::new(InMemoryJobRepository::new());
+        let worker_registry = Arc::new(InMemoryWorkerRegistry::new());
+        let log_service = LogStreamService::new();
+        let bus = Arc::new(MockEventBus::new());
+
+        let service = WorkerAgentServiceImpl::with_registry_job_repository_and_log_service(
+            worker_registry.clone(),
+            job_repository.clone(),
+            log_service,
+            bus.clone(),
+        );
+
+        // 1. Setup Worker
+        let worker_uuid = uuid::Uuid::new_v4();
+        let worker_id = WorkerId(worker_uuid);
+        let handle = WorkerHandle::new(
+            worker_id.clone(),
+            "resource".to_string(),
+            ProviderType::Docker,
+            ProviderId::new(),
+        );
+        let mut spec = WorkerSpec::new(
+            "hodei-jobs-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+        spec.worker_id = worker_id.clone();
+        worker_registry
+            .register(handle, spec)
+            .await
+            .expect("Failed to register worker");
+        worker_registry
+            .update_state(&worker_id, WorkerState::Connecting)
+            .await
+            .expect("Failed to set worker connecting");
+        worker_registry
+            .update_state(&worker_id, WorkerState::Ready)
+            .await
+            .expect("Failed to set worker ready");
+
+        // 2. Setup Job with Metadata (Correlation ID)
+        let job_uuid = uuid::Uuid::new_v4();
+        let job_id = JobId(job_uuid);
+        let mut job = Job::new(job_id.clone(), JobSpec::new(vec!["echo".to_string()]));
+        job.metadata
+            .insert("correlation_id".to_string(), "CORRl-123".to_string());
+        job.metadata
+            .insert("actor".to_string(), "ACTOR-XYZ".to_string());
+
+        let exec_ctx = ExecutionContext::new(
+            job_id.clone(),
+            ProviderId::new(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        job.submit_to_provider(ProviderId::new(), exec_ctx)
+            .expect("submit");
+        job.mark_running().expect("mark_running");
+        job_repository.save(&job).await.expect("save job");
+
+        // Ensure worker is assigned to job in registry so it can be released
+        worker_registry
+            .assign_to_job(&worker_id, job_id.clone())
+            .await
+            .expect("Failed to assign worker");
+
+        // 3. Process Result
+        let msg = hodei_jobs::JobResultMessage {
+            job_id: job_uuid.to_string(),
+            exit_code: 0,
+            success: true,
+            error_message: String::new(),
+            completed_at: None,
+        };
+        service
+            .on_job_result(&worker_uuid.to_string(), &msg)
+            .await
+            .expect("on_job_result");
+
+        // 4. Verify Event
+        let events = bus.published.lock().unwrap();
+        let success_event = events.iter().find(|e| {
+            matches!(
+                e,
+                DomainEvent::JobStatusChanged {
+                    new_state: JobState::Succeeded,
+                    ..
+                }
+            )
+        });
+        assert!(success_event.is_some());
+
+        if let Some(DomainEvent::JobStatusChanged {
+            correlation_id,
+            actor,
+            ..
+        }) = success_event
+        {
+            assert_eq!(correlation_id.as_deref(), Some("CORRl-123"));
+            assert_eq!(actor.as_deref(), Some("ACTOR-XYZ"));
+        }
+    }
 }
 
 impl WorkerAgentServiceImpl {
@@ -524,13 +626,16 @@ impl WorkerAgentServiceImpl {
                 JobState::Failed
             };
 
+            let correlation_id = job.metadata.get("correlation_id").cloned();
+            let actor = job.metadata.get("actor").cloned();
+
             let event = DomainEvent::JobStatusChanged {
                 job_id: job.id.clone(),
                 old_state: JobState::Running, // Asumimos que estaba running
                 new_state,
                 occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
+                correlation_id,
+                actor,
             };
             if let Err(e) = event_bus.publish(&event).await {
                 warn!(

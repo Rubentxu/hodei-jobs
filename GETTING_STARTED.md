@@ -1,6 +1,6 @@
 # Guía de Usuario - Hodei Jobs Platform
 
-**Versión**: 8.0  
+**Versión**: 8.0
 **Última Actualización**: 2025-12-16
 
 Guía práctica para usuarios que quieren ejecutar jobs distribuidos usando la interfaz web de Hodei Jobs Platform.
@@ -42,10 +42,15 @@ En menos de 5 minutos puedes tener la plataforma funcionando y ejecutar tu prime
 git clone <repo-url>
 cd hodei-jobs
 
-# 2. Levantar toda la plataforma
+# 2. Configurar variables de entorno
+cat > .env << EOF
+POSTGRES_PASSWORD=secure_password_here
+EOF
+
+# 3. Levantar toda la plataforma
 docker compose -f docker-compose.prod.yml up -d
 
-# 3. Abrir la interfaz web
+# 4. Abrir la interfaz web
 open http://localhost  # macOS
 xdg-open http://localhost  # Linux
 ```
@@ -77,32 +82,38 @@ docker compose -f docker-compose.prod.yml --profile monitoring up -d
 
 **Servicios disponibles:**
 
-| Servicio | URL | Descripción |
-|----------|-----|-------------|
-| **Web Dashboard** | http://localhost | Interfaz principal |
-| **API gRPC** | localhost:50051 | API para clientes |
-| **PostgreSQL** | localhost:5432 | Base de datos |
-| **Prometheus** | http://localhost:9090 | Métricas (opcional) |
-| **Grafana** | http://localhost:3000 | Dashboards (opcional) |
+| Servicio          | URL                   | Descripción           |
+| ----------------- | --------------------- | --------------------- |
+| **Web Dashboard** | http://localhost      | Interfaz principal    |
+| **API gRPC**      | localhost:50051       | API para clientes     |
+| **PostgreSQL**    | localhost:5432        | Base de datos         |
+| **Prometheus**    | http://localhost:9090 | Métricas (opcional)   |
+| **Grafana**       | http://localhost:3000 | Dashboards (opcional) |
 
-### Opción 2: Desarrollo Local
+### Opción 2: Desarrollo Local (Optimizado)
 
-Para desarrollo, puedes levantar solo PostgreSQL y ejecutar el servidor localmente:
+Hemos simplificado el flujo de desarrollo para que sea ultra-rápido.
 
 ```bash
-# Terminal 1: Base de datos
-docker compose -f docker-compose.dev.yml up -d
+# 1. Setup inicial (solo la primera vez)
+./setup.sh
 
-# Terminal 2: Servidor backend
-export HODEI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei"
-export HODEI_DEV_MODE=1
-export HODEI_DOCKER_ENABLED=1
-cargo run --bin server -p hodei-jobs-grpc
+# 2. Iniciar entorno de desarrollo
+./dev.sh
+```
 
-# Terminal 3: Frontend web
-cd web
-npm install
-npm run dev
+El script `./dev.sh` levantará automáticamente:
+
+- PostgreSQL (en Docker)
+- Backend (con Hot Reload via Bacon)
+- Frontend (con HMR via Vite)
+
+También puedes usar comandos individuales si lo prefieres:
+
+```bash
+./dev.sh db       # Solo base de datos
+./dev.sh backend  # Solo backend
+./dev.sh frontend # Solo frontend
 ```
 
 ### Verificar que todo funciona
@@ -138,6 +149,7 @@ El dashboard muestra un resumen del estado del sistema:
 - **Recent Executions**: Últimos 5 jobs ejecutados
 
 **Acciones rápidas:**
+
 - Clic en el botón **+** (azul, esquina inferior derecha) para crear un nuevo job
 - Clic en "See All" para ver el historial completo
 - Clic en cualquier job reciente para ver sus detalles
@@ -151,9 +163,11 @@ El dashboard muestra un resumen del estado del sistema:
 Formulario completo para programar un nuevo job:
 
 #### 1. Basic Info
+
 - **Job Name**: Nombre descriptivo del job (ej: "Data Processing Pipeline")
 
 #### 2. Core Execution
+
 - **Command Type**: Tipo de comando a ejecutar
   - `Shell Command`: Comandos bash/shell
   - `Docker Exec`: Ejecutar dentro de un contenedor
@@ -162,10 +176,12 @@ Formulario completo para programar un nuevo job:
 - **Command / Script Content**: El comando o script a ejecutar
 
 #### 3. Environment & Image
+
 - **Container Image**: Imagen Docker a usar (ej: `ubuntu:latest`, `python:3.9`)
 - **Environment Variables**: Variables de entorno (clave=valor)
 
 #### 4. Resources
+
 - **CPU Cores**: Número de cores (1-16)
 - **Memory (MB)**: Memoria RAM en MB
 - **Storage (MB)**: Almacenamiento temporal
@@ -174,12 +190,14 @@ Formulario completo para programar un nuevo job:
 - **Architecture**: `x86_64` o `arm64`
 
 #### 5. Preferences
+
 - **Provider**: Seleccionar provider específico o "Any"
 - **Region**: Región preferida o "Auto"
 - **Job Priority**: `Low`, `Normal`, o `High`
 - **Allow Retry**: Reintentar automáticamente si falla
 
 **Ejemplo rápido:**
+
 ```
 Job Name: Hello World Test
 Command Type: Shell Command
@@ -202,22 +220,27 @@ Muestra información detallada de un job específico:
 #### Pestañas disponibles:
 
 **Overview:**
+
 - **Timeline**: Progreso del job (Queued → Image Pulled → Running → Cleanup)
 - **Live Resources**: Uso de CPU y memoria en tiempo real
 - **Latest Logs**: Vista previa de los últimos logs
 
 **Config:**
+
 - Comando ejecutado
 - Imagen utilizada
 - Límites de CPU y memoria
 
 **Logs:**
+
 - Enlace al visor de logs completo
 
 **Resources:**
+
 - Gráficos detallados de uso de recursos
 
 #### Acciones:
+
 - **SSH Access**: Acceso directo al worker (si está disponible)
 - **Cancel Job**: Cancelar el job en ejecución
 
@@ -230,17 +253,20 @@ Muestra información detallada de un job específico:
 Visor de logs estilo terminal con streaming en tiempo real:
 
 **Características:**
+
 - **Búsqueda**: Filtrar logs por texto (grep)
 - **Filtros por nivel**: All, INFO, WARN, ERROR
 - **Pause/Resume**: Pausar el streaming para analizar
 - **Auto-scroll**: Seguir automáticamente los nuevos logs
 
 **Colores de logs:**
+
 - 🔵 **INFO**: Información general (azul)
 - 🟡 **WARN**: Advertencias (amarillo)
 - 🔴 **ERROR**: Errores (rojo)
 
 **Controles:**
+
 - **Pause/Resume**: Pausar o continuar el streaming
 - **Clear**: Limpiar la pantalla
 - **Scroll to bottom**: Ir al final de los logs
@@ -252,6 +278,7 @@ Visor de logs estilo terminal con streaming en tiempo real:
 **URL:** `/jobs`
 
 Lista completa de todos los jobs con:
+
 - ID del job
 - Nombre
 - Estado (Running, Success, Failed)
@@ -259,6 +286,7 @@ Lista completa de todos los jobs con:
 - Fecha de creación
 
 **Filtros disponibles:**
+
 - Por estado
 - Por fecha
 - Por nombre
@@ -271,13 +299,14 @@ Lista completa de todos los jobs con:
 
 Lista de providers de infraestructura disponibles:
 
-| Provider | Descripción |
-|----------|-------------|
-| **Docker** | Ejecuta jobs en contenedores Docker locales |
-| **Kubernetes** | Ejecuta jobs como Pods en un cluster K8s |
+| Provider        | Descripción                                   |
+| --------------- | --------------------------------------------- |
+| **Docker**      | Ejecuta jobs en contenedores Docker locales   |
+| **Kubernetes**  | Ejecuta jobs como Pods en un cluster K8s      |
 | **Firecracker** | Ejecuta jobs en microVMs (máximo aislamiento) |
 
 **Acciones:**
+
 - Ver detalles de cada provider
 - Habilitar/deshabilitar providers
 - Configurar parámetros específicos
@@ -295,6 +324,7 @@ Formulario para agregar un nuevo provider con su configuración específica.
 **URL:** `/metrics`
 
 Dashboard de métricas del sistema:
+
 - Jobs por estado
 - Tiempo promedio de ejecución
 - Uso de recursos por provider
@@ -367,6 +397,120 @@ Dashboard de métricas del sistema:
 
 ---
 
+## 🔍 Verificación Avanzada (Eventos y Auditoría)
+
+Para asegurar que los jobs se están ejecutando correctamente y generando los eventos de dominio esperados, puedes consultar directamente el sistema de auditoría.
+
+### Consultar Logs de Auditoría (SQL)
+
+Conéctate a la base de datos PostgreSQL corriendo en Docker.
+_Nota: El usuario por defecto en desarrollo es `postgres`, en producción suele ser `hodei`._
+
+```bash
+# Opción A: Entorno Desarrollo
+docker exec -it hodei-jobs-postgres psql -U postgres -d hodei
+
+# Opción B: Entorno Producción (o Inicio Rápido)
+docker exec -it hodei-jobs-postgres psql -U hodei -d hodei
+
+# Ejecutar query directa:
+docker exec hodei-jobs-postgres psql -U hodei -d hodei -c "SELECT * FROM audit_logs LIMIT 5;"
+```
+
+### Consultas Útiles
+
+#### 1. Ver últimos eventos registrados
+
+Verifica qué está pasando en el sistema en tiempo real.
+
+```sql
+SELECT occurred_at, event_type, actor, payload
+FROM audit_logs
+ORDER BY occurred_at DESC
+LIMIT 10;
+```
+
+#### 2. Seguir el ciclo de vida de un Job específico
+
+Usando el `correlation_id` (que suele ser el Job ID para eventos de Job), puedes ver toda la historia de un job.
+
+```sql
+-- Reemplaza 'JOB_ID_AQUI' con el ID real de tu job
+SELECT occurred_at, event_type, payload
+FROM audit_logs
+WHERE correlation_id = 'JOB_ID_AQUI'
+ORDER BY occurred_at ASC;
+```
+
+> [!NOTE]
+> Gracias a las mejoras recientes, **todos** los eventos del ciclo de vida (incluyendo éxito/fallo) ahora incluyen el `correlation_id`, facilitando el seguimiento completo con esta única query.
+
+### Verificación del Ciclo de Vida (Orden de Eventos)
+
+Para certificar que el flujo funciona correctamente, el orden cronológico de los eventos debe ser:
+
+1.  **`JobCreated`**: El job entra al sistema (estado `Queued`).
+2.  **`JobAssigned`**: El Scheduler asigna un worker.
+3.  **`JobStatusChanged`** (Scheduled -> Running): El worker confirma el inicio de la ejecución.
+4.  **`JobStatusChanged`** (Running -> Succeeded/Failed): El worker reporta la finalización.
+
+### Verificación de Limpieza del Worker
+
+Para verificar que el worker se libera correctamente tras finalizar el job, busca los eventos de latido (`WorkerHeartbeat`) o consulta el estado del worker. En entornos dinámicos (Docker), deberías ver que el contenedor se detiene y elimina si la política de escalado así lo dicta.
+
+**Verificar liberación en logs del servidor:**
+
+```bash
+docker compose -f docker-compose.dev.yml logs api | grep "released"
+```
+
+### Verificación de Logs de Ejecución
+
+Para confirmar que la salida del job (`stdout`/`stderr`) se transmite y registra correctamente:
+
+1.  **Logs del Contenedor Worker** (si aún existe):
+
+    ```bash
+    # Listar contenedores de workers (incluso detenidos)
+    docker ps -a --filter "name=hodei-worker"
+
+    # Ver logs específicos
+    docker logs <CONTAINER_ID>
+    ```
+
+2.  **Confirmar Recepción en el Servidor**:
+    El servidor recibe los logs vía gRPC y los registra (nivel DEBUG/INFO).
+    ```bash
+    docker logs hodei-jobs-api 2>&1 | grep "Log appended"
+    ```
+
+#### 3. Estadísticas de Ejecución
+
+Cuenta cuántos jobs han sido creados vs completados.
+
+```sql
+SELECT event_type, COUNT(*) as total
+FROM audit_logs
+GROUP BY event_type
+ORDER BY total DESC;
+```
+
+### Verificación de Integridad
+
+Si un job parece "atascado", busca si falta alguno de los eventos intermedios. Por ejemplo, si ves `JobCreated` pero nunca `JobAssigned`, el problema está en el Scheduler o en la falta de recursos (Providers).
+
+```sql
+-- Buscar jobs huérfanos (creados hace más de 5 min sin asignar)
+SELECT * FROM audit_logs
+WHERE event_type = 'JobCreated'
+AND occurred_at < NOW() - INTERVAL '5 minutes'
+AND correlation_id NOT IN (
+    SELECT correlation_id FROM audit_logs WHERE event_type = 'JobAssigned'
+);
+```
+
+---
+
 ## 🏗️ Arquitectura del Sistema
 
 ### Componentes
@@ -412,15 +556,15 @@ Dashboard de métricas del sistema:
 
 ### Estados del Job
 
-| Estado | Descripción |
-|--------|-------------|
-| `PENDING` | Esperando worker disponible |
-| `ASSIGNED` | Asignado a un worker |
-| `RUNNING` | En ejecución |
-| `SUCCEEDED` | Completado exitosamente |
-| `FAILED` | Terminó con error |
-| `CANCELLED` | Cancelado por el usuario |
-| `TIMEOUT` | Excedió el tiempo límite |
+| Estado      | Descripción                 |
+| ----------- | --------------------------- |
+| `PENDING`   | Esperando worker disponible |
+| `ASSIGNED`  | Asignado a un worker        |
+| `RUNNING`   | En ejecución                |
+| `SUCCEEDED` | Completado exitosamente     |
+| `FAILED`    | Terminó con error           |
+| `CANCELLED` | Cancelado por el usuario    |
+| `TIMEOUT`   | Excedió el tiempo límite    |
 
 ---
 
@@ -483,40 +627,45 @@ docker compose -f docker-compose.prod.yml up -d
 ## 👨‍💻 Referencia para Desarrolladores
 
 Para información técnica detallada sobre:
+
 - Compilación desde código fuente
 - Tests unitarios y de integración
 - API gRPC
 - Desarrollo de nuevos providers
 
-Consulta el archivo [DEVELOPMENT.md](./DEVELOPMENT.md) (próximamente).
+Consulta el archivo [DEVELOPMENT.md](./DEVELOPMENT.md) para la guía completa.
 
-### Comandos útiles para desarrollo
+### Comandos útiles (Justfile)
+
+Usamos `just` para automatizar tareas comunes. Ejecuta `just --list` para ver todos los comandos disponibles.
 
 ```bash
-# Compilar el proyecto
-cargo build --workspace
+# Desarrollo
+just dev            # Inicia todo el entorno
+just dev-db         # Inicia solo la base de datos
+just dev-backend    # Inicia backend con hot reload
 
-# Ejecutar tests
-cargo test --workspace
+# Testing
+just test           # Ejecuta todos los tests
+just test-backend   # Tests de backend
+just test-e2e       # Tests end-to-end
 
-# Verificar código
-cargo clippy --workspace
-
-# Formatear código
-cargo fmt --all
+# Calidad de Código
+just check          # Lint y format check
+just clean          # Limpiar artefactos
 ```
 
 ### Variables de Entorno
 
-| Variable | Descripción | Default |
-|----------|-------------|---------|
-| `HODEI_DATABASE_URL` | URL de PostgreSQL | - |
-| `HODEI_DEV_MODE` | Modo desarrollo (acepta tokens dev-*) | `0` |
-| `HODEI_DOCKER_ENABLED` | Habilitar Docker provider | `0` |
-| `HODEI_K8S_ENABLED` | Habilitar Kubernetes provider | `0` |
-| `HODEI_FC_ENABLED` | Habilitar Firecracker provider | `0` |
-| `GRPC_PORT` | Puerto del servidor gRPC | `50051` |
-| `RUST_LOG` | Nivel de logs | `info` |
+| Variable               | Descripción                            | Default |
+| ---------------------- | -------------------------------------- | ------- |
+| `HODEI_DATABASE_URL`   | URL de PostgreSQL                      | -       |
+| `HODEI_DEV_MODE`       | Modo desarrollo (acepta tokens dev-\*) | `0`     |
+| `HODEI_DOCKER_ENABLED` | Habilitar Docker provider              | `0`     |
+| `HODEI_K8S_ENABLED`    | Habilitar Kubernetes provider          | `0`     |
+| `HODEI_FC_ENABLED`     | Habilitar Firecracker provider         | `0`     |
+| `GRPC_PORT`            | Puerto del servidor gRPC               | `50051` |
+| `RUST_LOG`             | Nivel de logs                          | `info`  |
 
 ---
 
@@ -529,4 +678,4 @@ cargo fmt --all
 
 ---
 
-*¿Tienes preguntas? Abre un issue en el repositorio.*
+_¿Tienes preguntas? Abre un issue en el repositorio._

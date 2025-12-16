@@ -1,0 +1,50 @@
+# =============================================================================
+# Bacon Configuration for Hodei Job Platform
+# =============================================================================
+# Bacon is a background code checker for Rust that provides continuous feedback
+# with minimal interaction, perfect for rapid development.
+#
+# Install: cargo install --locked bacon
+# Usage: cd crates/grpc && bacon
+#
+# This configuration provides multiple jobs for different development workflows.
+
+[jobs]
+# Default job - run server with fast feedback
+run = { cmd = ["cargo", "run", "--bin", "server"], need_stdout = true, desc = "Run gRPC server with hot reload" }
+
+# Run worker with hot reload
+run-worker = { cmd = ["cargo", "run", "--bin", "worker"], need_stdout = true, desc = "Run worker with hot reload" }
+
+# Run all tests in watch mode
+test = { cmd = ["cargo", "test", "--workspace"], need_stdout = true, desc = "Run all tests in watch mode" }
+
+# Run specific test file
+test-file = { cmd = ["cargo", "test", "--"], need_stdout = true, desc = "Run specific test (use: bacon test-file -- test_name)" }
+
+# Check code quickly (faster than full compilation)
+check = { cmd = ["cargo", "check"], need_stdout = false, desc = "Quick code check" }
+
+# Run clippy for linting
+clippy = { cmd = ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"], need_stdout = false, desc = "Run clippy linter" }
+
+# Format code
+fmt = { cmd = ["cargo", "fmt", "--all", "--"], need_stdout = false, desc = "Format code" }
+
+# Generate protobuf code
+generate = { cmd = ["cargo", "build", "--package", "hodei-jobs-proto"], need_stdout = true, desc = "Generate protobuf code" }
+
+# Run integration tests
+test-integration = { cmd = ["cargo", "test", "--test", "integration"], need_stdout = true, desc = "Run integration tests" }
+
+# Build release
+build = { cmd = ["cargo", "build", "--release"], need_stdout = true, desc = "Build release version" }
+
+# Doc tests
+doc = { cmd = ["cargo", "test", "--doc"], need_stdout = true, desc = "Run documentation tests" }
+
+# Example: Run specific test
+# Usage: bacon test-file -- --exact test_name
+# This allows you to run a specific test while editing
+[default-job]
+name = "run"

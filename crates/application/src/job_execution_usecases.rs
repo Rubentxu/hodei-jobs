@@ -173,7 +173,7 @@ pub struct RetryJobResponse {
 }
 
 /// Use Case: Retry Failed Job (UC-003)
-/// 
+///
 /// Reintenta un job que ha fallado o ha expirado, siempre que no haya
 /// excedido el número máximo de intentos.
 pub struct RetryJobUseCase {
@@ -281,7 +281,16 @@ impl CreateJobUseCase {
         let job_id = JobId::new();
 
         // 3. Crear Job
-        let job = Job::new(job_id.clone(), job_spec.clone());
+        let mut job = Job::new(job_id.clone(), job_spec.clone());
+
+        // Store correlation details in metadata
+        if let Some(correlation_id) = &request.correlation_id {
+            job.metadata
+                .insert("correlation_id".to_string(), correlation_id.clone());
+        }
+        if let Some(actor) = &request.actor {
+            job.metadata.insert("actor".to_string(), actor.clone());
+        }
 
         // 4. Validar Job
         self.validate_job(&job)?;
@@ -639,7 +648,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_job_fails_when_max_attempts_exceeded() {
         let repo = Arc::new(MockJobRepositoryWithFailedJob::new_with_failed_job());
-        
+
         // Set attempts to max
         {
             let mut job_guard = repo.job.lock().unwrap();

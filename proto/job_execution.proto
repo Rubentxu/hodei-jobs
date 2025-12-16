@@ -9,7 +9,7 @@ import "google/protobuf/duration.proto";
 
 // Definición completa del job
 message JobDefinition {
-    hodei.common.hodei.common.JobId job_id = 1;
+    hodei.common.JobId job_id = 1;
     string name = 2;
     string description = 3;
     string command = 4;  // Comando a ejecutar
@@ -27,9 +27,9 @@ message JobDefinition {
 
 // Información de ejecución
 message ExecutionInfo {
-    hodei.common.hodei.common.ExecutionId execution_id = 1;
-    hodei.common.hodei.common.JobId job_id = 2;
-    hodei.common.hodei.common.WorkerId assigned_worker_id = 3;
+    hodei.common.ExecutionId execution_id = 1;
+    hodei.common.JobId job_id = 2;
+    hodei.common.WorkerId assigned_worker_id = 3;
     hodei.common.ExecutionState state = 4;
     hodei.common.JobStatus status = 5;
     google.protobuf.Timestamp start_time = 6;
@@ -43,7 +43,7 @@ message ExecutionInfo {
 message DomainEvent {
     string event_id = 1;
     string event_type = 2;  // JobCreated, JobQueued, JobAssigned, JobStarted, etc.
-    hodei.common.hodei.common.ExecutionId execution_id = 3;
+    hodei.common.ExecutionId execution_id = 3;
     google.protobuf.Timestamp timestamp = 4;
     string source = 5;  // worker_id, scheduler_name, etc.
     map<string, string> properties = 6;
@@ -66,7 +66,7 @@ message JobQueuedEvent {
 message JobAssignedEvent {
     hodei.common.JobId job_id = 1;
     hodei.common.WorkerId assigned_worker = 2;
-    hodei.common.ResourceAllocation allocation = 3;
+    ResourceAllocation allocation = 3;
     string assignment_reason = 4;
 }
 

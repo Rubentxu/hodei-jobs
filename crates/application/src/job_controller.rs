@@ -1,13 +1,16 @@
 use crate::smart_scheduler::{SchedulerConfig, SchedulingService};
 use crate::worker_command_sender::WorkerCommandSender;
+use crate::worker_provisioning::WorkerProvisioningService;
 use chrono::Utc;
 use hodei_jobs_domain::event_bus::EventBus;
 use hodei_jobs_domain::events::DomainEvent;
 use hodei_jobs_domain::job_execution::{ExecutionContext, JobQueue, JobRepository};
-use hodei_jobs_domain::job_scheduler::SchedulingContext;
+
+use hodei_jobs_domain::job_scheduler::{ProviderInfo, SchedulingContext};
 use hodei_jobs_domain::shared_kernel::{DomainError, JobState, Result, WorkerId};
 use hodei_jobs_domain::worker_registry::WorkerRegistry;
 use std::sync::Arc;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 pub struct JobController {
@@ -17,6 +20,7 @@ pub struct JobController {
     scheduler: SchedulingService,
     worker_command_sender: Arc<dyn WorkerCommandSender>,
     event_bus: Arc<dyn EventBus>,
+    provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
 }
 
 impl JobController {
@@ -27,6 +31,7 @@ impl JobController {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
+        provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
     ) -> Self {
         Self {
             job_queue,
@@ -35,6 +40,7 @@ impl JobController {
             scheduler: SchedulingService::new(scheduler_config),
             worker_command_sender,
             event_bus,
+            provisioning_service,
         }
     }
 
@@ -53,10 +59,40 @@ impl JobController {
             0.0
         };
 
+        let mut available_providers = Vec::new();
+        if let Some(provisioning) = &self.provisioning_service {
+            if let Ok(providers) = provisioning.list_providers().await {
+                for provider_id in providers {
+                    // Check if provider is available
+                    if let Ok(available) = provisioning.is_provider_available(&provider_id).await {
+                        if available {
+                            // Get stats if possible, otherwise defaults
+                            let workers_count = self
+                                .worker_registry
+                                .find_by_provider(&provider_id)
+                                .await
+                                .unwrap_or_default()
+                                .len();
+
+                            available_providers.push(ProviderInfo {
+                                provider_id,
+                                provider_type: hodei_jobs_domain::worker::ProviderType::Docker, // Hardcoded for simplified verification, ideally get from provider
+                                active_workers: workers_count,
+                                max_workers: 10, // Default limit
+                                estimated_startup_time: std::time::Duration::from_secs(5),
+                                health_score: 1.0,
+                                cost_per_hour: 0.0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let ctx = SchedulingContext {
             job: job.clone(),
             available_workers,
-            available_providers: Vec::new(),
+            available_providers,
             pending_jobs_count,
             system_load,
         };
@@ -68,12 +104,42 @@ impl JobController {
                 worker_id,
                 ..
             } => {
+                debug!("Assigning job {} to worker {}", job.id, worker_id);
                 self.assign_and_dispatch(&mut job, &worker_id).await?;
                 self.job_repository.update(&job).await?;
                 Ok(1)
             }
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::Enqueue { .. }
-            | hodei_jobs_domain::job_scheduler::SchedulingDecision::ProvisionWorker { .. } => {
+            hodei_jobs_domain::job_scheduler::SchedulingDecision::ProvisionWorker {
+                provider_id,
+                ..
+            } => {
+                debug!("Provisioning new worker from provider {}", provider_id);
+                if let Some(provisioning) = &self.provisioning_service {
+                    if let Some(spec) = provisioning.default_worker_spec(&provider_id) {
+                        match provisioning.provision_worker(&provider_id, spec).await {
+                            Ok(result) => {
+                                info!("Provisioned worker {} for job {}", result.worker_id, job.id);
+                                self.job_queue.enqueue(job).await?;
+                                Ok(0)
+                            }
+                            Err(e) => {
+                                error!("Failed to provision worker: {}", e);
+                                self.job_queue.enqueue(job).await?;
+                                Ok(0)
+                            }
+                        }
+                    } else {
+                        warn!("No default spec for provider {}", provider_id);
+                        self.job_queue.enqueue(job).await?;
+                        Ok(0)
+                    }
+                } else {
+                    warn!("Provisioning requested but service not available");
+                    self.job_queue.enqueue(job).await?;
+                    Ok(0)
+                }
+            }
+            hodei_jobs_domain::job_scheduler::SchedulingDecision::Enqueue { .. } => {
                 self.job_queue.enqueue(job).await?;
                 Ok(0)
             }
@@ -139,6 +205,10 @@ impl JobController {
         self.worker_registry
             .assign_to_job(worker_id, job.id.clone())
             .await?;
+
+        // Persist RUNNING state before dispatching to avoid race condition
+        // where worker completes before DB is updated
+        self.job_repository.update(job).await?;
 
         if let Err(e) = self
             .worker_command_sender
@@ -485,6 +555,7 @@ mod tests {
             SchedulerConfig::default(),
             sender.clone(),
             bus,
+            None,
         );
 
         let processed = controller.run_once().await.unwrap();

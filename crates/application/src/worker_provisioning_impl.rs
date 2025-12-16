@@ -94,9 +94,12 @@ impl DefaultWorkerProvisioningService {
     /// Get provider by ID
     async fn get_provider(&self, provider_id: &ProviderId) -> Result<Arc<dyn WorkerProvider>> {
         let providers = self.providers.read().await;
-        providers.get(provider_id).cloned().ok_or_else(|| DomainError::ProviderNotFound {
-            provider_id: provider_id.clone(),
-        })
+        providers
+            .get(provider_id)
+            .cloned()
+            .ok_or_else(|| DomainError::ProviderNotFound {
+                provider_id: provider_id.clone(),
+            })
     }
 }
 
@@ -116,11 +119,13 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         let provider = self.get_provider(provider_id).await?;
 
         // Check provider health
-        let health = provider.health_check().await.map_err(|e| {
-            DomainError::WorkerProvisioningFailed {
-                message: format!("Provider health check failed: {}", e),
-            }
-        })?;
+        let health =
+            provider
+                .health_check()
+                .await
+                .map_err(|e| DomainError::WorkerProvisioningFailed {
+                    message: format!("Provider health check failed: {}", e),
+                })?;
 
         if !matches!(
             health,
@@ -141,10 +146,8 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             .await?;
 
         // Add OTP token to worker environment so it can authenticate with the server
-        spec.environment.insert(
-            "HODEI_OTP_TOKEN".to_string(),
-            otp_token.to_string(),
-        );
+        spec.environment
+            .insert("HODEI_OTP_TOKEN".to_string(), otp_token.to_string());
 
         info!("Generated OTP for worker {}, creating container", worker_id);
 
@@ -158,10 +161,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         // Register in registry
         let worker = self.registry.register(handle, spec).await?;
 
-        info!(
-            "Worker {} provisioned successfully with OTP",
-            worker_id
-        );
+        info!("Worker {} provisioned successfully with OTP", worker_id);
 
         Ok(ProvisioningResult::new(
             worker.id().clone(),
@@ -172,7 +172,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
 
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
         let providers = self.providers.read().await;
-        
+
         let Some(provider) = providers.get(provider_id) else {
             return Ok(false);
         };
@@ -197,6 +197,11 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             self.config.default_image.clone(),
             self.config.server_address.clone(),
         ))
+    }
+
+    async fn list_providers(&self) -> Result<Vec<ProviderId>> {
+        let providers = self.providers.read().await;
+        Ok(providers.keys().cloned().collect())
     }
 }
 
