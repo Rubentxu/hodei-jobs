@@ -106,13 +106,17 @@ impl JobController {
         let old_state = job.state.clone();
         job.mark_running()?;
 
+        // Use job_id as correlation_id for traceability
+        let correlation_id = Some(job.id.to_string());
+        let actor = Some("job-controller".to_string());
+
         // Publish JobAssigned event
         let assigned_event = DomainEvent::JobAssigned {
             job_id: job.id.clone(),
             worker_id: worker_id.clone(),
             occurred_at: Utc::now(),
-            correlation_id: None,
-            actor: Some("job-controller".to_string()),
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
         };
         if let Err(e) = self.event_bus.publish(&assigned_event).await {
             tracing::error!("Failed to publish JobAssigned event: {}", e);
@@ -124,8 +128,8 @@ impl JobController {
             old_state,
             new_state: JobState::Running,
             occurred_at: Utc::now(),
-            correlation_id: None,
-            actor: Some("job-controller".to_string()),
+            correlation_id,
+            actor,
         };
 
         if let Err(e) = self.event_bus.publish(&event).await {

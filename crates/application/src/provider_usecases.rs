@@ -51,7 +51,11 @@ pub struct RegisterProviderRequest {
 }
 
 impl RegisterProviderRequest {
-    pub fn builder(name: impl Into<String>, provider_type: impl Into<String>, type_config: ProviderTypeConfig) -> RegisterProviderRequestBuilder {
+    pub fn builder(
+        name: impl Into<String>,
+        provider_type: impl Into<String>,
+        type_config: ProviderTypeConfig,
+    ) -> RegisterProviderRequestBuilder {
         RegisterProviderRequestBuilder {
             name: name.into(),
             provider_type: provider_type.into(),
@@ -113,16 +117,36 @@ pub struct RegisterProviderResponse {
     pub provider: ProviderDto,
 }
 
+use chrono::Utc;
+use hodei_jobs_domain::event_bus::EventBus;
+use hodei_jobs_domain::events::DomainEvent;
+use hodei_jobs_domain::request_context::RequestContext;
+
 pub struct RegisterProviderUseCase {
     registry: Arc<ProviderRegistry>,
+    event_bus: Arc<dyn EventBus>,
 }
 
 impl RegisterProviderUseCase {
-    pub fn new(registry: Arc<ProviderRegistry>) -> Self {
-        Self { registry }
+    pub fn new(registry: Arc<ProviderRegistry>, event_bus: Arc<dyn EventBus>) -> Self {
+        Self {
+            registry,
+            event_bus,
+        }
     }
 
-    pub async fn execute(&self, request: RegisterProviderRequest) -> Result<RegisterProviderResponse> {
+    pub async fn execute(
+        &self,
+        request: RegisterProviderRequest,
+    ) -> Result<RegisterProviderResponse> {
+        self.execute_with_context(request, None).await
+    }
+
+    pub async fn execute_with_context(
+        &self,
+        request: RegisterProviderRequest,
+        ctx: Option<&RequestContext>,
+    ) -> Result<RegisterProviderResponse> {
         let provider_type = parse_provider_type(&request.provider_type)?;
 
         let mut config = self
@@ -138,9 +162,26 @@ impl RegisterProviderUseCase {
         }
         config.tags = request.tags;
         config.metadata = request.metadata;
-        config.updated_at = chrono::Utc::now();
+        config.updated_at = Utc::now();
 
         self.registry.update_provider(config.clone()).await?;
+
+        let correlation_id = ctx.map(|c| c.correlation_id().to_string());
+        let actor = ctx.and_then(|c| c.actor_owned());
+
+        // Publicar evento
+        let event = DomainEvent::ProviderRegistered {
+            provider_id: config.id.clone(),
+            provider_type: config.provider_type.to_string(),
+            config_summary: format!("Registered provider {}", config.name),
+            occurred_at: Utc::now(),
+            correlation_id,
+            actor,
+        };
+
+        if let Err(e) = self.event_bus.publish(&event).await {
+            tracing::error!("Failed to publish ProviderRegistered event: {}", e);
+        }
 
         Ok(RegisterProviderResponse {
             provider: ProviderDto::from_domain(&config),
@@ -240,7 +281,10 @@ fn parse_provider_type(s: &str) -> Result<ProviderType> {
         "azure_vms" | "azurevms" => Ok(ProviderType::AzureVMs),
         "bare_metal" | "baremetal" => Ok(ProviderType::BareMetal),
         other if other.starts_with("custom:") => Ok(ProviderType::Custom(
-            other.strip_prefix("custom:").unwrap_or("unknown").to_string(),
+            other
+                .strip_prefix("custom:")
+                .unwrap_or("unknown")
+                .to_string(),
         )),
         other => Ok(ProviderType::Custom(other.to_string())),
     }

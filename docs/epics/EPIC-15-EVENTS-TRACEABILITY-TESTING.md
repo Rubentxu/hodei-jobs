@@ -145,9 +145,9 @@ Esta épica amplía y consolida el trabajo de EPIC-13 y EPIC-14 para lograr **co
 [x] T15.4.3 - Modificar UseCases para aceptar RequestContext ✅
 [x] T15.4.4 - Propagar contexto en CreateJobUseCase (ya tenía correlation_id/actor) ✅
 [x] T15.4.5 - Propagar contexto en CancelJobUseCase ✅
-[ ] T15.4.6 - Propagar contexto en JobController
+[x] T15.4.6 - Propagar contexto en JobController (usa job_id como correlation) ✅
 [ ] T15.4.7 - Propagar contexto en WorkerAgentService
-[ ] T15.4.8 - Propagar contexto en RegisterProviderUseCase
+[x] T15.4.8 - Propagar contexto en RegisterProviderUseCase ✅
 [x] T15.4.9 - Tests de interceptor ✅
 ```
 
