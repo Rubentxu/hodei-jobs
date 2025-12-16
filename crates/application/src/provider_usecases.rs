@@ -260,6 +260,127 @@ impl GetProviderUseCase {
     }
 }
 
+/// DTO para Update Provider Request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProviderRequest {
+    pub provider_id: String,
+    pub priority: Option<i32>,
+    pub max_workers: Option<u32>,
+    pub tags: Option<Vec<String>>,
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+}
+
+/// DTO para Update Provider Response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProviderResponse {
+    pub provider: ProviderDto,
+    pub changes: Vec<String>,
+}
+
+/// Use Case: Update Provider Configuration
+/// 
+/// Updates an existing provider's configuration and publishes a ProviderUpdated event.
+pub struct UpdateProviderUseCase {
+    registry: Arc<ProviderRegistry>,
+    event_bus: Arc<dyn EventBus>,
+}
+
+impl UpdateProviderUseCase {
+    pub fn new(registry: Arc<ProviderRegistry>, event_bus: Arc<dyn EventBus>) -> Self {
+        Self {
+            registry,
+            event_bus,
+        }
+    }
+
+    pub async fn execute(&self, request: UpdateProviderRequest) -> Result<UpdateProviderResponse> {
+        self.execute_with_context(request, None).await
+    }
+
+    pub async fn execute_with_context(
+        &self,
+        request: UpdateProviderRequest,
+        ctx: Option<&RequestContext>,
+    ) -> Result<UpdateProviderResponse> {
+        let provider_id = uuid::Uuid::parse_str(&request.provider_id)
+            .map(ProviderId::from_uuid)
+            .map_err(|_| DomainError::InvalidProviderConfig {
+                message: format!("Invalid provider_id: {}", request.provider_id),
+            })?;
+
+        let mut config = self
+            .registry
+            .get_provider(&provider_id)
+            .await?
+            .ok_or_else(|| DomainError::ProviderNotFound {
+                provider_id: provider_id.clone(),
+            })?;
+
+        let mut changes = Vec::new();
+
+        // Apply updates and track changes
+        if let Some(priority) = request.priority {
+            if config.priority != priority {
+                changes.push(format!("priority: {} -> {}", config.priority, priority));
+                config.priority = priority;
+            }
+        }
+
+        if let Some(max_workers) = request.max_workers {
+            if config.max_workers != max_workers {
+                changes.push(format!("max_workers: {} -> {}", config.max_workers, max_workers));
+                config.max_workers = max_workers;
+            }
+        }
+
+        if let Some(tags) = request.tags {
+            if config.tags != tags {
+                changes.push(format!("tags: {:?} -> {:?}", config.tags, tags));
+                config.tags = tags;
+            }
+        }
+
+        if let Some(metadata) = request.metadata {
+            if config.metadata != metadata {
+                changes.push("metadata: updated".to_string());
+                config.metadata = metadata;
+            }
+        }
+
+        // Only update if there are changes
+        if changes.is_empty() {
+            return Ok(UpdateProviderResponse {
+                provider: ProviderDto::from_domain(&config),
+                changes: vec![],
+            });
+        }
+
+        config.updated_at = Utc::now();
+        self.registry.update_provider(config.clone()).await?;
+
+        let correlation_id = ctx.map(|c| c.correlation_id().to_string());
+        let actor = ctx.and_then(|c| c.actor_owned());
+
+        // Publish ProviderUpdated event
+        let event = DomainEvent::ProviderUpdated {
+            provider_id: config.id.clone(),
+            changes: Some(changes.join(", ")),
+            occurred_at: Utc::now(),
+            correlation_id,
+            actor,
+        };
+
+        if let Err(e) = self.event_bus.publish(&event).await {
+            tracing::error!("Failed to publish ProviderUpdated event: {}", e);
+        }
+
+        Ok(UpdateProviderResponse {
+            provider: ProviderDto::from_domain(&config),
+            changes,
+        })
+    }
+}
+
 fn parse_provider_type(s: &str) -> Result<ProviderType> {
     if s.trim().is_empty() {
         return Err(DomainError::InvalidProviderConfig {
@@ -287,5 +408,201 @@ fn parse_provider_type(s: &str) -> Result<ProviderType> {
                 .to_string(),
         )),
         other => Ok(ProviderType::Custom(other.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use futures::stream::BoxStream;
+    use hodei_jobs_domain::event_bus::EventBusError;
+    use hodei_jobs_domain::provider_config::{DockerConfig, ProviderConfig, ProviderConfigRepository};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use tokio::sync::RwLock;
+
+    struct MockEventBus {
+        published: Arc<Mutex<Vec<DomainEvent>>>,
+    }
+
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            self.published.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<
+            BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>,
+            EventBusError,
+        > {
+            Err(EventBusError::SubscribeError("Mock".to_string()))
+        }
+    }
+
+    struct MockProviderConfigRepository {
+        configs: RwLock<HashMap<ProviderId, ProviderConfig>>,
+    }
+
+    impl MockProviderConfigRepository {
+        fn new() -> Self {
+            Self {
+                configs: RwLock::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl hodei_jobs_domain::provider_config::ProviderConfigRepository for MockProviderConfigRepository {
+        async fn save(&self, config: &ProviderConfig) -> Result<()> {
+            self.configs.write().await.insert(config.id.clone(), config.clone());
+            Ok(())
+        }
+        async fn find_by_id(&self, id: &ProviderId) -> Result<Option<ProviderConfig>> {
+            Ok(self.configs.read().await.get(id).cloned())
+        }
+        async fn find_by_name(&self, name: &str) -> Result<Option<ProviderConfig>> {
+            Ok(self.configs.read().await.values().find(|c| c.name == name).cloned())
+        }
+        async fn find_by_type(&self, _pt: &ProviderType) -> Result<Vec<ProviderConfig>> {
+            Ok(vec![])
+        }
+        async fn find_enabled(&self) -> Result<Vec<ProviderConfig>> {
+            Ok(vec![])
+        }
+        async fn find_with_capacity(&self) -> Result<Vec<ProviderConfig>> {
+            Ok(vec![])
+        }
+        async fn find_all(&self) -> Result<Vec<ProviderConfig>> {
+            Ok(self.configs.read().await.values().cloned().collect())
+        }
+        async fn update(&self, config: &ProviderConfig) -> Result<()> {
+            self.configs.write().await.insert(config.id.clone(), config.clone());
+            Ok(())
+        }
+        async fn delete(&self, id: &ProviderId) -> Result<()> {
+            self.configs.write().await.remove(id);
+            Ok(())
+        }
+        async fn exists_by_name(&self, name: &str) -> Result<bool> {
+            Ok(self.configs.read().await.values().any(|c| c.name == name))
+        }
+    }
+
+    fn create_docker_config() -> hodei_jobs_domain::provider_config::ProviderTypeConfig {
+        hodei_jobs_domain::provider_config::ProviderTypeConfig::Docker(DockerConfig::default())
+    }
+
+    #[tokio::test]
+    async fn test_update_provider_publishes_event() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let event_bus = Arc::new(MockEventBus::new());
+        let registry = Arc::new(ProviderRegistry::new(repo.clone()));
+
+        // First register a provider
+        let config = ProviderConfig::new(
+            "test-provider".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        );
+        repo.save(&config).await.unwrap();
+
+        let use_case = UpdateProviderUseCase::new(registry, event_bus.clone());
+
+        let request = UpdateProviderRequest {
+            provider_id: config.id.to_string(),
+            priority: Some(100),
+            max_workers: Some(20),
+            tags: None,
+            metadata: None,
+        };
+
+        let result = use_case.execute(request).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.provider.priority, 100);
+        assert_eq!(response.provider.max_workers, 20);
+        assert_eq!(response.changes.len(), 2);
+
+        let events = event_bus.published.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            DomainEvent::ProviderUpdated {
+                provider_id,
+                changes,
+                ..
+            } => {
+                assert_eq!(provider_id, &config.id);
+                assert!(changes.is_some());
+            }
+            _ => panic!("Expected ProviderUpdated event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_provider_no_changes_no_event() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let event_bus = Arc::new(MockEventBus::new());
+        let registry = Arc::new(ProviderRegistry::new(repo.clone()));
+
+        let config = ProviderConfig::new(
+            "test-provider".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        );
+        repo.save(&config).await.unwrap();
+
+        let use_case = UpdateProviderUseCase::new(registry, event_bus.clone());
+
+        // Request with same values (no actual changes)
+        let request = UpdateProviderRequest {
+            provider_id: config.id.to_string(),
+            priority: Some(config.priority),
+            max_workers: Some(config.max_workers),
+            tags: None,
+            metadata: None,
+        };
+
+        let result = use_case.execute(request).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.changes.is_empty());
+
+        // No event should be published
+        let events = event_bus.published.lock().unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_provider_not_found() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let event_bus = Arc::new(MockEventBus::new());
+        let registry = Arc::new(ProviderRegistry::new(repo));
+
+        let use_case = UpdateProviderUseCase::new(registry, event_bus);
+
+        let request = UpdateProviderRequest {
+            provider_id: uuid::Uuid::new_v4().to_string(),
+            priority: Some(100),
+            max_workers: None,
+            tags: None,
+            metadata: None,
+        };
+
+        let result = use_case.execute(request).await;
+        assert!(result.is_err());
     }
 }
