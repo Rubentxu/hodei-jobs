@@ -162,6 +162,95 @@ impl CancelJobUseCase {
 use chrono::Utc;
 use hodei_jobs_domain::event_bus::EventBus;
 use hodei_jobs_domain::events::DomainEvent;
+
+/// DTO para Retry Job Response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryJobResponse {
+    pub job_id: String,
+    pub attempt: u32,
+    pub status: String,
+    pub message: String,
+}
+
+/// Use Case: Retry Failed Job (UC-003)
+/// 
+/// Reintenta un job que ha fallado o ha expirado, siempre que no haya
+/// excedido el número máximo de intentos.
+pub struct RetryJobUseCase {
+    job_repository: Arc<dyn JobRepository>,
+    job_queue: Arc<dyn JobQueue>,
+    event_bus: Arc<dyn EventBus>,
+}
+
+impl RetryJobUseCase {
+    pub fn new(
+        job_repository: Arc<dyn JobRepository>,
+        job_queue: Arc<dyn JobQueue>,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Self {
+        Self {
+            job_repository,
+            job_queue,
+            event_bus,
+        }
+    }
+
+    pub async fn execute(&self, job_id: JobId) -> Result<RetryJobResponse> {
+        self.execute_with_context(job_id, None).await
+    }
+
+    pub async fn execute_with_context(
+        &self,
+        job_id: JobId,
+        ctx: Option<&RequestContext>,
+    ) -> Result<RetryJobResponse> {
+        let mut job = self
+            .job_repository
+            .find_by_id(&job_id)
+            .await?
+            .ok_or_else(|| DomainError::JobNotFound {
+                job_id: job_id.clone(),
+            })?;
+
+        let max_attempts = job.max_attempts;
+
+        // Validar y preparar retry (incrementa attempts internamente)
+        job.prepare_retry()?;
+
+        // Guardar job actualizado
+        self.job_repository.update(&job).await?;
+
+        // Encolar job para re-ejecución
+        self.job_queue.enqueue(job.clone()).await?;
+
+        let correlation_id = ctx.map(|c| c.correlation_id().to_string());
+        let actor = ctx.and_then(|c| c.actor_owned());
+
+        // Publicar evento JobRetried
+        let event = DomainEvent::JobRetried {
+            job_id: job.id.clone(),
+            attempt: job.attempts,
+            max_attempts,
+            occurred_at: Utc::now(),
+            correlation_id,
+            actor,
+        };
+
+        if let Err(e) = self.event_bus.publish(&event).await {
+            tracing::error!("Failed to publish JobRetried event: {}", e);
+        }
+
+        Ok(RetryJobResponse {
+            job_id: job.id.to_string(),
+            attempt: job.attempts,
+            status: job.state.to_string(),
+            message: format!(
+                "Job retry initiated (attempt {} of {})",
+                job.attempts, job.max_attempts
+            ),
+        })
+    }
+}
 use hodei_jobs_domain::request_context::RequestContext;
 
 /// Use Case: Create Job (UC-001)
@@ -463,5 +552,114 @@ mod tests {
             }
             _ => panic!("Unexpected event type"),
         }
+    }
+
+    // Mock repository that returns a failed job for retry testing
+    struct MockJobRepositoryWithFailedJob {
+        job: Mutex<Option<Job>>,
+    }
+
+    impl MockJobRepositoryWithFailedJob {
+        fn new_with_failed_job() -> Self {
+            let job_id = JobId::new();
+            let spec = JobSpec::new(vec!["test".to_string()]);
+            let mut job = Job::new(job_id, spec);
+            job.fail("Test failure".to_string()).unwrap();
+            Self {
+                job: Mutex::new(Some(job)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl JobRepository for MockJobRepositoryWithFailedJob {
+        async fn save(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+        async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> {
+            Ok(self.job.lock().unwrap().clone())
+        }
+        async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+        async fn find_pending(&self) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+        async fn find_all(&self, _limit: usize, _offset: usize) -> Result<(Vec<Job>, usize)> {
+            Ok((vec![], 0))
+        }
+        async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
+            Ok(None)
+        }
+        async fn delete(&self, _id: &JobId) -> Result<()> {
+            Ok(())
+        }
+        async fn update(&self, job: &Job) -> Result<()> {
+            *self.job.lock().unwrap() = Some(job.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_retry_job_publishes_job_retried_event() {
+        let repo = Arc::new(MockJobRepositoryWithFailedJob::new_with_failed_job());
+        let queue = Arc::new(MockJobQueue);
+        let bus = Arc::new(MockEventBus::new());
+
+        // Get the job_id from the mock
+        let job_id = repo.job.lock().unwrap().as_ref().unwrap().id.clone();
+
+        let use_case = RetryJobUseCase::new(repo, queue, bus.clone());
+
+        let result = use_case.execute(job_id).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.attempt, 2); // First attempt was 1, retry increments to 2
+        assert_eq!(response.status, "PENDING");
+
+        let events = bus.published.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            DomainEvent::JobRetried {
+                job_id: _,
+                attempt,
+                max_attempts,
+                occurred_at: _,
+                correlation_id: _,
+                actor: _,
+            } => {
+                assert_eq!(*attempt, 2);
+                assert_eq!(*max_attempts, 3);
+            }
+            _ => panic!("Expected JobRetried event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_retry_job_fails_when_max_attempts_exceeded() {
+        let repo = Arc::new(MockJobRepositoryWithFailedJob::new_with_failed_job());
+        
+        // Set attempts to max
+        {
+            let mut job_guard = repo.job.lock().unwrap();
+            if let Some(ref mut job) = *job_guard {
+                job.attempts = 3; // max_attempts is 3
+            }
+        }
+
+        let queue = Arc::new(MockJobQueue);
+        let bus = Arc::new(MockEventBus::new());
+
+        let job_id = repo.job.lock().unwrap().as_ref().unwrap().id.clone();
+
+        let use_case = RetryJobUseCase::new(repo, queue, bus.clone());
+
+        let result = use_case.execute(job_id).await;
+        assert!(result.is_err());
+
+        // No event should be published
+        let events = bus.published.lock().unwrap();
+        assert!(events.is_empty());
     }
 }

@@ -82,7 +82,7 @@ Esta épica amplía y consolida el trabajo de EPIC-13 y EPIC-14 para lograr **co
 ```
 [x] T15.2.1 - Añadir JobRetried a DomainEvent enum ✅
 [x] T15.2.2 - Añadir JobAssigned a DomainEvent enum ✅
-[ ] T15.2.3 - Publicar JobRetried en Job::prepare_retry o equivalente
+[x] T15.2.3 - Crear RetryJobUseCase que publica JobRetried ✅
 [x] T15.2.4 - Publicar evento de asignación en JobController::assign_and_dispatch ✅
 [x] T15.2.5 - Actualizar AuditService::log_event ✅
 [x] T15.2.6 - Tests unitarios ✅
@@ -111,9 +111,9 @@ Esta épica amplía y consolida el trabajo de EPIC-13 y EPIC-14 para lograr **co
 ```
 [ ] T15.3.1 - Crear UpdateProviderUseCase que publique ProviderUpdated
 [x] T15.3.2 - Añadir ProviderHealthChanged a DomainEvent ✅
-[ ] T15.3.3 - Publicar ProviderHealthChanged en health checks
+[x] T15.3.3 - Publicar ProviderHealthChanged en enable/disable/update_status ✅
 [x] T15.3.4 - Actualizar AuditService (usa event_type() automáticamente) ✅
-[x] T15.3.5 - Tests unitarios ✅
+[x] T15.3.5 - Tests unitarios (4 nuevos tests en provider_registry) ✅
 ```
 
 **Archivos a Modificar:**
