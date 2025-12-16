@@ -2,15 +2,16 @@
 // Endpoints para gestión de jobs y providers
 
 use axum::{
-    extract::{Path, State, Json, Query},
+    Router,
+    extract::{Json, Path, Query, State},
     http::StatusCode,
     response::Json as AxumJson,
     routing::{get, post},
-    Router,
 };
 use hodei_jobs_application::{
+    ProviderRegistry,
     job_execution_usecases::{
-        CancelJobResponse, CancelJobUseCase, CreateJobUseCase, CreateJobRequest, CreateJobResponse,
+        CancelJobResponse, CancelJobUseCase, CreateJobRequest, CreateJobResponse, CreateJobUseCase,
         GetJobStatusUseCase, TrackJobResponse,
     },
     provider_usecases::{
@@ -18,27 +19,34 @@ use hodei_jobs_application::{
         ListProvidersUseCase, RegisterProviderRequest, RegisterProviderResponse,
         RegisterProviderUseCase,
     },
-    ProviderRegistry,
-};
-use hodei_jobs_infrastructure::persistence::{
-    DatabaseConfig, PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
 };
 use hodei_jobs_domain::provider_config::ProviderTypeConfig;
+use hodei_jobs_infrastructure::event_bus::postgres::PostgresEventBus;
+use hodei_jobs_infrastructure::persistence::{
+    PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
+};
+use hodei_jobs_infrastructure::repositories::PostgresAuditRepository;
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 /// Trait para use case de crear job
 #[async_trait::async_trait]
 pub trait CreateJobUseCaseTrait: Send + Sync {
-    async fn execute(&self, request: CreateJobRequest) -> Result<CreateJobResponse, hodei_jobs_domain::shared_kernel::DomainError>;
+    async fn execute(
+        &self,
+        request: CreateJobRequest,
+    ) -> Result<CreateJobResponse, hodei_jobs_domain::shared_kernel::DomainError>;
 }
 
 #[async_trait::async_trait]
-impl RegisterProviderUseCaseTrait for hodei_jobs_application::provider_usecases::RegisterProviderUseCase {
+impl RegisterProviderUseCaseTrait
+    for hodei_jobs_application::provider_usecases::RegisterProviderUseCase
+{
     async fn execute(
         &self,
         request: RegisterProviderRequest,
@@ -119,6 +127,31 @@ pub struct AppState {
     pub register_provider_usecase: std::sync::Arc<dyn RegisterProviderUseCaseTrait>,
     pub list_providers_usecase: std::sync::Arc<dyn ListProvidersUseCaseTrait>,
     pub get_provider_usecase: std::sync::Arc<dyn GetProviderUseCaseTrait>,
+    pub get_audit_logs_usecase: std::sync::Arc<dyn GetAuditLogsUseCaseTrait>,
+}
+
+#[async_trait::async_trait]
+pub trait GetAuditLogsUseCaseTrait: Send + Sync {
+    async fn execute(
+        &self,
+        correlation_id: String,
+    ) -> Result<
+        Vec<hodei_jobs_domain::audit::AuditLog>,
+        hodei_jobs_domain::shared_kernel::DomainError,
+    >;
+}
+
+#[async_trait::async_trait]
+impl GetAuditLogsUseCaseTrait for hodei_jobs_application::audit_usecases::AuditService {
+    async fn execute(
+        &self,
+        correlation_id: String,
+    ) -> Result<
+        Vec<hodei_jobs_domain::audit::AuditLog>,
+        hodei_jobs_domain::shared_kernel::DomainError,
+    > {
+        self.get_logs_by_correlation_id(&correlation_id).await
+    }
 }
 
 /// Tipos de respuesta API
@@ -209,14 +242,16 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/v1/jobs", post(create_job))
         .route("/api/v1/jobs/{job_id}", get(get_job_status))
         .route("/api/v1/jobs/{job_id}/cancel", post(cancel_job))
-
         // Providers endpoints
-        .route("/api/v1/providers", post(register_provider).get(list_providers))
+        .route(
+            "/api/v1/providers",
+            post(register_provider).get(list_providers),
+        )
         .route("/api/v1/providers/{provider_id}", get(get_provider))
-        
+        // Audit endpoints
+        .route("/api/v1/audit-logs", get(get_audit_logs))
         // Health check
         .route("/health", get(health_check))
-        
         // CORS
         .layer(CorsLayer::new().allow_methods(Any).allow_headers(Any))
 }
@@ -227,7 +262,7 @@ async fn create_job(
     Json(request): Json<CreateJobApiRequest>,
 ) -> Result<AxumJson<ApiResponse<CreateJobResponse>>, StatusCode> {
     info!("Creating new job");
-    
+
     // Convertir DTO de API a DTO de aplicación
     let app_request = CreateJobRequest {
         spec: hodei_jobs_application::job_execution_usecases::JobSpecRequest {
@@ -238,6 +273,7 @@ async fn create_job(
             working_dir: request.spec.working_dir,
         },
         correlation_id: request.correlation_id,
+        actor: None, // API currently does not have authentication
     };
 
     // Ejecutar use case
@@ -362,6 +398,28 @@ async fn get_provider(
     }
 }
 
+#[derive(Deserialize)]
+pub struct GetAuditLogsQuery {
+    pub correlation_id: String,
+}
+
+async fn get_audit_logs(
+    State(state): State<AppState>,
+    Query(query): Query<GetAuditLogsQuery>,
+) -> Result<AxumJson<ApiResponse<Vec<hodei_jobs_domain::audit::AuditLog>>>, StatusCode> {
+    match state
+        .get_audit_logs_usecase
+        .execute(query.correlation_id)
+        .await
+    {
+        Ok(logs) => Ok(AxumJson(ApiResponse::success(logs))),
+        Err(e) => {
+            warn!("Failed to get audit logs: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 /// Handler para health check
 async fn health_check() -> Result<AxumJson<ApiResponse<String>>, StatusCode> {
     Ok(AxumJson(ApiResponse::success("healthy".to_string())))
@@ -385,7 +443,9 @@ impl ApiDatabaseSettings {
     {
         let url = get("HODEI_DATABASE_URL")
             .or_else(|| get("DATABASE_URL"))
-            .ok_or_else(|| anyhow::anyhow!("Missing database url (HODEI_DATABASE_URL or DATABASE_URL)"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Missing database url (HODEI_DATABASE_URL or DATABASE_URL)")
+            })?;
 
         let max_connections = get("HODEI_DB_MAX_CONNECTIONS")
             .and_then(|v| v.parse::<u32>().ok())
@@ -402,28 +462,28 @@ impl ApiDatabaseSettings {
             connection_timeout,
         })
     }
-
-    fn to_database_config(&self) -> DatabaseConfig {
-        DatabaseConfig {
-            url: self.url.clone(),
-            max_connections: self.max_connections,
-            connection_timeout: self.connection_timeout,
-        }
-    }
 }
 
 async fn create_app_state_from_env() -> anyhow::Result<AppState> {
     let settings = ApiDatabaseSettings::from_env()?;
-    let config = settings.to_database_config();
 
-    let job_repository = PostgresJobRepository::connect(&config).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(settings.max_connections)
+        .acquire_timeout(settings.connection_timeout)
+        .connect(&settings.url)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
+
+    let job_repository = PostgresJobRepository::new(pool.clone());
     job_repository.run_migrations().await?;
 
-    let job_queue = PostgresJobQueue::connect(&config).await?;
+    let job_queue = PostgresJobQueue::new(pool.clone());
     job_queue.run_migrations().await?;
 
-    let provider_repository = PostgresProviderConfigRepository::connect(&config).await?;
+    let provider_repository = PostgresProviderConfigRepository::new(pool.clone());
     provider_repository.run_migrations().await?;
+
+    let event_bus = std::sync::Arc::new(PostgresEventBus::new(pool.clone()));
 
     let provider_repository = std::sync::Arc::new(provider_repository)
         as std::sync::Arc<dyn hodei_jobs_domain::provider_config::ProviderConfigRepository>;
@@ -434,13 +494,20 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
     let job_queue = std::sync::Arc::new(job_queue)
         as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
 
-    let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), job_queue);
+    let create_job_usecase =
+        CreateJobUseCase::new(job_repository.clone(), job_queue, event_bus.clone());
     let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
-    let cancel_job_usecase = CancelJobUseCase::new(job_repository);
+    let cancel_job_usecase = CancelJobUseCase::new(job_repository, event_bus.clone());
 
-    let register_provider_usecase = RegisterProviderUseCase::new(provider_registry.clone());
+    let register_provider_usecase =
+        RegisterProviderUseCase::new(provider_registry.clone(), event_bus.clone());
     let list_providers_usecase = ListProvidersUseCase::new(provider_registry.clone());
     let get_provider_usecase = GetProviderUseCase::new(provider_registry);
+
+    let audit_repository = PostgresAuditRepository::new(pool.clone());
+    let audit_service = hodei_jobs_application::audit_usecases::AuditService::new(
+        std::sync::Arc::new(audit_repository),
+    );
 
     Ok(AppState {
         create_job_usecase: std::sync::Arc::new(create_job_usecase),
@@ -449,32 +516,38 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
         register_provider_usecase: std::sync::Arc::new(register_provider_usecase),
         list_providers_usecase: std::sync::Arc::new(list_providers_usecase),
         get_provider_usecase: std::sync::Arc::new(get_provider_usecase),
+        get_audit_logs_usecase: std::sync::Arc::new(audit_service),
     })
 }
 
 /// Función para iniciar el servidor HTTP
 pub async fn start_server(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting HTTP server on {}", addr);
-    
+
     let state = create_app_state_from_env().await?;
     let router = create_router().with_state(state);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;
-    
+
     Ok(())
 }
 
 /// Implementaciones de traits para use cases
 #[async_trait::async_trait]
 impl CreateJobUseCaseTrait for hodei_jobs_application::job_execution_usecases::CreateJobUseCase {
-    async fn execute(&self, request: CreateJobRequest) -> Result<CreateJobResponse, hodei_jobs_domain::shared_kernel::DomainError> {
+    async fn execute(
+        &self,
+        request: CreateJobRequest,
+    ) -> Result<CreateJobResponse, hodei_jobs_domain::shared_kernel::DomainError> {
         self.execute(request).await
     }
 }
 
 #[async_trait::async_trait]
-impl GetJobStatusUseCaseTrait for hodei_jobs_application::job_execution_usecases::GetJobStatusUseCase {
+impl GetJobStatusUseCaseTrait
+    for hodei_jobs_application::job_execution_usecases::GetJobStatusUseCase
+{
     async fn execute(
         &self,
         job_id: hodei_jobs_domain::shared_kernel::JobId,
@@ -502,15 +575,61 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use futures::stream::BoxStream;
+    use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
+    use hodei_jobs_domain::events::DomainEvent;
     use hodei_jobs_infrastructure::persistence::{FileBasedPersistence, PersistenceConfig};
     use http_body_util::BodyExt;
+    use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
 
+    struct MockEventBusWithAudit {
+        published: Arc<Mutex<Vec<DomainEvent>>>,
+        audit_logs: Arc<Mutex<Vec<hodei_jobs_domain::audit::AuditLog>>>,
+    }
+    impl MockEventBusWithAudit {
+        fn new(audit_logs: Arc<Mutex<Vec<hodei_jobs_domain::audit::AuditLog>>>) -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+                audit_logs,
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBusWithAudit {
+        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            self.published.lock().unwrap().push(event.clone());
+            // Simulate AuditService behavior: save event as audit log
+            let audit_log = hodei_jobs_domain::audit::AuditLog::new(
+                event.event_type().to_string(),
+                serde_json::to_value(event).unwrap_or_default(),
+                event.correlation_id(),
+                event.actor().or_else(|| Some("system".to_string())),
+            );
+            self.audit_logs.lock().unwrap().push(audit_log);
+            Ok(())
+        }
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<
+            BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>,
+            EventBusError,
+        > {
+            Err(EventBusError::SubscribeError(
+                "Mock not implemented".to_string(),
+            ))
+        }
+    }
+
     fn create_app_state_for_tests() -> AppState {
-        let job_repository = std::sync::Arc::new(hodei_jobs_infrastructure::repositories::InMemoryJobRepository::new())
+        let job_repository = std::sync::Arc::new(
+            hodei_jobs_infrastructure::repositories::InMemoryJobRepository::new(),
+        )
             as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-        let job_queue = std::sync::Arc::new(hodei_jobs_infrastructure::repositories::InMemoryJobQueue::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+        let job_queue =
+            std::sync::Arc::new(hodei_jobs_infrastructure::repositories::InMemoryJobQueue::new())
+                as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_directory = temp_dir.keep().to_string_lossy().to_string();
@@ -520,16 +639,24 @@ mod tests {
             backup_enabled: false,
             auto_compact: false,
         });
-        let provider_repo = hodei_jobs_infrastructure::persistence::FileBasedProviderConfigRepository::new(persistence);
+        let provider_repo =
+            hodei_jobs_infrastructure::persistence::FileBasedProviderConfigRepository::new(
+                persistence,
+            );
         let provider_repo = std::sync::Arc::new(provider_repo)
             as std::sync::Arc<dyn hodei_jobs_domain::provider_config::ProviderConfigRepository>;
         let provider_registry = std::sync::Arc::new(ProviderRegistry::new(provider_repo));
 
-        let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), job_queue);
-        let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
-        let cancel_job_usecase = CancelJobUseCase::new(job_repository);
+        let shared_audit_logs = Arc::new(Mutex::new(Vec::new()));
+        let event_bus = std::sync::Arc::new(MockEventBusWithAudit::new(shared_audit_logs.clone()));
 
-        let register_provider_usecase = RegisterProviderUseCase::new(provider_registry.clone());
+        let create_job_usecase =
+            CreateJobUseCase::new(job_repository.clone(), job_queue, event_bus.clone());
+        let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
+        let cancel_job_usecase = CancelJobUseCase::new(job_repository, event_bus.clone());
+
+        let register_provider_usecase =
+            RegisterProviderUseCase::new(provider_registry.clone(), event_bus.clone());
         let list_providers_usecase = ListProvidersUseCase::new(provider_registry.clone());
         let get_provider_usecase = GetProviderUseCase::new(provider_registry);
 
@@ -540,6 +667,47 @@ mod tests {
             register_provider_usecase: std::sync::Arc::new(register_provider_usecase),
             list_providers_usecase: std::sync::Arc::new(list_providers_usecase),
             get_provider_usecase: std::sync::Arc::new(get_provider_usecase),
+            get_audit_logs_usecase: std::sync::Arc::new(
+                hodei_jobs_application::audit_usecases::AuditService::new(std::sync::Arc::new(
+                    MockAuditRepository::new_with_logs(shared_audit_logs),
+                )),
+            ),
+        }
+    }
+
+    struct MockAuditRepository {
+        pub saved_logs: Arc<Mutex<Vec<hodei_jobs_domain::audit::AuditLog>>>,
+    }
+
+    impl MockAuditRepository {
+        fn new_with_logs(logs: Arc<Mutex<Vec<hodei_jobs_domain::audit::AuditLog>>>) -> Self {
+            Self { saved_logs: logs }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl hodei_jobs_domain::audit::AuditRepository for MockAuditRepository {
+        async fn save(
+            &self,
+            log: &hodei_jobs_domain::audit::AuditLog,
+        ) -> Result<(), hodei_jobs_domain::shared_kernel::DomainError> {
+            self.saved_logs.lock().unwrap().push(log.clone());
+            Ok(())
+        }
+
+        async fn find_by_correlation_id(
+            &self,
+            id: &str,
+        ) -> Result<
+            Vec<hodei_jobs_domain::audit::AuditLog>,
+            hodei_jobs_domain::shared_kernel::DomainError,
+        > {
+            let logs = self.saved_logs.lock().unwrap();
+            Ok(logs
+                .iter()
+                .filter(|l| l.correlation_id.as_deref() == Some(id))
+                .cloned()
+                .collect())
         }
     }
 
@@ -553,7 +721,7 @@ mod tests {
             "type_config": {
                 "type": "docker",
                 "socket_path": "/var/run/docker.sock",
-                "default_image": "hodei-worker:latest"
+                "default_image": "hodei-jobs-worker:latest"
             },
             "priority": 10,
             "max_workers": 5,
@@ -604,15 +772,18 @@ mod tests {
             .await
             .unwrap()
             .to_bytes();
-        let list_api: ApiResponse<ListProvidersResponse> = serde_json::from_slice(&list_bytes).unwrap();
+        let list_api: ApiResponse<ListProvidersResponse> =
+            serde_json::from_slice(&list_bytes).unwrap();
         assert!(list_api.success);
-        assert!(list_api
-            .data
-            .as_ref()
-            .unwrap()
-            .providers
-            .iter()
-            .any(|p| p.id == provider_id));
+        assert!(
+            list_api
+                .data
+                .as_ref()
+                .unwrap()
+                .providers
+                .iter()
+                .any(|p| p.id == provider_id)
+        );
 
         let get_response = app
             .oneshot(
@@ -625,12 +796,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(get_response.status(), StatusCode::OK);
-        let get_bytes = get_response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let get_bytes = get_response.into_body().collect().await.unwrap().to_bytes();
         let get_api: ApiResponse<GetProviderResponse> = serde_json::from_slice(&get_bytes).unwrap();
         assert!(get_api.success);
         assert_eq!(
@@ -639,6 +805,93 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_get_audit_logs() {
+        let app = create_router().with_state(create_app_state_for_tests());
+        let correlation_id = "test-corr-id";
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/audit-logs?correlation_id={}",
+                        correlation_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let api_response: ApiResponse<Vec<hodei_jobs_domain::audit::AuditLog>> =
+            serde_json::from_slice(&bytes).unwrap();
+
+        assert!(api_response.success);
+        assert!(api_response.data.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_job() {
+        let app = create_router().with_state(create_app_state_for_tests());
+        let correlation_id = "test-corr-create-job";
+
+        let job_request = serde_json::json!({
+            "spec": {
+                "command": ["echo", "hello"],
+                "image": "alpine:latest",
+                "timeout_ms": 1000
+            },
+            "correlation_id": correlation_id
+        });
+
+        // 1. Create Job
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(job_request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // 2. Verify Audit Log
+        let audit_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/audit-logs?correlation_id={}",
+                        correlation_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(audit_response.status(), StatusCode::OK);
+        let audit_bytes = audit_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let audit_logs: ApiResponse<Vec<hodei_jobs_domain::audit::AuditLog>> =
+            serde_json::from_slice(&audit_bytes).unwrap();
+
+        assert!(audit_logs.success);
+        let logs = audit_logs.data.unwrap();
+        assert!(!logs.is_empty());
+        assert_eq!(logs[0].event_type, "JobCreated");
+        assert_eq!(logs[0].correlation_id.as_deref(), Some(correlation_id));
+    }
     #[tokio::test]
     async fn test_health_check() {
         let app = create_router().with_state(create_app_state_for_tests());
@@ -674,13 +927,18 @@ mod tests {
 
         assert_eq!(result.max_connections, 10);
         assert_eq!(result.connection_timeout, Duration::from_secs(30));
-        assert_eq!(result.url, "postgres://postgres:postgres@localhost:5432/postgres");
+        assert_eq!(
+            result.url,
+            "postgres://postgres:postgres@localhost:5432/postgres"
+        );
     }
 
     #[test]
     fn test_db_settings_parses_overrides() {
         let result = ApiDatabaseSettings::from_env_with(|key| match key {
-            "DATABASE_URL" => Some("postgres://postgres:postgres@localhost:5432/postgres".to_string()),
+            "DATABASE_URL" => {
+                Some("postgres://postgres:postgres@localhost:5432/postgres".to_string())
+            }
             "HODEI_DB_MAX_CONNECTIONS" => Some("42".to_string()),
             "HODEI_DB_CONNECTION_TIMEOUT_SECS" => Some("5".to_string()),
             _ => None,
@@ -727,7 +985,8 @@ mod tests {
             .await
             .unwrap()
             .to_bytes();
-        let create_api: ApiResponse<CreateJobResponse> = serde_json::from_slice(&create_bytes).unwrap();
+        let create_api: ApiResponse<CreateJobResponse> =
+            serde_json::from_slice(&create_bytes).unwrap();
         assert!(create_api.success);
         let job_id = create_api.data.unwrap().job_id;
 
@@ -749,7 +1008,8 @@ mod tests {
             .await
             .unwrap()
             .to_bytes();
-        let status_api: ApiResponse<TrackJobApiResponse> = serde_json::from_slice(&status_bytes).unwrap();
+        let status_api: ApiResponse<TrackJobApiResponse> =
+            serde_json::from_slice(&status_bytes).unwrap();
         assert!(status_api.success);
         assert_eq!(status_api.data.as_ref().unwrap().status, "PENDING");
 
@@ -772,7 +1032,8 @@ mod tests {
             .await
             .unwrap()
             .to_bytes();
-        let cancel_api: ApiResponse<CancelJobResponse> = serde_json::from_slice(&cancel_bytes).unwrap();
+        let cancel_api: ApiResponse<CancelJobResponse> =
+            serde_json::from_slice(&cancel_bytes).unwrap();
         assert!(cancel_api.success);
         assert_eq!(cancel_api.data.as_ref().unwrap().status, "CANCELLED");
 
@@ -793,7 +1054,8 @@ mod tests {
             .await
             .unwrap()
             .to_bytes();
-        let status_api2: ApiResponse<TrackJobApiResponse> = serde_json::from_slice(&status_bytes2).unwrap();
+        let status_api2: ApiResponse<TrackJobApiResponse> =
+            serde_json::from_slice(&status_bytes2).unwrap();
         assert!(status_api2.success);
         assert_eq!(status_api2.data.as_ref().unwrap().status, "CANCELLED");
     }
