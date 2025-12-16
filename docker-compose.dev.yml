@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
-    container_name: hodei-postgres
+    container_name: hodei-jobs-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -20,7 +18,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - hodei-network
+      - hodei-jobs-network
 
   # Hodei gRPC Server (opcional - para desarrollo local se puede correr con cargo)
   # Descomenta si prefieres correr el servidor en Docker
@@ -28,7 +26,7 @@ services:
   #   build:
   #     context: .
   #     dockerfile: Dockerfile.server
-  #   container_name: hodei-server
+  #   container_name: hodei-jobs-server
   #   environment:
   #     HODEI_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei
   #     HODEI_DEV_MODE: "1"
@@ -42,7 +40,7 @@ services:
   #     postgres:
   #       condition: service_healthy
   #   networks:
-  #     - hodei-network
+  #     - hodei-jobs-network
   #   volumes:
   #     - /var/run/docker.sock:/var/run/docker.sock
 
@@ -50,5 +48,5 @@ volumes:
   postgres_data:
 
 networks:
-  hodei-network:
+  hodei-jobs-network:
     driver: bridge

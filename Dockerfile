@@ -1,5 +1,8 @@
-# Build stage
-FROM rust:1.85-bookworm AS builder
+# =============================================================================
+# Hodei Jobs Platform - Production Dockerfile
+# =============================================================================
+# Build stage - using latest to get the most current Rust version
+FROM rust:latest AS builder
 
 WORKDIR /app
 
@@ -11,12 +14,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY proto/ proto/
 COPY crates/ crates/
 
-# Build release
-RUN cargo build --release -p hodei-jobs-cli
-RUN cargo build --release -p hodei-jobs-grpc --bin server
+# Build release (single command to leverage cargo's incremental compilation)
+RUN cargo build --release -p hodei-jobs-cli -p hodei-jobs-grpc
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage - using stable-slim to match the GLIBC version of rust:latest
+FROM debian:stable-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
@@ -24,7 +26,7 @@ WORKDIR /app
 
 # Copy binaries
 COPY --from=builder /app/target/release/hodei-jobs-cli /usr/local/bin/
-COPY --from=builder /app/target/release/server /usr/local/bin/server
+COPY --from=builder /app/target/release/server /usr/local/bin/hodei-jobs-server
 
 # Default command
-CMD ["server"]
+CMD ["hodei-jobs-server"]

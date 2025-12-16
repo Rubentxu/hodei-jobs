@@ -43,6 +43,7 @@ opentelemetry = { workspace = true }
 # Configuration
 config = { workspace = true }
 dotenvy = { workspace = true }
+sqlx = { workspace = true }
 
 [[bin]]
 name = "server"
@@ -61,6 +62,7 @@ version = "1.16"
 [dev-dependencies]
 tokio-test = { workspace = true }
 sqlx = { workspace = true }
+futures = { workspace = true }
 # Usar versión más reciente compatible con bollard 0.19
 testcontainers = { version = "0.26", features = ["properties-config"] }
 testcontainers-modules = { version = "0.14", features = ["postgres"] }

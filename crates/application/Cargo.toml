@@ -32,3 +32,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+futures = { workspace = true }

@@ -138,40 +138,16 @@ Desarrolla un flujo de trabajo completo integrando MCP Chrome DevTools para perf
 - Utilizar estilos responsivos y adaptativos para diferentes dispositivos y pantallas.
 - Mientras se va probando la aplicacion intentaremos extraer todos los flujos posibles a recrear con tests en playwright para probar de manera continua y automatizarlos con CI/CD.
 
+---
 
-HU-6.3 + HU-6.4 completadas (TDD, verde, production-ready)
-Qué se ha implementado
-Port nuevo (aditivo, no rompe interfaces):
-crates/application/src/worker_command_sender.rs
-Trait WorkerCommandSender con send_run_job(worker_id, job).
-JobController (application):
-crates/application/src/job_controller.rs
-Método testeable run_once():
-dequeue() de JobQueue
-scheduling con SchedulingService
-assign_to_job() en WorkerRegistry
-send_run_job() vía port
-persistencia en JobRepository
-Adapter gRPC:
-crates/grpc/src/worker_command_sender.rs
-GrpcWorkerCommandSender convierte JobSpec → RunJobCommand (proto) y usa WorkerAgentServiceImpl::send_to_worker.
-Wiring en producción:
-crates/grpc/src/bin/server.rs
-Loop background configurable por env:
-HODEI_JOB_CONTROLLER_ENABLED=1 (default)
-HODEI_JOB_CONTROLLER_INTERVAL_MS=500 (default)
-Tests (todo en verde)
-Se añadieron tests unitarios y de integración:
-Unit: cargo test -p hodei-jobs-application job_controller::tests::run_once_assigns_and_dispatches
-Integration gRPC: cargo test -p hodei-jobs-grpc --test job_controller_integration
-Y se verificó:
-cargo test --workspace ✅
-Documentación
-docs/epics/EPIC-6-KubernetesJobs-ControlLoop.md actualizado con checks visibles para HU-6.3+HU-6.4.
-Estado del plan
-HU-6.3+6.4: ✅ completadas
-Siguientes pendientes:
-HU-6.2 (OTP persistente + hardening dev-mode en prod)
-HU-6.6 (Provisioning real sin stub)
-HU-6.7 (JobTemplate/JobRun fase aditiva)
-Si confirmas, el siguiente paso natural (y necesario para “production ready real”) es HU-6.2: sacar OTP de in-memory y eliminar aceptación de tokens dev-* en producción (manteniendo dev/testing bien delimitado).
+
+Estan cubierto todos los casos de uso de la aplicacion con sus eventos? todos los casos de uso y 
+funcionalidad importante deberia generar un evento y que se persista. Revisalo en profundidad. 
+Vamos a hacer un trabajo de mejora de eventos y testin apoyados en los eventos alli donde sea util. 
+Nos servira para tener mayor trazabilidad en los tests y en el codigo de negocio, 
+revisa en detalle si hacen falta mas eventos en los casos de uso, y si podemos mejorar 
+la validacion en los tests (sobre todo en los de integracion y e2e) , 
+tambien validar con el sistema de audit podria ser util para validar mejor el codigo generado y 
+que sea potente y production ready. Estudio en detalle todo el codigo y 
+planifica todo en un documento en docs, que podamos usar de referencia. 
+Posteriormente crea una nueva epica para este cometido.

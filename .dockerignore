@@ -1,0 +1,71 @@
+# =============================================================================
+# Hodei Jobs Platform - Docker Ignore
+# =============================================================================
+# Optimizes Docker build context by excluding unnecessary files
+
+# Build artifacts
+target/
+*.rs.bk
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed in image)
+docs/
+*.md
+!README.md
+
+# Test files
+**/tests/
+**/*_test.rs
+**/test_*.rs
+
+# Development files
+.env
+.env.*
+!.env.example
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker files (avoid recursive inclusion)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts not needed in runtime
+scripts/
+deploy/
+
+# Web frontend (built separately)
+web/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+*.tmp
+
+# Coverage and profiling
+coverage/
+*.profraw
+*.profdata
+tarpaulin-report.html
+
+# Cargo lock is needed for reproducible builds
+# Cargo.lock - DO NOT IGNORE
+
+# Config examples
+config/*.example.*

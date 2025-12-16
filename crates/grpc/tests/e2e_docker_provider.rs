@@ -34,7 +34,7 @@ use hodei_jobs::{
 
 mod common;
 
-use common::{TestStack, TestServerConfig, get_postgres_context, is_docker_available, DockerVerifier};
+use common::{TestStack, TestServerConfig, get_postgres_context, DockerVerifier};
 
 // =============================================================================
 // NIVEL 1: Infraestructura Base
@@ -385,7 +385,7 @@ async fn test_07_docker_provider_creates_container() {
 
     // Verificar con CLI
     let verifier = DockerVerifier::new().expect("Docker CLI");
-    let container_name = format!("hodei-worker-{}", worker_id);
+    let container_name = format!("hodei-jobs-worker-{}", worker_id);
     let containers = verifier.find_containers(&container_name).unwrap();
     assert!(!containers.is_empty(), "Container should exist");
     println!("✓ Container verificado via CLI");
@@ -401,6 +401,7 @@ async fn test_07_docker_provider_creates_container() {
 async fn test_08_docker_provider_container_lifecycle() {
     use hodei_jobs_domain::worker::WorkerSpec;
     use hodei_jobs_domain::worker_provider::WorkerProvider;
+    #[allow(unused_imports)]
     use hodei_jobs_domain::shared_kernel::WorkerState;
     use hodei_jobs_infrastructure::providers::DockerProvider;
 
@@ -435,7 +436,7 @@ async fn test_08_docker_provider_container_lifecycle() {
 
     // 5. Verificar que no existe
     let verifier = DockerVerifier::new().unwrap();
-    let container_name = format!("hodei-worker-{}", spec.worker_id);
+    let container_name = format!("hodei-jobs-worker-{}", spec.worker_id);
     tokio::time::sleep(Duration::from_millis(500)).await;
     let containers = verifier.find_containers(&container_name).unwrap();
     assert!(containers.is_empty(), "Container should be gone");

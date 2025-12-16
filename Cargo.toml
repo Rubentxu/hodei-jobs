@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "crates/domain",
-    "crates/application", 
+    "crates/application",
     "crates/infrastructure",
     "crates/interface",
     "crates/grpc",
@@ -14,7 +14,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-authors = ["Hodei Team"]
+authors = ["Hodei Team Platform"]
 
 [workspace.dependencies]
 # Internal crates
@@ -33,6 +33,7 @@ tokio-test = "0.4"
 async-trait = "0.1"
 async-stream = "0.3"
 futures-core = "0.3"
+futures = "0.3"
 pin-project-lite = "0.2"
 
 # HTTP & Web
@@ -85,7 +86,13 @@ bollard = "0.19"
 # Firecracker microVM
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 hyperlocal = "0.9"
-nix = { version = "0.30", features = ["net", "ioctl", "fs", "process", "signal"] }
+nix = { version = "0.30", features = [
+    "net",
+    "ioctl",
+    "fs",
+    "process",
+    "signal",
+] }
 
 # Configuration
 config = "0.15"
@@ -96,7 +103,13 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+] }
 
 # Utilities
 rand = "0.9"

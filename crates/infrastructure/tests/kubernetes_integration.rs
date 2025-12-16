@@ -25,7 +25,7 @@ fn get_test_config() -> KubernetesConfig {
     KubernetesConfig::builder()
         .namespace(
             std::env::var("HODEI_K8S_TEST_NAMESPACE")
-                .unwrap_or_else(|_| "hodei-workers".to_string()),
+                .unwrap_or_else(|_| "hodei-jobs-workers".to_string()),
         )
         .build()
         .expect("Failed to build test config")
@@ -165,7 +165,7 @@ async fn test_kubernetes_provider_destroy_nonexistent_worker() {
     let worker_id = WorkerId::new();
     let handle = hodei_jobs_domain::worker::WorkerHandle::new(
         worker_id,
-        "hodei-worker-nonexistent".to_string(),
+        "hodei-jobs-worker-nonexistent".to_string(),
         ProviderType::Kubernetes,
         provider.provider_id().clone(),
     );

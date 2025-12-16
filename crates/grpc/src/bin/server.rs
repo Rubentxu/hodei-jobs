@@ -10,6 +10,7 @@ use hodei_jobs::{
     scheduler_service_server::SchedulerServiceServer,
     worker_agent_service_server::WorkerAgentServiceServer,
 };
+use hodei_jobs_application::audit_usecases::AuditService;
 use hodei_jobs_application::job_controller::JobController;
 use hodei_jobs_application::job_execution_usecases::{CancelJobUseCase, CreateJobUseCase};
 use hodei_jobs_application::provider_registry::ProviderRegistry;
@@ -24,12 +25,13 @@ use hodei_jobs_grpc::services::{
     ProviderManagementServiceImpl, SchedulerServiceImpl, WorkerAgentServiceImpl,
 };
 use hodei_jobs_infrastructure::persistence::{
-    DatabaseConfig, PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
+    PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
     PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
 };
 use hodei_jobs_infrastructure::providers::{
     DockerProvider, FirecrackerConfig, FirecrackerProvider, KubernetesConfig, KubernetesProvider,
 };
+use hodei_jobs_infrastructure::repositories::PostgresAuditRepository;
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -38,8 +40,8 @@ use tonic::transport::Server;
 use tonic_reflection::server::Builder as ReflectionBuilder;
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{Level, info};
-use tracing_subscriber::FmtSubscriber;
+use tracing::info;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use hodei_jobs_grpc::worker_command_sender::GrpcWorkerCommandSender;
 
@@ -75,21 +77,13 @@ impl GrpcDatabaseSettings {
             connection_timeout,
         })
     }
-
-    fn to_database_config(&self) -> DatabaseConfig {
-        DatabaseConfig {
-            url: self.url.clone(),
-            max_connections: self.max_connections,
-            connection_timeout: self.connection_timeout,
-        }
-    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_env_filter(EnvFilter::from_default_env())
         .with_target(true)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
@@ -113,39 +107,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_stream_service = LogStreamService::new();
 
     let db_settings = GrpcDatabaseSettings::from_env()?;
-    let db_config = db_settings.to_database_config();
 
-    let job_repository = PostgresJobRepository::connect(&db_config).await?;
-    job_repository.run_migrations().await?;
+    // Create shared Postgres Pool
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(db_settings.max_connections)
+        .acquire_timeout(db_settings.connection_timeout)
+        .connect(&db_settings.url)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
 
-    let job_queue = PostgresJobQueue::connect(&db_config).await?;
-    job_queue.run_migrations().await?;
+    // Create repositories using shared pool
+    let job_repository_impl = PostgresJobRepository::new(pool.clone());
+    job_repository_impl.run_migrations().await?;
 
-    let worker_registry = PostgresWorkerRegistry::connect(&db_config).await?;
-    worker_registry.run_migrations().await?;
+    let job_queue_impl = PostgresJobQueue::new(pool.clone());
+    job_queue_impl.run_migrations().await?;
 
-    let token_store = PostgresWorkerBootstrapTokenStore::connect(&db_config).await?;
-    token_store.run_migrations().await?;
+    let worker_registry_impl = PostgresWorkerRegistry::new(pool.clone());
+    worker_registry_impl.run_migrations().await?;
 
-    let provider_config_repo = PostgresProviderConfigRepository::connect(&db_config).await?;
-    provider_config_repo.run_migrations().await?;
+    let token_store_impl = PostgresWorkerBootstrapTokenStore::new(pool.clone());
+    token_store_impl.run_migrations().await?;
 
-    let job_repository = std::sync::Arc::new(job_repository)
+    let provider_config_repo_impl = PostgresProviderConfigRepository::new(pool.clone());
+    provider_config_repo_impl.run_migrations().await?;
+
+    // Create Audit Repository and run migrations (Story 3.1)
+    let audit_repository_impl = PostgresAuditRepository::new(pool.clone());
+    audit_repository_impl.run_migrations().await?;
+    let audit_repository = std::sync::Arc::new(audit_repository_impl)
+        as std::sync::Arc<dyn hodei_jobs_domain::audit::AuditRepository>;
+
+    // Create Audit Service (Story 3.2)
+    let audit_service = AuditService::new(audit_repository);
+
+    // Create Event Bus
+    let event_bus_impl =
+        hodei_jobs_infrastructure::event_bus::postgres::PostgresEventBus::new(pool.clone());
+    let event_bus = std::sync::Arc::new(event_bus_impl);
+
+    // Cast to traits
+    let job_repository = std::sync::Arc::new(job_repository_impl)
         as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-    let job_queue = std::sync::Arc::new(job_queue)
+    let job_queue = std::sync::Arc::new(job_queue_impl)
         as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
-    let worker_registry = std::sync::Arc::new(worker_registry)
+    let worker_registry = std::sync::Arc::new(worker_registry_impl)
         as std::sync::Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
-    let token_store = std::sync::Arc::new(token_store)
+    let token_store = std::sync::Arc::new(token_store_impl)
         as std::sync::Arc<dyn hodei_jobs_domain::otp_token_store::WorkerBootstrapTokenStore>;
-    let provider_config_repo = std::sync::Arc::new(provider_config_repo)
+    let provider_config_repo = std::sync::Arc::new(provider_config_repo_impl)
         as std::sync::Arc<dyn hodei_jobs_domain::provider_config::ProviderConfigRepository>;
 
     let provider_registry =
         std::sync::Arc::new(ProviderRegistry::new(provider_config_repo.clone()));
 
-    let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), job_queue.clone());
-    let cancel_job_usecase = CancelJobUseCase::new(job_repository.clone());
+    let create_job_usecase =
+        CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
+    let cancel_job_usecase = CancelJobUseCase::new(job_repository.clone(), event_bus.clone());
 
     let scheduler_job_repository = job_repository.clone();
     let scheduler_job_queue = job_queue.clone();
@@ -153,6 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler_create_job_usecase = CreateJobUseCase::new(
         scheduler_job_repository.clone(),
         scheduler_job_queue.clone(),
+        event_bus.clone(),
     );
 
     // Create services with shared log stream
@@ -162,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             job_repository.clone(),
             token_store.clone(),
             log_stream_service.clone(),
+            event_bus.clone(),
         );
     let worker_service_for_controller = worker_service.clone();
     let job_repository_for_controller = job_repository.clone();
@@ -213,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!(
                         "  ✓ Kubernetes provider initialized (namespace: {})",
                         env::var("HODEI_K8S_NAMESPACE")
-                            .unwrap_or_else(|_| "hodei-workers".to_string())
+                            .unwrap_or_else(|_| "hodei-jobs-workers".to_string())
                     );
                     let provider_id = provider.provider_id().clone();
                     providers.insert(
@@ -262,7 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let provisioning_config = ProvisioningConfig::new(server_address).with_default_image(
                 env::var("HODEI_WORKER_IMAGE")
-                    .unwrap_or_else(|_| "hodei-worker:latest".to_string()),
+                    .unwrap_or_else(|_| "hodei-jobs-worker:latest".to_string()),
             );
 
             let provisioning_service = std::sync::Arc::new(DefaultWorkerProvisioningService::new(
@@ -320,8 +340,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ ProviderManagementService");
     info!("  ✓ LogStreamService (PRD v6.0)");
     info!("  ✓ Reflection Service");
+    info!("  ✓ Event Bus (Postgres)");
 
-    // JobController loop (HU-6.3+6.4)
+    // JobController loop (HU-6.3+6.4) - REFACTORED FOR EDA
     let controller_enabled =
         env::var("HODEI_JOB_CONTROLLER_ENABLED").unwrap_or_else(|_| "1".to_string()) == "1";
     let controller_interval_ms = env::var("HODEI_JOB_CONTROLLER_INTERVAL_MS")
@@ -331,7 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if controller_enabled {
         info!(
-            "Starting JobController loop (interval={}ms)",
+            "Starting JobController loop (interval={}ms, event-driven)",
             controller_interval_ms
         );
 
@@ -347,20 +368,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             worker_registry_for_controller,
             SchedulerConfig::default(),
             sender,
+            event_bus.clone(),
         ));
 
         let interval = Duration::from_millis(controller_interval_ms);
+        let event_bus_clone = event_bus.clone();
+
         tokio::spawn(async move {
-            loop {
-                if let Err(e) = controller.run_once().await {
-                    tracing::error!("JobController run_once failed: {}", e);
+            use hodei_jobs_domain::event_bus::EventBus;
+            use tokio_stream::StreamExt;
+
+            let mut events = match event_bus_clone.subscribe("hodei_events").await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to subscribe to 'hodei_events': {}. Falling back to polling.",
+                        e
+                    );
+                    // If subscription fails, we loop with just interval
+                    loop {
+                        if let Err(e) = controller.run_once().await {
+                            tracing::error!("JobController run_once failed: {}", e);
+                        }
+                        tokio::time::sleep(interval).await;
+                    }
                 }
-                tokio::time::sleep(interval).await;
+            };
+
+            // Initial run to catch up
+            if let Err(e) = controller.run_once().await {
+                tracing::error!("JobController initial run failed: {}", e);
+            }
+
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {
+                        // Keep-alive / polling fallback
+                        if let Err(e) = controller.run_once().await {
+                            tracing::error!("JobController run_once failed (timer): {}", e);
+                        }
+                    }
+                    Some(event_res) = events.next() => {
+                        match event_res {
+                            Ok(event) => {
+                                tracing::debug!("Controller woke up by event: {:?}", event);
+                                // Trigger processing for the event
+                                // In a perfect world, we'd check if event relates to job creation/state change
+                                // For now, any event triggers a scheduler run attempt
+                                if let Err(e) = controller.run_once().await {
+                                    tracing::error!("JobController run_once failed (event): {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Event bus stream error: {}", e);
+                            }
+                        }
+                    }
+                }
             }
         });
     } else {
         info!("JobController loop disabled (HODEI_JOB_CONTROLLER_ENABLED != 1)");
     }
+
+    // Start Audit Service Subscriber Loop (Story 3.2)
+    let audit_service_clone = audit_service.clone();
+    let event_bus_for_audit = event_bus.clone();
+
+    tokio::spawn(async move {
+        use hodei_jobs_domain::event_bus::EventBus;
+        use tokio_stream::StreamExt;
+
+        info!("Starting Audit Service subscriber loop for 'hodei_events'");
+
+        let mut events = match event_bus_for_audit.subscribe("hodei_events").await {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::error!("Failed to subscribe Audit Service to 'hodei_events': {}", e);
+                return;
+            }
+        };
+
+        while let Some(event_res) = events.next().await {
+            match event_res {
+                Ok(event) => {
+                    tracing::debug!("Audit Service received event: {:?}", event);
+                    if let Err(e) = audit_service_clone.log_event(&event).await {
+                        tracing::error!("Failed to log audit event: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Audit event stream error: {}", e);
+                }
+            }
+        }
+        tracing::warn!("Audit Service event stream ended");
+    });
 
     // Configure CORS for gRPC-Web (US-12.1.4)
     let cors = CorsLayer::new()

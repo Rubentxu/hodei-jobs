@@ -570,7 +570,7 @@ async fn test_07_firecracker_provider_creates_vm() {
         "http://localhost:50051".to_string(),
     )
     .with_env("TEST_VAR", "firecracker_test");
-    let worker_id = spec.worker_id.clone();
+    let _worker_id = spec.worker_id.clone();
 
     let handle = match provider.create_worker(&spec).await {
         Ok(h) => h,

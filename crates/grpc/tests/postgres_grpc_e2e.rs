@@ -6,11 +6,10 @@ use tokio::sync::oneshot;
 use tonic::transport::{Channel, Server};
 
 use hodei_jobs::{
+    GetAvailableWorkersRequest, GetQueueStatusRequest, JobDefinition, ScheduleJobRequest, WorkerId,
     scheduler_service_client::SchedulerServiceClient,
     scheduler_service_server::SchedulerServiceServer,
     worker_agent_service_server::WorkerAgentServiceServer,
-    ScheduleJobRequest, GetQueueStatusRequest, GetAvailableWorkersRequest,
-    JobDefinition, WorkerId,
 };
 
 use hodei_jobs_application::job_execution_usecases::CreateJobUseCase;
@@ -40,13 +39,15 @@ async fn start_test_server(db_url: String) -> (SocketAddr, oneshot::Sender<()>) 
     let worker_registry = PostgresWorkerRegistry::connect(&db_config).await.unwrap();
     worker_registry.run_migrations().await.unwrap();
 
-    let job_repository = Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
+    let job_repository =
+        Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
     let job_queue = Arc::new(job_queue) as Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
-    let worker_registry = Arc::new(worker_registry) as Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
+    let worker_registry =
+        Arc::new(worker_registry) as Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
 
     // Register a worker in DB so scheduler can assign.
     let worker_spec = WorkerSpec::new(
-        "hodei-worker:latest".to_string(),
+        "hodei-jobs-worker:latest".to_string(),
         "http://localhost:50051".to_string(),
     );
     let worker_id = worker_spec.worker_id.clone();
@@ -65,7 +66,9 @@ async fn start_test_server(db_url: String) -> (SocketAddr, oneshot::Sender<()>) 
         .await
         .unwrap();
 
-    let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), job_queue.clone());
+    let event_bus = Arc::new(common::MockEventBus);
+    let create_job_usecase =
+        CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus);
     let scheduler_service = SchedulerServiceImpl::new(
         Arc::new(create_job_usecase),
         job_repository,
@@ -171,10 +174,15 @@ async fn test_scheduler_e2e_postgres_assigns_job_to_worker() {
 
     // Worker should exist and be BUSY after assignment.
     assert!(workers.workers.iter().any(|w| {
-        w.worker_id.as_ref().map(|id| !id.value.is_empty()).unwrap_or(false)
+        w.worker_id
+            .as_ref()
+            .map(|id| !id.value.is_empty())
+            .unwrap_or(false)
             && w.status == 3 // BUSY
     }));
 
     // Compile-time use of WorkerId to ensure proto types are linked
-    let _ = WorkerId { value: "".to_string() };
+    let _ = WorkerId {
+        value: "".to_string(),
+    };
 }

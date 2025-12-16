@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Common test infrastructure for E2E tests
 //!
 //! # Patrón Single Instance + Resource Pooling
@@ -46,40 +47,70 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
-use tokio::sync::{oneshot, RwLock, OnceCell};
+use tokio::sync::{OnceCell, RwLock, oneshot};
 use tonic::transport::{Channel, Server};
-use uuid::Uuid;
 
 use sqlx::{Connection, PgConnection};
 
 use hodei_jobs::{
-    worker_agent_service_server::WorkerAgentServiceServer,
-    job_execution_service_server::JobExecutionServiceServer,
-    scheduler_service_server::SchedulerServiceServer,
-    log_stream_service_server::LogStreamServiceServer,
-    worker_agent_service_client::WorkerAgentServiceClient,
     job_execution_service_client::JobExecutionServiceClient,
+    job_execution_service_server::JobExecutionServiceServer,
+    log_stream_service_server::LogStreamServiceServer,
     scheduler_service_client::SchedulerServiceClient,
+    scheduler_service_server::SchedulerServiceServer,
+    worker_agent_service_client::WorkerAgentServiceClient,
+    worker_agent_service_server::WorkerAgentServiceServer,
 };
 
 use hodei_jobs_application::job_controller::JobController;
 use hodei_jobs_application::job_execution_usecases::{CancelJobUseCase, CreateJobUseCase};
 use hodei_jobs_application::smart_scheduler::SchedulerConfig;
-use hodei_jobs_application::worker_provisioning_impl::{DefaultWorkerProvisioningService, ProvisioningConfig};
+use hodei_jobs_application::worker_provisioning_impl::{
+    DefaultWorkerProvisioningService, ProvisioningConfig,
+};
 use hodei_jobs_domain::shared_kernel::ProviderId;
 use hodei_jobs_domain::worker_provider::WorkerProvider;
 use hodei_jobs_grpc::services::{
-    JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc,
-    SchedulerServiceImpl, WorkerAgentServiceImpl,
+    JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc, SchedulerServiceImpl,
+    WorkerAgentServiceImpl,
 };
 use hodei_jobs_grpc::worker_command_sender::GrpcWorkerCommandSender;
 use hodei_jobs_infrastructure::persistence::{
-    DatabaseConfig, PostgresJobQueue, PostgresJobRepository, 
-    PostgresWorkerRegistry, PostgresWorkerBootstrapTokenStore,
+    DatabaseConfig, PostgresJobQueue, PostgresJobRepository, PostgresWorkerBootstrapTokenStore,
+    PostgresWorkerRegistry,
 };
 use hodei_jobs_infrastructure::providers::DockerProvider;
+
+use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
+
+pub struct MockEventBus;
+
+#[async_trait::async_trait]
+impl EventBus for MockEventBus {
+    async fn publish(
+        &self,
+        _event: &hodei_jobs_domain::events::DomainEvent,
+    ) -> std::result::Result<(), EventBusError> {
+        Ok(())
+    }
+
+    async fn subscribe(
+        &self,
+        _event_type: &str,
+    ) -> std::result::Result<
+        futures::stream::BoxStream<
+            'static,
+            std::result::Result<hodei_jobs_domain::events::DomainEvent, EventBusError>,
+        >,
+        EventBusError,
+    > {
+        // Return empty stream or unimplemented for now as we don't test subscription here yet
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+}
 
 // =============================================================================
 // Single Instance Pattern: Shared Postgres Container
@@ -110,7 +141,7 @@ static DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 // =============================================================================
 
 /// An isolated test database within the shared Postgres container.
-/// 
+///
 /// Each test gets its own database with a unique name, providing:
 /// - Complete isolation between tests
 /// - Clean state for each test
@@ -167,22 +198,22 @@ impl Drop for PostgresTestDatabase {
 }
 
 /// Get or create a Postgres test database.
-/// 
+///
 /// This function implements the Single Instance + Resource Pooling pattern:
-/// 
+///
 /// 1. **Single Instance**: The Postgres container is created only once (first call)
 ///    and reused for all subsequent calls. This is achieved using `OnceCell`.
-/// 
+///
 /// 2. **Resource Pooling**: Each call creates a new isolated database within
 ///    the shared container. The database name is unique using an atomic counter.
-/// 
+///
 /// # Performance
-/// 
+///
 /// - First call: ~2-5 seconds (container startup)
 /// - Subsequent calls: ~50-100ms (just database creation)
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust,ignore
 /// let db1 = get_postgres_context().await?; // Creates container + db "test_0"
 /// let db2 = get_postgres_context().await?; // Reuses container, creates "test_1"
@@ -193,7 +224,7 @@ pub async fn get_postgres_context() -> anyhow::Result<PostgresTestDatabase> {
     let ctx = POSTGRES_CONTEXT
         .get_or_try_init(|| async {
             tracing::info!("Starting shared Postgres container (Single Instance pattern)...");
-            
+
             let container = Postgres::default()
                 .with_tag("16-alpine")
                 .start()
@@ -242,8 +273,10 @@ pub async fn get_postgres_context() -> anyhow::Result<PostgresTestDatabase> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create test database: {e}"))?;
 
-    let connection_string =
-        format!("postgres://postgres:postgres@{}:{}/{}", ctx.host, ctx.port, db_name);
+    let connection_string = format!(
+        "postgres://postgres:postgres@{}:{}/{}",
+        ctx.host, ctx.port, db_name
+    );
 
     Ok(PostgresTestDatabase {
         connection_string,
@@ -272,7 +305,7 @@ impl TestServerConfig {
             db_url,
             enable_docker_provider: false,
             enable_job_controller: true,
-            worker_image: "hodei-worker:e2e-test".to_string(),
+            worker_image: "hodei-jobs-worker:e2e-test".to_string(),
             dev_mode: true,
         }
     }
@@ -329,32 +362,36 @@ impl TestServer {
         token_store.run_migrations().await?;
 
         // Arc wrappers
-        let job_repository = Arc::new(job_repository)
-            as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-        let job_queue = Arc::new(job_queue)
-            as Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+        let job_repository =
+            Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
+        let job_queue = Arc::new(job_queue) as Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
         let worker_registry = Arc::new(worker_registry)
             as Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
         let token_store = Arc::new(token_store)
             as Arc<dyn hodei_jobs_domain::otp_token_store::WorkerBootstrapTokenStore>;
 
         // Create use cases
-        let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), job_queue.clone());
-        let cancel_job_usecase = CancelJobUseCase::new(job_repository.clone());
+        let event_bus = Arc::new(MockEventBus);
+        let create_job_usecase =
+            CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
+        let cancel_job_usecase = CancelJobUseCase::new(job_repository.clone(), event_bus.clone());
 
         // Create log stream service
         let log_stream_service = LogStreamService::new();
 
         // Create worker service
-        let worker_service = WorkerAgentServiceImpl::with_registry_job_repository_token_store_and_log_service(
-            worker_registry.clone(),
-            job_repository.clone(),
-            token_store.clone(),
-            log_stream_service.clone(),
-        );
+        let worker_service =
+            WorkerAgentServiceImpl::with_registry_job_repository_token_store_and_log_service(
+                worker_registry.clone(),
+                job_repository.clone(),
+                token_store.clone(),
+                log_stream_service.clone(),
+                event_bus.clone(),
+            );
 
         // Create job execution service
-        let create_job_usecase2 = CreateJobUseCase::new(job_repository.clone(), job_queue.clone());
+        let create_job_usecase2 =
+            CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
         let job_service = JobExecutionServiceImpl::new(
             Arc::new(create_job_usecase2),
             Arc::new(cancel_job_usecase),
@@ -372,9 +409,12 @@ impl TestServer {
             // Initialize Docker provider
             let docker_provider = DockerProvider::new().await?;
             let provider_id = docker_provider.provider_id().clone();
-            
+
             let mut providers: HashMap<ProviderId, Arc<dyn WorkerProvider>> = HashMap::new();
-            providers.insert(provider_id, Arc::new(docker_provider) as Arc<dyn WorkerProvider>);
+            providers.insert(
+                provider_id,
+                Arc::new(docker_provider) as Arc<dyn WorkerProvider>,
+            );
             let providers = Arc::new(RwLock::new(providers));
 
             // Server address for workers to connect back
@@ -387,7 +427,8 @@ impl TestServer {
                 token_store.clone(),
                 providers,
                 provisioning_config,
-            )) as Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>;
+            ))
+                as Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>;
 
             SchedulerServiceImpl::with_provisioning(
                 Arc::new(create_job_usecase),
@@ -439,6 +480,7 @@ impl TestServer {
                 worker_registry,
                 SchedulerConfig::default(),
                 sender,
+                event_bus.clone(),
             ));
 
             let handle = tokio::spawn(async move {
@@ -472,25 +514,19 @@ impl TestServer {
 
     /// Create a WorkerAgentService client
     pub async fn worker_client(&self) -> anyhow::Result<WorkerAgentServiceClient<Channel>> {
-        let channel = Channel::from_shared(self.endpoint())?
-            .connect()
-            .await?;
+        let channel = Channel::from_shared(self.endpoint())?.connect().await?;
         Ok(WorkerAgentServiceClient::new(channel))
     }
 
     /// Create a JobExecutionService client
     pub async fn job_client(&self) -> anyhow::Result<JobExecutionServiceClient<Channel>> {
-        let channel = Channel::from_shared(self.endpoint())?
-            .connect()
-            .await?;
+        let channel = Channel::from_shared(self.endpoint())?.connect().await?;
         Ok(JobExecutionServiceClient::new(channel))
     }
 
     /// Create a SchedulerService client
     pub async fn scheduler_client(&self) -> anyhow::Result<SchedulerServiceClient<Channel>> {
-        let channel = Channel::from_shared(self.endpoint())?
-            .connect()
-            .await?;
+        let channel = Channel::from_shared(self.endpoint())?.connect().await?;
         Ok(SchedulerServiceClient::new(channel))
     }
 
@@ -538,8 +574,7 @@ impl TestStack {
     /// Create a new test stack with Docker provider enabled
     pub async fn with_docker_provider() -> anyhow::Result<Self> {
         let db = get_postgres_context().await?;
-        let config = TestServerConfig::new(db.connection_string.clone())
-            .with_docker_provider();
+        let config = TestServerConfig::new(db.connection_string.clone()).with_docker_provider();
         let server = TestServer::start(config).await?;
         Ok(Self { db, server })
     }
@@ -555,8 +590,7 @@ impl TestStack {
     /// Create a new test stack with JobController enabled (for job dispatch tests)
     pub async fn with_job_controller() -> anyhow::Result<Self> {
         let db = get_postgres_context().await?;
-        let config = TestServerConfig::new(db.connection_string.clone())
-            .with_job_controller();
+        let config = TestServerConfig::new(db.connection_string.clone()).with_job_controller();
         let server = TestServer::start(config).await?;
         Ok(Self { db, server })
     }
@@ -603,7 +637,7 @@ macro_rules! skip_if_no_docker {
 use std::process::Command;
 
 /// Helper para verificar Docker en tests E2E
-/// 
+///
 /// Usa el comando `docker` CLI directamente para evitar problemas de
 /// permisos con bollard/hyper en algunos entornos.
 pub struct DockerVerifier;
@@ -620,8 +654,8 @@ pub struct ContainerInfo {
 
 impl ContainerInfo {
     pub fn is_running(&self) -> bool {
-        self.state.to_lowercase().contains("running") || 
-        self.status.to_lowercase().starts_with("up")
+        self.state.to_lowercase().contains("running")
+            || self.status.to_lowercase().starts_with("up")
     }
 }
 
@@ -654,9 +688,12 @@ impl DockerVerifier {
     pub fn find_containers(&self, name_pattern: &str) -> anyhow::Result<Vec<ContainerInfo>> {
         let output = Command::new("docker")
             .args([
-                "ps", "-a",
-                "--filter", &format!("name={}", name_pattern),
-                "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}"
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name={}", name_pattern),
+                "--format",
+                "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}",
             ])
             .output()
             .map_err(|e| anyhow::anyhow!("Failed to run docker ps: {}", e))?;
@@ -691,7 +728,7 @@ impl DockerVerifier {
 
     /// Buscar containers de workers Hodei
     pub fn find_hodei_workers(&self) -> anyhow::Result<Vec<ContainerInfo>> {
-        self.find_containers("hodei-worker")
+        self.find_containers("hodei-jobs-worker")
     }
 
     /// Verificar si un container específico está corriendo
@@ -704,8 +741,10 @@ impl DockerVerifier {
     pub fn list_all_containers(&self) -> anyhow::Result<Vec<ContainerInfo>> {
         let output = Command::new("docker")
             .args([
-                "ps", "-a",
-                "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}"
+                "ps",
+                "-a",
+                "--format",
+                "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}",
             ])
             .output()
             .map_err(|e| anyhow::anyhow!("Failed to run docker ps: {}", e))?;

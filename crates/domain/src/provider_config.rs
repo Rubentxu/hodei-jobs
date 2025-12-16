@@ -151,7 +151,7 @@ impl Default for DockerConfig {
     fn default() -> Self {
         Self {
             socket_path: "/var/run/docker.sock".to_string(),
-            default_image: "hodei-worker:latest".to_string(),
+            default_image: "hodei-jobs-worker:latest".to_string(),
             network: None,
             registry_auth: None,
             tls: None,
@@ -185,8 +185,8 @@ impl Default for KubernetesConfig {
         Self {
             kubeconfig_path: None,
             namespace: "hodei-jobs".to_string(),
-            service_account: "hodei-worker".to_string(),
-            default_image: "hodei-worker:latest".to_string(),
+            service_account: "hodei-jobs-worker".to_string(),
+            default_image: "hodei-jobs-worker:latest".to_string(),
             image_pull_secrets: vec![],
             node_selector: HashMap::new(),
             tolerations: vec![],
@@ -480,7 +480,7 @@ mod tests {
     fn test_docker_config_default() {
         let config = DockerConfig::default();
         assert_eq!(config.socket_path, "/var/run/docker.sock");
-        assert_eq!(config.default_image, "hodei-worker:latest");
+        assert_eq!(config.default_image, "hodei-jobs-worker:latest");
     }
 
     #[test]

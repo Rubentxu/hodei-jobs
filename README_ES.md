@@ -137,6 +137,22 @@ grpcurl -plaintext -d '{
 
 ## 🏗️ Arquitectura
 
+### Componentes de Alto Nivel
+
+El siguiente diagrama ilustra la interacción entre los servicios principales:
+
+<p align="center">
+  <img src="docs/assets/diagrama-jobs-services.png" alt="Diagrama de Servicios Hodei Jobs" width="800" />
+</p>
+
+### Flujo de Ejecución de Jobs
+
+Vista detallada de cómo fluye un job a través del sistema:
+
+<p align="center">
+  <img src="docs/assets/diagrama-jobs-eng.png" alt="Flujo de Ejecución Hodei Jobs" width="800" />
+</p>
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     HODEI JOBS PLATFORM                         │

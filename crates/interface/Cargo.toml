@@ -36,7 +36,11 @@ tracing-subscriber = { workspace = true }
 # Metrics & Monitoring
 metrics = { workspace = true }
 
+# Database
+sqlx = { workspace = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 http-body-util = "0.1.2"
 tempfile = { workspace = true }
+futures = { workspace = true }

@@ -4,7 +4,7 @@
 # =============================================================================
 # Stage 1: Builder
 # =============================================================================
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:latest AS builder
 
 WORKDIR /app
 
@@ -21,20 +21,23 @@ COPY crates ./crates
 COPY proto ./proto
 
 # Build release binary
-RUN cargo build --release -p hodei-jobs-cli
+RUN cargo build --release -p hodei-jobs-grpc --bin worker
 
 # =============================================================================
-# Stage 2: Runtime (Distroless for minimal attack surface)
+# Stage 2: Runtime
 # =============================================================================
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+FROM debian:stable-slim AS runtime
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/hodei-cli /usr/local/bin/hodei-worker
+COPY --from=builder /app/target/release/worker /usr/local/bin/hodei-jobs-worker
 
-# Use non-root user (provided by distroless:nonroot)
-USER nonroot:nonroot
+# Create non-root user
+RUN useradd -r -u 1000 -g root hodei
+USER hodei
 
 # Environment variables (overridden at runtime via Pod spec)
 ENV HODEI_WORKER_ID=""
@@ -47,5 +50,5 @@ ENV RUST_LOG="info"
 EXPOSE 9090
 
 # Default command
-ENTRYPOINT ["/usr/local/bin/hodei-worker"]
-CMD ["worker", "start"]
+ENTRYPOINT ["/usr/local/bin/hodei-jobs-worker"]
+CMD []

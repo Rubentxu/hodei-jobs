@@ -252,7 +252,7 @@ mod tests {
 
     fn create_test_worker(ready: bool) -> Worker {
         let spec = WorkerSpec::new(
-            "hodei-worker:latest".to_string(),
+            "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
         let handle = WorkerHandle::new(

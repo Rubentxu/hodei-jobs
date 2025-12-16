@@ -15,19 +15,18 @@ use hodei_jobs_application::smart_scheduler::{SchedulerConfig, SchedulingService
 use hodei_jobs_application::worker_provisioning::WorkerProvisioningService;
 use hodei_jobs_domain::job_execution::{ExecutionContext, JobQueue, JobRepository};
 use hodei_jobs_domain::job_scheduler::SchedulingContext;
-use hodei_jobs_domain::shared_kernel::{DomainError, JobId, JobState, Result as DomainResult, WorkerId, WorkerState};
+use hodei_jobs_domain::shared_kernel::{
+    DomainError, JobId, JobState, Result as DomainResult, WorkerId, WorkerState,
+};
 use hodei_jobs_domain::worker_registry::{WorkerFilter, WorkerRegistry};
 use uuid::Uuid;
 
 use hodei_jobs::{
-    scheduler_service_server::SchedulerService,
-    ScheduleJobRequest, ScheduleJobResponse,
-    GetSchedulingDecisionRequest, GetSchedulingDecisionResponse,
-    ConfigureSchedulerRequest, ConfigureSchedulerResponse,
-    GetQueueStatusRequest, GetQueueStatusResponse,
-    GetAvailableWorkersRequest, GetAvailableWorkersResponse,
-    AvailableWorker, ExecutionId, JobId as GrpcJobId, QueueStatus,
-    SchedulingDecision, WorkerId as GrpcWorkerId, WorkerSchedulingInfo,
+    AvailableWorker, ConfigureSchedulerRequest, ConfigureSchedulerResponse, ExecutionId,
+    GetAvailableWorkersRequest, GetAvailableWorkersResponse, GetQueueStatusRequest,
+    GetQueueStatusResponse, GetSchedulingDecisionRequest, GetSchedulingDecisionResponse,
+    JobId as GrpcJobId, QueueStatus, ScheduleJobRequest, ScheduleJobResponse, SchedulingDecision,
+    WorkerId as GrpcWorkerId, WorkerSchedulingInfo, scheduler_service_server::SchedulerService,
 };
 
 #[derive(Clone)]
@@ -102,7 +101,9 @@ impl SchedulerServiceImpl {
             DomainError::JobNotFound { .. } => Status::not_found(err.to_string()),
             DomainError::WorkerNotFound { .. } => Status::not_found(err.to_string()),
             DomainError::WorkerNotAvailable { .. } => Status::failed_precondition(err.to_string()),
-            DomainError::InvalidStateTransition { .. } => Status::failed_precondition(err.to_string()),
+            DomainError::InvalidStateTransition { .. } => {
+                Status::failed_precondition(err.to_string())
+            }
             _ => Status::internal(err.to_string()),
         }
     }
@@ -110,11 +111,11 @@ impl SchedulerServiceImpl {
     fn map_worker_status(state: &WorkerState) -> i32 {
         match state {
             WorkerState::Creating | WorkerState::Connecting => 1, // REGISTERING
-            WorkerState::Ready => 2,                               // AVAILABLE
-            WorkerState::Busy => 3,                                // BUSY
-            WorkerState::Draining => 4,                            // DRAINING
-            WorkerState::Terminating => 5,                         // TERMINATING
-            WorkerState::Terminated => 0,                          // OFFLINE
+            WorkerState::Ready => 2,                              // AVAILABLE
+            WorkerState::Busy => 3,                               // BUSY
+            WorkerState::Draining => 4,                           // DRAINING
+            WorkerState::Terminating => 5,                        // TERMINATING
+            WorkerState::Terminated => 0,                         // OFFLINE
         }
     }
 
@@ -125,19 +126,24 @@ impl SchedulerServiceImpl {
         score: f64,
         reasons: &[String],
     ) {
-        job.metadata
-            .insert("scheduler.selected_worker_id".to_string(), worker_id.to_string());
-        job.metadata
-            .insert("scheduler.execution_id".to_string(), execution_id.to_string());
+        job.metadata.insert(
+            "scheduler.selected_worker_id".to_string(),
+            worker_id.to_string(),
+        );
+        job.metadata.insert(
+            "scheduler.execution_id".to_string(),
+            execution_id.to_string(),
+        );
         job.metadata
             .insert("scheduler.score".to_string(), score.to_string());
-        job.metadata.insert(
-            "scheduler.reasons".to_string(),
-            reasons.join("\n"),
-        );
+        job.metadata
+            .insert("scheduler.reasons".to_string(), reasons.join("\n"));
     }
 
-    fn build_decision_from_job(job_id: GrpcJobId, job: &hodei_jobs_domain::job_execution::Job) -> SchedulingDecision {
+    fn build_decision_from_job(
+        job_id: GrpcJobId,
+        job: &hodei_jobs_domain::job_execution::Job,
+    ) -> SchedulingDecision {
         let selected_worker_id = job
             .metadata
             .get("scheduler.selected_worker_id")
@@ -180,7 +186,10 @@ impl SchedulerServiceImpl {
         }
     }
 
-    async fn build_scheduling_context(&self, job: hodei_jobs_domain::job_execution::Job) -> DomainResult<SchedulingContext> {
+    async fn build_scheduling_context(
+        &self,
+        job: hodei_jobs_domain::job_execution::Job,
+    ) -> DomainResult<SchedulingContext> {
         let available_workers = self.worker_registry.find_available().await?;
         let pending_jobs_count = self.job_queue.len().await?;
         let stats = self.worker_registry.stats().await?;
@@ -248,6 +257,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 working_dir: None,
             },
             correlation_id: None,
+            actor: None,
         };
 
         let create_response = self
@@ -282,7 +292,10 @@ impl SchedulerService for SchedulerServiceImpl {
             .map_err(Self::to_status)?;
 
         match decision {
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::AssignToWorker { worker_id, .. } => {
+            hodei_jobs_domain::job_scheduler::SchedulingDecision::AssignToWorker {
+                worker_id,
+                ..
+            } => {
                 let worker = self
                     .worker_registry
                     .get(&worker_id)
@@ -310,16 +323,31 @@ impl SchedulerService for SchedulerServiceImpl {
                     .map_err(Self::to_status)?;
 
                 let reasons = vec!["Assigned to existing worker".to_string()];
-                Self::persist_decision_metadata(&mut job, &worker_id, &provider_execution_id, 1.0, &reasons);
-                self.job_repository.update(&job).await.map_err(Self::to_status)?;
+                Self::persist_decision_metadata(
+                    &mut job,
+                    &worker_id,
+                    &provider_execution_id,
+                    1.0,
+                    &reasons,
+                );
+                self.job_repository
+                    .update(&job)
+                    .await
+                    .map_err(Self::to_status)?;
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: true,
                     message: "Job scheduled".to_string(),
                     decision: Some(SchedulingDecision {
-                        job_id: Some(GrpcJobId { value: create_response.job_id }),
-                        selected_worker_id: Some(GrpcWorkerId { value: worker_id.to_string() }),
-                        execution_id: Some(ExecutionId { value: provider_execution_id }),
+                        job_id: Some(GrpcJobId {
+                            value: create_response.job_id,
+                        }),
+                        selected_worker_id: Some(GrpcWorkerId {
+                            value: worker_id.to_string(),
+                        }),
+                        execution_id: Some(ExecutionId {
+                            value: provider_execution_id,
+                        }),
                         score: 1.0,
                         reasons,
                         decision_time: Some(Self::now_timestamp()),
@@ -331,13 +359,18 @@ impl SchedulerService for SchedulerServiceImpl {
             hodei_jobs_domain::job_scheduler::SchedulingDecision::Enqueue { reason, .. } => {
                 job.metadata
                     .insert("scheduler.reasons".to_string(), reason.clone());
-                self.job_repository.update(&job).await.map_err(Self::to_status)?;
+                self.job_repository
+                    .update(&job)
+                    .await
+                    .map_err(Self::to_status)?;
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: true,
                     message: format!("Job enqueued: {}", reason),
                     decision: Some(SchedulingDecision {
-                        job_id: Some(GrpcJobId { value: create_response.job_id }),
+                        job_id: Some(GrpcJobId {
+                            value: create_response.job_id,
+                        }),
                         selected_worker_id: None,
                         execution_id: None,
                         score: 0.0,
@@ -351,13 +384,18 @@ impl SchedulerService for SchedulerServiceImpl {
             hodei_jobs_domain::job_scheduler::SchedulingDecision::Reject { reason, .. } => {
                 job.state = JobState::Failed;
                 job.error_message = Some(reason.clone());
-                self.job_repository.update(&job).await.map_err(Self::to_status)?;
+                self.job_repository
+                    .update(&job)
+                    .await
+                    .map_err(Self::to_status)?;
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: false,
                     message: format!("Job rejected: {}", reason),
                     decision: Some(SchedulingDecision {
-                        job_id: Some(GrpcJobId { value: create_response.job_id }),
+                        job_id: Some(GrpcJobId {
+                            value: create_response.job_id,
+                        }),
                         selected_worker_id: None,
                         execution_id: None,
                         score: 0.0,
@@ -368,7 +406,10 @@ impl SchedulerService for SchedulerServiceImpl {
                     scheduled_at: Some(Self::now_timestamp()),
                 }))
             }
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::ProvisionWorker { provider_id, .. } => {
+            hodei_jobs_domain::job_scheduler::SchedulingDecision::ProvisionWorker {
+                provider_id,
+                ..
+            } => {
                 // Check if provisioning service is configured
                 let Some(provisioning_service) = &self.provisioning_service else {
                     let msg = "Worker provisioning is not configured in this scheduler instance";
@@ -376,7 +417,9 @@ impl SchedulerService for SchedulerServiceImpl {
                         success: false,
                         message: msg.to_string(),
                         decision: Some(SchedulingDecision {
-                            job_id: Some(GrpcJobId { value: create_response.job_id }),
+                            job_id: Some(GrpcJobId {
+                                value: create_response.job_id,
+                            }),
                             selected_worker_id: None,
                             execution_id: None,
                             score: 0.0,
@@ -394,7 +437,10 @@ impl SchedulerService for SchedulerServiceImpl {
                     .ok_or_else(|| Status::internal("No default worker spec for provider"))?;
 
                 // Provision the worker
-                info!("Provisioning worker for job {} via provider {}", job_id, provider_id);
+                info!(
+                    "Provisioning worker for job {} via provider {}",
+                    job_id, provider_id
+                );
                 let provisioning_result = provisioning_service
                     .provision_worker(&provider_id, spec)
                     .await
@@ -415,10 +461,16 @@ impl SchedulerService for SchedulerServiceImpl {
                     "scheduler.provisioning_provider_id".to_string(),
                     provider_id.to_string(),
                 );
-                self.job_repository.update(&job).await.map_err(Self::to_status)?;
+                self.job_repository
+                    .update(&job)
+                    .await
+                    .map_err(Self::to_status)?;
 
                 let reasons = vec![
-                    format!("Provisioned new worker {} via provider {}", worker_id, provider_id),
+                    format!(
+                        "Provisioned new worker {} via provider {}",
+                        worker_id, provider_id
+                    ),
                     "Job enqueued, will be assigned when worker becomes ready".to_string(),
                 ];
 
@@ -426,8 +478,12 @@ impl SchedulerService for SchedulerServiceImpl {
                     success: true,
                     message: format!("Worker {} provisioned, job enqueued", worker_id),
                     decision: Some(SchedulingDecision {
-                        job_id: Some(GrpcJobId { value: create_response.job_id }),
-                        selected_worker_id: Some(GrpcWorkerId { value: worker_id.to_string() }),
+                        job_id: Some(GrpcJobId {
+                            value: create_response.job_id,
+                        }),
+                        selected_worker_id: Some(GrpcWorkerId {
+                            value: worker_id.to_string(),
+                        }),
                         execution_id: None,
                         score: 0.8,
                         reasons,
@@ -469,7 +525,9 @@ impl SchedulerService for SchedulerServiceImpl {
         _request: Request<ConfigureSchedulerRequest>,
     ) -> Result<Response<ConfigureSchedulerResponse>, Status> {
         let req = _request.into_inner();
-        let cfg = req.config.ok_or_else(|| Status::invalid_argument("config is required"))?;
+        let cfg = req
+            .config
+            .ok_or_else(|| Status::invalid_argument("config is required"))?;
         let plugin_cfg = cfg.plugin_config;
 
         let mut scheduler_config = SchedulerConfig::default();
@@ -492,10 +550,18 @@ impl SchedulerService for SchedulerServiceImpl {
 
         if let Some(v) = plugin_cfg.get("worker_strategy") {
             scheduler_config.worker_strategy = match v.as_str() {
-                "first_available" => hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::FirstAvailable,
-                "least_loaded" => hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::LeastLoaded,
-                "round_robin" => hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::RoundRobin,
-                "most_capacity" => hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::MostCapacity,
+                "first_available" => {
+                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::FirstAvailable
+                }
+                "least_loaded" => {
+                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::LeastLoaded
+                }
+                "round_robin" => {
+                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::RoundRobin
+                }
+                "most_capacity" => {
+                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::MostCapacity
+                }
                 "affinity" => hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::Affinity,
                 _ => scheduler_config.worker_strategy,
             };
@@ -503,12 +569,24 @@ impl SchedulerService for SchedulerServiceImpl {
 
         if let Some(v) = plugin_cfg.get("provider_strategy") {
             scheduler_config.provider_strategy = match v.as_str() {
-                "first_available" => hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::FirstAvailable,
-                "lowest_cost" => hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::LowestCost,
-                "fastest_startup" => hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::FastestStartup,
-                "most_capacity" => hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::MostCapacity,
-                "round_robin" => hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::RoundRobin,
-                "healthiest" => hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::Healthiest,
+                "first_available" => {
+                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::FirstAvailable
+                }
+                "lowest_cost" => {
+                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::LowestCost
+                }
+                "fastest_startup" => {
+                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::FastestStartup
+                }
+                "most_capacity" => {
+                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::MostCapacity
+                }
+                "round_robin" => {
+                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::RoundRobin
+                }
+                "healthiest" => {
+                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::Healthiest
+                }
                 _ => scheduler_config.provider_strategy,
             };
         }
@@ -604,7 +682,8 @@ impl SchedulerService for SchedulerServiceImpl {
                     max_age.seconds.max(0) as u64,
                     max_age.nanos.max(0) as u32,
                 );
-                let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_age).unwrap_or_default();
+                let cutoff =
+                    chrono::Utc::now() - chrono::Duration::from_std(max_age).unwrap_or_default();
                 workers.retain(|w| w.last_heartbeat() >= cutoff);
             }
         }
@@ -639,7 +718,8 @@ impl SchedulerService for SchedulerServiceImpl {
         }))
     }
 
-    type SchedulingDecisionStreamStream = Pin<Box<dyn Stream<Item = Result<SchedulingDecision, Status>> + Send>>;
+    type SchedulingDecisionStreamStream =
+        Pin<Box<dyn Stream<Item = Result<SchedulingDecision, Status>> + Send>>;
 
     async fn scheduling_decision_stream(
         &self,

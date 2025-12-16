@@ -12,7 +12,7 @@ providers:
       - development
     config:
       socket_path: /var/run/docker.sock
-      default_image: hodei-worker:latest
+      default_image: hodei-jobs-worker:latest
       network: bridge
 
   # Kubernetes provider for production
@@ -25,8 +25,8 @@ providers:
       - cloud
     config:
       namespace: hodei-jobs
-      service_account: hodei-worker
-      default_image: hodei-worker:latest
+      service_account: hodei-jobs-worker
+      default_image: hodei-jobs-worker:latest
 
   # AWS Lambda provider for serverless workloads
   - name: lambda-serverless
@@ -54,4 +54,4 @@ providers:
       region: us-east-1
       cluster_arn: arn:aws:ecs:us-east-1:123456789:cluster/hodei
       execution_role_arn: arn:aws:iam::123456789:role/hodei-fargate-execution
-      default_image: hodei-worker:latest
+      default_image: hodei-jobs-worker:latest

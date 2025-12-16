@@ -40,7 +40,7 @@ async fn test_postgres_worker_lifecycle() {
     );
     
     let spec = WorkerSpec::new(
-        "hodei-worker:latest".to_string(),
+        "hodei-jobs-worker:latest".to_string(),
         "http://localhost:50051".to_string(),
     );
 

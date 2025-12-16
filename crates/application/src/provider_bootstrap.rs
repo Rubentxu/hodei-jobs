@@ -224,7 +224,7 @@ impl ProviderBootstrap {
                     task_role_arn: None,
                     default_image: config_map.get("default_image")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("hodei-worker:latest")
+                        .unwrap_or("hodei-jobs-worker:latest")
                         .to_string(),
                 };
                 Ok(ProviderTypeConfig::Fargate(fc))

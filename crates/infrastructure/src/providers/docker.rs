@@ -5,12 +5,13 @@
 
 use async_trait::async_trait;
 use bollard::{
-    container::{
-        Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions,
-        StartContainerOptions, StopContainerOptions,
+    container::LogOutput,
+    models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig},
+    query_parameters::{
+        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
+        LogsOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
+        StopContainerOptionsBuilder,
     },
-    image::CreateImageOptions,
-    secret::{ContainerStateStatusEnum, HostConfig},
     Docker,
 };
 use chrono::Utc;
@@ -220,7 +221,7 @@ impl DockerProvider {
     }
 
     /// Create container configuration from WorkerSpec
-    fn create_container_config(&self, spec: &WorkerSpec) -> Config<String> {
+    fn create_container_config(&self, spec: &WorkerSpec) -> ContainerCreateBody {
         let mut env_vars: Vec<String> = spec
             .environment
             .iter()
@@ -248,7 +249,7 @@ impl DockerProvider {
             ..Default::default()
         };
 
-        Config {
+        ContainerCreateBody {
             image: Some(spec.image.clone()),
             env: Some(env_vars),
             labels: Some(labels),
@@ -265,10 +266,9 @@ impl DockerProvider {
         }
 
         info!("Pulling image {}", image);
-        let options = CreateImageOptions {
-            from_image: image,
-            ..Default::default()
-        };
+        let options = CreateImageOptionsBuilder::default()
+            .from_image(image)
+            .build();
 
         let mut stream = self.client.create_image(Some(options), None, None);
 
@@ -333,10 +333,9 @@ impl WorkerProvider for DockerProvider {
         let container_name = format!("hodei-worker-{}", worker_id);
         let config = self.create_container_config(spec);
 
-        let options = CreateContainerOptions {
-            name: container_name.clone(),
-            platform: None,
-        };
+        let options = CreateContainerOptionsBuilder::default()
+            .name(&container_name)
+            .build();
 
         let container = self
             .client
@@ -348,7 +347,7 @@ impl WorkerProvider for DockerProvider {
         debug!("Container created: {}", container_id);
 
         self.client
-            .start_container(&container_id, None::<StartContainerOptions<String>>)
+            .start_container(&container_id, None::<StartContainerOptions>)
             .await
             .map_err(|e| {
                 error!("Failed to start container: {}", e);
@@ -375,7 +374,7 @@ impl WorkerProvider for DockerProvider {
 
         let inspect = self
             .client
-            .inspect_container(container_id, None::<bollard::container::InspectContainerOptions>)
+            .inspect_container(container_id, None::<InspectContainerOptions>)
             .await
             .map_err(|e| ProviderError::WorkerNotFound(format!("Container not found: {}", e)))?;
 
@@ -387,16 +386,15 @@ impl WorkerProvider for DockerProvider {
         let container_id = &handle.provider_resource_id;
         info!("Destroying worker: {}", handle.worker_id);
 
-        let stop_options = StopContainerOptions { t: 10 };
+        let stop_options = StopContainerOptionsBuilder::default().t(10).build();
         if let Err(e) = self.client.stop_container(container_id, Some(stop_options)).await {
             warn!("Failed to stop container gracefully: {}", e);
         }
 
-        let remove_options = RemoveContainerOptions {
-            force: true,
-            v: true,
-            ..Default::default()
-        };
+        let remove_options = RemoveContainerOptionsBuilder::default()
+            .force(true)
+            .v(true)
+            .build();
 
         self.client
             .remove_container(container_id, Some(remove_options))
@@ -416,13 +414,13 @@ impl WorkerProvider for DockerProvider {
     ) -> std::result::Result<Vec<LogEntry>, ProviderError> {
         let container_id = &handle.provider_resource_id;
 
-        let options = LogsOptions::<String> {
-            stdout: true,
-            stderr: true,
-            timestamps: true,
-            tail: tail.map(|t| t.to_string()).unwrap_or_else(|| "100".to_string()),
-            ..Default::default()
-        };
+        let tail_str = tail.map(|t| t.to_string()).unwrap_or_else(|| "100".to_string());
+        let options = LogsOptionsBuilder::default()
+            .stdout(true)
+            .stderr(true)
+            .timestamps(true)
+            .tail(&tail_str)
+            .build();
 
         let mut logs = Vec::new();
         let mut stream = self.client.logs(container_id, Some(options));

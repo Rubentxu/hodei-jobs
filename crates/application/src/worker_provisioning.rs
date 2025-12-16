@@ -60,7 +60,6 @@ pub trait WorkerProvisioningService: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_jobs_domain::shared_kernel::WorkerId;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -100,7 +99,7 @@ mod tests {
 
         fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
             Some(WorkerSpec::new(
-                "hodei-worker:latest".to_string(),
+                "hodei-jobs-worker:latest".to_string(),
                 "http://localhost:50051".to_string(),
             ))
         }
@@ -112,7 +111,7 @@ mod tests {
         let service = MockProvisioningService::new(vec![provider_id.clone()]);
 
         let spec = WorkerSpec::new(
-            "hodei-worker:latest".to_string(),
+            "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
 
@@ -141,6 +140,6 @@ mod tests {
 
         let spec = service.default_worker_spec(&provider_id);
         assert!(spec.is_some());
-        assert_eq!(spec.unwrap().image, "hodei-worker:latest");
+        assert_eq!(spec.unwrap().image, "hodei-jobs-worker:latest");
     }
 }

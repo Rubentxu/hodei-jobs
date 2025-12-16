@@ -9,8 +9,8 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::{
-    api::{Api, DeleteParams, ListParams, LogParams, PostParams},
     Client, Config,
+    api::{Api, DeleteParams, ListParams, LogParams, PostParams},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -104,14 +104,14 @@ pub struct KubernetesConfig {
 impl Default for KubernetesConfig {
     fn default() -> Self {
         let mut base_labels = HashMap::new();
-        base_labels.insert("app".to_string(), "hodei-worker".to_string());
+        base_labels.insert("app".to_string(), "hodei-jobs-worker".to_string());
         base_labels.insert("hodei.io/managed".to_string(), "true".to_string());
 
         Self {
-            namespace: "hodei-workers".to_string(),
+            namespace: "hodei-jobs-workers".to_string(),
             kubeconfig_path: None,
             context: None,
-            service_account: Some("hodei-worker".to_string()),
+            service_account: Some("hodei-jobs-worker".to_string()),
             base_labels,
             base_annotations: HashMap::new(),
             node_selector: HashMap::new(),
@@ -165,7 +165,9 @@ impl KubernetesConfigBuilder {
     }
 
     pub fn add_base_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.base_annotations.insert(key.into(), value.into());
+        self.config
+            .base_annotations
+            .insert(key.into(), value.into());
         self
     }
 
@@ -312,7 +314,10 @@ impl KubernetesProvider {
     }
 
     /// Create a new KubernetesProvider with a specific provider ID
-    pub async fn with_provider_id(provider_id: ProviderId, config: KubernetesConfig) -> Result<Self> {
+    pub async fn with_provider_id(
+        provider_id: ProviderId,
+        config: KubernetesConfig,
+    ) -> Result<Self> {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
 
@@ -349,17 +354,20 @@ impl KubernetesProvider {
                         message: format!("Failed to read kubeconfig from {}: {}", path, e),
                     }
                 })?;
-                Config::from_custom_kubeconfig(kubeconfig, &kube::config::KubeConfigOptions::default())
-                    .await
-                    .map_err(|e| DomainError::InfrastructureError {
-                        message: format!("Failed to create Kubernetes config: {}", e),
-                    })?
-            }
-            (None, _) => {
-                Config::infer().await.map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to infer Kubernetes config: {}", e),
+                Config::from_custom_kubeconfig(
+                    kubeconfig,
+                    &kube::config::KubeConfigOptions::default(),
+                )
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to create Kubernetes config: {}", e),
                 })?
             }
+            (None, _) => Config::infer()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to infer Kubernetes config: {}", e),
+                })?,
         };
 
         Client::try_from(kube_config).map_err(|e| DomainError::InfrastructureError {
@@ -376,9 +384,16 @@ impl KubernetesProvider {
                 max_gpu_count: 8,
             },
             gpu_support: true,
-            gpu_types: vec!["nvidia-tesla-v100".to_string(), "nvidia-tesla-t4".to_string()],
+            gpu_types: vec![
+                "nvidia-tesla-v100".to_string(),
+                "nvidia-tesla-t4".to_string(),
+            ],
             architectures: vec![Architecture::Amd64, Architecture::Arm64],
-            runtimes: vec!["shell".to_string(), "python".to_string(), "node".to_string()],
+            runtimes: vec![
+                "shell".to_string(),
+                "python".to_string(),
+                "node".to_string(),
+            ],
             regions: vec!["default".to_string()],
             max_execution_time: Some(Duration::from_secs(86400)), // 24 hours
             persistent_storage: true,
@@ -404,7 +419,10 @@ impl KubernetesProvider {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         labels.insert("hodei.io/worker-id".to_string(), spec.worker_id.to_string());
-        labels.insert("hodei.io/provider-id".to_string(), self.provider_id.to_string());
+        labels.insert(
+            "hodei.io/provider-id".to_string(),
+            self.provider_id.to_string(),
+        );
 
         // Add spec labels
         for (k, v) in &spec.labels {
@@ -496,17 +514,18 @@ impl KubernetesProvider {
         };
 
         // Build node selector
-        let node_selector: Option<BTreeMap<String, String>> = if self.config.node_selector.is_empty() {
-            None
-        } else {
-            Some(
-                self.config
-                    .node_selector
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-            )
-        };
+        let node_selector: Option<BTreeMap<String, String>> =
+            if self.config.node_selector.is_empty() {
+                None
+            } else {
+                Some(
+                    self.config
+                        .node_selector
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            };
 
         // Build tolerations
         let tolerations: Option<Vec<k8s_openapi::api::core::v1::Toleration>> =
@@ -617,7 +636,10 @@ impl WorkerProvider for KubernetesProvider {
         &self.capabilities
     }
 
-    async fn create_worker(&self, spec: &WorkerSpec) -> std::result::Result<WorkerHandle, ProviderError> {
+    async fn create_worker(
+        &self,
+        spec: &WorkerSpec,
+    ) -> std::result::Result<WorkerHandle, ProviderError> {
         let worker_id = spec.worker_id.clone();
         info!("Creating Kubernetes worker Pod: {}", worker_id);
 
@@ -625,9 +647,14 @@ impl WorkerProvider for KubernetesProvider {
         let pod_name = Self::pod_name(&worker_id);
 
         // Check if Pod already exists
-        if pods.get_opt(&pod_name).await.map_err(|e| {
-            ProviderError::ProvisioningFailed(format!("Failed to check existing Pod: {}", e))
-        })?.is_some() {
+        if pods
+            .get_opt(&pod_name)
+            .await
+            .map_err(|e| {
+                ProviderError::ProvisioningFailed(format!("Failed to check existing Pod: {}", e))
+            })?
+            .is_some()
+        {
             return Err(ProviderError::ProvisioningFailed(format!(
                 "Pod {} already exists",
                 pod_name
@@ -644,7 +671,9 @@ impl WorkerProvider for KubernetesProvider {
         let created_pod = pods
             .create(&PostParams::default(), &pod)
             .await
-            .map_err(|e| ProviderError::ProvisioningFailed(format!("Failed to create Pod: {}", e)))?;
+            .map_err(|e| {
+                ProviderError::ProvisioningFailed(format!("Failed to create Pod: {}", e))
+            })?;
 
         let pod_uid = created_pod
             .metadata
@@ -652,7 +681,10 @@ impl WorkerProvider for KubernetesProvider {
             .clone()
             .unwrap_or_else(|| pod_name.clone());
 
-        info!("Worker Pod {} created successfully (uid: {})", pod_name, pod_uid);
+        info!(
+            "Worker Pod {} created successfully (uid: {})",
+            pod_name, pod_uid
+        );
 
         let handle = WorkerHandle::new(
             worker_id,
@@ -660,13 +692,19 @@ impl WorkerProvider for KubernetesProvider {
             ProviderType::Kubernetes,
             self.provider_id.clone(),
         )
-        .with_metadata("namespace", serde_json::json!(self.config.namespace.clone()))
+        .with_metadata(
+            "namespace",
+            serde_json::json!(self.config.namespace.clone()),
+        )
         .with_metadata("pod_uid", serde_json::json!(pod_uid));
 
         Ok(handle)
     }
 
-    async fn get_worker_status(&self, handle: &WorkerHandle) -> std::result::Result<WorkerState, ProviderError> {
+    async fn get_worker_status(
+        &self,
+        handle: &WorkerHandle,
+    ) -> std::result::Result<WorkerState, ProviderError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
         let pod_name = &handle.provider_resource_id;
 
@@ -684,7 +722,10 @@ impl WorkerProvider for KubernetesProvider {
         }
     }
 
-    async fn destroy_worker(&self, handle: &WorkerHandle) -> std::result::Result<(), ProviderError> {
+    async fn destroy_worker(
+        &self,
+        handle: &WorkerHandle,
+    ) -> std::result::Result<(), ProviderError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
         let pod_name = &handle.provider_resource_id;
 
@@ -752,11 +793,12 @@ impl WorkerProvider for KubernetesProvider {
 
         match pods.list(&ListParams::default().limit(1)).await {
             Ok(_) => Ok(HealthStatus::Healthy),
-            Err(kube::Error::Api(ae)) if ae.code == 403 => {
-                Ok(HealthStatus::Degraded {
-                    reason: format!("Insufficient permissions in namespace {}", self.config.namespace),
-                })
-            }
+            Err(kube::Error::Api(ae)) if ae.code == 403 => Ok(HealthStatus::Degraded {
+                reason: format!(
+                    "Insufficient permissions in namespace {}",
+                    self.config.namespace
+                ),
+            }),
             Err(e) => Ok(HealthStatus::Unhealthy {
                 reason: format!("Failed to connect to Kubernetes API: {}", e),
             }),
@@ -791,9 +833,12 @@ mod tests {
     #[test]
     fn test_kubernetes_config_default() {
         let config = KubernetesConfig::default();
-        assert_eq!(config.namespace, "hodei-workers");
+        assert_eq!(config.namespace, "hodei-jobs-workers");
         assert!(config.kubeconfig_path.is_none());
-        assert_eq!(config.service_account, Some("hodei-worker".to_string()));
+        assert_eq!(
+            config.service_account,
+            Some("hodei-jobs-worker".to_string())
+        );
         assert!(config.base_labels.contains_key("app"));
     }
 
@@ -813,11 +858,20 @@ mod tests {
             .expect("should build config");
 
         assert_eq!(config.namespace, "custom-namespace");
-        assert_eq!(config.kubeconfig_path, Some("/path/to/kubeconfig".to_string()));
+        assert_eq!(
+            config.kubeconfig_path,
+            Some("/path/to/kubeconfig".to_string())
+        );
         assert_eq!(config.context, Some("my-context".to_string()));
         assert_eq!(config.service_account, Some("custom-sa".to_string()));
-        assert_eq!(config.base_labels.get("team"), Some(&"platform".to_string()));
-        assert_eq!(config.node_selector.get("node-type"), Some(&"worker".to_string()));
+        assert_eq!(
+            config.base_labels.get("team"),
+            Some(&"platform".to_string())
+        );
+        assert_eq!(
+            config.node_selector.get("node-type"),
+            Some(&"worker".to_string())
+        );
         assert!(config.image_pull_secrets.contains(&"my-secret".to_string()));
         assert_eq!(config.default_cpu_request, "200m");
         assert_eq!(config.default_memory_request, "256Mi");
@@ -825,9 +879,7 @@ mod tests {
 
     #[test]
     fn test_kubernetes_config_builder_validation() {
-        let result = KubernetesConfig::builder()
-            .namespace("")
-            .build();
+        let result = KubernetesConfig::builder().namespace("").build();
 
         assert!(result.is_err());
     }

@@ -138,6 +138,22 @@ That's it! The server automatically provisions a Docker container, the worker re
 
 ## 🏗️ Architecture
 
+### High-Level Components
+
+The following diagram illustrates the interaction between the core services:
+
+<p align="center">
+  <img src="docs/assets/diagrama-jobs-services.png" alt="Hodei Jobs Services Diagram" width="800" />
+</p>
+
+### Job Execution Flow
+
+Detailed view of how a job flows through the system:
+
+<p align="center">
+  <img src="docs/assets/diagrama-jobs-eng.png" alt="Hodei Jobs Execution Flow" width="800" />
+</p>
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     HODEI JOBS PLATFORM                         │

@@ -52,7 +52,7 @@ fn should_run_k8s_tests() -> bool {
 
 fn get_test_namespace() -> String {
     std::env::var("HODEI_K8S_TEST_NAMESPACE")
-        .unwrap_or_else(|_| "hodei-workers".to_string())
+        .unwrap_or_else(|_| "hodei-jobs-workers".to_string())
 }
 
 /// Verifier for Kubernetes CLI operations
@@ -598,7 +598,7 @@ async fn test_07_kubernetes_provider_creates_pod() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify with kubectl
-    let pod_name = format!("hodei-worker-{}", worker_id);
+    let _pod_name = format!("hodei-jobs-worker-{}", worker_id);
     let pods = verifier.find_pods(&format!("hodei.io/worker-id={}", worker_id)).unwrap();
     assert!(!pods.is_empty(), "Pod should exist");
     println!("✓ Pod verificado via kubectl");

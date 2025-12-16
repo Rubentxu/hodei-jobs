@@ -178,6 +178,16 @@ impl JobExecutionService for JobExecutionServiceImpl {
         &self,
         request: Request<QueueJobRequest>,
     ) -> Result<Response<QueueJobResponse>, Status> {
+        let metadata = request.metadata();
+        let correlation_id = metadata
+            .get("x-correlation-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let actor = metadata
+            .get("x-user-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
         let req = request.into_inner();
         let definition = req
             .job_definition
@@ -197,7 +207,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 timeout_ms: None,
                 working_dir: None,
             },
-            correlation_id: None,
+            correlation_id,
+            actor,
         };
 
         let result = self

@@ -38,7 +38,7 @@ impl Default for ProvisioningConfig {
     fn default() -> Self {
         Self {
             otp_ttl: DEFAULT_OTP_TTL,
-            default_image: "hodei-worker:latest".to_string(),
+            default_image: "hodei-jobs-worker:latest".to_string(),
             server_address: "http://localhost:50051".to_string(),
             max_workers_per_provider: 10,
         }
@@ -208,7 +208,7 @@ mod tests {
     fn test_provisioning_config_default() {
         let config = ProvisioningConfig::default();
         assert_eq!(config.otp_ttl, DEFAULT_OTP_TTL);
-        assert_eq!(config.default_image, "hodei-worker:latest");
+        assert_eq!(config.default_image, "hodei-jobs-worker:latest");
     }
 
     #[test]

@@ -294,7 +294,6 @@ mod job_execution_tests {
 }
 
 mod provider_type_tests {
-    use super::*;
     use crate::worker::ProviderType;
     use crate::worker_provider::ProviderCapabilities;
 
@@ -335,7 +334,7 @@ mod worker_tests {
     #[test]
     fn test_worker_state_transitions() {
         let spec = WorkerSpec::new(
-            "hodei-worker:latest".to_string(),
+            "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
         let handle = WorkerHandle::new(
