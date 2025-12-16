@@ -30,6 +30,7 @@ use hodei_jobs_domain::shared_kernel::{JobId, JobResult, JobState};
 use hodei_jobs_domain::worker_registry::WorkerRegistry;
 
 use super::log_stream::LogStreamService;
+use crate::interceptors::RequestContextExt;
 
 /// Estado interno de un worker registrado
 #[derive(Debug, Clone)]
@@ -707,6 +708,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         &self,
         request: Request<RegisterWorkerRequest>,
     ) -> Result<Response<RegisterWorkerResponse>, Status> {
+        let ctx = request.get_context();
         let req = request.into_inner();
 
         let worker_info = req
@@ -760,8 +762,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 ),
                 provider_id: hodei_jobs_domain::shared_kernel::ProviderId::new(),
                 occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
+                correlation_id: ctx.correlation_id_owned(),
+                actor: ctx.actor_owned(),
             };
             if let Err(e) = event_bus.publish(&event).await {
                 warn!("Failed to publish WorkerRegistered event: {}", e);
