@@ -2,6 +2,6 @@
 //!
 //! Interceptors para manejo de contexto, autenticación y trazabilidad.
 
-mod context;
+pub mod context;
 
 pub use context::*;

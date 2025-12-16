@@ -43,6 +43,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
+use hodei_jobs_grpc::interceptors::context::context_interceptor;
 use hodei_jobs_grpc::worker_command_sender::GrpcWorkerCommandSender;
 
 #[derive(Clone)]
@@ -474,18 +475,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("  ✓ gRPC-Web support enabled (CORS configured)");
 
-    // Build and start server with gRPC-Web support
+    // Build and start server with gRPC-Web support and context interceptor
+    // The context_interceptor extracts/generates correlation_id and actor from headers
+    // and makes them available via RequestContextExt::get_context()
+    info!("  ✓ Context interceptor enabled (correlation_id, actor propagation)");
+    
     Server::builder()
         .accept_http1(true)
         .layer(cors)
         .layer(GrpcWebLayer::new())
         .add_service(reflection_service)
-        .add_service(WorkerAgentServiceServer::new(worker_service))
-        .add_service(JobExecutionServiceServer::new(job_service))
+        .add_service(WorkerAgentServiceServer::with_interceptor(
+            worker_service,
+            context_interceptor,
+        ))
+        .add_service(JobExecutionServiceServer::with_interceptor(
+            job_service,
+            context_interceptor,
+        ))
         .add_service(MetricsServiceServer::new(metrics_service))
-        .add_service(SchedulerServiceServer::new(scheduler_service))
-        .add_service(ProviderManagementServiceServer::new(
+        .add_service(SchedulerServiceServer::with_interceptor(
+            scheduler_service,
+            context_interceptor,
+        ))
+        .add_service(ProviderManagementServiceServer::with_interceptor(
             provider_management_service,
+            context_interceptor,
         ))
         .add_service(LogStreamServiceServer::new(log_grpc_service))
         .serve(addr)
