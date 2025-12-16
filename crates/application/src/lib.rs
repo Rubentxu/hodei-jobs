@@ -1,6 +1,7 @@
 // Hodei Job Platform - Application Layer
 // Use Cases y Servicios de Aplicación
 
+pub mod audit_cleanup;
 pub mod audit_test_helper;
 pub mod audit_usecases;
 pub mod job_controller;
@@ -15,6 +16,7 @@ pub mod worker_lifecycle;
 pub mod worker_provisioning;
 pub mod worker_provisioning_impl;
 
+pub use audit_cleanup::*;
 pub use audit_test_helper::*;
 pub use audit_usecases::*;
 pub use job_controller::*;

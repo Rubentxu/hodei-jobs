@@ -12,6 +12,7 @@ use hodei_jobs::{
     scheduler_service_server::SchedulerServiceServer,
     worker_agent_service_server::WorkerAgentServiceServer,
 };
+use hodei_jobs_application::audit_cleanup::{AuditCleanupService, AuditRetentionConfig};
 use hodei_jobs_application::audit_usecases::AuditService;
 use hodei_jobs_application::job_controller::JobController;
 use hodei_jobs_application::job_execution_usecases::{CancelJobUseCase, CreateJobUseCase};
@@ -145,7 +146,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audit_service = AuditService::new(audit_repository.clone());
     
     // Create Audit gRPC Service (Story 15.8)
-    let audit_grpc_service = AuditServiceImpl::new(audit_repository);
+    let audit_grpc_service = AuditServiceImpl::new(audit_repository.clone());
+    
+    // Create Audit Cleanup Service (Story 15.9)
+    let audit_cleanup_config = AuditRetentionConfig::from_env();
+    let audit_cleanup_service = std::sync::Arc::new(AuditCleanupService::new(
+        audit_repository,
+        audit_cleanup_config.clone(),
+    ));
+    
+    // Start background cleanup task
+    if audit_cleanup_config.enabled {
+        info!(
+            "  ✓ Audit cleanup enabled (retention: {} days, interval: {:?})",
+            audit_cleanup_config.retention_days,
+            audit_cleanup_config.cleanup_interval
+        );
+        audit_cleanup_service.clone().start_background_cleanup();
+    } else {
+        info!("  ⚠ Audit cleanup disabled (HODEI_AUDIT_CLEANUP_ENABLED != 1)");
+    }
 
     // Create Event Bus
     let event_bus_impl =
