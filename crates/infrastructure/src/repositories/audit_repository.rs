@@ -1,4 +1,5 @@
-use hodei_jobs_domain::audit::{AuditLog, AuditRepository};
+use chrono::{DateTime, Utc};
+use hodei_jobs_domain::audit::{AuditLog, AuditQuery, AuditQueryResult, AuditRepository, EventTypeCount};
 use hodei_jobs_domain::shared_kernel::{DomainError, Result};
 use sqlx::{Row, postgres::PgPool};
 
@@ -25,6 +26,10 @@ impl PostgresAuditRepository {
             );
             
             CREATE INDEX IF NOT EXISTS idx_audit_correlation_id ON audit_logs(correlation_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_logs(event_type);
+            CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_logs(occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor);
+            CREATE INDEX IF NOT EXISTS idx_audit_event_date ON audit_logs(event_type, occurred_at);
             "#,
         )
         .execute(&self.pool)
@@ -34,6 +39,17 @@ impl PostgresAuditRepository {
         })?;
 
         Ok(())
+    }
+
+    fn row_to_audit_log(row: &sqlx::postgres::PgRow) -> AuditLog {
+        AuditLog {
+            id: row.get("id"),
+            correlation_id: row.get("correlation_id"),
+            event_type: row.get("event_type"),
+            payload: row.get("payload"),
+            occurred_at: row.get("occurred_at"),
+            actor: row.get("actor"),
+        }
     }
 }
 
@@ -72,24 +88,268 @@ impl AuditRepository for PostgresAuditRepository {
             message: format!("Failed to find audit logs: {}", e),
         })?;
 
-        let mut logs = Vec::new();
-        for row in rows {
-            logs.push(AuditLog {
-                id: row.get("id"),
-                correlation_id: row.get("correlation_id"),
-                event_type: row.get("event_type"),
-                payload: row.get("payload"),
-                occurred_at: row.get("occurred_at"),
-                actor: row.get("actor"),
-            });
+        Ok(rows.iter().map(Self::row_to_audit_log).collect())
+    }
+
+    async fn find_by_event_type(
+        &self,
+        event_type: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<AuditQueryResult> {
+        let count_row = sqlx::query(
+            "SELECT COUNT(*) as count FROM audit_logs WHERE event_type = $1",
+        )
+        .bind(event_type)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to count audit logs: {}", e),
+        })?;
+        let total_count: i64 = count_row.get("count");
+
+        let rows = sqlx::query(
+            "SELECT * FROM audit_logs WHERE event_type = $1 ORDER BY occurred_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(event_type)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to find audit logs by event type: {}", e),
+        })?;
+
+        let logs: Vec<AuditLog> = rows.iter().map(Self::row_to_audit_log).collect();
+        let has_more = (offset + logs.len() as i64) < total_count;
+
+        Ok(AuditQueryResult {
+            logs,
+            total_count,
+            has_more,
+        })
+    }
+
+    async fn find_by_date_range(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<AuditQueryResult> {
+        let count_row = sqlx::query(
+            "SELECT COUNT(*) as count FROM audit_logs WHERE occurred_at >= $1 AND occurred_at <= $2",
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to count audit logs: {}", e),
+        })?;
+        let total_count: i64 = count_row.get("count");
+
+        let rows = sqlx::query(
+            "SELECT * FROM audit_logs WHERE occurred_at >= $1 AND occurred_at <= $2 ORDER BY occurred_at DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(start)
+        .bind(end)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to find audit logs by date range: {}", e),
+        })?;
+
+        let logs: Vec<AuditLog> = rows.iter().map(Self::row_to_audit_log).collect();
+        let has_more = (offset + logs.len() as i64) < total_count;
+
+        Ok(AuditQueryResult {
+            logs,
+            total_count,
+            has_more,
+        })
+    }
+
+    async fn find_by_actor(
+        &self,
+        actor: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<AuditQueryResult> {
+        let count_row = sqlx::query(
+            "SELECT COUNT(*) as count FROM audit_logs WHERE actor = $1",
+        )
+        .bind(actor)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to count audit logs: {}", e),
+        })?;
+        let total_count: i64 = count_row.get("count");
+
+        let rows = sqlx::query(
+            "SELECT * FROM audit_logs WHERE actor = $1 ORDER BY occurred_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(actor)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to find audit logs by actor: {}", e),
+        })?;
+
+        let logs: Vec<AuditLog> = rows.iter().map(Self::row_to_audit_log).collect();
+        let has_more = (offset + logs.len() as i64) < total_count;
+
+        Ok(AuditQueryResult {
+            logs,
+            total_count,
+            has_more,
+        })
+    }
+
+    async fn query(&self, query: AuditQuery) -> Result<AuditQueryResult> {
+        let limit = query.limit.unwrap_or(100);
+        let offset = query.offset.unwrap_or(0);
+
+        // Build dynamic WHERE clause
+        let mut conditions = Vec::new();
+        let mut param_idx = 1;
+
+        if query.event_type.is_some() {
+            conditions.push(format!("event_type = ${}", param_idx));
+            param_idx += 1;
         }
-        Ok(logs)
+        if query.actor.is_some() {
+            conditions.push(format!("actor = ${}", param_idx));
+            param_idx += 1;
+        }
+        if query.start_time.is_some() {
+            conditions.push(format!("occurred_at >= ${}", param_idx));
+            param_idx += 1;
+        }
+        if query.end_time.is_some() {
+            conditions.push(format!("occurred_at <= ${}", param_idx));
+            param_idx += 1;
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let count_sql = format!("SELECT COUNT(*) as count FROM audit_logs {}", where_clause);
+        let select_sql = format!(
+            "SELECT * FROM audit_logs {} ORDER BY occurred_at DESC LIMIT ${} OFFSET ${}",
+            where_clause, param_idx, param_idx + 1
+        );
+
+        // Build count query
+        let mut count_query = sqlx::query(&count_sql);
+        if let Some(ref et) = query.event_type {
+            count_query = count_query.bind(et);
+        }
+        if let Some(ref a) = query.actor {
+            count_query = count_query.bind(a);
+        }
+        if let Some(st) = query.start_time {
+            count_query = count_query.bind(st);
+        }
+        if let Some(et) = query.end_time {
+            count_query = count_query.bind(et);
+        }
+
+        let count_row = count_query
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to count audit logs: {}", e),
+            })?;
+        let total_count: i64 = count_row.get("count");
+
+        // Build select query
+        let mut select_query = sqlx::query(&select_sql);
+        if let Some(ref et) = query.event_type {
+            select_query = select_query.bind(et);
+        }
+        if let Some(ref a) = query.actor {
+            select_query = select_query.bind(a);
+        }
+        if let Some(st) = query.start_time {
+            select_query = select_query.bind(st);
+        }
+        if let Some(et) = query.end_time {
+            select_query = select_query.bind(et);
+        }
+        select_query = select_query.bind(limit).bind(offset);
+
+        let rows = select_query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to query audit logs: {}", e),
+            })?;
+
+        let logs: Vec<AuditLog> = rows.iter().map(Self::row_to_audit_log).collect();
+        let has_more = (offset + logs.len() as i64) < total_count;
+
+        Ok(AuditQueryResult {
+            logs,
+            total_count,
+            has_more,
+        })
+    }
+
+    async fn count_by_event_type(&self) -> Result<Vec<EventTypeCount>> {
+        let rows = sqlx::query(
+            "SELECT event_type, COUNT(*) as count FROM audit_logs GROUP BY event_type ORDER BY count DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to count audit logs by event type: {}", e),
+        })?;
+
+        Ok(rows
+            .iter()
+            .map(|row| EventTypeCount {
+                event_type: row.get("event_type"),
+                count: row.get("count"),
+            })
+            .collect())
+    }
+
+    async fn delete_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM audit_logs WHERE occurred_at < $1")
+            .bind(before)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to delete old audit logs: {}", e),
+            })?;
+
+        Ok(result.rows_affected())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // Helper to generic test setup (assumes DB available via env or local)
-    // For unit tests we usually mock, but for repository we need integration usually.
-    // However, without a running DB in this environment, I can only check compilation.
+    use super::*;
+
+    #[test]
+    fn test_audit_query_builder() {
+        let query = AuditQuery::new()
+            .with_event_type("JobCreated")
+            .with_actor("user@example.com")
+            .with_pagination(50, 0);
+
+        assert_eq!(query.event_type, Some("JobCreated".to_string()));
+        assert_eq!(query.actor, Some("user@example.com".to_string()));
+        assert_eq!(query.limit, Some(50));
+        assert_eq!(query.offset, Some(0));
+    }
 }
