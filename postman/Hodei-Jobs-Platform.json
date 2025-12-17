@@ -1,593 +1,292 @@
 {
-	"info": {
-		"_postman_id": "hodei-jobs-platform-api",
-		"name": "Hodei Jobs Platform API",
-		"description": "Complete collection for Hodei Jobs Platform gRPC API\n\n## Setup\n1. Import this collection\n2. Set up environment variables (see documentation)\n3. Ensure gRPC server is running on localhost:50051\n\n## Services\n- JobExecutionService: Core job management\n- LogStreamService: Real-time log streaming\n- SchedulerService: Job scheduling\n- WorkerAgentService: Worker management\n- AuditService: Audit logs\n- MetricsService: System metrics\n- ProviderManagementService: Provider configuration\n\n## Note\nPostman has limited gRPC support. For full functionality, consider using Evans or grpcurl.\nSee POSTMAN_CONFIGURATION.md for details.",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-	},
-	"item": [
-		{
-			"name": "Job Execution",
-			"item": [
-				{
-					"name": "1. Queue Job",
-					"request": {
-						"description": "Submit a new job for execution",
-						"method": "GRPC",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "QueueJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_definition\": {\n    \"name\": \"example-job\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-lc\", \"echo 'Hello World'\"],\n    \"requirements\": {\n      \"cpu_cores\": 1.0,\n      \"memory_bytes\": 1073741824\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"300s\"\n    }\n  },\n  \"queued_by\": \"user\"\n}"
-						}
-					}
-				},
-				{
-					"name": "2. Get Job",
-					"request": {
-						"description": "Retrieve job details by ID",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "GetJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  }\n}"
-						}
-					}
-				},
-				{
-					"name": "3. List Jobs",
-					"request": {
-						"description": "List jobs with optional filters",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "ListJobs"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"limit\": 50,\n  \"status\": \"JOB_STATUS_RUNNING\"\n}"
-						}
-					}
-				},
-				{
-					"name": "4. Cancel Job",
-					"request": {
-						"description": "Cancel a running job",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "CancelJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"execution_id\": {\n    \"value\": \"{{execution_id}}\"\n  },\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  },\n  \"reason\": \"User requested cancellation\"\n}"
-						}
-					}
-				},
-				{
-					"name": "5. Update Progress",
-					"request": {
-						"description": "Update progress for a running job",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "UpdateJobProgress"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"execution_id\": {\n    \"value\": \"{{execution_id}}\"\n  },\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  },\n  \"progress_percentage\": 50,\n  \"current_stage\": \"Building\",\n  \"message\": \"Compiling sources...\"\n}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Log Streaming",
-			"item": [
-				{
-					"name": "Subscribe to Logs",
-					"request": {
-						"description": "Stream logs in real-time for a specific job",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.LogStreamService",
-								"method": "SubscribeLogs"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_id\": \"{{job_id}}\",\n  \"include_history\": true,\n  \"tail_lines\": 50\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Historical Logs",
-					"request": {
-						"description": "Get historical logs (non-streaming)",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.LogStreamService",
-								"method": "GetLogs"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_id\": \"{{job_id}}\",\n  \"limit\": 1000\n}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Scheduler",
-			"item": [
-				{
-					"name": "Schedule Job",
-					"request": {
-						"description": "Schedule a job for execution",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.SchedulerService",
-								"method": "ScheduleJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_definition\": {\n    \"name\": \"scheduled-job\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-lc\", \"echo 'Scheduled'\"],\n    \"scheduling\": {\n      \"priority\": \"PRIORITY_NORMAL\",\n      \"deadline\": \"3600s\"\n    }\n  },\n  \"requested_by\": \"scheduler\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Queue Info",
-					"request": {
-						"description": "Get information about the job queue",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.SchedulerService",
-								"method": "GetJobQueueInfo"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"queue_name\": \"default\",\n  \"include_estimates\": true\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Scheduler Status",
-					"request": {
-						"description": "Get current scheduler status",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.SchedulerService",
-								"method": "GetSchedulerStatus"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"scheduler_name\": \"default\"\n}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Worker Management",
-			"item": [
-				{
-					"name": "Register Worker",
-					"request": {
-						"description": "Register a new worker",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.WorkerAgentService",
-								"method": "Register"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"auth_token\": \"worker-token\",\n  \"worker_info\": {\n    \"name\": \"worker-1\",\n    \"version\": \"1.0.0\",\n    \"hostname\": \"worker-host\",\n    \"capacity\": {\n      \"cpu_cores\": 4.0,\n      \"memory_bytes\": 8589934592,\n      \"disk_bytes\": 107374182400\n    }\n  }\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Available Workers",
-					"request": {
-						"description": "Get list of available workers",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.WorkerAgentService",
-								"method": "GetAvailableWorkers"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"min_requirements\": {\n    \"cpu_cores\": 1.0,\n    \"memory_bytes\": 1073741824\n  },\n  \"max_results\": 20\n}"
-						}
-					}
-				},
-				{
-					"name": "Drain Worker",
-					"request": {
-						"description": "Drain a worker (prepare for shutdown)",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.WorkerAgentService",
-								"method": "DrainWorker"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"worker_id\": {\n    \"value\": \"{{worker_id}}\"\n  },\n  \"grace_period\": \"300s\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Unregister Worker",
-					"request": {
-						"description": "Unregister a worker",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.WorkerAgentService",
-								"method": "UnregisterWorker"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"worker_id\": {\n    \"value\": \"{{worker_id}}\"\n  },\n  \"reason\": \"Maintenance\"\n}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Audit",
-			"item": [
-				{
-					"name": "Get Audit Logs",
-					"request": {
-						"description": "Get audit logs with filters",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.AuditService",
-								"method": "GetAuditLogs"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"limit\": 100,\n  \"event_type\": \"JobCreated\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Logs by Correlation",
-					"request": {
-						"description": "Get logs by correlation ID for tracing",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.AuditService",
-								"method": "GetAuditLogsByCorrelation"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"correlation_id\": \"correlation-uuid\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Event Counts",
-					"request": {
-						"description": "Get count of events grouped by type",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.AuditService",
-								"method": "GetEventCounts"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"start_time\": \"2025-12-17T00:00:00Z\",\n  \"end_time\": \"2025-12-17T23:59:59Z\"\n}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Metrics",
-			"item": [
-				{
-					"name": "Get System Metrics",
-					"request": {
-						"description": "Get system metrics for workers",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.MetricsService",
-								"method": "GetSystemMetrics"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"worker_id\": {\n    \"value\": \"{{worker_id}}\"\n  },\n  \"metric_types\": [\"cpu\", \"memory\", \"disk\"],\n  \"interval\": \"60s\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Stream Real-Time Metrics",
-					"request": {
-						"description": "Stream metrics in real-time",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.MetricsService",
-								"method": "RealTimeMetricsStream"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"worker_id\": {\n    \"value\": \"{{worker_id}}\"\n  },\n  \"metric_types\": [\"cpu\", \"memory\"],\n  \"update_interval\": \"5s\",\n  \"max_points\": 100\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Health Metrics",
-					"request": {
-						"description": "Get system health metrics",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.MetricsService",
-								"method": "GetHealthMetrics"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"worker_ids\": [{\"value\": \"{{worker_id}}\"}],\n  \"lookback_period\": \"3600s\"\n}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Provider Management",
-			"item": [
-				{
-					"name": "Register Provider",
-					"request": {
-						"description": "Register a new provider",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.ProviderManagementService",
-								"method": "RegisterProvider"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"name\": \"docker-provider\",\n  \"provider_type\": \"PROVIDER_TYPE_DOCKER\",\n  \"type_config\": {\n    \"docker\": {\n      \"socket_path\": \"/var/run/docker.sock\",\n      \"default_image\": \"ubuntu:22.04\",\n      \"network_mode\": \"bridge\"\n    }\n  },\n  \"priority\": 1,\n  \"max_workers\": 10\n}"
-						}
-					}
-				},
-				{
-					"name": "List Providers",
-					"request": {
-						"description": "List all providers with optional filters",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.ProviderManagementService",
-								"method": "ListProviders"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"only_with_capacity\": true\n}"
-						}
-					}
-				},
-				{
-					"name": "Get Provider Stats",
-					"request": {
-						"description": "Get provider statistics",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.ProviderManagementService",
-								"method": "GetProviderStats"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{}"
-						}
-					}
-				}
-			]
-		},
-		{
-			"name": "Maven Examples",
-			"item": [
-				{
-					"name": "Maven Build (Docker Provider)",
-					"request": {
-						"description": "Execute Maven build using Docker provider (recommended)",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "QueueJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-docker-build\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-c\", \"cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean package -DskipTests && ls -lh target/\"],\n    \"requirements\": {\n      \"cpu_cores\": 2.0,\n      \"memory_bytes\": 2147483648,\n      \"disk_bytes\": 1073741824\n    },\n    \"metadata\": {\n      \"container_image\": \"maven:3.9.4-eclipse-temurin-17\"\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"600s\"\n    }\n  },\n  \"queued_by\": \"user\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Maven Build with Tests",
-					"request": {
-						"description": "Execute Maven build with tests",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "QueueJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-with-tests\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-c\", \"cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean test\"],\n    \"requirements\": {\n      \"cpu_cores\": 2.0,\n      \"memory_bytes\": 4294967296,\n      \"disk_bytes\": 1073741824\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"900s\"\n    }\n  },\n  \"queued_by\": \"developer\"\n}"
-						}
-					}
-				},
-				{
-					"name": "Maven Release Build",
-					"request": {
-						"description": "Execute Maven release build",
-						"method": "GRPC",
-						"url": {
-							"grpc": {
-								"server": "{{grpc_server}}",
-								"service": "hodei.JobExecutionService",
-								"method": "QueueJob"
-							}
-						},
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-release-build\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-c\", \"cd /tmp && git clone https://github.com/my-org/release-project.git && cd release-project && mvn clean deploy -DskipTests -Drevision=$RELEASE_VERSION -Dcommit=$COMMIT_SHA\"],\n    \"requirements\": {\n      \"cpu_cores\": 4.0,\n      \"memory_bytes\": 8589934592,\n      \"disk_bytes\": 10737418240\n    },\n    \"environment\": {\n      \"RELEASE_VERSION\": \"1.0.0\",\n      \"COMMIT_SHA\": \"abc123\",\n      \"MAVEN_OPTS\": \"-Xmx4g\"\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"1800s\"\n    }\n  },\n  \"queued_by\": \"release-bot\"\n}"
-						}
-					}
-				}
-			]
-		}
-	],
-	"event": [
-		{
-			"listen": "prerequest",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					"// Generate UUID for job_id if not set",
-					"if (!pm.environment.get('job_id')) {",
-					"    const jobId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {",
-					"        const r = Math.random() * 16 | 0;",
-					"        const v = c == 'x' ? r : (r & 0x3 | 0x8);",
-					"        return v.toString(16);",
-					"    });",
-					"    pm.environment.set('job_id', jobId);",
-					"}"
-				]
-			}
-		},
-		{
-			"listen": "test",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					"// Test response",
-					"pm.test('Status code is 200', function () {",
-					"    pm.response.to.have.status(200);",
-					"});",
-					"",
-					"// Extract job ID from Queue Job response",
-					"if (pm.response.code === 200) {",
-					"    try {",
-					"        const response = pm.response.json();",
-					"        if (response.jobId && response.jobId.value) {",
-					"            pm.environment.set('job_id', response.jobId.value);",
-					"            console.log('Job ID:', response.jobId.value);",
-					"        }",
-					"        if (response.latestExecution && response.latestExecution.executionId) {",
-					"            pm.environment.set('execution_id', response.latestExecution.executionId.value);",
-					"        }",
-					"    } catch (e) {",
-					"        console.log('Could not parse response as JSON');",
-					"    }",
-					"}"
-				]
-			}
-		}
-	],
-	"variable": [
-		{
-			"key": "grpc_server",
-			"value": "localhost:50051",
-			"type": "string"
-		},
-		{
-			"key": "job_id",
-			"value": "",
-			"type": "string"
-		},
-		{
-			"key": "execution_id",
-			"value": "",
-			"type": "string"
-		},
-		{
-			"key": "worker_id",
-			"value": "",
-			"type": "string"
-		}
-	]
+  "info": {
+    "_postman_id": "hodei-jobs-platform-api",
+    "name": "Hodei Jobs Platform API",
+    "description": "Complete collection for Hodei Jobs Platform gRPC API\n\n## ⚠️ IMPORTANT - gRPC Limitation\n\nPostman does **NOT** natively support gRPC requests. This collection contains:\n1. **HTTP-based example requests** (for documentation/reference)\n2. **Request templates** you can copy to gRPC tools\n3. **Environment variables** for consistency\n\n## Recommended Tools for gRPC:\n\n✅ **Evans** (Recommended):\n   - Install: `brew install evans` (macOS) or see https://github.com/ktr0731/evans\n   - Usage: `evans -p 50051 repl`\n\n✅ **grpcurl** (Command Line):\n   - Install: `go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest`\n   - Usage: `grpcurl -plaintext localhost:50051 list`\n\n✅ **gRPCurl GUI**: Web-based gRPC client\n\n## Setup\n1. Import this collection (for reference only)\n2. Use Evans or grpcurl for actual gRPC calls\n3. See POSTMAN_CONFIGURATION.md for detailed setup\n4. See GRPC_SETUP_GUIDE.md for complete guide\n\n## Services Documented:\n- JobExecutionService: Core job management\n- LogStreamService: Real-time log streaming\n- SchedulerService: Job scheduling\n- WorkerAgentService: Worker management\n- AuditService: Audit logs\n- MetricsService: System metrics\n- ProviderManagementService: Provider configuration\n\n## Environment Variables:\n- `grpc_server`: localhost:50051\n- `job_id`: Job ID (auto-generated)\n- `execution_id`: Execution ID (auto-populated)\n- `worker_id`: Worker ID (set as needed)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Documentation & Setup",
+      "item": [
+        {
+          "name": "📖 Setup Guide",
+          "request": {
+            "description": "See GRPC_SETUP_GUIDE.md for complete setup instructions",
+            "method": "GET",
+            "url": {
+              "raw": "{{grpc_server}}/docs/setup",
+              "host": ["{{grpc_server}}"],
+              "path": ["docs", "setup"]
+            }
+          }
+        },
+        {
+          "name": "📚 API Reference",
+          "request": {
+            "description": "See docs/GRPC_API_REFERENCE.md for complete API documentation",
+            "method": "GET",
+            "url": {
+              "raw": "{{grpc_server}}/docs/api",
+              "host": ["{{grpc_server}}"],
+              "path": ["docs", "api"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Job Templates (Copy to gRPC Client)",
+      "item": [
+        {
+          "name": "Queue Job - Simple",
+          "request": {
+            "description": "Template for simple job queueing. Copy the body and use with: grpcurl -plaintext -d @ localhost:50051 hodei.JobExecutionService/QueueJob",
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{grpc_server}}/template/queue-job",
+              "host": ["{{grpc_server}}"],
+              "path": ["template", "queue-job"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_definition\": {\n    \"name\": \"example-job\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-lc\", \"echo 'Hello World'\"],\n    \"requirements\": {\n      \"cpu_cores\": 1.0,\n      \"memory_bytes\": 1073741824,\n      \"disk_bytes\": 1073741824\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"300s\"\n    }\n  },\n  \"queued_by\": \"user\"\n}\n\n=== USE WITH grpcurl ===\ngrpcurl -plaintext -d @ localhost:50051 hodei.JobExecutionService/QueueJob\n\n=== USE WITH evans ===\nevans -p 50051 repl\n> package hodei.job\n> service JobExecutionService\n> call QueueJob"
+            }
+          }
+        },
+        {
+          "name": "Queue Job - Maven Build",
+          "request": {
+            "description": "Template for Maven build. Copy the body and use with grpcurl or Evans",
+            "method": "POST",
+            "url": {
+              "raw": "{{grpc_server}}/template/maven-build",
+              "host": ["{{grpc_server}}"],
+              "path": ["template", "maven-build"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-build-docker\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-c\", \"cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean package -DskipTests && ls -lh target/\"],\n    \"requirements\": {\n      \"cpu_cores\": 2.0,\n      \"memory_bytes\": 2147483648,\n      \"disk_bytes\": 1073741824\n    },\n    \"metadata\": {\n      \"container_image\": \"maven:3.9.4-eclipse-temurin-17\"\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"600s\"\n    }\n  },\n  \"queued_by\": \"user\"\n}\n\n=== USE WITH grpcurl ===\ngrpcurl -plaintext -d @ localhost:50051 hodei.JobExecutionService/QueueJob\n\n=== USE WITH Evans ===\nevans -p 50051 repl\n> call QueueJob"
+            }
+          }
+        },
+        {
+          "name": "Get Job Status",
+          "request": {
+            "description": "Template for getting job details. Replace {{job_id}} with actual ID",
+            "method": "POST",
+            "url": {
+              "raw": "{{grpc_server}}/template/get-job",
+              "host": ["{{grpc_server}}"],
+              "path": ["template", "get-job"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  }\n}\n\n=== USE WITH grpcurl ===\ngrpcurl -plaintext -d '{\"job_id\": {\"value\": \"YOUR-JOB-ID\"}}' localhost:50051 hodei.JobExecutionService/GetJob\n\n=== USE WITH Evans ===\n> call GetJob\njobId:\n  value: YOUR-JOB-ID"
+            }
+          }
+        },
+        {
+          "name": "List Jobs",
+          "request": {
+            "description": "Template for listing jobs with filters",
+            "method": "POST",
+            "url": {
+              "raw": "{{grpc_server}}/template/list-jobs",
+              "host": ["{{grpc_server}}"],
+              "path": ["template", "list-jobs"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"limit\": 50\n}\n\n=== VARIATIONS ===\n\nRunning jobs only:\n{\n  \"limit\": 50,\n  \"status\": \"JOB_STATUS_RUNNING\"\n}\n\nSearch by name:\n{\n  \"limit\": 50,\n  \"search_term\": \"maven\"\n}\n\n=== USE WITH grpcurl ===\ngrpcurl -plaintext -d '{\"limit\": 50}' localhost:50051 hodei.JobExecutionService/ListJobs\n\n=== USE WITH Evans ===\n> call ListJobs"
+            }
+          }
+        },
+        {
+          "name": "Stream Job Logs",
+          "request": {
+            "description": "Template for streaming logs. Requires gRPC streaming support",
+            "method": "POST",
+            "url": {
+              "raw": "{{grpc_server}}/template/stream-logs",
+              "host": ["{{grpc_server}}"],
+              "path": ["template", "stream-logs"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": \"{{job_id}}\",\n  \"include_history\": true,\n  \"tail_lines\": 50\n}\n\n=== USE WITH grpcurl (streaming) ===\ngrpcurl -plaintext -d '{\"job_id\": \"YOUR-JOB-ID\", \"include_history\": true}' \\\n  localhost:50051 hodei.LogStreamService/SubscribeLogs\n\n=== USE WITH Evans (streaming) ===\n> service LogStreamService\n> call SubscribeLogs\njobId: YOUR-JOB-ID\nincludeHistory: true\n\n=== USE scripts/watch_logs.sh ===\n./scripts/watch_logs.sh YOUR-JOB-ID"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Service Reference",
+      "item": [
+        {
+          "name": "JobExecutionService Methods",
+          "request": {
+            "description": "Available methods in JobExecutionService",
+            "method": "GET",
+            "url": {
+              "raw": "{{grpc_server}}/docs/services/job-execution",
+              "host": ["{{grpc_server}}"],
+              "path": ["docs", "services", "job-execution"]
+            }
+          }
+        },
+        {
+          "name": "LogStreamService Methods",
+          "request": {
+            "description": "Available methods in LogStreamService",
+            "method": "GET",
+            "url": {
+              "raw": "{{grpc_server}}/docs/services/log-stream",
+              "host": ["{{grpc_server}}"],
+              "path": ["docs", "services", "log-stream"]
+            }
+          }
+        },
+        {
+          "name": "SchedulerService Methods",
+          "request": {
+            "description": "Available methods in SchedulerService",
+            "method": "GET",
+            "url": {
+              "raw": "{{grpc_server}}/docs/services/scheduler",
+              "host": ["{{grpc_server}}"],
+              "path": ["docs", "services", "scheduler"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Quick Commands",
+      "item": [
+        {
+          "name": "List All Services",
+          "request": {
+            "description": "List all available gRPC services",
+            "method": "GET",
+            "url": {
+              "raw": "grpcurl -plaintext {{grpc_server}} list",
+              "host": ["grpcurl", "-plaintext", "{{grpc_server}}", "list"]
+            }
+          }
+        },
+        {
+          "name": "Check Server Reflection",
+          "request": {
+            "description": "Check if gRPC reflection is enabled",
+            "method": "GET",
+            "url": {
+              "raw": "grpcurl -plaintext {{grpc_server}} describe hodei.JobExecutionService",
+              "host": [
+                "grpcurl",
+                "-plaintext",
+                "{{grpc_server}}",
+                "describe",
+                "hodei.JobExecutionService"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Troubleshooting",
+      "item": [
+        {
+          "name": "Connection Test",
+          "request": {
+            "description": "Test if gRPC server is reachable",
+            "method": "GET",
+            "url": {
+              "raw": "nc -zv {{grpc_server}}",
+              "host": ["nc", "-zv", "{{grpc_server}}"]
+            }
+          }
+        },
+        {
+          "name": "Common Errors",
+          "request": {
+            "description": "See troubleshooting section in documentation",
+            "method": "GET",
+            "url": {
+              "raw": "{{grpc_server}}/docs/troubleshooting",
+              "host": ["{{grpc_server}}"],
+              "path": ["docs", "troubleshooting"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Generate UUID for job_id if not set",
+          "if (!pm.environment.get('job_id')) {",
+          "    const jobId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {",
+          "        const r = Math.random() * 16 | 0;",
+          "        const v = c == 'x' ? r : (r & 0x3 | 0x8);",
+          "        return v.toString(16);",
+          "    });",
+          "    pm.environment.set('job_id', jobId);",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Test response (informational only)",
+          "pm.test('This is a template collection - use gRPC tools for actual requests', function () {",
+          "    pm.response.to.have.status(200);",
+          "});",
+          "",
+          "// Show instructions for gRPC tools",
+          "if (pm.response.code === 200) {",
+          "    console.log('Postman Collection for Hodei Jobs Platform');",
+          "    console.log('Use Evans or grpcurl for actual gRPC calls');",
+          "    console.log('See POSTMAN_CONFIGURATION.md for details');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "grpc_server",
+      "value": "localhost:50051",
+      "type": "string"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "execution_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "worker_id",
+      "value": "",
+      "type": "string"
+    }
+  ]
 }

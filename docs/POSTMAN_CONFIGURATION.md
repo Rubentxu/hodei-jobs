@@ -15,7 +15,18 @@
 
 ## Overview
 
-This guide explains how to use Postman to interact with the Hodei Jobs Platform gRPC API. Postman doesn't natively support gRPC, so we'll use **gRPC-request** and **Evans** or configure the API with **gRPC Reflection** for dynamic schema loading.
+This guide explains how to use Postman with the Hodei Jobs Platform gRPC API.
+
+⚠️ **IMPORTANT**: Postman **does NOT natively support gRPC** as of version 11.76.5. This collection provides:
+
+1. **Request templates** you can copy to gRPC clients
+2. **Environment variables** for consistency
+3. **Documentation references** for each API call
+
+**For actual gRPC calls, use:**
+- ✅ **Evans** (recommended) - Modern gRPC client
+- ✅ **grpcurl** - Command-line gRPC client
+- ✅ **gRPCurl GUI** - Web-based gRPC client
 
 ---
 
