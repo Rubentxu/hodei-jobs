@@ -322,7 +322,7 @@ build_project() {
 
     if command -v docker &> /dev/null; then
         print_info "Building Worker Docker Image (hodei-jobs-worker:latest)..."
-        docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:latest .
+        docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
         print_success "Worker image built"
     fi
 }

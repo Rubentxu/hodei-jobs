@@ -145,14 +145,16 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             .issue(&worker_id, self.config.otp_ttl)
             .await?;
 
-        // Add OTP token to worker environment so it can authenticate with the server
-        spec.environment
+        // Create a mutable copy of the spec with OTP token in environment
+        let mut spec_with_env = spec.clone();
+        spec_with_env
+            .environment
             .insert("HODEI_OTP_TOKEN".to_string(), otp_token.to_string());
 
         info!("Generated OTP for worker {}, creating container", worker_id);
 
         // Create worker via provider (now with OTP token in environment)
-        let handle = provider.create_worker(&spec).await.map_err(|e| {
+        let handle = provider.create_worker(&spec_with_env).await.map_err(|e| {
             DomainError::WorkerProvisioningFailed {
                 message: e.to_string(),
             }

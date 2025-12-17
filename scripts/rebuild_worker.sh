@@ -92,12 +92,12 @@ fi
 
 # Build the worker Docker image
 print_header "Building Worker Docker Image"
-print_info "Building Docker image from scripts/kubernetes/Dockerfile.worker..."
+print_info "Building Docker image from Dockerfile.worker..."
 
 # Get current timestamp for tagging
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-if docker build -f scripts/kubernetes/Dockerfile.worker \
+if docker build -f Dockerfile.worker \
     -t hodei-jobs-worker:latest \
     -t hodei-jobs-worker:${TIMESTAMP} \
     .; then

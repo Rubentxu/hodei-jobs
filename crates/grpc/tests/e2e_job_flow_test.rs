@@ -864,7 +864,7 @@ cargo test --test e2e_job_flow_test test_e2e_complete_job_flow_with_logs -- --ig
 - Docker must be running
 - The `hodei-jobs-worker:e2e-test` image must be built:
   ```bash
-  docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:e2e-test .
+  docker build -f Dockerfile.worker -t hodei-jobs-worker:e2e-test .
   ```
 
 ## Flow

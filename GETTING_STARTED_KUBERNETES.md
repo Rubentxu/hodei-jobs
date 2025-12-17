@@ -21,7 +21,7 @@ El provider de Kubernetes necesita que la imagen del worker (`hodei-jobs-worker`
 Desde la raíz del proyecto:
 
 ```bash
-docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:latest .
+docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
 ```
 
 2. **Cargar la imagen en el clúster (Solo Desarrollo Local):**

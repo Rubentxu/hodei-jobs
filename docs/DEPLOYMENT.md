@@ -139,7 +139,7 @@ kubectl create namespace hodei-workers
 # Construir imágenes
 docker build -t your-registry/hodei-server:1.0.0 .
 docker build -t your-registry/hodei-web:1.0.0 ./web
-docker build -t your-registry/hodei-worker:1.0.0 -f scripts/docker/Dockerfile.worker .
+docker build -t your-registry/hodei-worker:1.0.0 -f Dockerfile.worker .
 
 # Subir a registry
 docker push your-registry/hodei-server:1.0.0

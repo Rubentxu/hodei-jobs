@@ -1,164 +1,76 @@
 # Hodei Scripts
 
-Scripts for building, deploying, and managing Hodei worker images across different providers.
+Scripts for building, deploying, and managing the Hodei worker images.
 
 ## Directory Structure
 
 ```
 scripts/
-├── docker/                 # Docker provider scripts
-│   ├── Dockerfile.worker   # Worker image Dockerfile
-│   ├── build-worker-image.sh
-│   ├── check-env.sh
-│   └── README.md
-├── kubernetes/             # Kubernetes provider scripts
-│   ├── Dockerfile.worker   # Distroless worker image
-│   ├── build-worker-image.sh
-│   ├── check-env.sh
-│   └── README.md
-├── firecracker/            # Firecracker provider scripts
-│   ├── build-rootfs.sh     # Alpine rootfs builder
-│   ├── check-env.sh
-│   └── README.md
-└── README.md               # This file
+├── rebuild_worker.sh       # Rebuild worker image
+├── start.sh               # Quick start script
+├── setup.sh               # Development environment setup
+├── cleanup.sh             # Clean up Docker resources
+├── e2e/                   # E2E test scripts
+│   └── run-docker-e2e.sh
+├── verification/          # Job verification scripts
+│   └── maven_build_job.sh
+├── watch_logs.sh          # Monitor job logs
+├── run_maven_job.sh       # Run Maven test job
+└── submit_optimized_job.sh # Submit optimized job
 ```
 
 ## Quick Start
 
-### Docker Provider
+### Build Worker Image
+
+The worker image is built from the centralized `Dockerfile.worker` in the project root:
 
 ```bash
-# Check environment
-./scripts/docker/check-env.sh
+# Using the rebuild script
+./scripts/rebuild_worker.sh
 
-# Build worker image
-./scripts/docker/build-worker-image.sh
-
-# Enable provider
-export HODEI_DOCKER_ENABLED=1
+# Or directly with Docker
+docker build -f Dockerfile.worker -t hodei-worker:latest .
 ```
 
-### Kubernetes Provider
+### Docker/Kubernetes Providers
+
+Both providers use the same worker image:
 
 ```bash
-# Check environment
-./scripts/kubernetes/check-env.sh
+# Build image
+docker build -f Dockerfile.worker -t hodei-worker:latest .
 
-# Build and push worker image
-./scripts/kubernetes/build-worker-image.sh -r ghcr.io/myorg -t v1.0.0 -p
+# Enable Docker provider
+export HODEI_DOCKER_ENABLED=1
 
-# Install K8s manifests
-./deploy/kubernetes/install.sh
-
-# Enable provider
+# Enable Kubernetes provider
 export HODEI_K8S_ENABLED=1
 export HODEI_K8S_NAMESPACE=hodei-workers
 ```
 
-### Firecracker Provider
-
-```bash
-# Check environment
-./scripts/firecracker/check-env.sh
-
-# Build rootfs (requires root)
-sudo ./scripts/firecracker/build-rootfs.sh
-
-# Enable provider
-export HODEI_FC_ENABLED=1
-```
-
-## Environment Verification
-
-Each provider has a `check-env.sh` script that verifies:
-
-| Provider | Checks |
-|----------|--------|
-| Docker | Docker daemon, socket permissions, worker image |
-| Kubernetes | kubectl, cluster connectivity, RBAC, namespaces |
-| Firecracker | KVM, binaries, kernel, rootfs |
-
-Run all checks:
-
-```bash
-./scripts/docker/check-env.sh
-./scripts/kubernetes/check-env.sh
-./scripts/firecracker/check-env.sh
-```
-
 ## Image Building
 
-### Docker
+### Worker Image
 
-Standard multi-stage build with Debian runtime:
-
-```bash
-./scripts/docker/build-worker-image.sh -t hodei-worker:v1.0.0
-```
-
-### Kubernetes
-
-Distroless image optimized for security:
+Standard multi-stage build with Debian runtime and asdf support:
 
 ```bash
-# Single architecture
-./scripts/kubernetes/build-worker-image.sh -t hodei-worker:v1.0.0
+# Build for local development
+docker build -f Dockerfile.worker -t hodei-worker:latest .
 
-# Multi-architecture (amd64 + arm64)
-./scripts/kubernetes/build-worker-image.sh --multi-arch -r ghcr.io/myorg -p
+# Build with specific tag
+docker build -f Dockerfile.worker -t hodei-worker:v1.0.0 .
+
+# Build for E2E tests
+docker build -f Dockerfile.worker -t hodei-worker:e2e-test .
 ```
 
-### Firecracker
-
-Alpine-based rootfs with init scripts:
-
-```bash
-sudo ./scripts/firecracker/build-rootfs.sh /var/lib/hodei/rootfs.ext4
-```
-
-## Provider Comparison
-
-| Feature | Docker | Kubernetes | Firecracker |
-|---------|--------|------------|-------------|
-| Isolation | Container | Container | Hardware (KVM) |
-| Startup Time | ~1s | ~5-15s | ~125ms |
-| Resource Overhead | Low | Low | Very Low |
-| Security | Good | Good | Excellent |
-| GPU Support | Yes | Yes | No |
-| Requirements | Docker | K8s Cluster | KVM Host |
-
-## CI/CD Integration
-
-### GitHub Actions
-
-```yaml
-jobs:
-  build-images:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Build Docker image
-        run: ./scripts/docker/build-worker-image.sh -t ${{ github.sha }}
-      
-      - name: Build K8s image
-        run: |
-          ./scripts/kubernetes/build-worker-image.sh \
-            --multi-arch \
-            -r ghcr.io/${{ github.repository }} \
-            -t ${{ github.sha }} \
-            -p
-```
-
-### GitLab CI
-
-```yaml
-build-images:
-  stage: build
-  script:
-    - ./scripts/docker/build-worker-image.sh -t $CI_COMMIT_SHA
-    - ./scripts/kubernetes/build-worker-image.sh -r $CI_REGISTRY_IMAGE -t $CI_COMMIT_SHA -p
-```
+The Dockerfile.worker includes:
+- Rust toolchain for building the worker
+- asdf for managing runtime versions (Node.js, Python, etc.)
+- Debian slim runtime with minimal dependencies
+- Non-root user for security
 
 ## Troubleshooting
 
@@ -170,24 +82,14 @@ sudo usermod -aG docker $USER
 # Logout and login again
 ```
 
-**Kubernetes: Cannot connect to cluster**
+**Worker image not found**
 ```bash
-kubectl config view
-kubectl cluster-info
-```
-
-**Firecracker: KVM not available**
-```bash
-# Check CPU virtualization
-grep -E '(vmx|svm)' /proc/cpuinfo
-
-# Load KVM module
-sudo modprobe kvm_intel  # or kvm_amd
+# Build the worker image
+docker build -f Dockerfile.worker -t hodei-worker:latest .
 ```
 
 ## Related Documentation
 
-- [Docker Provider Design](../docs/providers/docker-provider-design.md)
-- [Kubernetes Provider Design](../docs/providers/kubernetes-provider-design.md)
-- [Firecracker Provider Design](../docs/providers/firecracker-provider-design.md)
-- [Kubernetes Deployment](../deploy/kubernetes/README.md)
+- [Getting Started Guide](../GETTING_STARTED.md)
+- [Kubernetes Guide](../GETTING_STARTED_KUBERNETES.md)
+- [Deployment Guide](../docs/DEPLOYMENT.md)

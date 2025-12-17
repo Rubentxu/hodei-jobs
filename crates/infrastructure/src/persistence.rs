@@ -1498,6 +1498,17 @@ impl WorkerRegistry for PostgresWorkerRegistry {
                 }
             }
 
+            // Filter out workers that haven't sent heartbeat recently (unhealthy)
+            if let Some(unhealthy_timeout) = filter.unhealthy_timeout {
+                let since_heartbeat = chrono::Utc::now()
+                    .signed_duration_since(worker.last_heartbeat())
+                    .to_std()
+                    .unwrap_or(std::time::Duration::ZERO);
+                if since_heartbeat > unhealthy_timeout {
+                    continue;
+                }
+            }
+
             workers.push(worker);
         }
 
@@ -1505,7 +1516,14 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     }
 
     async fn find_available(&self) -> Result<Vec<Worker>> {
-        self.find(&WorkerFilter::new().accepting_jobs()).await
+        // Filter out workers that haven't sent heartbeat recently (unhealthy)
+        // Default unhealthy timeout matches the registry's heartbeat_timeout
+        self.find(
+            &WorkerFilter::new()
+                .accepting_jobs()
+                .unhealthy_for(self.heartbeat_timeout),
+        )
+        .await
     }
 
     async fn find_by_provider(&self, provider_id: &ProviderId) -> Result<Vec<Worker>> {

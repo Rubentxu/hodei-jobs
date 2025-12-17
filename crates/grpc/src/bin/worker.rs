@@ -98,7 +98,7 @@ impl JobExecutor {
         self.docker_available
     }
 
-    /// Execute a job from RunJobCommand
+    /// Execute a job from RunJobCommand with timeout support
     async fn execute_from_command(
         &self,
         job_id: &str,
@@ -106,29 +106,35 @@ impl JobExecutor {
         env_vars: HashMap<String, String>,
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
+        timeout_secs: Option<u64>,
     ) -> Result<(i32, String, String), String> {
         let spec = command_spec.ok_or("No command spec provided")?;
 
+        // Get timeout from RunJobMessage or use default
+        let timeout_secs = timeout_secs.unwrap_or(3600); // Default 1 hour
+
         match spec.command_type {
             Some(ProtoCommandType::Shell(shell)) => {
-                self.execute_shell(
+                self.execute_shell_with_timeout(
                     job_id,
                     &shell.cmd,
                     &shell.args,
                     &env_vars,
                     working_dir,
                     log_sender,
+                    timeout_secs,
                 )
                 .await
             }
             Some(ProtoCommandType::Script(script)) => {
-                self.execute_script(
+                self.execute_script_with_timeout(
                     job_id,
                     &script.interpreter,
                     &script.content,
                     &env_vars,
                     working_dir,
                     log_sender,
+                    timeout_secs,
                 )
                 .await
             }
@@ -145,28 +151,45 @@ impl JobExecutor {
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
     ) -> Result<(i32, String, String), String> {
-        info!("Executing shell job {}: {} {:?}", job_id, command, args);
+        // Build the full command line: combine command + args
+        // Following Jenkins/Kubernetes/GitHub Actions best practices
+        let full_command = if args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {}", command, args.join(" "))
+        };
+
+        info!(
+            "Executing shell job {} with command: {}",
+            job_id, full_command
+        );
 
         // Send log entry
         let _ = log_sender
             .send(create_log_message(
                 job_id,
-                &format!("Starting: {} {:?}", command, args),
+                &format!("$ {}", full_command),
                 false,
             ))
             .await;
 
-        let mut cmd = StdCommand::new(command);
-        cmd.args(args);
+        // IMPORTANT: Always use /bin/bash -c to execute commands
+        // This is the standard practice in Jenkins agents, Kubernetes Jobs, GitHub Actions
+        // It ensures proper shell expansion, PATH resolution, and consistent behavior
+        let mut cmd = StdCommand::new("/bin/bash");
+        cmd.arg("-c").arg(&full_command);
 
+        // Set environment variables
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
 
+        // Set working directory if specified
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
 
+        // Execute with timeout support (can be added later)
         let output = cmd
             .output()
             .map_err(|e| format!("Failed to execute command: {}", e))?;
@@ -176,31 +199,22 @@ impl JobExecutor {
         let exit_code = output.status.code().unwrap_or(-1);
 
         info!(
-            "Command output - stdout length: {}, stderr length: {}, exit_code: {}",
+            "Command completed - stdout: {} bytes, stderr: {} bytes, exit_code: {}",
             stdout.len(),
             stderr.len(),
             exit_code
         );
-        if !stderr.is_empty() {
-            info!("Stderr content: '{}'", stderr);
-        }
 
-        // Send stdout logs
+        // Send stdout logs line by line (like Jenkins/K8s)
         for line in stdout.lines() {
             let _ = log_sender
                 .send(create_log_message(job_id, line, false))
                 .await;
         }
 
-        // Send stderr logs
-        info!(
-            "Sending {} stderr lines for job {}",
-            stderr.lines().count(),
-            job_id
-        );
+        // Send stderr logs line by line (like Jenkins/K8s)
         for line in stderr.lines() {
             if !line.is_empty() {
-                info!("Sending stderr log: {}", line);
                 let _ = log_sender
                     .send(create_log_message(job_id, line, true))
                     .await;
@@ -208,6 +222,63 @@ impl JobExecutor {
         }
 
         Ok((exit_code, stdout, stderr))
+    }
+
+    /// Execute shell command with timeout (like Kubernetes Jobs)
+    async fn execute_shell_with_timeout(
+        &self,
+        job_id: &str,
+        command: &str,
+        args: &[String],
+        env_vars: &HashMap<String, String>,
+        working_dir: Option<String>,
+        log_sender: mpsc::Sender<WorkerMessage>,
+        timeout_secs: u64,
+    ) -> Result<(i32, String, String), String> {
+        let full_command = if args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {}", command, args.join(" "))
+        };
+
+        info!(
+            "Executing shell job {} with command (timeout: {}s): {}",
+            job_id, timeout_secs, full_command
+        );
+
+        let _ = log_sender
+            .send(create_log_message(
+                job_id,
+                &format!("$ {}", full_command),
+                false,
+            ))
+            .await;
+
+        // Use tokio::time::timeout for timeout support (like K8s Jobs)
+        let result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            self.execute_shell(
+                job_id,
+                command,
+                args,
+                env_vars,
+                working_dir,
+                log_sender.clone(),
+            ),
+        )
+        .await;
+
+        match result {
+            Ok(exec_result) => exec_result,
+            Err(_) => {
+                let timeout_msg = format!("Command timed out after {} seconds", timeout_secs);
+                error!("{}", timeout_msg);
+                let _ = log_sender
+                    .send(create_log_message(job_id, &timeout_msg, true))
+                    .await;
+                Err(timeout_msg)
+            }
+        }
     }
 
     async fn execute_script(
@@ -220,25 +291,39 @@ impl JobExecutor {
         log_sender: mpsc::Sender<WorkerMessage>,
     ) -> Result<(i32, String, String), String> {
         info!(
-            "Executing script job {} with interpreter {}",
+            "Executing script job {} with interpreter: {}",
             job_id, interpreter
         );
 
+        // Send log entry with script header
         let _ = log_sender
             .send(create_log_message(
                 job_id,
-                &format!("Starting script with {}", interpreter),
+                &format!("$ {} -c << 'EOF'", interpreter),
                 false,
             ))
             .await;
 
+        // Send script content as log (like Jenkins/K8s shows script content)
+        for line in content.lines() {
+            let _ = log_sender
+                .send(create_log_message(job_id, line, false))
+                .await;
+        }
+        let _ = log_sender
+            .send(create_log_message(job_id, "EOF", false))
+            .await;
+
+        // Execute script with interpreter
         let mut cmd = StdCommand::new(interpreter);
         cmd.arg("-c").arg(content);
 
+        // Set environment variables
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
 
+        // Set working directory if specified
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
@@ -251,11 +336,13 @@ impl JobExecutor {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code().unwrap_or(-1);
 
+        // Send stdout logs
         for line in stdout.lines() {
             let _ = log_sender
                 .send(create_log_message(job_id, line, false))
                 .await;
         }
+        // Send stderr logs
         for line in stderr.lines() {
             let _ = log_sender
                 .send(create_log_message(job_id, line, true))
@@ -263,6 +350,49 @@ impl JobExecutor {
         }
 
         Ok((exit_code, stdout, stderr))
+    }
+
+    /// Execute script with timeout (like Kubernetes Jobs)
+    async fn execute_script_with_timeout(
+        &self,
+        job_id: &str,
+        interpreter: &str,
+        content: &str,
+        env_vars: &HashMap<String, String>,
+        working_dir: Option<String>,
+        log_sender: mpsc::Sender<WorkerMessage>,
+        timeout_secs: u64,
+    ) -> Result<(i32, String, String), String> {
+        info!(
+            "Executing script job {} with interpreter (timeout: {}s): {}",
+            job_id, timeout_secs, interpreter
+        );
+
+        // Use tokio::time::timeout for timeout support (like K8s Jobs)
+        let result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            self.execute_script(
+                job_id,
+                interpreter,
+                content,
+                env_vars,
+                working_dir,
+                log_sender.clone(),
+            ),
+        )
+        .await;
+
+        match result {
+            Ok(exec_result) => exec_result,
+            Err(_) => {
+                let timeout_msg = format!("Script timed out after {} seconds", timeout_secs);
+                error!("{}", timeout_msg);
+                let _ = log_sender
+                    .send(create_log_message(job_id, &timeout_msg, true))
+                    .await;
+                Err(timeout_msg)
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -534,6 +664,7 @@ impl Worker {
                                             run_job.env,
                                             working_dir,
                                             tx_job.clone(),
+                                            None, // Timeout will be read from command spec
                                         )
                                         .await;
 

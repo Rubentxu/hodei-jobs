@@ -102,7 +102,7 @@ fi
 if $BUILD_WORKER; then
     print_header "Building Worker Image"
     print_info "This is required for Docker/Kubernetes providers"
-    docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:latest .
+    docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
     print_success "Worker image built"
 fi
 

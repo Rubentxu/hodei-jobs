@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use bollard::{
+    Docker,
     container::LogOutput,
     models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig},
     query_parameters::{
@@ -12,7 +13,6 @@ use bollard::{
         LogsOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
         StopContainerOptionsBuilder,
     },
-    Docker,
 };
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -21,8 +21,8 @@ use hodei_jobs_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerState},
     worker::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
     worker_provider::{
-        HealthStatus, LogEntry, LogLevel, ProviderCapabilities,
-        ProviderError, ResourceLimits, WorkerProvider,
+        HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
+        WorkerProvider,
     },
 };
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -112,18 +112,18 @@ impl DockerProviderBuilder {
         // 2. DOCKER_HOST environment variable
         // 3. Docker Desktop socket (~/.docker/desktop/docker.sock)
         // 4. Default socket (/var/run/docker.sock)
-        
+
         let socket_paths = Self::get_socket_paths(config);
-        
+
         for socket_path in &socket_paths {
             debug!("Trying Docker socket: {}", socket_path);
-            
+
             let client_result = if socket_path == "/var/run/docker.sock" {
                 Docker::connect_with_socket_defaults()
             } else {
                 Docker::connect_with_socket(socket_path, 120, bollard::API_DEFAULT_VERSION)
             };
-            
+
             match client_result {
                 Ok(client) => {
                     if client.ping().await.is_ok() {
@@ -136,7 +136,7 @@ impl DockerProviderBuilder {
                 }
             }
         }
-        
+
         Err(DomainError::InfrastructureError {
             message: format!(
                 "Failed to connect to Docker daemon. Tried sockets: {:?}",
@@ -144,22 +144,22 @@ impl DockerProviderBuilder {
             ),
         })
     }
-    
+
     fn get_socket_paths(config: &DockerConfig) -> Vec<String> {
         let mut paths = Vec::new();
-        
+
         // 1. Configured socket path (if not default)
         if config.socket_path != "/var/run/docker.sock" {
             paths.push(config.socket_path.clone());
         }
-        
+
         // 2. DOCKER_HOST environment variable
         if let Ok(docker_host) = std::env::var("DOCKER_HOST") {
             if let Some(path) = docker_host.strip_prefix("unix://") {
                 paths.push(path.to_string());
             }
         }
-        
+
         // 3. Docker Desktop socket (Linux)
         if let Ok(home) = std::env::var("HOME") {
             let desktop_socket = format!("{}/.docker/desktop/docker.sock", home);
@@ -167,7 +167,7 @@ impl DockerProviderBuilder {
                 paths.push(desktop_socket);
             }
         }
-        
+
         // 4. Podman socket (rootless)
         if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
             let podman_socket = format!("{}/podman/podman.sock", xdg_runtime);
@@ -175,10 +175,10 @@ impl DockerProviderBuilder {
                 paths.push(podman_socket);
             }
         }
-        
+
         // 5. Default Docker socket
         paths.push("/var/run/docker.sock".to_string());
-        
+
         paths
     }
 
@@ -193,7 +193,11 @@ impl DockerProviderBuilder {
             gpu_support: false,
             gpu_types: vec![],
             architectures: vec![Architecture::Amd64, Architecture::Arm64],
-            runtimes: vec!["shell".to_string(), "python".to_string(), "node".to_string()],
+            runtimes: vec![
+                "shell".to_string(),
+                "python".to_string(),
+                "node".to_string(),
+            ],
             regions: vec!["local".to_string()],
             max_execution_time: Some(Duration::from_secs(86400)),
             persistent_storage: true,
@@ -217,20 +221,35 @@ impl DockerProvider {
 
     /// Create a new DockerProvider with custom configuration
     pub async fn with_config(config: DockerConfig) -> Result<Self> {
-        DockerProviderBuilder::new().with_config(config).build().await
+        DockerProviderBuilder::new()
+            .with_config(config)
+            .build()
+            .await
     }
 
     /// Create container configuration from WorkerSpec
     fn create_container_config(&self, spec: &WorkerSpec) -> ContainerCreateBody {
+        // Collect all environment variables from the spec
         let mut env_vars: Vec<String> = spec
             .environment
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
 
-        env_vars.push(format!("HODEI_WORKER_ID={}", spec.worker_id));
+        // Add Hodei-specific environment variables
+        env_vars.push(format!("HODEI_WORKER_ID={}", spec.worker_id.0));
         env_vars.push(format!("HODEI_SERVER_ADDRESS={}", spec.server_address));
         env_vars.push("HODEI_WORKER_MODE=ephemeral".to_string());
+
+        // Add OTP token if present (for authentication)
+        if let Some(token) = spec.environment.get("HODEI_OTP_TOKEN") {
+            env_vars.push(format!("HODEI_OTP_TOKEN={}", token));
+        }
+
+        info!(
+            "Creating container with {} environment variables",
+            env_vars.len()
+        );
 
         let mut labels = spec.labels.clone();
         labels.insert("hodei.worker.id".to_string(), spec.worker_id.to_string());
@@ -305,7 +324,6 @@ impl DockerProvider {
             None | Some(ContainerStateStatusEnum::EMPTY) => WorkerState::Creating,
         }
     }
-
 }
 
 #[async_trait]
@@ -322,7 +340,10 @@ impl WorkerProvider for DockerProvider {
         &self.capabilities
     }
 
-    async fn create_worker(&self, spec: &WorkerSpec) -> std::result::Result<WorkerHandle, ProviderError> {
+    async fn create_worker(
+        &self,
+        spec: &WorkerSpec,
+    ) -> std::result::Result<WorkerHandle, ProviderError> {
         let worker_id = spec.worker_id.clone();
         info!("Creating Docker worker: {}", worker_id);
 
@@ -341,7 +362,9 @@ impl WorkerProvider for DockerProvider {
             .client
             .create_container(Some(options), config)
             .await
-            .map_err(|e| ProviderError::ProvisioningFailed(format!("Failed to create container: {}", e)))?;
+            .map_err(|e| {
+                ProviderError::ProvisioningFailed(format!("Failed to create container: {}", e))
+            })?;
 
         let container_id = container.id.clone();
         debug!("Container created: {}", container_id);
@@ -364,12 +387,18 @@ impl WorkerProvider for DockerProvider {
         )
         .with_metadata("container_name", serde_json::json!(container_name));
 
-        self.active_workers.write().await.insert(container_id, handle.clone());
+        self.active_workers
+            .write()
+            .await
+            .insert(container_id, handle.clone());
 
         Ok(handle)
     }
 
-    async fn get_worker_status(&self, handle: &WorkerHandle) -> std::result::Result<WorkerState, ProviderError> {
+    async fn get_worker_status(
+        &self,
+        handle: &WorkerHandle,
+    ) -> std::result::Result<WorkerState, ProviderError> {
         let container_id = &handle.provider_resource_id;
 
         let inspect = self
@@ -382,12 +411,19 @@ impl WorkerProvider for DockerProvider {
         Ok(Self::map_container_state(state))
     }
 
-    async fn destroy_worker(&self, handle: &WorkerHandle) -> std::result::Result<(), ProviderError> {
+    async fn destroy_worker(
+        &self,
+        handle: &WorkerHandle,
+    ) -> std::result::Result<(), ProviderError> {
         let container_id = &handle.provider_resource_id;
         info!("Destroying worker: {}", handle.worker_id);
 
         let stop_options = StopContainerOptionsBuilder::default().t(10).build();
-        if let Err(e) = self.client.stop_container(container_id, Some(stop_options)).await {
+        if let Err(e) = self
+            .client
+            .stop_container(container_id, Some(stop_options))
+            .await
+        {
             warn!("Failed to stop container gracefully: {}", e);
         }
 
@@ -414,7 +450,9 @@ impl WorkerProvider for DockerProvider {
     ) -> std::result::Result<Vec<LogEntry>, ProviderError> {
         let container_id = &handle.provider_resource_id;
 
-        let tail_str = tail.map(|t| t.to_string()).unwrap_or_else(|| "100".to_string());
+        let tail_str = tail
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "100".to_string());
         let options = LogsOptionsBuilder::default()
             .stdout(true)
             .stderr(true)
@@ -432,12 +470,14 @@ impl WorkerProvider for DockerProvider {
                         LogOutput::StdOut { message } => {
                             (LogLevel::Info, String::from_utf8_lossy(message).to_string())
                         }
-                        LogOutput::StdErr { message } => {
-                            (LogLevel::Error, String::from_utf8_lossy(message).to_string())
-                        }
-                        LogOutput::Console { message } => {
-                            (LogLevel::Debug, String::from_utf8_lossy(message).to_string())
-                        }
+                        LogOutput::StdErr { message } => (
+                            LogLevel::Error,
+                            String::from_utf8_lossy(message).to_string(),
+                        ),
+                        LogOutput::Console { message } => (
+                            LogLevel::Debug,
+                            String::from_utf8_lossy(message).to_string(),
+                        ),
                         LogOutput::StdIn { .. } => continue,
                     };
 

@@ -6,8 +6,8 @@
 #
 # This Justfile provides a fast development workflow with hot reload,
 # parallel execution, and optimized build times.
-
 # Configuration
+
 export DEV_DATABASE_URL := "postgres://postgres:postgres@localhost:5432/hodei_dev"
 export RUST_BACKTRACE := "1"
 export RUST_LOG := "debug,hodei=trace,sqlx=warn"
@@ -260,16 +260,75 @@ logs-db:
 watch-logs:
     @./scripts/watch_logs.sh
 
+# Start server with Docker-in-Docker for worker provisioning
+dev-server:
+    @echo "🚀 Starting Hodei server with Docker-in-Docker support..."
+    @docker compose -f docker-compose.dev.yml up -d api
+    @just db-wait
+    @echo "✅ Server ready at localhost:50051"
+
+# Start full environment with auto-provisioning
+dev-full:
+    @echo "🚀 Starting full development environment with auto-provisioning..."
+    @just dev-db
+    @just dev-server
+    @echo "✅ Full environment ready"
+
+# Clean phantom workers from database
+clean-workers:
+    @echo "🧹 Cleaning phantom workers from database..."
+    @docker exec hodei-jobs-postgres psql -U hodei -d hodei -c "DELETE FROM workers WHERE last_heartbeat < NOW() - INTERVAL '2 minutes';" || true
+    @echo "✅ Phantom workers cleaned"
+
+# Test worker auto-provisioning flow
+test-auto-provision:
+    @echo "🧪 Testing worker auto-provisioning..."
+    @echo "This will:"
+    @echo "  1. Check server is running"
+    @echo "  2. Clean phantom workers"
+    @echo "  3. Queue a test job"
+    @echo "  4. Monitor worker provisioning and log streaming"
+    @just status
+    @just clean-workers
+    @echo "📤 Queueing test job..."
+    @cargo run --bin hodei-jobs-cli -- job queue --name "Auto-Provision Test" --command "echo 'Worker provisioned successfully!'"
+    @echo "👀 Starting log monitor (Ctrl+C to stop)..."
+    @just watch-logs
+
+# Test improved shell execution (bash -c, pipes, env vars)
+test-shell-features:
+    @echo "🐚 Testing shell execution features..."
+    @echo "  1. Testing pipes and redirections"
+    @cargo run --bin hodei-jobs-cli -- job queue --name "Pipe Test" --command "echo 'test' | grep 'test'"
+    @sleep 5
+    @echo "  2. Testing environment variables"
+    @cargo run --bin hodei-jobs-cli -- job queue --name "Env Test" --command "echo 'HOME: ' \$HOME"
+    @sleep 5
+    @echo "  3. Testing compound commands"
+    @cargo run --bin hodei-jobs-cli -- job queue --name "Compound Test" --command "cd /tmp && pwd && ls -la | head -5"
+    @sleep 5
+    @echo "✅ Shell feature tests queued"
+
+# Build and deploy worker with improvements
+build-worker:
+    @echo "🔨 Building worker with improvements..."
+    @cargo build --bin worker --release
+    @echo "✅ Worker compiled: target/release/worker"
+    @docker build -t hodei-jobs-worker:latest . --no-cache
+    @echo "✅ Docker image built: hodei-jobs-worker:latest"
+
 # Check system status
 status:
     @echo "📊 System Status:"
     @echo "=================="
-    @docker ps --filter "name=hodei" || echo "No containers running"
+    @docker ps --filter "name=hodei" 2>/dev/null || echo "No containers running"
+    @echo ""
+    @echo "Workers in database:"
+    @docker exec hodei-jobs-postgres psql -U postgres -d hodei -c "SELECT id, state, created_at FROM workers ORDER BY created_at DESC LIMIT 5;" 2>/dev/null || echo "Database not accessible"
     @echo ""
     @cargo --version
     @node --version 2>/dev/null || echo "Node not installed"
-    @npm --version 2>/devnpm not installed"
-
+    @npm --version 2>/dev/null || echo "npm not installed"
 
 help:
     @echo "Hodei Job Platform - Development Commands"

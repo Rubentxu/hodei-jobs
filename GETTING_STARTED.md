@@ -1,7 +1,157 @@
 # Guía de Usuario - Hodei Jobs Platform
 
 **Versión**: 8.0
-**Última Actualización**: 2025-12-16
+**Última Actualización**: 2025-12-17
+
+---
+
+## 🚀 NUEVAS MEJORAS - Worker Agent v0.1.5
+
+**Fecha**: 2025-12-17  
+**Versión**: 0.1.5
+
+### Mejoras Implementadas (Basadas en Jenkins/K8s/GitHub Actions)
+
+#### 1. ✅ Ejecución de Comandos con Shell
+El worker ahora **siempre usa `/bin/bash -c`** para ejecutar comandos (como Jenkins, Kubernetes Jobs, GitHub Actions):
+
+**Beneficios**:
+- ✅ Soporte para pipes y redirecciones: `echo "test" | grep test`
+- ✅ Variables de entorno: `echo $HOME`
+- ✅ Comandos compuestos: `cd /tmp && ls -la`
+- ✅ Wildcards: `ls *.txt`
+- ✅ Builtins del shell: `source`, `export`, `cd`
+
+**Ejemplo**:
+```bash
+cargo run --bin hodei-jobs-cli -- job queue \
+  --name "Pipeline Test" \
+  --command "echo 'Step 1' && sleep 1 && echo 'Step 2' | grep 'Step'"
+```
+
+#### 2. ✅ Streaming de Logs Mejorado
+Logs ahora se envían **línea por línea** en tiempo real (como Jenkins/K8s):
+- Marcadores `$` para comandos ejecutados
+- Separación clara de stdout/stderr
+- Timestamps en cada entrada
+- Buffers optimizados para alto throughput
+
+#### 3. ✅ Soporte para Timeouts
+Jobs pueden especificar timeout (como Kubernetes Jobs):
+```rust
+// Timeout de 5 minutos por defecto
+// Configurable via RunJobMessage.timeout_ms
+```
+
+#### 4. ✅ Ejecución de Scripts Mejorada
+Scripts muestran header y contenido como logs (como Jenkins):
+```bash
+$ /bin/bash -c << 'EOF'
+# Script content visible in logs
+echo "Script started"
+# ...
+EOF
+```
+
+### Cómo Usar
+
+**Encolar Job Simple**:
+```bash
+cargo run --bin hodei-jobs-cli -- job queue \
+  --name "Echo Test" \
+  --command "echo 'Hello from worker!'"
+```
+
+**Encolar Job con Pipeline**:
+```bash
+cargo run --bin hodei-jobs-cli -- job queue \
+  --name "Pipeline Test" \
+  --command "cat /etc/os-release | grep PRETTY_NAME"
+```
+
+**Encolar Job Multi-Step**:
+```bash
+cargo run --bin hodei-jobs-cli -- job queue \
+  --name "Multi-step" \
+  --command "cd /tmp && pwd && ls -la && echo 'Done!'"
+```
+
+**Monitorear Logs**:
+```bash
+just watch-logs
+# o
+./scripts/watch_logs.sh
+```
+
+### Problema Conocido
+
+⚠️ **Docker Provider - Variables de Entorno**: Los workers auto-provisionados necesitan corrección en `DockerProvider::create_container()` para recibir variables de entorno. **Trabajo futuro**.
+
+---
+
+## 🔧 ACTUALIZACIÓN IMPORTANTE - Worker Auto-Provisioning Fix
+
+**Estado**: ✅ CORREGIDO  
+**Fecha**: 2025-12-17  
+**Versión**: 0.1.5
+
+### ¿Qué se corrigió?
+
+El sistema ahora implementa correctamente el aprovisionamiento automático de workers según PRD v7.0:
+
+- ✅ **Workers Fantasma Eliminados**: Workers obsoletos (>60s sin heartbeat) ahora se filtran
+- ✅ **Auto-Aprovisionamiento Funciona**: Cuando no hay workers disponibles, el sistema aprovisiona nuevos automáticamente
+- ✅ **Arquitectura Event-Driven**: JobController responde a eventos y activa el aprovisionamiento
+- ✅ **Flujo E2E Completo**: Job → Encolar → Provisionar Worker → Registrar → Ejecutar → Stream de Logs
+
+### Cómo Usar (Desarrollo)
+
+**Opción 1: Docker Compose Actualizado (con Docker-in-Docker)**
+
+```bash
+cd /home/rubentxu/Proyectos/rust/package/hodei-job-platform
+docker compose -f docker-compose.dev.yml up -d
+```
+
+**Opción 2: Servidor Manual con Docker Socket**
+
+```bash
+docker run -d \
+  --name hodei-jobs-api \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  --network hodei-job-platform_hodei-jobs-internal \
+  -p 50051:50051 \
+  -e HODEI_DATABASE_URL=postgres://hodei:secure_password_here@postgres:5432/hodei \
+  -e HODEI_DOCKER_ENABLED=1 \
+  -e HODEI_PROVISIONING_ENABLED=1 \
+  hodei-jobs-server:latest
+```
+
+### Probar Aprovisionamiento de Worker
+
+```bash
+# Encolar un job de prueba
+cargo run --bin hodei-jobs-cli -- job queue \
+  --name "Test Auto-Provisioning" \
+  --command "echo 'Worker aprovisionado correctamente!'"
+
+# Ver logs en tiempo real
+just watch-logs
+
+# Verificar workers aprovisionados en la base de datos
+docker exec hodei-jobs-postgres psql -U hodei -d hodei -c \
+  "SELECT id, state, created_at FROM workers ORDER BY created_at DESC LIMIT 5;"
+```
+
+**Flujo Esperado**:
+1. Job encolado exitosamente ✅
+2. Servidor detecta 0 workers disponibles ✅
+3. Auto-aprovisiona nuevo contenedor Docker worker ✅
+4. Worker se conecta y registra con el servidor ✅
+5. Job asignado al worker ✅
+6. Worker ejecuta job y envía logs ✅
+
+---
 
 Guía práctica para usuarios que quieren ejecutar jobs distribuidos usando la interfaz web de Hodei Jobs Platform.
 
@@ -73,7 +223,7 @@ EOF
 
 
 # Construir la imagen del Worker (CRÍTICO: Necesaria para Docker/K8s Providers)
-docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:latest .
+docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
 
 # Levantar servicios principales
 docker compose -f docker-compose.prod.yml up -d --build

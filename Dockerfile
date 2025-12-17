@@ -27,6 +27,7 @@ WORKDIR /app
 # Copy binaries
 COPY --from=builder /app/target/release/hodei-jobs-cli /usr/local/bin/
 COPY --from=builder /app/target/release/server /usr/local/bin/hodei-jobs-server
+COPY --from=builder /app/target/release/worker /usr/local/bin/hodei-jobs-worker
 
 # Default command
 CMD ["hodei-jobs-server"]

@@ -69,23 +69,21 @@ done
 if [ "$BUILD_IMAGE" = true ]; then
     echo ""
     echo -e "${YELLOW}[2/4] Building worker image...${NC}"
-    
-    if [ -f "$PROJECT_ROOT/scripts/docker/build-worker-image.sh" ]; then
-        "$PROJECT_ROOT/scripts/docker/build-worker-image.sh" -t hodei-worker:e2e-test
-        echo -e "${GREEN}✓${NC} Worker image built: hodei-worker:e2e-test"
-    else
-        echo -e "${YELLOW}⚠${NC} Build script not found, skipping image build"
-    fi
+
+    echo "Building worker image..."
+    cd "$PROJECT_ROOT"
+    docker build -f Dockerfile.worker -t hodei-worker:e2e-test .
+    echo -e "${GREEN}✓${NC} Worker image built: hodei-worker:e2e-test"
 else
     echo ""
     echo -e "${YELLOW}[2/4] Skipping worker image build (use --build-image to build)${NC}"
-    
+
     # Check if image exists
     if docker image inspect hodei-worker:e2e-test &> /dev/null; then
         echo -e "${GREEN}✓${NC} Worker image exists: hodei-worker:e2e-test"
     else
         echo -e "${YELLOW}⚠${NC} Worker image not found. Some tests may fail."
-        echo "   Run: ./scripts/docker/build-worker-image.sh -t hodei-worker:e2e-test"
+        echo "   Run: docker build -f Dockerfile.worker -t hodei-worker:e2e-test ."
     fi
 fi
 
