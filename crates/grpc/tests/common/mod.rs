@@ -81,7 +81,7 @@ use hodei_jobs_infrastructure::persistence::{
     DatabaseConfig, PostgresJobQueue, PostgresJobRepository, PostgresWorkerBootstrapTokenStore,
     PostgresWorkerRegistry,
 };
-use hodei_jobs_infrastructure::providers::DockerProvider;
+use hodei_jobs_infrastructure::providers::{DockerProvider, TestWorkerProvider};
 
 use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
 
@@ -294,8 +294,10 @@ pub async fn get_postgres_context() -> anyhow::Result<PostgresTestDatabase> {
 pub struct TestServerConfig {
     pub db_url: String,
     pub enable_docker_provider: bool,
+    pub enable_test_provider: bool,
     pub enable_job_controller: bool,
     pub worker_image: String,
+    pub worker_binary_path: String,
     pub dev_mode: bool,
 }
 
@@ -304,8 +306,10 @@ impl TestServerConfig {
         Self {
             db_url,
             enable_docker_provider: false,
+            enable_test_provider: false,
             enable_job_controller: true,
             worker_image: "hodei-jobs-worker:e2e-test".to_string(),
+            worker_binary_path: "target/release/worker".to_string(),
             dev_mode: true,
         }
     }
@@ -315,8 +319,18 @@ impl TestServerConfig {
         self
     }
 
+    pub fn with_test_provider(mut self) -> Self {
+        self.enable_test_provider = true;
+        self
+    }
+
     pub fn with_worker_image(mut self, image: String) -> Self {
         self.worker_image = image;
+        self
+    }
+
+    pub fn with_worker_binary_path(mut self, path: String) -> Self {
+        self.worker_binary_path = path;
         self
     }
 
@@ -404,39 +418,71 @@ impl TestServer {
         let addr = listener.local_addr()?;
         drop(listener);
 
-        // Create scheduler service (with or without provisioning)
-        let scheduler_service = if config.enable_docker_provider {
-            // Initialize Docker provider
-            let docker_provider = DockerProvider::new().await?;
-            let provider_id = docker_provider.provider_id().clone();
-
+        // Create provisioning service (with provider)
+        let provisioning_service: Option<
+            Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>,
+        > = if config.enable_docker_provider || config.enable_test_provider {
+            // Initialize provider (Docker or Test)
             let mut providers: HashMap<ProviderId, Arc<dyn WorkerProvider>> = HashMap::new();
-            providers.insert(
-                provider_id,
-                Arc::new(docker_provider) as Arc<dyn WorkerProvider>,
-            );
+
+            if config.enable_docker_provider {
+                let docker_provider = DockerProvider::new().await?;
+                let provider_id = docker_provider.provider_id().clone();
+                providers.insert(
+                    provider_id,
+                    Arc::new(docker_provider) as Arc<dyn WorkerProvider>,
+                );
+            }
+
+            #[cfg(test)]
+            if config.enable_test_provider {
+                let test_provider =
+                    TestWorkerProvider::with_worker_binary(config.worker_binary_path.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to create test provider: {}", e))?;
+                let provider_id = test_provider.provider_id().clone();
+                providers.insert(
+                    provider_id,
+                    Arc::new(test_provider) as Arc<dyn WorkerProvider>,
+                );
+            }
+
             let providers = Arc::new(RwLock::new(providers));
 
             // Server address for workers to connect back
-            let server_address = format!("http://host.docker.internal:{}", addr.port());
+            let server_address = if config.enable_test_provider {
+                // Test provider connects directly to localhost
+                format!("http://127.0.0.1:{}", addr.port())
+            } else {
+                // Docker provider needs host.docker.internal
+                format!("http://host.docker.internal:{}", addr.port())
+            };
+
             let provisioning_config = ProvisioningConfig::new(server_address)
                 .with_default_image(config.worker_image.clone());
 
-            let provisioning_service = Arc::new(DefaultWorkerProvisioningService::new(
+            Some(Arc::new(DefaultWorkerProvisioningService::new(
                 worker_registry.clone(),
                 token_store.clone(),
                 providers,
                 provisioning_config,
             ))
-                as Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>;
+                as Arc<
+                    dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService,
+                >)
+        } else {
+            None
+        };
 
+        // Create scheduler service (with or without provisioning)
+        let scheduler_service = if let Some(ref prov_svc) = provisioning_service {
             SchedulerServiceImpl::with_provisioning(
                 Arc::new(create_job_usecase),
                 job_repository.clone(),
                 job_queue.clone(),
                 worker_registry.clone(),
                 SchedulerConfig::default(),
-                provisioning_service,
+                prov_svc.clone(),
             )
         } else {
             SchedulerServiceImpl::new(
@@ -481,7 +527,7 @@ impl TestServer {
                 SchedulerConfig::default(),
                 sender,
                 event_bus.clone(),
-                None,
+                provisioning_service.clone(),
             ));
 
             let handle = tokio::spawn(async move {
@@ -565,17 +611,39 @@ impl Drop for TestServer {
 // TestStack - Complete E2E Stack
 // =============================================================================
 
-/// Complete E2E test stack: Postgres + Server + optional Docker Provider
+/// Complete E2E test stack: Postgres + Server + optional Provider
 pub struct TestStack {
     pub db: PostgresTestDatabase,
     pub server: TestServer,
 }
 
 impl TestStack {
-    /// Create a new test stack with Docker provider enabled
+    /// Create a new test stack with Docker provider enabled (slow but realistic)
     pub async fn with_docker_provider() -> anyhow::Result<Self> {
         let db = get_postgres_context().await?;
         let config = TestServerConfig::new(db.connection_string.clone()).with_docker_provider();
+        let server = TestServer::start(config).await?;
+        Ok(Self { db, server })
+    }
+
+    /// Create a new test stack with TestWorkerProvider (FAST - ~10s)
+    /// This is the preferred option for E2E tests as it's much faster
+    pub async fn with_test_provider() -> anyhow::Result<Self> {
+        let db = get_postgres_context().await?;
+
+        // Calculate absolute path to worker binary
+        let current_dir = std::env::current_dir()?;
+        let project_root = current_dir
+            .ancestors()
+            .nth(2) // Go up from crates/grpc/tests to project root
+            .unwrap_or(&current_dir);
+        let worker_binary_path = project_root.join("target/release/worker");
+
+        tracing::info!("Using worker binary at: {}", worker_binary_path.display());
+
+        let config = TestServerConfig::new(db.connection_string.clone())
+            .with_test_provider()
+            .with_worker_binary_path(worker_binary_path.to_string_lossy().to_string());
         let server = TestServer::start(config).await?;
         Ok(Self { db, server })
     }

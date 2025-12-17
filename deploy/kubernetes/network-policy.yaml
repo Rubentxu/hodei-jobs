@@ -2,14 +2,14 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: hodei-workers-egress
-  namespace: hodei-workers
+  namespace: hodei-jobs-workers
   labels:
     app.kubernetes.io/name: hodei
     app.kubernetes.io/component: network-policy
 spec:
   podSelector:
     matchLabels:
-      app: hodei-worker
+      app: hodei-jobs-worker
   policyTypes:
   - Egress
   - Ingress
@@ -40,7 +40,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: hodei-workers-default-deny
-  namespace: hodei-workers
+  namespace: hodei-jobs-workers
   labels:
     app.kubernetes.io/name: hodei
     app.kubernetes.io/component: network-policy

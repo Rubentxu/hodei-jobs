@@ -21,7 +21,7 @@ cargo install just bacon
 ### 2. Run Setup
 
 ```bash
-./setup.sh
+./scripts/setup.sh
 ```
 
 This will install all dependencies and build the project.
@@ -29,7 +29,7 @@ This will install all dependencies and build the project.
 ### 3. Start Development
 
 ```bash
-./dev.sh
+./scripts/dev.sh
 ```
 
 That's it! Backend and frontend will start with hot reload.
@@ -39,6 +39,7 @@ That's it! Backend and frontend will start with hot reload.
 ## 📦 Stack Overview
 
 ### Backend (Rust)
+
 - **gRPC Server**: Tonic (port 50051)
 - **HTTP Server**: Axum (port 8080)
 - **Database**: PostgreSQL (port 5432)
@@ -47,6 +48,7 @@ That's it! Backend and frontend will start with hot reload.
 - **Monitoring**: Prometheus metrics
 
 ### Frontend (TypeScript)
+
 - **Framework**: React 18
 - **Build Tool**: Vite (HMR enabled)
 - **Language**: TypeScript
@@ -59,15 +61,17 @@ That's it! Backend and frontend will start with hot reload.
 
 ### Option 1: Using dev.sh (Recommended)
 
+### Option 1: Using dev.sh (Recommended)
+
 ```bash
 # Full environment
-./dev.sh
+./scripts/dev.sh
 
 # Individual services
-./dev.sh db           # Database only
-./dev.sh backend      # Backend with hot reload
-./dev.sh frontend     # Frontend with HMR
-./dev.sh test         # Run all tests
+./scripts/dev.sh db           # Database only
+./scripts/dev.sh backend      # Backend with hot reload
+./scripts/dev.sh frontend     # Frontend with HMR
+./scripts/dev.sh test         # Run all tests
 ```
 
 ### Option 2: Using Just Commands
@@ -126,11 +130,13 @@ bacon run
 ```
 
 **Bacon Commands:**
+
 - `:q` - Quit
 - `:j job-name` - Switch job (run, test, clippy, etc.)
 - `Ctrl+C` - Stop
 
 **How it works:**
+
 1. Edit Rust code
 2. Bacon detects changes automatically
 3. Incremental compilation starts
@@ -148,6 +154,7 @@ npm run dev
 ```
 
 **How it works:**
+
 1. Edit React/TypeScript code
 2. Vite updates affected modules only
 3. Browser reflects changes instantly
@@ -171,6 +178,7 @@ docker-compose -f docker-compose.dev.yml up -d postgres
 ```
 
 **Connection Details:**
+
 - Host: `localhost`
 - Port: `5432`
 - User: `postgres`
@@ -190,6 +198,7 @@ just db-reset
 ```
 
 This will:
+
 1. Stop PostgreSQL container
 2. Remove volume (loses all data)
 3. Start PostgreSQL fresh
@@ -255,15 +264,18 @@ cd web && npm run test:e2e
 The project includes complete VS Code configuration:
 
 **.vscode/tasks.json** - Pre-configured tasks
+
 - `Ctrl/Cmd+Shift+P` → "Tasks: Run Task"
 - Select from: Start Dev, Run Tests, Build, etc.
 
 **.vscode/launch.json** - Debug configurations
+
 - `F5` to debug gRPC server
 - `F5` to debug current test file
 - Debug specific tests with custom configurations
 
 **Recommended Extensions:**
+
 - `rust-analyzer` - Rust language support
 - `vadimcn.vscode-lldb` - Rust debugging
 - `ms-vscode.vscode-typescript-next` - TypeScript support
@@ -382,12 +394,13 @@ hodei-job-platform/
 │   └── package.json
 ├── proto/               # Protocol Buffer definitions
 ├── scripts/             # Build & deployment scripts
+│   ├── dev.sh
+│   ├── setup.sh
+│   └── watch_logs.sh
 ├── docker-compose.dev.yml
 ├── docker-compose.prod.yml
 ├── justfile
 ├── bacon.toml
-├── dev.sh
-├── setup.sh
 └── DEVELOPMENT.md (this file)
 ```
 
@@ -417,14 +430,42 @@ hodei-job-platform/
 
 ### Running E2E Tests
 
+#### Frontend E2E Tests (Playwright)
+
 ```bash
 just test-e2e
 ```
 
 This uses Playwright to test the full stack including:
+
 - Database interactions
 - gRPC calls
 - Frontend UI
+
+#### Backend E2E Tests (Rust)
+
+```bash
+# Run all backend E2E tests
+cargo test --test e2e_job_flow_test -- --ignored --nocapture
+
+# Run specific Maven complex build test
+cargo test test_e2e_maven_complex_build -- --ignored --nocapture
+```
+
+The backend E2E tests include:
+
+- **Maven Complex Build Test**: Tests a complete CI/CD pipeline with:
+  - ASDF version management setup
+  - Java 21 installation
+  - Maven 3.9.9 installation  
+  - Git repository cloning
+  - Maven build with enforcer plugin validation
+  
+- **Fast Execution**: Uses `TestWorkerProvider` (35x faster than Docker)
+  - Direct process spawning instead of containerization
+  - Execution time: ~6 seconds (vs 2-3 minutes with Docker)
+  
+- **Comprehensive Validation**: Verifies all pipeline stages in real-time
 
 ---
 
@@ -480,7 +521,7 @@ just logs-db
 just clean-all
 
 # Rebuild from scratch
-./setup.sh
+./scripts/setup.sh
 ```
 
 ### Rust Compilation Errors
@@ -501,11 +542,13 @@ cargo clean
 ## 📚 Additional Resources
 
 ### Documentation
+
 - **README.md** - Project overview
 - **GETTING_STARTED.md** - Detailed setup guide
 - **docs/** - Full documentation
 
 ### Tools
+
 - **Bacon** - https://dystroy.org/bacon/
 - **Just** - https://github.com/casey/just
 - **Vite** - https://vitejs.dev/
@@ -513,6 +556,7 @@ cargo clean
 - **Tonic** - https://github.com/hyperium/tonic
 
 ### Learning
+
 - **Rust Book** - https://doc.rust-lang.org/book/
 - **Tokio Tutorial** - https://tokio.rs/tokio/tutorial
 - **React Docs** - https://react.dev/

@@ -194,6 +194,7 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
         SchedulerConfig::default(),
         sender,
         event_bus.clone(),
+        None,
     );
 
     let processed = controller.run_once().await.unwrap();

@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: hodei-workers
+  name: hodei-jobs-workers
   labels:
     app.kubernetes.io/name: hodei
     app.kubernetes.io/component: workers

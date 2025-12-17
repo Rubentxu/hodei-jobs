@@ -199,16 +199,61 @@ impl JobExecutionService for JobExecutionServiceImpl {
         }
         command.extend(definition.arguments);
 
+        // Map timeout from protobuf Duration to milliseconds
+        let timeout_ms = definition.timeout.and_then(|t| {
+            t.execution_timeout.and_then(|duration| {
+                let seconds = duration.seconds;
+                let nanos = duration.nanos;
+                Some((seconds * 1000) as u64 + (nanos as u64 / 1_000_000))
+            })
+        });
+
+        // Map resource requirements
+        let (cpu_cores, memory_bytes, disk_bytes) =
+            definition.requirements.map_or((None, None, None), |r| {
+                tracing::info!(
+                    "Mapping requirements: cpu_cores={}, memory_bytes={}, disk_bytes={}",
+                    r.cpu_cores,
+                    r.memory_bytes,
+                    r.disk_bytes
+                );
+                (Some(r.cpu_cores), Some(r.memory_bytes), Some(r.disk_bytes))
+            });
+
+        tracing::info!(
+            "Mapped requirements: cpu_cores={:?}, memory_bytes={:?}, disk_bytes={:?}",
+            cpu_cores,
+            memory_bytes,
+            disk_bytes
+        );
+
+        // Extract job_id from request if provided (filter empty values)
+        let job_id = definition
+            .job_id
+            .as_ref()
+            .map(|id| id.value.clone())
+            .filter(|v| !v.is_empty());
+
+        tracing::info!(
+            "QueueJob request - client job_id: {:?}, name: {}",
+            job_id,
+            definition.name
+        );
+
         let create_request = CreateJobRequest {
             spec: JobSpecRequest {
                 command,
                 image: None,
                 env: Some(definition.environment),
-                timeout_ms: None,
+                timeout_ms,
                 working_dir: None,
+                cpu_cores,
+                memory_bytes,
+                disk_bytes,
             },
             correlation_id,
             actor,
+            job_id,
         };
 
         let result = self
@@ -615,7 +660,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 match job_repository.find_by_execution_id(&exec_id_clone).await {
                     Ok(Some(job)) => {
                         let status = Self::map_job_state(&job.state) as i32;
-                        
+
                         // Check if we should send an update (simple change detection)
                         // In a real implementation, we might want to check more fields or use a proper event bus
                         if status != last_status {
@@ -625,8 +670,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
                                 let execution = JobExecution {
                                     execution_id: Some(ExecutionId { value: ctx.provider_execution_id.clone() }),
                                     job_id: Some(GrpcJobId { value: job.id.to_string() }),
-                                    worker_id: None, 
-                                    state: 0, 
+                                    worker_id: None,
+                                    state: 0,
                                     job_status: status,
                                     start_time: ctx.started_at.map(Self::to_timestamp),
                                     end_time: ctx.completed_at.map(Self::to_timestamp),
@@ -654,11 +699,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
                                 | hodei_jobs_domain::shared_kernel::JobState::Cancelled
                                 | hodei_jobs_domain::shared_kernel::JobState::Timeout
                         ) {
-                             // Give a moment for the final message to be sent/processed if needed, then exit
-                             // But we already sent the update above.
-                             // Maybe we want to keep stream open for a bit? 
-                             // For now, let's close it after sending the terminal state.
-                             break;
+                            // Give a moment for the final message to be sent/processed if needed, then exit
+                            // But we already sent the update above.
+                            // Maybe we want to keep stream open for a bit?
+                            // For now, let's close it after sending the terminal state.
+                            break;
                         }
                     }
                     Ok(None) => {
@@ -675,6 +720,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(output_stream) as Self::ExecutionEventStreamStream))
+        Ok(Response::new(
+            Box::pin(output_stream) as Self::ExecutionEventStreamStream
+        ))
     }
 }

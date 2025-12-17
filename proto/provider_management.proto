@@ -8,28 +8,28 @@ import "common.proto";
 service ProviderManagementService {
     // Register a new provider
     rpc RegisterProvider(RegisterProviderRequest) returns (RegisterProviderResponse);
-    
+
     // Get provider by ID
     rpc GetProvider(GetProviderRequest) returns (GetProviderResponse);
-    
+
     // Get provider by name
     rpc GetProviderByName(GetProviderByNameRequest) returns (GetProviderResponse);
-    
+
     // List all providers
     rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
-    
+
     // Update provider configuration
     rpc UpdateProvider(UpdateProviderRequest) returns (UpdateProviderResponse);
-    
+
     // Delete provider
     rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
-    
+
     // Enable provider
     rpc EnableProvider(EnableProviderRequest) returns (EnableProviderResponse);
-    
+
     // Disable provider
     rpc DisableProvider(DisableProviderRequest) returns (DisableProviderResponse);
-    
+
     // Get provider statistics
     rpc GetProviderStats(GetProviderStatsRequest) returns (GetProviderStatsResponse);
 }
@@ -48,7 +48,8 @@ enum ProviderType {
     PROVIDER_TYPE_EC2 = 9;
     PROVIDER_TYPE_COMPUTE_ENGINE = 10;
     PROVIDER_TYPE_AZURE_VMS = 11;
-    PROVIDER_TYPE_BARE_METAL = 12;
+    PROVIDER_TYPE_TEST = 12;
+    PROVIDER_TYPE_BARE_METAL = 13;
     PROVIDER_TYPE_CUSTOM = 99;
 }
 

@@ -31,16 +31,14 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use hodei_jobs::{
-    QueueJobRequest, JobDefinition, WorkerId, JobId,
-    RegisterWorkerRequest, WorkerInfo, ResourceCapacity,
-    WorkerMessage, WorkerHeartbeat, JobResultMessage,
-    worker_message::Payload as WorkerPayload,
-    server_message::Payload as ServerPayload,
+    JobDefinition, JobId, JobResultMessage, QueueJobRequest, RegisterWorkerRequest,
+    ResourceCapacity, WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage,
+    server_message::Payload as ServerPayload, worker_message::Payload as WorkerPayload,
 };
 
 mod common;
 
-use common::{TestStack, TestServerConfig, get_postgres_context};
+use common::{TestServerConfig, TestStack, get_postgres_context};
 
 // =============================================================================
 // Helper Functions
@@ -51,8 +49,7 @@ fn should_run_k8s_tests() -> bool {
 }
 
 fn get_test_namespace() -> String {
-    std::env::var("HODEI_K8S_TEST_NAMESPACE")
-        .unwrap_or_else(|_| "hodei-jobs-workers".to_string())
+    std::env::var("HODEI_K8S_TEST_NAMESPACE").unwrap_or_else(|_| "hodei-jobs-workers".to_string())
 }
 
 /// Verifier for Kubernetes CLI operations
@@ -66,11 +63,11 @@ impl KubernetesVerifier {
         let output = std::process::Command::new("kubectl")
             .args(["version", "--client", "-o", "json"])
             .output()?;
-        
+
         if !output.status.success() {
             anyhow::bail!("kubectl not available");
         }
-        
+
         Ok(Self {
             namespace: get_test_namespace(),
         })
@@ -80,7 +77,7 @@ impl KubernetesVerifier {
         let output = std::process::Command::new("kubectl")
             .args(["cluster-info"])
             .output();
-        
+
         match output {
             Ok(o) => o.status.success(),
             Err(_) => false,
@@ -91,7 +88,7 @@ impl KubernetesVerifier {
         let output = std::process::Command::new("kubectl")
             .args(["get", "namespace", &self.namespace])
             .output();
-        
+
         match output {
             Ok(o) => o.status.success(),
             Err(_) => false,
@@ -102,7 +99,7 @@ impl KubernetesVerifier {
         let output = std::process::Command::new("kubectl")
             .args(["create", "namespace", &self.namespace])
             .output()?;
-        
+
         // Ignore "already exists" error
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -116,59 +113,70 @@ impl KubernetesVerifier {
     pub fn find_pods(&self, label_selector: &str) -> anyhow::Result<Vec<String>> {
         let output = std::process::Command::new("kubectl")
             .args([
-                "get", "pods",
-                "-n", &self.namespace,
-                "-l", label_selector,
-                "-o", "jsonpath={.items[*].metadata.name}",
+                "get",
+                "pods",
+                "-n",
+                &self.namespace,
+                "-l",
+                label_selector,
+                "-o",
+                "jsonpath={.items[*].metadata.name}",
             ])
             .output()?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("Failed to list pods: {}", stderr);
         }
-        
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         let pods: Vec<String> = stdout
             .split_whitespace()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
-        
+
         Ok(pods)
     }
 
     pub fn get_pod_status(&self, pod_name: &str) -> anyhow::Result<String> {
         let output = std::process::Command::new("kubectl")
             .args([
-                "get", "pod", pod_name,
-                "-n", &self.namespace,
-                "-o", "jsonpath={.status.phase}",
+                "get",
+                "pod",
+                pod_name,
+                "-n",
+                &self.namespace,
+                "-o",
+                "jsonpath={.status.phase}",
             ])
             .output()?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("Failed to get pod status: {}", stderr);
         }
-        
+
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     pub fn delete_pod(&self, pod_name: &str) -> anyhow::Result<()> {
         let output = std::process::Command::new("kubectl")
             .args([
-                "delete", "pod", pod_name,
-                "-n", &self.namespace,
+                "delete",
+                "pod",
+                pod_name,
+                "-n",
+                &self.namespace,
                 "--ignore-not-found",
             ])
             .output()?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("Failed to delete pod: {}", stderr);
         }
-        
+
         Ok(())
     }
 
@@ -180,11 +188,9 @@ impl KubernetesVerifier {
             args.push("--tail");
             args.push(&tail_str);
         }
-        
-        let output = std::process::Command::new("kubectl")
-            .args(&args)
-            .output()?;
-        
+
+        let output = std::process::Command::new("kubectl").args(&args).output()?;
+
         // Logs might not be available yet, don't fail
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
@@ -211,12 +217,17 @@ async fn test_01_kubernetes_available() {
         }
     };
 
-    assert!(verifier.is_cluster_available(), "Kubernetes cluster should be reachable");
+    assert!(
+        verifier.is_cluster_available(),
+        "Kubernetes cluster should be reachable"
+    );
     println!("✓ kubectl disponible y cluster accesible");
 
     // Ensure namespace exists
     if !verifier.namespace_exists() {
-        verifier.create_namespace().expect("Should create namespace");
+        verifier
+            .create_namespace()
+            .expect("Should create namespace");
         println!("✓ Namespace {} creado", get_test_namespace());
     } else {
         println!("✓ Namespace {} existe", get_test_namespace());
@@ -239,7 +250,7 @@ async fn test_02_postgres_testcontainer() {
             return;
         }
     };
-    
+
     println!("✓ PostgreSQL iniciado: {}", db.connection_string);
     assert!(!db.connection_string.is_empty());
 }
@@ -272,7 +283,7 @@ async fn test_03_grpc_server_starts() {
 
     let client = server.job_client().await;
     assert!(client.is_ok(), "Should create job client");
-    
+
     println!("✓ Server gRPC iniciado en {}", server.addr);
     server.shutdown().await;
 }
@@ -299,19 +310,27 @@ async fn test_04_worker_registration_with_otp() {
     };
 
     let worker_id = uuid::Uuid::new_v4().to_string();
-    
-    let otp = stack.server.generate_otp(&worker_id).await
+
+    let otp = stack
+        .server
+        .generate_otp(&worker_id)
+        .await
         .expect("Should generate OTP");
     println!("✓ OTP generado para worker: {}", worker_id);
 
-    let mut worker_client = stack.server.worker_client().await
+    let mut worker_client = stack
+        .server
+        .worker_client()
+        .await
         .expect("Should create worker client");
 
     let reg_request = RegisterWorkerRequest {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "K8s Test Worker".to_string(),
             version: "1.0.0".to_string(),
             hostname: "k8s-test-pod".to_string(),
@@ -334,13 +353,21 @@ async fn test_04_worker_registration_with_otp() {
         }),
     };
 
-    let reg_response = worker_client.register(reg_request).await
+    let reg_response = worker_client
+        .register(reg_request)
+        .await
         .expect("Should register worker")
         .into_inner();
 
     assert!(reg_response.success, "Registration should succeed");
-    assert!(!reg_response.session_id.is_empty(), "Should have session_id");
-    println!("✓ Worker registrado con session: {}", reg_response.session_id);
+    assert!(
+        !reg_response.session_id.is_empty(),
+        "Should have session_id"
+    );
+    println!(
+        "✓ Worker registrado con session: {}",
+        reg_response.session_id
+    );
 
     stack.shutdown().await;
 }
@@ -371,7 +398,9 @@ async fn test_05_worker_stream_connection() {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "K8s Stream Test Worker".to_string(),
             ..Default::default()
         }),
@@ -383,7 +412,9 @@ async fn test_05_worker_stream_connection() {
 
     let heartbeat = WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             status: 2, // AVAILABLE
             usage: None,
             active_jobs: 0,
@@ -394,7 +425,9 @@ async fn test_05_worker_stream_connection() {
     tx.send(heartbeat).await.unwrap();
 
     let inbound = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let response = worker_client.worker_stream(inbound).await
+    let response = worker_client
+        .worker_stream(inbound)
+        .await
         .expect("Should connect to stream");
     let mut stream = response.into_inner();
 
@@ -431,7 +464,9 @@ async fn test_06_job_queued_and_dispatched() {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "K8s Job Dispatch Test Worker".to_string(),
             capacity: Some(ResourceCapacity {
                 cpu_cores: 2.0,
@@ -452,7 +487,9 @@ async fn test_06_job_queued_and_dispatched() {
 
     let heartbeat = WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             status: 2,
             usage: None,
             active_jobs: 0,
@@ -474,7 +511,9 @@ async fn test_06_job_queued_and_dispatched() {
 
     let queue_request = QueueJobRequest {
         job_definition: Some(JobDefinition {
-            job_id: Some(JobId { value: job_id.clone() }),
+            job_id: Some(JobId {
+                value: job_id.clone(),
+            }),
             name: "K8s Dispatch Test Job".to_string(),
             description: "Test job dispatch for Kubernetes".to_string(),
             command: "echo".to_string(),
@@ -490,7 +529,11 @@ async fn test_06_job_queued_and_dispatched() {
         queued_by: "k8s-test".to_string(),
     };
 
-    let queue_response = job_client.queue_job(queue_request).await.unwrap().into_inner();
+    let queue_response = job_client
+        .queue_job(queue_request)
+        .await
+        .unwrap()
+        .into_inner();
     assert!(queue_response.success, "Job should be queued");
     println!("✓ Job encolado: {}", job_id);
 
@@ -504,7 +547,8 @@ async fn test_06_job_queued_and_dispatched() {
             }
         }
         None
-    }).await;
+    })
+    .await;
 
     match run_job_result {
         Ok(Some(run_job)) => {
@@ -567,7 +611,9 @@ async fn test_07_kubernetes_provider_creates_pod() {
 
     // Ensure namespace exists
     if !verifier.namespace_exists() {
-        verifier.create_namespace().expect("Should create namespace");
+        verifier
+            .create_namespace()
+            .expect("Should create namespace");
     }
 
     let config = KubernetesConfig::builder()
@@ -587,10 +633,19 @@ async fn test_07_kubernetes_provider_creates_pod() {
     let spec = WorkerSpec::new(
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
-    );
+    )
+    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+        cpu_cores: 0.25,                 // 0.25 cores
+        memory_bytes: 256 * 1024 * 1024, // 256MB
+        disk_bytes: 1024 * 1024 * 1024,
+        gpu_count: 0,
+        gpu_type: None,
+    });
     let worker_id = spec.worker_id.clone();
 
-    let handle = provider.create_worker(&spec).await
+    let handle = provider
+        .create_worker(&spec)
+        .await
         .expect("Should create worker");
     println!("✓ Pod creado: {}", handle.provider_resource_id);
 
@@ -599,12 +654,17 @@ async fn test_07_kubernetes_provider_creates_pod() {
 
     // Verify with kubectl
     let _pod_name = format!("hodei-jobs-worker-{}", worker_id);
-    let pods = verifier.find_pods(&format!("hodei.io/worker-id={}", worker_id)).unwrap();
+    let pods = verifier
+        .find_pods(&format!("hodei.io/worker-id={}", worker_id))
+        .unwrap();
     assert!(!pods.is_empty(), "Pod should exist");
     println!("✓ Pod verificado via kubectl");
 
     // Cleanup
-    provider.destroy_worker(&handle).await.expect("Should destroy");
+    provider
+        .destroy_worker(&handle)
+        .await
+        .expect("Should destroy");
     println!("✓ Pod eliminado");
 }
 
@@ -617,9 +677,9 @@ async fn test_08_kubernetes_provider_pod_lifecycle() {
         return;
     }
 
+    use hodei_jobs_domain::shared_kernel::WorkerState;
     use hodei_jobs_domain::worker::WorkerSpec;
     use hodei_jobs_domain::worker_provider::WorkerProvider;
-    use hodei_jobs_domain::shared_kernel::WorkerState;
     use hodei_jobs_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
 
     let verifier = match KubernetesVerifier::new() {
@@ -636,7 +696,9 @@ async fn test_08_kubernetes_provider_pod_lifecycle() {
     }
 
     if !verifier.namespace_exists() {
-        verifier.create_namespace().expect("Should create namespace");
+        verifier
+            .create_namespace()
+            .expect("Should create namespace");
     }
 
     let config = KubernetesConfig::builder()
@@ -656,6 +718,13 @@ async fn test_08_kubernetes_provider_pod_lifecycle() {
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
     )
+    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+        cpu_cores: 0.25,                 // 0.25 cores
+        memory_bytes: 256 * 1024 * 1024, // 256MB
+        disk_bytes: 1024 * 1024 * 1024,
+        gpu_count: 0,
+        gpu_type: None,
+    })
     .with_env("TEST_VAR", "kubernetes_test");
 
     // 1. Crear
@@ -663,7 +732,7 @@ async fn test_08_kubernetes_provider_pod_lifecycle() {
     println!("✓ 1. Pod creado: {}", handle.provider_resource_id);
 
     // 2. Esperar y verificar estado
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
     let state = provider.get_worker_status(&handle).await.unwrap();
     println!("✓ 2. Estado: {:?}", state);
 
@@ -712,7 +781,9 @@ async fn test_09_multiple_jobs_queued() {
         let job_id = uuid::Uuid::new_v4().to_string();
         let queue_request = QueueJobRequest {
             job_definition: Some(JobDefinition {
-                job_id: Some(JobId { value: job_id.clone() }),
+                job_id: Some(JobId {
+                    value: job_id.clone(),
+                }),
                 name: format!("K8s Batch Job {}", i),
                 description: format!("Kubernetes batch job {} of 3", i),
                 command: "echo".to_string(),
@@ -728,7 +799,11 @@ async fn test_09_multiple_jobs_queued() {
             queued_by: "k8s-test".to_string(),
         };
 
-        let response = job_client.queue_job(queue_request).await.unwrap().into_inner();
+        let response = job_client
+            .queue_job(queue_request)
+            .await
+            .unwrap()
+            .into_inner();
         assert!(response.success, "Job {} should be queued", i);
     }
 
@@ -765,7 +840,10 @@ async fn test_10_scheduler_queue_status() {
 
     assert!(status_response.status.is_some(), "Should have queue status");
     let status = status_response.status.unwrap();
-    println!("✓ Queue status: pending={}, running={}", status.pending_jobs, status.running_jobs);
+    println!(
+        "✓ Queue status: pending={}, running={}",
+        status.pending_jobs, status.running_jobs
+    );
 
     stack.shutdown().await;
 }
@@ -795,7 +873,10 @@ async fn test_11_kubernetes_provider_health_check() {
         }
     };
 
-    let health = provider.health_check().await.expect("Health check should not fail");
+    let health = provider
+        .health_check()
+        .await
+        .expect("Health check should not fail");
 
     match health {
         HealthStatus::Healthy => {
@@ -841,11 +922,20 @@ async fn test_12_kubernetes_provider_capabilities() {
     let capabilities = provider.capabilities();
 
     println!("✓ KubernetesProvider capabilities:");
-    println!("  - Max CPU: {} cores", capabilities.max_resources.max_cpu_cores);
-    println!("  - Max Memory: {} GB", capabilities.max_resources.max_memory_bytes / (1024 * 1024 * 1024));
+    println!(
+        "  - Max CPU: {} cores",
+        capabilities.max_resources.max_cpu_cores
+    );
+    println!(
+        "  - Max Memory: {} GB",
+        capabilities.max_resources.max_memory_bytes / (1024 * 1024 * 1024)
+    );
     println!("  - GPU Support: {}", capabilities.gpu_support);
     println!("  - Architectures: {:?}", capabilities.architectures);
-    println!("  - Persistent Storage: {}", capabilities.persistent_storage);
+    println!(
+        "  - Persistent Storage: {}",
+        capabilities.persistent_storage
+    );
     println!("  - Custom Networking: {}", capabilities.custom_networking);
 
     assert!(capabilities.max_resources.max_cpu_cores > 0.0);

@@ -1,27 +1,20 @@
 // Provider Management gRPC Service Implementation
 
 use hodei_jobs::providers::{
-    provider_management_service_server::ProviderManagementService,
-    DeleteProviderRequest, DeleteProviderResponse,
-    DisableProviderRequest, DisableProviderResponse,
-    EnableProviderRequest, EnableProviderResponse,
-    GetProviderByNameRequest, GetProviderRequest, GetProviderResponse,
-    GetProviderStatsRequest, GetProviderStatsResponse,
-    ListProvidersRequest, ListProvidersResponse,
-    ProviderConfig as ProtoProviderConfig,
-    ProviderCapabilities as ProtoProviderCapabilities,
-    ProviderStatus as ProtoProviderStatus,
-    ProviderType as ProtoProviderType,
-    ProviderTypeConfig as ProtoProviderTypeConfig,
-    RegisterProviderRequest, RegisterProviderResponse,
-    ResourceLimits as ProtoResourceLimits,
+    DeleteProviderRequest, DeleteProviderResponse, DisableProviderRequest, DisableProviderResponse,
+    DockerConfig as ProtoDockerConfig, EnableProviderRequest, EnableProviderResponse,
+    GetProviderByNameRequest, GetProviderRequest, GetProviderResponse, GetProviderStatsRequest,
+    GetProviderStatsResponse, KubernetesConfig as ProtoKubernetesConfig, ListProvidersRequest,
+    ListProvidersResponse, ProviderCapabilities as ProtoProviderCapabilities,
+    ProviderConfig as ProtoProviderConfig, ProviderStatus as ProtoProviderStatus,
+    ProviderType as ProtoProviderType, ProviderTypeConfig as ProtoProviderTypeConfig,
+    RegisterProviderRequest, RegisterProviderResponse, ResourceLimits as ProtoResourceLimits,
     UpdateProviderRequest, UpdateProviderResponse,
-    DockerConfig as ProtoDockerConfig,
-    KubernetesConfig as ProtoKubernetesConfig,
+    provider_management_service_server::ProviderManagementService,
 };
 use hodei_jobs_application::ProviderRegistry;
 use hodei_jobs_domain::provider_config::{
-    ProviderConfig, ProviderTypeConfig, DockerConfig, KubernetesConfig,
+    DockerConfig, KubernetesConfig, ProviderConfig, ProviderTypeConfig,
 };
 use hodei_jobs_domain::shared_kernel::{ProviderId, ProviderStatus};
 use hodei_jobs_domain::worker::ProviderType;
@@ -68,6 +61,7 @@ impl ProviderManagementServiceImpl {
             ProviderType::EC2 => ProtoProviderType::Ec2,
             ProviderType::ComputeEngine => ProtoProviderType::ComputeEngine,
             ProviderType::AzureVMs => ProtoProviderType::AzureVms,
+            ProviderType::Test => ProtoProviderType::Test,
             ProviderType::BareMetal => ProtoProviderType::BareMetal,
             ProviderType::Custom(_) => ProtoProviderType::Custom,
         }
@@ -86,6 +80,7 @@ impl ProviderManagementServiceImpl {
             ProtoProviderType::Ec2 => ProviderType::EC2,
             ProtoProviderType::ComputeEngine => ProviderType::ComputeEngine,
             ProtoProviderType::AzureVms => ProviderType::AzureVMs,
+            ProtoProviderType::Test => ProviderType::Test,
             ProtoProviderType::BareMetal => ProviderType::BareMetal,
             ProtoProviderType::Custom | ProtoProviderType::Unspecified => {
                 ProviderType::Custom("unknown".to_string())
@@ -117,7 +112,11 @@ impl ProviderManagementServiceImpl {
             }),
             gpu_support: caps.gpu_support,
             gpu_types: caps.gpu_types.clone(),
-            architectures: caps.architectures.iter().map(|a| format!("{:?}", a)).collect(),
+            architectures: caps
+                .architectures
+                .iter()
+                .map(|a| format!("{:?}", a))
+                .collect(),
             runtimes: caps.runtimes.clone(),
             regions: caps.regions.clone(),
             max_execution_time_seconds: caps.max_execution_time.map(|d| d.as_secs()),
@@ -146,7 +145,11 @@ impl ProviderManagementServiceImpl {
                             kubeconfig_path: kc.kubeconfig_path.clone(),
                             namespace: kc.namespace.clone(),
                             service_account: kc.service_account.clone(),
-                            image_pull_secret: kc.image_pull_secrets.first().cloned().unwrap_or_default(),
+                            image_pull_secret: kc
+                                .image_pull_secrets
+                                .first()
+                                .cloned()
+                                .unwrap_or_default(),
                             node_selector: kc.node_selector.clone(),
                         },
                     ),
@@ -166,7 +169,11 @@ impl ProviderManagementServiceImpl {
                 ProviderTypeConfig::Docker(DockerConfig {
                     socket_path: dc.socket_path,
                     default_image: dc.default_image,
-                    network: if dc.network_mode.is_empty() { None } else { Some(dc.network_mode) },
+                    network: if dc.network_mode.is_empty() {
+                        None
+                    } else {
+                        Some(dc.network_mode)
+                    },
                     ..Default::default()
                 })
             }

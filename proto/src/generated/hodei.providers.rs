@@ -296,7 +296,8 @@ pub enum ProviderType {
     Ec2 = 9,
     ComputeEngine = 10,
     AzureVms = 11,
-    BareMetal = 12,
+    Test = 12,
+    BareMetal = 13,
     Custom = 99,
 }
 impl ProviderType {
@@ -318,6 +319,7 @@ impl ProviderType {
             Self::Ec2 => "PROVIDER_TYPE_EC2",
             Self::ComputeEngine => "PROVIDER_TYPE_COMPUTE_ENGINE",
             Self::AzureVms => "PROVIDER_TYPE_AZURE_VMS",
+            Self::Test => "PROVIDER_TYPE_TEST",
             Self::BareMetal => "PROVIDER_TYPE_BARE_METAL",
             Self::Custom => "PROVIDER_TYPE_CUSTOM",
         }
@@ -337,6 +339,7 @@ impl ProviderType {
             "PROVIDER_TYPE_EC2" => Some(Self::Ec2),
             "PROVIDER_TYPE_COMPUTE_ENGINE" => Some(Self::ComputeEngine),
             "PROVIDER_TYPE_AZURE_VMS" => Some(Self::AzureVms),
+            "PROVIDER_TYPE_TEST" => Some(Self::Test),
             "PROVIDER_TYPE_BARE_METAL" => Some(Self::BareMetal),
             "PROVIDER_TYPE_CUSTOM" => Some(Self::Custom),
             _ => None,

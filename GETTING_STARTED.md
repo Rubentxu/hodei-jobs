@@ -70,6 +70,11 @@ POSTGRES_PASSWORD=tu-password-seguro
 GRAFANA_PASSWORD=admin
 EOF
 
+
+
+# Construir la imagen del Worker (CRÍTICO: Necesaria para Docker/K8s Providers)
+docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:latest .
+
 # Levantar servicios principales
 docker compose -f docker-compose.prod.yml up -d --build
 
@@ -94,15 +99,35 @@ docker compose -f docker-compose.prod.yml --profile monitoring up -d
 
 Hemos simplificado el flujo de desarrollo para que sea ultra-rápido.
 
-```bash
-# 1. Setup inicial (solo la primera vez)
-./setup.sh
+### 1. Setup Inicial (solo la primera vez)
 
-# 2. Iniciar entorno de desarrollo
-./dev.sh
+```bash
+./scripts/setup.sh
 ```
 
-El script `./dev.sh` levantará automáticamente:
+Esto instalará:
+
+- Rust (cargo, rustc)
+- Node.js & npm
+- Docker & docker-compose
+- Herramientas auxiliares (`just`, `bacon`, `buf`)
+- Dependencias del proyecto
+
+Si prefieres una instalación mínima (sin herramientas opcionales):
+
+```bash
+./scripts/setup.sh --minimal
+```
+
+### 2. Iniciar el Entorno de Desarrollo
+
+El script `dev.sh` levanta todo el entorno (base de datos, backend, frontend) con hot-reload habilitado.
+
+```bash
+./scripts/dev.sh
+```
+
+El script `./scripts/dev.sh` levantará automáticamente:
 
 - PostgreSQL (en Docker)
 - Backend (con Hot Reload via Bacon)
@@ -111,9 +136,9 @@ El script `./dev.sh` levantará automáticamente:
 También puedes usar comandos individuales si lo prefieres:
 
 ```bash
-./dev.sh db       # Solo base de datos
-./dev.sh backend  # Solo backend
-./dev.sh frontend # Solo frontend
+./scripts/dev.sh db       # Solo base de datos
+./scripts/dev.sh backend  # Solo backend
+./scripts/dev.sh frontend # Solo frontend
 ```
 
 ### Verificar que todo funciona
@@ -454,7 +479,56 @@ Para certificar que el flujo funciona correctamente, el orden cronológico de lo
 3.  **`JobStatusChanged`** (Scheduled -> Running): El worker confirma el inicio de la ejecución.
 4.  **`JobStatusChanged`** (Running -> Succeeded/Failed): El worker reporta la finalización.
 
-### Verificación de Limpieza del Worker
+##### 5. Verificación de Logs y Trazas (NUEVO)
+
+Para capturar y persistir las trazas de ejecución de los jobs en tiempo real durante el desarrollo, utiliza el comando:
+
+```bash
+just watch-logs
+```
+
+Este script se conectará al servidor gRPC, detectará jobs en ejecución y guardará sus trazas en:
+
+- **Directorio**: `build/logs/`
+- **Formato**: `<job_id>.log`
+
+Es una herramienta de desarrollo externa que no afecta al código productivo del servidor.
+
+#### Ejemplos de Verificación
+
+Puedes probar el sistema enviando diferentes tipos de jobs y observando cómo aparecen sus trazas en `build/logs/*.log`.
+
+**1. Job Simple**
+
+```bash
+cargo run --bin hodei-jobs-cli -- job queue --name "Hola Mundo" --command "echo 'Hola Hodei desde el Worker!'"
+```
+
+_Salida esperada:_
+
+```
+Starting: echo 'Hola Hodei desde el Worker!' []
+Hola Hodei desde el Worker!
+Completed: exit_code=0
+```
+
+**2. Job de Larga Duración (para ver streaming)**
+
+```bash
+cargo run --bin hodei-jobs-cli -- job queue --name "Loop Test" --command "sh -c 'for i in 1 2 3 4 5; do echo \"Log Line \$i\"; sleep 1; done'"
+```
+
+_Si tienes `just watch-logs` corriendo, verás aparecer las líneas una a una en el fichero correspondiente._
+
+**3. Verificación de Entorno**
+
+```bash
+cargo run --bin hodei-jobs-cli -- job queue --name "Env Check" --command "env"
+```
+
+_Útil para verificar qué variables de entorno ve el worker (e.g., `HODEI_WORKER_ID`)._
+
+### 6. Limpieza (Worker Release)
 
 Para verificar que el worker se libera correctamente tras finalizar el job, busca los eventos de latido (`WorkerHeartbeat`) o consulta el estado del worker. En entornos dinámicos (Docker), deberías ver que el contenedor se detiene y elimina si la política de escalado así lo dicta.
 
@@ -538,7 +612,7 @@ AND correlation_id NOT IN (
 │                             │          │           │          │
 │                      ┌──────▼──┐ ┌─────▼───┐ ┌─────▼─────┐   │
 │                      │Container│ │   Pod   │ │  microVM  │   │
-│                      │ Worker  │ │ Worker  │ │  Worker   │   │
+│                      │ Worker  │ │  Worker  │ │  Worker   │   │
 │                      └─────────┘ └─────────┘ └───────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -679,3 +753,41 @@ just clean          # Limpiar artefactos
 ---
 
 _¿Tienes preguntas? Abre un issue en el repositorio._
+
+## 🏗️ Job Complejo: Estrategia de Build Maven (Git + asdf)
+
+Este escenario valida la capacidad de la plataforma para manejar trabajos complejos que requieren:
+1.  **Aprovisionamiento de Entorno**: Uso de `asdf` para configurar Java y Maven dinám
+icamente.
+2.  **Integración con Git**: Clonado de repositorios externos.
+3.  **Procesos Largos**: Compilación y empaquetado de una aplicación Java.
+4.  **Logging Avanzado**: Captura de stdout y stderr en tiempo real.
+
+### 1. Definición del Job
+Usa el script de verificación preparado para ejecutar este flujo:
+
+```bash
+# Leer el contenido del script para enviarlo como payload
+SCRIPT_CONTENT=$(cat scripts/verification/maven_build_job.sh | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
+
+# Enviar el job
+grpcurl -plaintext -d "{
+  \"job_definition\": {
+    \"name\": \"maven-complex-build\",
+    \"command\": \"/bin/bash\",
+    \"arguments\": [\"-c\", \"$SCRIPT_CONTENT\"],
+    \"requirements\": { \"cpu_cores\": 1.0, \"memory_bytes\": 1073741824 },
+    \"timeout\": { \"execution_timeout\": \"600s\" }
+  },
+  \"queued_by\": \"user\"
+}" localhost:50051 hodei.JobExecutionService/QueueJob
+```
+
+### 2. Verificación
+Monitorea los logs para ver el progreso de la instalación y compilación:
+
+```bash
+./scripts/watch_logs.sh
+```
+
+Deberías ver la instalación de Java/Maven, el clonado del repo y finalmente el `BUILD SUCCESS` de Maven.

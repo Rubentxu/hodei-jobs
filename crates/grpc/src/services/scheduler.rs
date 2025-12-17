@@ -255,9 +255,13 @@ impl SchedulerService for SchedulerServiceImpl {
                 env: Some(definition.environment),
                 timeout_ms: None,
                 working_dir: None,
+                cpu_cores: None,
+                memory_bytes: None,
+                disk_bytes: None,
             },
             correlation_id: None,
             actor: None,
+            job_id: definition.job_id.map(|id| id.value),
         };
 
         let create_response = self

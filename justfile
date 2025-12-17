@@ -134,9 +134,15 @@ test-frontend:
 
 # Run E2E tests
 test-e2e:
-    @echo "🎭 Running E2E tests..."
+    @echo "🎭 Running E2E tests (Playwright)..."
     @cd web && npm run test:e2e
     @echo "✅ E2E tests passed"
+
+# Run Docker Provider E2E tests (Rust)
+test-docker-provider:
+    @echo "🐳 Running Docker Provider E2E tests..."
+    @./scripts/e2e/run-docker-e2e.sh
+    @echo "✅ Docker Provider E2E tests passed"
 
 # Test coverage
 test-coverage:
@@ -250,6 +256,10 @@ logs-frontend:
 logs-db:
     @docker compose -f docker-compose.dev.yml logs -f postgres
 
+# Watch job logs (requires hodei-server running)
+watch-logs:
+    @./scripts/watch_logs.sh
+
 # Check system status
 status:
     @echo "📊 System Status:"
@@ -262,7 +272,7 @@ status:
 
 
 help:
-   /null || echo "# Show help @echo "Hodei Job Platform - Development Commands"
+    @echo "Hodei Job Platform - Development Commands"
     @echo "=========================================="
     @echo ""
     @echo "Quick Start:"

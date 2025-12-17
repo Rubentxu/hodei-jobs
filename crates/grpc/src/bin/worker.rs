@@ -3,28 +3,26 @@
 //! Real worker that connects to the gRPC server and executes jobs using Docker.
 
 use hodei_jobs::{
+    JobResultMessage, LogEntry, RegisterWorkerRequest, ResourceCapacity, ResourceUsage,
+    UnregisterWorkerRequest, WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage,
+    command_spec::CommandType as ProtoCommandType, server_message::Payload as ServerPayload,
     worker_agent_service_client::WorkerAgentServiceClient,
-    RegisterWorkerRequest, WorkerInfo, WorkerId, ResourceCapacity,
-    UnregisterWorkerRequest, ResourceUsage,
-    WorkerMessage, WorkerHeartbeat, LogEntry, JobResultMessage,
     worker_message::Payload as WorkerPayload,
-    server_message::Payload as ServerPayload,
-    command_spec::CommandType as ProtoCommandType,
 };
+use prost_types::Timestamp;
 use std::collections::HashMap;
-use std::process::Command as StdCommand;
 use std::env;
+use std::process::Command as StdCommand;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::sync::mpsc;
 use tokio::time::interval;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
-use tracing::{info, warn, error, debug, Level};
+use tracing::{Level, debug, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
-use prost_types::Timestamp;
-use std::time::SystemTime;
 
 #[derive(Clone)]
 struct WorkerConfig {
@@ -35,7 +33,7 @@ struct WorkerConfig {
     cpu_cores: f64,
     memory_bytes: i64,
     disk_bytes: i64,
-    auth_token: String,  // OTP token from environment
+    auth_token: String, // OTP token from environment
 }
 
 impl Default for WorkerConfig {
@@ -43,7 +41,7 @@ impl Default for WorkerConfig {
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
-        
+
         Self {
             worker_id: uuid::Uuid::new_v4().to_string(),
             worker_name: format!("Docker Worker on {}", hostname),
@@ -52,7 +50,7 @@ impl Default for WorkerConfig {
             cpu_cores: num_cpus::get() as f64,
             memory_bytes: get_system_memory(),
             disk_bytes: get_disk_space(),
-            auth_token: String::new(),  // Must be provided by HODEI_TOKEN env
+            auth_token: String::new(), // Must be provided by HODEI_TOKEN env
         }
     }
 }
@@ -110,13 +108,29 @@ impl JobExecutor {
         log_sender: mpsc::Sender<WorkerMessage>,
     ) -> Result<(i32, String, String), String> {
         let spec = command_spec.ok_or("No command spec provided")?;
-        
+
         match spec.command_type {
             Some(ProtoCommandType::Shell(shell)) => {
-                self.execute_shell(job_id, &shell.cmd, &shell.args, &env_vars, working_dir, log_sender).await
+                self.execute_shell(
+                    job_id,
+                    &shell.cmd,
+                    &shell.args,
+                    &env_vars,
+                    working_dir,
+                    log_sender,
+                )
+                .await
             }
             Some(ProtoCommandType::Script(script)) => {
-                self.execute_script(job_id, &script.interpreter, &script.content, &env_vars, working_dir, log_sender).await
+                self.execute_script(
+                    job_id,
+                    &script.interpreter,
+                    &script.content,
+                    &env_vars,
+                    working_dir,
+                    log_sender,
+                )
+                .await
             }
             None => Err("Empty command spec".to_string()),
         }
@@ -132,36 +146,65 @@ impl JobExecutor {
         log_sender: mpsc::Sender<WorkerMessage>,
     ) -> Result<(i32, String, String), String> {
         info!("Executing shell job {}: {} {:?}", job_id, command, args);
-        
+
         // Send log entry
-        let _ = log_sender.send(create_log_message(job_id, &format!("Starting: {} {:?}", command, args), false)).await;
-        
+        let _ = log_sender
+            .send(create_log_message(
+                job_id,
+                &format!("Starting: {} {:?}", command, args),
+                false,
+            ))
+            .await;
+
         let mut cmd = StdCommand::new(command);
         cmd.args(args);
-        
+
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
-        
+
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
 
-        let output = cmd.output()
+        let output = cmd
+            .output()
             .map_err(|e| format!("Failed to execute command: {}", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code().unwrap_or(-1);
-        
+
+        info!(
+            "Command output - stdout length: {}, stderr length: {}, exit_code: {}",
+            stdout.len(),
+            stderr.len(),
+            exit_code
+        );
+        if !stderr.is_empty() {
+            info!("Stderr content: '{}'", stderr);
+        }
+
         // Send stdout logs
         for line in stdout.lines() {
-            let _ = log_sender.send(create_log_message(job_id, line, false)).await;
+            let _ = log_sender
+                .send(create_log_message(job_id, line, false))
+                .await;
         }
-        
+
         // Send stderr logs
+        info!(
+            "Sending {} stderr lines for job {}",
+            stderr.lines().count(),
+            job_id
+        );
         for line in stderr.lines() {
-            let _ = log_sender.send(create_log_message(job_id, line, true)).await;
+            if !line.is_empty() {
+                info!("Sending stderr log: {}", line);
+                let _ = log_sender
+                    .send(create_log_message(job_id, line, true))
+                    .await;
+            }
         }
 
         Ok((exit_code, stdout, stderr))
@@ -176,33 +219,47 @@ impl JobExecutor {
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
     ) -> Result<(i32, String, String), String> {
-        info!("Executing script job {} with interpreter {}", job_id, interpreter);
-        
-        let _ = log_sender.send(create_log_message(job_id, &format!("Starting script with {}", interpreter), false)).await;
-        
+        info!(
+            "Executing script job {} with interpreter {}",
+            job_id, interpreter
+        );
+
+        let _ = log_sender
+            .send(create_log_message(
+                job_id,
+                &format!("Starting script with {}", interpreter),
+                false,
+            ))
+            .await;
+
         let mut cmd = StdCommand::new(interpreter);
         cmd.arg("-c").arg(content);
-        
+
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
-        
+
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
 
-        let output = cmd.output()
+        let output = cmd
+            .output()
             .map_err(|e| format!("Failed to execute script: {}", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code().unwrap_or(-1);
-        
+
         for line in stdout.lines() {
-            let _ = log_sender.send(create_log_message(job_id, line, false)).await;
+            let _ = log_sender
+                .send(create_log_message(job_id, line, false))
+                .await;
         }
         for line in stderr.lines() {
-            let _ = log_sender.send(create_log_message(job_id, line, true)).await;
+            let _ = log_sender
+                .send(create_log_message(job_id, line, true))
+                .await;
         }
 
         Ok((exit_code, stdout, stderr))
@@ -218,9 +275,9 @@ impl JobExecutor {
         image: Option<&str>,
     ) -> Result<(i32, String, String), String> {
         let image = image.unwrap_or("alpine:latest");
-        
+
         info!("Executing job {} with Docker image {}", job_id, image);
-        
+
         // Build docker command
         let mut docker_args = vec![
             "run".to_string(),
@@ -274,7 +331,12 @@ fn create_log_message(job_id: &str, line: &str, is_stderr: bool) -> WorkerMessag
 }
 
 /// Helper to create job result message
-fn create_result_message(job_id: &str, exit_code: i32, success: bool, error_msg: Option<String>) -> WorkerMessage {
+fn create_result_message(
+    job_id: &str,
+    exit_code: i32,
+    success: bool,
+    error_msg: Option<String>,
+) -> WorkerMessage {
     WorkerMessage {
         payload: Some(WorkerPayload::Result(JobResultMessage {
             job_id: job_id.to_string(),
@@ -290,7 +352,9 @@ fn create_result_message(job_id: &str, exit_code: i32, success: bool, error_msg:
 fn create_heartbeat_message(worker_id: &str, status: i32, usage: ResourceUsage) -> WorkerMessage {
     WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.to_string() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.to_string(),
+            }),
             status,
             usage: Some(usage),
             active_jobs: 0,
@@ -337,13 +401,15 @@ impl Worker {
 
     async fn register(&self, channel: Channel) -> Result<String, Box<dyn std::error::Error>> {
         let mut client = WorkerAgentServiceClient::new(channel);
-        
+
         // PRD v6.0: Register with OTP token
         let request = RegisterWorkerRequest {
             auth_token: self.config.auth_token.clone(),
-            session_id: String::new(),  // New registration
+            session_id: String::new(), // New registration
             worker_info: Some(WorkerInfo {
-                worker_id: Some(WorkerId { value: self.config.worker_id.clone() }),
+                worker_id: Some(WorkerId {
+                    value: self.config.worker_id.clone(),
+                }),
                 name: self.config.worker_name.clone(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 hostname: hostname::get()
@@ -370,10 +436,12 @@ impl Worker {
 
         let response = client.register(request).await?;
         let resp = response.into_inner();
-        
+
         if resp.success {
-            info!("Worker registered successfully: {} (session: {})", 
-                self.config.worker_id, resp.session_id);
+            info!(
+                "Worker registered successfully: {} (session: {})",
+                self.config.worker_id, resp.session_id
+            );
             Ok(resp.session_id)
         } else {
             error!("Failed to register worker: {}", resp.message);
@@ -388,12 +456,12 @@ impl Worker {
         let config = self.config.clone();
         let executor = self.executor.clone();
         let active_jobs = self.active_jobs.clone();
-        
+
         // Channel for outbound messages (heartbeats, logs, results)
         let (tx, rx) = mpsc::channel::<WorkerMessage>(100);
         let tx_for_heartbeat = tx.clone();
         let tx_for_jobs = tx.clone();
-        
+
         // Spawn heartbeat task
         let heartbeat_config = config.clone();
         let heartbeat_jobs = active_jobs.clone();
@@ -401,18 +469,20 @@ impl Worker {
             let mut interval = interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                
+
                 let jobs = heartbeat_jobs.read().await;
                 let usage = ResourceUsage {
                     cpu_cores: get_cpu_usage() as f64 / 100.0 * heartbeat_config.cpu_cores,
-                    memory_bytes: (get_memory_usage() as f64 / 100.0 * heartbeat_config.memory_bytes as f64) as i64,
+                    memory_bytes: (get_memory_usage() as f64 / 100.0
+                        * heartbeat_config.memory_bytes as f64)
+                        as i64,
                     disk_bytes: (0.3 * heartbeat_config.disk_bytes as f64) as i64,
                     gpu_count: 0,
                     custom_usage: HashMap::new(),
                 };
                 let status = if jobs.is_empty() { 2 } else { 3 }; // 2=AVAILABLE, 3=BUSY
                 drop(jobs);
-                
+
                 let msg = create_heartbeat_message(&heartbeat_config.worker_id, status, usage);
                 if tx_for_heartbeat.send(msg).await.is_err() {
                     warn!("Heartbeat channel closed");
@@ -421,17 +491,17 @@ impl Worker {
                 debug!("Heartbeat sent");
             }
         });
-        
+
         // Create outbound stream
         let outbound = ReceiverStream::new(rx);
-        
+
         // Connect to server stream
         info!("Connecting to job stream...");
         let response = client.worker_stream(outbound).await?;
         let mut inbound = response.into_inner();
-        
+
         info!("✓ Connected to job stream. Waiting for commands...");
-        
+
         // Process incoming server messages
         while let Some(msg_result) = inbound.next().await {
             match msg_result {
@@ -440,45 +510,55 @@ impl Worker {
                         match payload {
                             ServerPayload::RunJob(run_job) => {
                                 info!("📥 Received job: {}", run_job.job_id);
-                                
+
                                 // Track active job
                                 active_jobs.write().await.push(run_job.job_id.clone());
-                                
+
                                 // Execute job in background
                                 let job_id = run_job.job_id.clone();
                                 let exec = executor.clone();
                                 let tx_job = tx_for_jobs.clone();
                                 let jobs_ref = active_jobs.clone();
-                                
+
                                 tokio::spawn(async move {
                                     let working_dir = if run_job.working_dir.is_empty() {
                                         None
                                     } else {
                                         Some(run_job.working_dir.clone())
                                     };
-                                    
-                                    let result = exec.execute_from_command(
-                                        &job_id,
-                                        run_job.command,
-                                        run_job.env,
-                                        working_dir,
-                                        tx_job.clone(),
-                                    ).await;
-                                    
+
+                                    let result = exec
+                                        .execute_from_command(
+                                            &job_id,
+                                            run_job.command,
+                                            run_job.env,
+                                            working_dir,
+                                            tx_job.clone(),
+                                        )
+                                        .await;
+
                                     // Send result
                                     let result_msg = match result {
                                         Ok((exit_code, _, _)) => {
-                                            info!("✅ Job {} completed with exit code {}", job_id, exit_code);
-                                            create_result_message(&job_id, exit_code, exit_code == 0, None)
+                                            info!(
+                                                "✅ Job {} completed with exit code {}",
+                                                job_id, exit_code
+                                            );
+                                            create_result_message(
+                                                &job_id,
+                                                exit_code,
+                                                exit_code == 0,
+                                                None,
+                                            )
                                         }
                                         Err(e) => {
                                             error!("❌ Job {} failed: {}", job_id, e);
                                             create_result_message(&job_id, -1, false, Some(e))
                                         }
                                     };
-                                    
+
                                     let _ = tx_job.send(result_msg).await;
-                                    
+
                                     // Remove from active jobs
                                     jobs_ref.write().await.retain(|j| j != &job_id);
                                 });
@@ -502,29 +582,30 @@ impl Worker {
                 }
             }
         }
-        
+
         warn!("Job stream disconnected");
         Ok(())
     }
 
     async fn unregister(&self, channel: Channel) -> Result<(), Box<dyn std::error::Error>> {
         let mut client = WorkerAgentServiceClient::new(channel);
-        
+
         let request = UnregisterWorkerRequest {
-            worker_id: Some(WorkerId { value: self.config.worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: self.config.worker_id.clone(),
+            }),
             reason: "Shutdown".to_string(),
         };
 
         let response = client.unregister_worker(request).await?;
         let resp = response.into_inner();
-        
+
         if resp.success {
             info!("Worker unregistered successfully");
         }
 
         Ok(())
     }
-
 }
 
 fn get_local_ip() -> String {
@@ -545,7 +626,7 @@ fn get_memory_usage() -> f32 {
         if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
             let mut total: f64 = 0.0;
             let mut available: f64 = 0.0;
-            
+
             for line in meminfo.lines() {
                 if line.starts_with("MemTotal:") {
                     if let Some(kb) = line.split_whitespace().nth(1) {
@@ -557,7 +638,7 @@ fn get_memory_usage() -> f32 {
                     }
                 }
             }
-            
+
             if total > 0.0 {
                 return ((total - available) / total * 100.0) as f32;
             }
@@ -580,21 +661,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if auth_token.is_empty() {
         warn!("HODEI_OTP_TOKEN not set - registration may fail without OTP");
     }
-    
+
     // Read server address - support both HODEI_SERVER_ADDRESS (from providers) and HODEI_SERVER (legacy)
     let server_addr = env::var("HODEI_SERVER_ADDRESS")
         .or_else(|_| env::var("HODEI_SERVER"))
         .unwrap_or_else(|_| "http://localhost:50051".to_string());
-    
+
     // Read worker ID - support both HODEI_WORKER_ID (from providers) and WORKER_ID (legacy)
     let worker_id = env::var("HODEI_WORKER_ID")
         .or_else(|_| env::var("WORKER_ID"))
         .unwrap_or_else(|_| WorkerConfig::default().worker_id);
-    
+
     let config = WorkerConfig {
         server_addr,
         worker_id,
-        worker_name: env::var("WORKER_NAME").unwrap_or_else(|_| WorkerConfig::default().worker_name),
+        worker_name: env::var("WORKER_NAME")
+            .unwrap_or_else(|_| WorkerConfig::default().worker_name),
         auth_token,
         ..Default::default()
     };
@@ -631,11 +713,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _session_id = worker.register(channel.clone()).await?;
 
     info!("Worker is running. Waiting for jobs via stream...");
-    
+
     // Start job stream with graceful shutdown
     let stream_channel = channel.clone();
     let worker_clone = worker.clone();
-    
+
     tokio::select! {
         result = worker_clone.start_job_stream(stream_channel) => {
             if let Err(e) = result {
@@ -646,9 +728,128 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Received shutdown signal");
         }
     }
-    
+
     info!("Shutting down...");
     worker.unregister(channel).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+
+    // =============================================================================
+    // Performance Testing
+    // =============================================================================
+
+    // TODO: Implement LogSender for performance testing
+    // These tests are temporarily disabled until LogSender is implemented
+
+    /*
+    #[tokio::test]
+    async fn test_concurrent_log_senders() {
+        // Test multiple log senders operating concurrently
+        use tokio::sync::mpsc;
+
+        let num_senders = 20;
+        let logs_per_sender = 500;
+        let mut handles = vec![];
+
+        let start_time = tokio::time::Instant::now();
+
+        // Spawn multiple concurrent log senders
+        for sender_id in 0..num_senders {
+            let (tx, _rx) = mpsc::channel::<WorkerMessage>(10000);
+            let log_sender = LogSender::new(tx);
+
+            let handle = tokio::spawn(async move {
+                for i in 0..logs_per_sender {
+                    let msg = format!("Concurrent log from sender {}: {}", sender_id, i);
+                    log_sender
+                        .send_log(&format!("job-{}", sender_id), &msg, false)
+                        .await
+                        .unwrap();
+                }
+                log_sender.flush().await.unwrap();
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all senders to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let elapsed = start_time.elapsed();
+        let total_logs = num_senders * logs_per_sender;
+        let throughput = total_logs as f64 / elapsed.as_secs_f64();
+
+        println!(
+            "✅ Concurrent log senders: {} senders, {} logs in {:?} ({:.0} logs/sec)",
+            num_senders, total_logs, elapsed, throughput
+        );
+
+        // Should handle high concurrent load efficiently
+        assert!(
+            elapsed < tokio::time::Duration::from_secs(10),
+            "Concurrent logging took too long: {:?}",
+            elapsed
+        );
+
+        // Should achieve high throughput
+        assert!(
+            throughput > 1000.0,
+            "Throughput too low: {:.0} logs/sec",
+            throughput
+        );
+    }
+
+    #[tokio::test]
+    async fn test_burst_log_traffic() {
+        // Test handling burst of log traffic
+        use tokio::sync::mpsc;
+
+        let (tx, _rx) = mpsc::channel::<WorkerMessage>(100000);
+        let log_sender = LogSender::new(tx);
+
+        let num_logs = 100000;
+        let start_time = tokio::time::Instant::now();
+
+        // Send burst of logs
+        for i in 0..num_logs {
+            let msg = format!("Burst log {}", i);
+            log_sender
+                .send_log("burst-job", &msg, i % 2 == 0)
+                .await
+                .unwrap();
+        }
+
+        let elapsed = start_time.elapsed();
+
+        // Flush remaining logs
+        log_sender.flush().await.unwrap();
+
+        let throughput = num_logs as f64 / elapsed.as_secs_f64();
+
+        println!(
+            "✅ Burst traffic: {} logs in {:?} ({:.0} logs/sec)",
+            num_logs, elapsed, throughput
+        );
+
+        // Should handle burst efficiently
+        assert!(
+            elapsed < tokio::time::Duration::from_secs(5),
+            "Burst traffic took too long: {:?}",
+            elapsed
+        );
+
+        // Should achieve very high throughput
+        assert!(
+            throughput > 50000.0,
+            "Burst throughput too low: {:.0} logs/sec",
+            throughput
+        );
+    }
+    */
 }

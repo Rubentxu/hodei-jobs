@@ -483,7 +483,7 @@ impl JobRepository for PostgresJobRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO jobs 
+            INSERT INTO jobs
                 (id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                  created_at, started_at, completed_at, result, error_message, metadata)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -1372,8 +1372,8 @@ impl WorkerRegistry for PostgresWorkerRegistry {
 
         sqlx::query(
             r#"
-            INSERT INTO workers 
-                (id, provider_id, provider_type, handle, spec, state, current_job_id, 
+            INSERT INTO workers
+                (id, provider_id, provider_type, handle, spec, state, current_job_id,
                  jobs_executed, last_heartbeat, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#,
@@ -1429,7 +1429,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     async fn get(&self, worker_id: &WorkerId) -> Result<Option<Worker>> {
         let row = sqlx::query(
             r#"
-            SELECT id, handle, spec, state, current_job_id, jobs_executed, 
+            SELECT id, handle, spec, state, current_job_id, jobs_executed,
                    last_heartbeat, created_at, updated_at
             FROM workers WHERE id = $1
             "#,
@@ -1601,10 +1601,10 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         let timeout_seconds = timeout.as_secs() as i64;
         let rows = sqlx::query(
             r#"
-            SELECT id, handle, spec, state, current_job_id, jobs_executed, 
+            SELECT id, handle, spec, state, current_job_id, jobs_executed,
                    last_heartbeat, created_at, updated_at
-            FROM workers 
-            WHERE state != 'TERMINATED' 
+            FROM workers
+            WHERE state != 'TERMINATED'
             AND last_heartbeat < NOW() - make_interval(secs => $1)
             "#,
         )
@@ -1627,9 +1627,9 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         // or complex SQL query. For now, fetch active and filter.
         let rows = sqlx::query(
             r#"
-            SELECT id, handle, spec, state, current_job_id, jobs_executed, 
+            SELECT id, handle, spec, state, current_job_id, jobs_executed,
                    last_heartbeat, created_at, updated_at
-            FROM workers 
+            FROM workers
             WHERE state != 'TERMINATED'
             "#,
         )
@@ -1863,6 +1863,7 @@ impl PostgresProviderConfigRepository {
             ProviderType::EC2 => "ec2".to_string(),
             ProviderType::ComputeEngine => "compute_engine".to_string(),
             ProviderType::AzureVMs => "azure_vms".to_string(),
+            ProviderType::Test => "test".to_string(),
             ProviderType::BareMetal => "bare_metal".to_string(),
             ProviderType::Custom(name) => format!("custom:{}", name),
         }
@@ -1882,6 +1883,7 @@ impl PostgresProviderConfigRepository {
             "ec2" => ProviderType::EC2,
             "compute_engine" => ProviderType::ComputeEngine,
             "azure_vms" => ProviderType::AzureVMs,
+            "test" => ProviderType::Test,
             "bare_metal" => ProviderType::BareMetal,
             s if s.starts_with("custom:") => {
                 ProviderType::Custom(s.strip_prefix("custom:").unwrap_or("").to_string())
@@ -1939,7 +1941,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO provider_configs 
+            INSERT INTO provider_configs
                 (id, name, provider_type, status, priority, max_workers, active_workers,
                  capabilities, type_config, tags, metadata, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -2063,7 +2065,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
             r#"
             SELECT id, name, provider_type, status, priority, max_workers, active_workers,
                    capabilities, type_config, tags, metadata, created_at, updated_at
-            FROM provider_configs 
+            FROM provider_configs
             WHERE status = 'active' AND active_workers < max_workers
             ORDER BY priority DESC
             "#,
@@ -2263,7 +2265,7 @@ impl PostgresJobTemplateRepository {
                 success_count BIGINT NOT NULL DEFAULT 0,
                 failure_count BIGINT NOT NULL DEFAULT 0
             );
-            
+
             CREATE INDEX IF NOT EXISTS idx_job_templates_name ON job_templates(name);
             CREATE INDEX IF NOT EXISTS idx_job_templates_status ON job_templates(status);
             CREATE INDEX IF NOT EXISTS idx_job_templates_labels ON job_templates USING GIN(labels);

@@ -55,6 +55,9 @@ logs/
 tmp/
 temp/
 *.tmp
+build/
+logs_build/
+docs/alineamiento
 
 # -----------------------------------------------------------------------------
 # Build Artifacts

@@ -188,6 +188,7 @@ impl<T> ApiResponse<T> {
 pub struct CreateJobApiRequest {
     pub spec: JobSpecApiRequest,
     pub correlation_id: Option<String>,
+    pub job_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -197,6 +198,9 @@ pub struct JobSpecApiRequest {
     pub env: Option<std::collections::HashMap<String, String>>,
     pub timeout_ms: Option<u64>,
     pub working_dir: Option<String>,
+    pub cpu_cores: Option<f64>,
+    pub memory_bytes: Option<i64>,
+    pub disk_bytes: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -271,9 +275,13 @@ async fn create_job(
             env: request.spec.env,
             timeout_ms: request.spec.timeout_ms,
             working_dir: request.spec.working_dir,
+            cpu_cores: request.spec.cpu_cores,
+            memory_bytes: request.spec.memory_bytes,
+            disk_bytes: request.spec.disk_bytes,
         },
         correlation_id: request.correlation_id,
         actor: None, // API currently does not have authentication
+        job_id: request.job_id,
     };
 
     // Ejecutar use case
@@ -715,11 +723,22 @@ mod tests {
             event_type: &str,
             limit: i64,
             offset: i64,
-        ) -> Result<hodei_jobs_domain::audit::AuditQueryResult, hodei_jobs_domain::shared_kernel::DomainError> {
+        ) -> Result<
+            hodei_jobs_domain::audit::AuditQueryResult,
+            hodei_jobs_domain::shared_kernel::DomainError,
+        > {
             let logs = self.saved_logs.lock().unwrap();
-            let filtered: Vec<_> = logs.iter().filter(|l| l.event_type == event_type).cloned().collect();
+            let filtered: Vec<_> = logs
+                .iter()
+                .filter(|l| l.event_type == event_type)
+                .cloned()
+                .collect();
             let total = filtered.len() as i64;
-            let result: Vec<_> = filtered.into_iter().skip(offset as usize).take(limit as usize).collect();
+            let result: Vec<_> = filtered
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
             Ok(hodei_jobs_domain::audit::AuditQueryResult {
                 logs: result.clone(),
                 total_count: total,
@@ -733,11 +752,22 @@ mod tests {
             end: chrono::DateTime<chrono::Utc>,
             limit: i64,
             offset: i64,
-        ) -> Result<hodei_jobs_domain::audit::AuditQueryResult, hodei_jobs_domain::shared_kernel::DomainError> {
+        ) -> Result<
+            hodei_jobs_domain::audit::AuditQueryResult,
+            hodei_jobs_domain::shared_kernel::DomainError,
+        > {
             let logs = self.saved_logs.lock().unwrap();
-            let filtered: Vec<_> = logs.iter().filter(|l| l.occurred_at >= start && l.occurred_at <= end).cloned().collect();
+            let filtered: Vec<_> = logs
+                .iter()
+                .filter(|l| l.occurred_at >= start && l.occurred_at <= end)
+                .cloned()
+                .collect();
             let total = filtered.len() as i64;
-            let result: Vec<_> = filtered.into_iter().skip(offset as usize).take(limit as usize).collect();
+            let result: Vec<_> = filtered
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
             Ok(hodei_jobs_domain::audit::AuditQueryResult {
                 logs: result.clone(),
                 total_count: total,
@@ -750,11 +780,22 @@ mod tests {
             actor: &str,
             limit: i64,
             offset: i64,
-        ) -> Result<hodei_jobs_domain::audit::AuditQueryResult, hodei_jobs_domain::shared_kernel::DomainError> {
+        ) -> Result<
+            hodei_jobs_domain::audit::AuditQueryResult,
+            hodei_jobs_domain::shared_kernel::DomainError,
+        > {
             let logs = self.saved_logs.lock().unwrap();
-            let filtered: Vec<_> = logs.iter().filter(|l| l.actor.as_deref() == Some(actor)).cloned().collect();
+            let filtered: Vec<_> = logs
+                .iter()
+                .filter(|l| l.actor.as_deref() == Some(actor))
+                .cloned()
+                .collect();
             let total = filtered.len() as i64;
-            let result: Vec<_> = filtered.into_iter().skip(offset as usize).take(limit as usize).collect();
+            let result: Vec<_> = filtered
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
             Ok(hodei_jobs_domain::audit::AuditQueryResult {
                 logs: result.clone(),
                 total_count: total,
@@ -765,13 +806,24 @@ mod tests {
         async fn query(
             &self,
             query: hodei_jobs_domain::audit::AuditQuery,
-        ) -> Result<hodei_jobs_domain::audit::AuditQueryResult, hodei_jobs_domain::shared_kernel::DomainError> {
+        ) -> Result<
+            hodei_jobs_domain::audit::AuditQueryResult,
+            hodei_jobs_domain::shared_kernel::DomainError,
+        > {
             let logs = self.saved_logs.lock().unwrap();
             let mut filtered: Vec<_> = logs.iter().cloned().collect();
-            if let Some(ref et) = query.event_type { filtered.retain(|l| &l.event_type == et); }
-            if let Some(ref a) = query.actor { filtered.retain(|l| l.actor.as_deref() == Some(a.as_str())); }
-            if let Some(start) = query.start_time { filtered.retain(|l| l.occurred_at >= start); }
-            if let Some(end) = query.end_time { filtered.retain(|l| l.occurred_at <= end); }
+            if let Some(ref et) = query.event_type {
+                filtered.retain(|l| &l.event_type == et);
+            }
+            if let Some(ref a) = query.actor {
+                filtered.retain(|l| l.actor.as_deref() == Some(a.as_str()));
+            }
+            if let Some(start) = query.start_time {
+                filtered.retain(|l| l.occurred_at >= start);
+            }
+            if let Some(end) = query.end_time {
+                filtered.retain(|l| l.occurred_at <= end);
+            }
             let total = filtered.len() as i64;
             let limit = query.limit.unwrap_or(100) as usize;
             let offset = query.offset.unwrap_or(0) as usize;
@@ -783,14 +835,33 @@ mod tests {
             })
         }
 
-        async fn count_by_event_type(&self) -> Result<Vec<hodei_jobs_domain::audit::EventTypeCount>, hodei_jobs_domain::shared_kernel::DomainError> {
+        async fn count_by_event_type(
+            &self,
+        ) -> Result<
+            Vec<hodei_jobs_domain::audit::EventTypeCount>,
+            hodei_jobs_domain::shared_kernel::DomainError,
+        > {
             let logs = self.saved_logs.lock().unwrap();
-            let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-            for log in logs.iter() { *counts.entry(log.event_type.clone()).or_insert(0) += 1; }
-            Ok(counts.into_iter().map(|(event_type, count)| hodei_jobs_domain::audit::EventTypeCount { event_type, count }).collect())
+            let mut counts: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            for log in logs.iter() {
+                *counts.entry(log.event_type.clone()).or_insert(0) += 1;
+            }
+            Ok(counts
+                .into_iter()
+                .map(
+                    |(event_type, count)| hodei_jobs_domain::audit::EventTypeCount {
+                        event_type,
+                        count,
+                    },
+                )
+                .collect())
         }
 
-        async fn delete_before(&self, before: chrono::DateTime<chrono::Utc>) -> Result<u64, hodei_jobs_domain::shared_kernel::DomainError> {
+        async fn delete_before(
+            &self,
+            before: chrono::DateTime<chrono::Utc>,
+        ) -> Result<u64, hodei_jobs_domain::shared_kernel::DomainError> {
             let mut logs = self.saved_logs.lock().unwrap();
             let original_len = logs.len();
             logs.retain(|l| l.occurred_at >= before);

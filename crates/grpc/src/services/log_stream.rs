@@ -1,7 +1,7 @@
 //! Log Streaming Service (PRD v6.0)
 //!
 //! Provides real-time log streaming for job execution monitoring.
-//! 
+//!
 //! Features:
 //! - Buffered log storage (circular buffer per job)
 //! - Real-time streaming to subscribed clients
@@ -10,15 +10,14 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio::sync::{RwLock, mpsc};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use hodei_jobs::{
-    LogEntry,
+    GetLogsRequest, GetLogsResponse, JobLogEntry, LogEntry, SubscribeLogsRequest,
     log_stream_service_server::LogStreamService as LogStreamServiceTrait,
-    SubscribeLogsRequest, JobLogEntry, GetLogsRequest, GetLogsResponse,
 };
 
 /// Buffer size for log entries per job
@@ -63,7 +62,7 @@ impl LogStreamService {
     /// Append a log entry for a job
     pub async fn append_log(&self, entry: LogEntry) {
         let job_id = entry.job_id.clone();
-        
+
         // Get and increment sequence
         let sequence = {
             let mut seqs = self.sequences.write().await;
@@ -84,7 +83,7 @@ impl LogStreamService {
         {
             let mut logs = self.logs.write().await;
             let buffer = logs.entry(job_id.clone()).or_insert_with(Vec::new);
-            
+
             if buffer.len() >= LOG_BUFFER_SIZE {
                 buffer.remove(0);
             }
@@ -107,7 +106,7 @@ impl LogStreamService {
     /// Subscribe to logs for a specific job
     pub async fn subscribe(&self, job_id: &str) -> Pin<Box<dyn Stream<Item = LogEntry> + Send>> {
         let (tx, rx) = mpsc::channel::<LogEntry>(100);
-        
+
         // Send buffered logs first
         {
             let logs = self.logs.read().await;
@@ -139,7 +138,7 @@ impl LogStreamService {
     /// Get historical logs for a job
     pub async fn get_logs(&self, job_id: &str, limit: Option<usize>) -> Vec<LogEntry> {
         let logs = self.logs.read().await;
-        
+
         if let Some(buffer) = logs.get(job_id) {
             let limit = limit.unwrap_or(buffer.len());
             buffer
@@ -173,16 +172,21 @@ impl LogStreamService {
     }
 
     /// Get buffered logs with sequence info
-    pub async fn get_logs_with_sequence(&self, job_id: &str, limit: Option<usize>, since_sequence: Option<u64>) -> Vec<BufferedLogEntry> {
+    pub async fn get_logs_with_sequence(
+        &self,
+        job_id: &str,
+        limit: Option<usize>,
+        since_sequence: Option<u64>,
+    ) -> Vec<BufferedLogEntry> {
         let logs = self.logs.read().await;
-        
+
         if let Some(buffer) = logs.get(job_id) {
             let filtered: Vec<_> = buffer
                 .iter()
                 .filter(|e| since_sequence.map_or(true, |seq| e.sequence > seq))
                 .cloned()
                 .collect();
-            
+
             let limit = limit.unwrap_or(filtered.len());
             filtered.into_iter().rev().take(limit).rev().collect()
         } else {
@@ -222,16 +226,23 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
     ) -> Result<Response<Self::SubscribeLogsStream>, Status> {
         let req = request.into_inner();
         let job_id = req.job_id;
-        
+
         info!("Client subscribing to logs for job: {}", job_id);
 
         let (tx, rx) = mpsc::channel::<Result<JobLogEntry, Status>>(100);
-        
+
         // Send buffered logs first if requested
         if req.include_history {
-            let limit = if req.tail_lines > 0 { Some(req.tail_lines as usize) } else { None };
-            let buffered = self.inner.get_logs_with_sequence(&job_id, limit, None).await;
-            
+            let limit = if req.tail_lines > 0 {
+                Some(req.tail_lines as usize)
+            } else {
+                None
+            };
+            let buffered = self
+                .inner
+                .get_logs_with_sequence(&job_id, limit, None)
+                .await;
+
             for entry in buffered {
                 let log_entry = JobLogEntry {
                     job_id: entry.job_id,
@@ -249,7 +260,7 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
         // Subscribe to new logs
         let mut log_stream = self.inner.subscribe(&job_id).await;
         let sequences = self.inner.sequences.clone();
-        
+
         // Forward new logs to client
         tokio::spawn(async move {
             while let Some(entry) = log_stream.next().await {
@@ -258,7 +269,7 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
                     let seqs = sequences.read().await;
                     seqs.get(&entry.job_id).copied().unwrap_or(0)
                 };
-                
+
                 let log_entry = JobLogEntry {
                     job_id: entry.job_id,
                     line: entry.line,
@@ -266,7 +277,7 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
                     timestamp: entry.timestamp,
                     sequence: seq as i64,
                 };
-                
+
                 if tx.send(Ok(log_entry)).await.is_err() {
                     debug!("Log subscriber disconnected");
                     break;
@@ -284,19 +295,33 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
         request: Request<GetLogsRequest>,
     ) -> Result<Response<GetLogsResponse>, Status> {
         let req = request.into_inner();
-        let limit = if req.limit > 0 { Some(req.limit as usize) } else { None };
-        let since = if req.since_sequence > 0 { Some(req.since_sequence as u64) } else { None };
-        
-        let entries = self.inner.get_logs_with_sequence(&req.job_id, limit, since).await;
-        
+        let limit = if req.limit > 0 {
+            Some(req.limit as usize)
+        } else {
+            None
+        };
+        let since = if req.since_sequence > 0 {
+            Some(req.since_sequence as u64)
+        } else {
+            None
+        };
+
+        let entries = self
+            .inner
+            .get_logs_with_sequence(&req.job_id, limit, since)
+            .await;
+
         let response = GetLogsResponse {
-            entries: entries.into_iter().map(|e| JobLogEntry {
-                job_id: e.job_id,
-                line: e.line,
-                is_stderr: e.is_stderr,
-                timestamp: e.timestamp,
-                sequence: e.sequence as i64,
-            }).collect(),
+            entries: entries
+                .into_iter()
+                .map(|e| JobLogEntry {
+                    job_id: e.job_id,
+                    line: e.line,
+                    is_stderr: e.is_stderr,
+                    timestamp: e.timestamp,
+                    sequence: e.sequence as i64,
+                })
+                .collect(),
             has_more: false, // TODO: Implement pagination
         };
 
@@ -312,24 +337,24 @@ mod tests {
     #[tokio::test]
     async fn test_append_and_get_logs() {
         let service = LogStreamService::new();
-        
+
         let entry1 = LogEntry {
             job_id: "job-1".to_string(),
             line: "Hello world".to_string(),
             is_stderr: false,
             timestamp: None,
         };
-        
+
         let entry2 = LogEntry {
             job_id: "job-1".to_string(),
             line: "Error occurred".to_string(),
             is_stderr: true,
             timestamp: None,
         };
-        
+
         service.append_log(entry1).await;
         service.append_log(entry2).await;
-        
+
         let logs = service.get_logs("job-1", None).await;
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0].line, "Hello world");
@@ -340,20 +365,22 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_receives_buffered_logs() {
         let service = LogStreamService::new();
-        
+
         // Add some logs first
         for i in 0..5 {
-            service.append_log(LogEntry {
-                job_id: "job-2".to_string(),
-                line: format!("Line {}", i),
-                is_stderr: false,
-                timestamp: None,
-            }).await;
+            service
+                .append_log(LogEntry {
+                    job_id: "job-2".to_string(),
+                    line: format!("Line {}", i),
+                    is_stderr: false,
+                    timestamp: None,
+                })
+                .await;
         }
-        
+
         // Subscribe
         let mut stream = service.subscribe("job-2").await;
-        
+
         // Should receive buffered logs
         let mut received = Vec::new();
         for _ in 0..5 {
@@ -361,7 +388,7 @@ mod tests {
                 received.push(log.line);
             }
         }
-        
+
         assert_eq!(received.len(), 5);
         assert_eq!(received[0], "Line 0");
         assert_eq!(received[4], "Line 4");
@@ -371,27 +398,26 @@ mod tests {
     async fn test_subscriber_receives_new_logs() {
         let service = LogStreamService::new();
         let service_clone = service.clone();
-        
+
         // Subscribe first
         let mut stream = service.subscribe("job-3").await;
-        
+
         // Append new log in background
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            service_clone.append_log(LogEntry {
-                job_id: "job-3".to_string(),
-                line: "New log entry".to_string(),
-                is_stderr: false,
-                timestamp: None,
-            }).await;
+            service_clone
+                .append_log(LogEntry {
+                    job_id: "job-3".to_string(),
+                    line: "New log entry".to_string(),
+                    is_stderr: false,
+                    timestamp: None,
+                })
+                .await;
         });
-        
+
         // Should receive the new log
-        let timeout = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            stream.next()
-        ).await;
-        
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await;
+
         assert!(timeout.is_ok());
         let log = timeout.unwrap().unwrap();
         assert_eq!(log.line, "New log entry");
@@ -400,17 +426,19 @@ mod tests {
     #[tokio::test]
     async fn test_circular_buffer() {
         let service = LogStreamService::new();
-        
+
         // Add more than buffer size
         for i in 0..(LOG_BUFFER_SIZE + 100) {
-            service.append_log(LogEntry {
-                job_id: "job-4".to_string(),
-                line: format!("Line {}", i),
-                is_stderr: false,
-                timestamp: None,
-            }).await;
+            service
+                .append_log(LogEntry {
+                    job_id: "job-4".to_string(),
+                    line: format!("Line {}", i),
+                    is_stderr: false,
+                    timestamp: None,
+                })
+                .await;
         }
-        
+
         let logs = service.get_logs("job-4", None).await;
         assert_eq!(logs.len(), LOG_BUFFER_SIZE);
         // First entry should be line 100 (oldest ones removed)
@@ -420,18 +448,20 @@ mod tests {
     #[tokio::test]
     async fn test_clear_logs() {
         let service = LogStreamService::new();
-        
-        service.append_log(LogEntry {
-            job_id: "job-5".to_string(),
-            line: "Test".to_string(),
-            is_stderr: false,
-            timestamp: None,
-        }).await;
-        
+
+        service
+            .append_log(LogEntry {
+                job_id: "job-5".to_string(),
+                line: "Test".to_string(),
+                is_stderr: false,
+                timestamp: None,
+            })
+            .await;
+
         assert_eq!(service.get_logs("job-5", None).await.len(), 1);
-        
+
         service.clear_logs("job-5").await;
-        
+
         assert_eq!(service.get_logs("job-5", None).await.len(), 0);
     }
 }

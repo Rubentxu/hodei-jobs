@@ -4,12 +4,18 @@
 //! for different container orchestration platforms.
 
 pub mod docker;
-pub mod kubernetes;
 pub mod firecracker;
+pub mod kubernetes;
+
+pub mod test_worker_provider;
 
 pub use docker::DockerProvider;
-pub use kubernetes::{KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesToleration};
 pub use firecracker::{
-    FirecrackerConfig, FirecrackerConfigBuilder, FirecrackerNetworkConfig,
-    FirecrackerProvider, IpPool, MicroVMResources,
+    FirecrackerConfig, FirecrackerConfigBuilder, FirecrackerNetworkConfig, FirecrackerProvider,
+    IpPool, MicroVMResources,
 };
+pub use kubernetes::{
+    KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesToleration,
+};
+
+pub use test_worker_provider::{TestWorkerConfig, TestWorkerProvider, TestWorkerProviderBuilder};

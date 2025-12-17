@@ -25,25 +25,25 @@ kubectl apply -f configmap.yaml
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HODEI_K8S_ENABLED` | Enable Kubernetes provider | `0` |
-| `HODEI_K8S_NAMESPACE` | Namespace for worker pods | `hodei-workers` |
-| `HODEI_K8S_KUBECONFIG` | Path to kubeconfig (optional) | In-cluster |
-| `HODEI_K8S_CONTEXT` | Kubeconfig context (optional) | Current |
-| `HODEI_K8S_SERVICE_ACCOUNT` | ServiceAccount for workers | `hodei-worker` |
-| `HODEI_K8S_IMAGE_PULL_SECRET` | Image pull secret name | - |
-| `HODEI_K8S_DEFAULT_CPU_REQUEST` | Default CPU request | `100m` |
-| `HODEI_K8S_DEFAULT_MEMORY_REQUEST` | Default memory request | `128Mi` |
+| Variable                           | Description                   | Default              |
+| ---------------------------------- | ----------------------------- | -------------------- |
+| `HODEI_K8S_ENABLED`                | Enable Kubernetes provider    | `0`                  |
+| `HODEI_K8S_NAMESPACE`              | Namespace for worker pods     | `hodei-jobs-workers` |
+| `HODEI_K8S_KUBECONFIG`             | Path to kubeconfig (optional) | In-cluster           |
+| `HODEI_K8S_CONTEXT`                | Kubeconfig context (optional) | Current              |
+| `HODEI_K8S_SERVICE_ACCOUNT`        | ServiceAccount for workers    | `hodei-jobs-worker`  |
+| `HODEI_K8S_IMAGE_PULL_SECRET`      | Image pull secret name        | -                    |
+| `HODEI_K8S_DEFAULT_CPU_REQUEST`    | Default CPU request           | `100m`               |
+| `HODEI_K8S_DEFAULT_MEMORY_REQUEST` | Default memory request        | `128Mi`              |
 
 ### Manifests
 
-| File | Description |
-|------|-------------|
-| `namespace.yaml` | Creates `hodei-workers` namespace |
-| `rbac.yaml` | ServiceAccounts, Role, and RoleBinding |
-| `network-policy.yaml` | Network policies for worker isolation |
-| `configmap.yaml` | Provider configuration |
+| File                  | Description                            |
+| --------------------- | -------------------------------------- |
+| `namespace.yaml`      | Creates `hodei-jobs-workers` namespace |
+| `rbac.yaml`           | ServiceAccounts, Role, and RoleBinding |
+| `network-policy.yaml` | Network policies for worker isolation  |
+| `configmap.yaml`      | Provider configuration                 |
 
 ## RBAC Permissions
 
@@ -51,20 +51,21 @@ The Kubernetes provider requires the following permissions in the workers namesp
 
 ```yaml
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["create", "get", "list", "watch", "delete"]
-- apiGroups: [""]
-  resources: ["pods/log"]
-  verbs: ["get"]
-- apiGroups: [""]
-  resources: ["pods/status"]
-  verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
 ```
 
 ## Network Policies
 
 Worker pods are configured with:
+
 - **Egress**: DNS, Hodei control plane (gRPC:50051), HTTPS (443)
 - **Ingress**: Denied by default
 
@@ -72,24 +73,24 @@ Worker pods are configured with:
 
 ```bash
 # Check namespace
-kubectl get ns hodei-workers
+kubectl get ns hodei-jobs-workers
 
 # Check RBAC
-kubectl get serviceaccount -n hodei-workers
-kubectl get role -n hodei-workers
-kubectl get rolebinding -n hodei-workers
+kubectl get serviceaccount -n hodei-jobs-workers
+kubectl get role -n hodei-jobs-workers
+kubectl get rolebinding -n hodei-jobs-workers
 
 # Check network policies
-kubectl get networkpolicies -n hodei-workers
+kubectl get networkpolicies -n hodei-jobs-workers
 
 # Test pod creation (manual)
-kubectl run test-worker --image=alpine --rm -it -n hodei-workers -- echo "Hello"
+kubectl run test-worker --image=alpine --rm -it -n hodei-jobs-workers -- echo "Hello"
 ```
 
 ## Cleanup
 
 ```bash
-kubectl delete namespace hodei-workers
+kubectl delete namespace hodei-jobs-workers
 kubectl delete namespace hodei-system
 ```
 
@@ -98,20 +99,23 @@ kubectl delete namespace hodei-system
 ### Pod stuck in Pending
 
 Check node resources and scheduling constraints:
+
 ```bash
-kubectl describe pod <pod-name> -n hodei-workers
+kubectl describe pod <pod-name> -n hodei-jobs-workers
 ```
 
 ### Permission denied errors
 
 Verify RBAC is correctly applied:
+
 ```bash
-kubectl auth can-i create pods -n hodei-workers --as=system:serviceaccount:hodei-system:hodei-control-plane
+kubectl auth can-i create pods -n hodei-jobs-workers --as=system:serviceaccount:hodei-system:hodei-control-plane
 ```
 
 ### Network connectivity issues
 
 Check network policies:
+
 ```bash
-kubectl describe networkpolicy -n hodei-workers
+kubectl describe networkpolicy -n hodei-jobs-workers
 ```

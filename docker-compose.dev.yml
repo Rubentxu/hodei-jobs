@@ -7,14 +7,14 @@
 #   just dev-db          # Start database only
 #   just dev             # Start full development environment
 #   just logs            # View logs
-#   just logs-backend    ##
-# Environment View backend logs
- variables (create .env file):
+#   just logs-backend    # View backend logs
+#
+# Environment variables (create .env file):
 #   POSTGRES_PASSWORD=postgres
 #   HODEI_DEV_MODE=1
 # =============================================================================
 
-version: '3.8'
+version: "3.8"
 
 services:
   # ===========================================================================
@@ -69,18 +69,26 @@ services:
       - ./deploy/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_dev_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=7d'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--storage.tsdb.retention.time=7d"
     ports:
       - "9090:9090"
     networks:
       - hodei-dev-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:9090/-/healthy",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3

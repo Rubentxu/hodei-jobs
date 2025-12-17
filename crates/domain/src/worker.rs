@@ -1,7 +1,7 @@
 // Worker Domain - Entidades para workers on-demand
 
 use crate::shared_kernel::{
-    JobId, ProviderId, WorkerId, WorkerState, DomainError, Result, Aggregate,
+    Aggregate, DomainError, JobId, ProviderId, Result, WorkerId, WorkerState,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,8 @@ pub enum ProviderType {
     EC2,
     ComputeEngine,
     AzureVMs,
+    // Testing
+    Test,
     // Other
     BareMetal,
     Custom(String),
@@ -33,14 +35,19 @@ pub enum ProviderType {
 impl ProviderType {
     pub fn category(&self) -> ProviderCategory {
         match self {
-            Self::Docker | Self::Kubernetes | Self::Fargate |
-            Self::CloudRun | Self::ContainerApps => ProviderCategory::Container,
+            Self::Docker
+            | Self::Kubernetes
+            | Self::Fargate
+            | Self::CloudRun
+            | Self::ContainerApps => ProviderCategory::Container,
 
-            Self::Lambda | Self::CloudFunctions | Self::AzureFunctions => ProviderCategory::Serverless,
+            Self::Lambda | Self::CloudFunctions | Self::AzureFunctions => {
+                ProviderCategory::Serverless
+            }
 
             Self::EC2 | Self::ComputeEngine | Self::AzureVMs => ProviderCategory::VirtualMachine,
 
-            Self::BareMetal | Self::Custom(_) => ProviderCategory::BareMetal,
+            Self::Test | Self::BareMetal | Self::Custom(_) => ProviderCategory::BareMetal,
         }
     }
 }
@@ -59,6 +66,7 @@ impl std::fmt::Display for ProviderType {
             Self::EC2 => write!(f, "ec2"),
             Self::ComputeEngine => write!(f, "computeengine"),
             Self::AzureVMs => write!(f, "azurevms"),
+            Self::Test => write!(f, "test"),
             Self::BareMetal => write!(f, "baremetal"),
             Self::Custom(name) => write!(f, "custom:{}", name),
         }
@@ -108,7 +116,7 @@ impl Default for ResourceRequirements {
         Self {
             cpu_cores: 1.0,
             memory_bytes: 512 * 1024 * 1024, // 512MB
-            disk_bytes: 1024 * 1024 * 1024,   // 1GB
+            disk_bytes: 1024 * 1024 * 1024,  // 1GB
             gpu_count: 0,
             gpu_type: None,
         }
@@ -149,28 +157,28 @@ impl WorkerSpec {
             labels: HashMap::new(),
             environment: HashMap::new(),
             server_address,
-            max_lifetime: Duration::from_secs(3600),     // 1 hora default
-            idle_timeout: Duration::from_secs(300),      // 5 minutos default
+            max_lifetime: Duration::from_secs(3600), // 1 hora default
+            idle_timeout: Duration::from_secs(300),  // 5 minutos default
             architecture: Architecture::default(),
             required_capabilities: vec![],
         }
     }
-    
+
     pub fn with_resources(mut self, resources: ResourceRequirements) -> Self {
         self.resources = resources;
         self
     }
-    
+
     pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.labels.insert(key.into(), value.into());
         self
     }
-    
+
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.environment.insert(key.into(), value.into());
         self
     }
-    
+
     pub fn with_capability(mut self, capability: impl Into<String>) -> Self {
         self.required_capabilities.push(capability.into());
         self
@@ -210,7 +218,7 @@ impl WorkerHandle {
             metadata: HashMap::new(),
         }
     }
-    
+
     pub fn with_metadata(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.metadata.insert(key.into(), value);
         self
@@ -256,51 +264,51 @@ impl Worker {
             updated_at: now,
         }
     }
-    
+
     // === Getters ===
-    
+
     pub fn id(&self) -> &WorkerId {
         &self.id
     }
-    
+
     pub fn handle(&self) -> &WorkerHandle {
         &self.handle
     }
-    
+
     pub fn state(&self) -> &WorkerState {
         &self.state
     }
-    
+
     pub fn spec(&self) -> &WorkerSpec {
         &self.spec
     }
-    
+
     pub fn current_job_id(&self) -> Option<&JobId> {
         self.current_job_id.as_ref()
     }
-    
+
     pub fn jobs_executed(&self) -> u32 {
         self.jobs_executed
     }
-    
+
     pub fn last_heartbeat(&self) -> DateTime<Utc> {
         self.last_heartbeat
     }
-    
+
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at
     }
-    
+
     pub fn provider_type(&self) -> &ProviderType {
         &self.handle.provider_type
     }
-    
+
     pub fn provider_id(&self) -> &ProviderId {
         &self.handle.provider_id
     }
-    
+
     // === State transitions ===
-    
+
     /// Worker conectando (agent arrancando gRPC)
     pub fn mark_connecting(&mut self) -> Result<()> {
         match &self.state {
@@ -309,17 +317,17 @@ impl Worker {
                 self.updated_at = Utc::now();
                 Ok(())
             }
-            _ => Err(DomainError::WorkerNotAvailable { 
-                worker_id: self.id.clone() 
+            _ => Err(DomainError::WorkerNotAvailable {
+                worker_id: self.id.clone(),
             }),
         }
     }
-    
+
     /// Alias para retrocompatibilidad
     pub fn mark_starting(&mut self) -> Result<()> {
         self.mark_connecting()
     }
-    
+
     /// Worker está listo (agent registrado)
     pub fn mark_ready(&mut self) -> Result<()> {
         match &self.state {
@@ -329,26 +337,26 @@ impl Worker {
                 self.last_heartbeat = Utc::now();
                 Ok(())
             }
-            _ => Err(DomainError::WorkerNotAvailable { 
-                worker_id: self.id.clone() 
+            _ => Err(DomainError::WorkerNotAvailable {
+                worker_id: self.id.clone(),
             }),
         }
     }
-    
+
     /// Asignar job al worker
     pub fn assign_job(&mut self, job_id: JobId) -> Result<()> {
         if !self.state.can_accept_jobs() {
-            return Err(DomainError::WorkerNotAvailable { 
-                worker_id: self.id.clone() 
+            return Err(DomainError::WorkerNotAvailable {
+                worker_id: self.id.clone(),
             });
         }
-        
+
         self.current_job_id = Some(job_id);
         self.state = WorkerState::Busy;
         self.updated_at = Utc::now();
         Ok(())
     }
-    
+
     /// Job completado - worker vuelve a Ready
     pub fn complete_job(&mut self) -> Result<()> {
         match &self.state {
@@ -359,12 +367,12 @@ impl Worker {
                 self.updated_at = Utc::now();
                 Ok(())
             }
-            _ => Err(DomainError::WorkerNotAvailable { 
-                worker_id: self.id.clone() 
+            _ => Err(DomainError::WorkerNotAvailable {
+                worker_id: self.id.clone(),
             }),
         }
     }
-    
+
     /// Marcar worker como draining (no acepta nuevos jobs)
     pub fn mark_draining(&mut self) -> Result<()> {
         match &self.state {
@@ -376,80 +384,80 @@ impl Worker {
             _ => Ok(()),
         }
     }
-    
+
     /// Iniciar terminación del worker
     pub fn mark_terminating(&mut self) -> Result<()> {
         if self.state.is_terminated() {
             return Ok(()); // Ya terminado
         }
-        
+
         self.state = WorkerState::Terminating;
         self.updated_at = Utc::now();
         Ok(())
     }
-    
+
     /// Worker terminado
     pub fn mark_terminated(&mut self) -> Result<()> {
         self.state = WorkerState::Terminated;
         self.updated_at = Utc::now();
         Ok(())
     }
-    
+
     /// Worker falló - se marca como Terminated (PRD v6.0 no tiene Failed state)
     pub fn mark_failed(&mut self, _reason: String) -> Result<()> {
         self.state = WorkerState::Terminated;
         self.updated_at = Utc::now();
         Ok(())
     }
-    
+
     /// Actualizar heartbeat
     pub fn update_heartbeat(&mut self) {
         self.last_heartbeat = Utc::now();
         self.updated_at = Utc::now();
     }
-    
+
     /// Verificar si el worker ha excedido idle timeout
     pub fn is_idle_timeout(&self) -> bool {
         if !matches!(self.state, WorkerState::Ready) {
             return false;
         }
-        
+
         let idle_duration = Utc::now()
             .signed_duration_since(self.last_heartbeat)
             .to_std()
             .unwrap_or(Duration::ZERO);
-            
+
         idle_duration > self.spec.idle_timeout
     }
-    
+
     /// Verificar si el worker ha excedido max lifetime
     pub fn is_lifetime_exceeded(&self) -> bool {
         let lifetime = Utc::now()
             .signed_duration_since(self.created_at)
             .to_std()
             .unwrap_or(Duration::ZERO);
-            
+
         lifetime > self.spec.max_lifetime
     }
-    
+
     /// Verificar si el worker está sano (heartbeat reciente)
     pub fn is_healthy(&self, heartbeat_timeout: Duration) -> bool {
         if self.state.is_terminated() {
             return false;
         }
-        
+
         let since_heartbeat = Utc::now()
             .signed_duration_since(self.last_heartbeat)
             .to_std()
             .unwrap_or(Duration::ZERO);
-            
+
         since_heartbeat <= heartbeat_timeout
     }
 }
 
 impl Aggregate for Worker {
     type Id = WorkerId;
-    
+
     fn aggregate_id(&self) -> &Self::Id {
         &self.id
     }
@@ -458,7 +466,7 @@ impl Aggregate for Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn create_test_worker() -> Worker {
         let spec = WorkerSpec::new(
             "hodei-worker:latest".to_string(),
@@ -472,57 +480,57 @@ mod tests {
         );
         Worker::new(handle, spec)
     }
-    
+
     #[test]
     fn test_worker_lifecycle() {
         let mut worker = create_test_worker();
-        
+
         // Estado inicial: Creating (PRD v6.0)
         assert_eq!(*worker.state(), WorkerState::Creating);
-        
+
         // Transición a Connecting
         worker.mark_connecting().unwrap();
         assert_eq!(*worker.state(), WorkerState::Connecting);
-        
+
         // Transición a Ready
         worker.mark_ready().unwrap();
         assert_eq!(*worker.state(), WorkerState::Ready);
         assert!(worker.state().can_accept_jobs());
-        
+
         // Asignar job -> Busy
         let job_id = JobId::new();
         worker.assign_job(job_id).unwrap();
         assert_eq!(*worker.state(), WorkerState::Busy);
         assert!(!worker.state().can_accept_jobs());
-        
+
         // Completar job -> Ready (PRD v6.0: vuelve a Ready, no Idle)
         worker.complete_job().unwrap();
         assert_eq!(*worker.state(), WorkerState::Ready);
         assert_eq!(worker.jobs_executed(), 1);
-        
+
         // Draining (nuevo en PRD v6.0)
         worker.mark_draining().unwrap();
         assert_eq!(*worker.state(), WorkerState::Draining);
         assert!(!worker.state().can_accept_jobs());
-        
+
         // Terminating
         worker.mark_terminating().unwrap();
         assert_eq!(*worker.state(), WorkerState::Terminating);
-        
+
         // Terminated
         worker.mark_terminated().unwrap();
         assert_eq!(*worker.state(), WorkerState::Terminated);
         assert!(worker.state().is_terminated());
     }
-    
+
     #[test]
     fn test_worker_cannot_accept_job_when_busy() {
         let mut worker = create_test_worker();
         worker.mark_starting().unwrap();
         worker.mark_ready().unwrap();
-        
+
         worker.assign_job(JobId::new()).unwrap();
-        
+
         let result = worker.assign_job(JobId::new());
         assert!(result.is_err());
     }

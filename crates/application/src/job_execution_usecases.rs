@@ -13,6 +13,8 @@ pub struct CreateJobRequest {
     pub spec: JobSpecRequest,
     pub correlation_id: Option<String>,
     pub actor: Option<String>,
+    /// Optional job_id provided by client. If None, a new UUID will be generated.
+    pub job_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +24,9 @@ pub struct JobSpecRequest {
     pub env: Option<std::collections::HashMap<String, String>>,
     pub timeout_ms: Option<u64>,
     pub working_dir: Option<String>,
+    pub cpu_cores: Option<f64>,
+    pub memory_bytes: Option<i64>,
+    pub disk_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,8 +282,16 @@ impl CreateJobUseCase {
         // 1. Convertir request a JobSpec
         let job_spec = self.convert_to_job_spec(request.spec)?;
 
-        // 2. Generar JobId
-        let job_id = JobId::new();
+        // 2. Use provided JobId or generate new one
+        let job_id = if let Some(id_str) = &request.job_id {
+            let uuid =
+                uuid::Uuid::parse_str(id_str).map_err(|_| DomainError::InvalidProviderConfig {
+                    message: format!("Invalid UUID format for job_id: {}", id_str),
+                })?;
+            JobId(uuid)
+        } else {
+            JobId::new()
+        };
 
         // 3. Crear Job
         let mut job = Job::new(job_id.clone(), job_spec.clone());
@@ -341,6 +354,19 @@ impl CreateJobUseCase {
 
         if let Some(working_dir) = request.working_dir {
             spec.working_dir = Some(working_dir);
+        }
+
+        // Map resource requirements
+        if let Some(cpu_cores) = request.cpu_cores {
+            spec.resources.cpu_cores = cpu_cores as f32;
+        }
+
+        if let Some(memory_bytes) = request.memory_bytes {
+            spec.resources.memory_mb = (memory_bytes / (1024 * 1024)) as u64;
+        }
+
+        if let Some(disk_bytes) = request.disk_bytes {
+            spec.resources.storage_mb = (disk_bytes / (1024 * 1024)) as u64;
         }
 
         Ok(spec)
@@ -533,12 +559,16 @@ mod tests {
             env: None,
             timeout_ms: Some(1000),
             working_dir: None,
+            cpu_cores: Some(0.5),
+            memory_bytes: Some(512 * 1024 * 1024),
+            disk_bytes: Some(1024 * 1024 * 1024),
         };
 
         let request = CreateJobRequest {
             spec: spec_request,
             correlation_id: Some("test-correlation".to_string()),
             actor: Some("test-user".to_string()),
+            job_id: Some("test-job-id".to_string()),
         };
 
         let result = use_case.execute(request).await;

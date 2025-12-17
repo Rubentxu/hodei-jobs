@@ -243,9 +243,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("  ✓ Docker provider initialized");
                     let provider_id = provider.provider_id().clone();
                     providers.insert(
-                        provider_id,
+                        provider_id.clone(),
                         std::sync::Arc::new(provider) as std::sync::Arc<dyn WorkerProvider>,
                     );
+
+                    // Register provider in ProviderConfigRepository
+                    let docker_config = hodei_jobs_domain::provider_config::ProviderConfig::new(
+                        "Docker".to_string(),
+                        hodei_jobs_domain::worker::ProviderType::Docker,
+                        hodei_jobs_domain::provider_config::ProviderTypeConfig::Docker(
+                            hodei_jobs_domain::provider_config::DockerConfig::default(),
+                        ),
+                    )
+                    .with_max_workers(10);
+                    if let Err(e) = provider_config_repo.save(&docker_config).await {
+                        tracing::warn!(
+                            "Failed to register Docker provider in config repository: {}",
+                            e
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Docker provider not available: {}", e);

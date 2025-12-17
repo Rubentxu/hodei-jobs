@@ -16,9 +16,7 @@ use hodei_jobs_infrastructure::repositories::PostgresAuditRepository;
 use uuid::Uuid;
 
 /// Helper to create audit infrastructure for tests
-async fn setup_audit_repository(
-    pool: &sqlx::PgPool,
-) -> anyhow::Result<Arc<dyn AuditRepository>> {
+async fn setup_audit_repository(pool: &sqlx::PgPool) -> anyhow::Result<Arc<dyn AuditRepository>> {
     let audit_repo_impl = PostgresAuditRepository::new(pool.clone());
     audit_repo_impl.run_migrations().await?;
     Ok(Arc::new(audit_repo_impl) as Arc<dyn AuditRepository>)
@@ -76,7 +74,11 @@ async fn test_audit_helper_event_sequence_validation() {
 
     // Verify event sequence using assert_event_sequence
     let result = audit_helper
-        .assert_event_sequence(&correlation_id, &["JobCreated", "JobStatusChanged"])
+        .assert_event_sequence(
+            &correlation_id,
+            &["JobCreated", "JobStatusChanged"],
+            Duration::from_secs(5),
+        )
         .await;
 
     assert!(
@@ -194,14 +196,23 @@ async fn test_audit_helper_find_by_event_type() {
     }
 
     // Find JobCreated events
-    let job_logs = audit_helper.find_by_event_type("JobCreated", 10).await.unwrap();
+    let job_logs = audit_helper
+        .find_by_event_type("JobCreated", 10)
+        .await
+        .unwrap();
     assert_eq!(job_logs.len(), 5, "Expected 5 JobCreated events");
 
     // Find WorkerRegistered events
-    let worker_logs = audit_helper.find_by_event_type("WorkerRegistered", 10).await.unwrap();
+    let worker_logs = audit_helper
+        .find_by_event_type("WorkerRegistered", 10)
+        .await
+        .unwrap();
     assert_eq!(worker_logs.len(), 3, "Expected 3 WorkerRegistered events");
 
     // Find non-existent event type
-    let empty_logs = audit_helper.find_by_event_type("NonExistent", 10).await.unwrap();
+    let empty_logs = audit_helper
+        .find_by_event_type("NonExistent", 10)
+        .await
+        .unwrap();
     assert!(empty_logs.is_empty(), "Expected no NonExistent events");
 }

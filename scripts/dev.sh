@@ -6,15 +6,20 @@
 # for both backend (Rust) and frontend (React) with database.
 #
 # Usage:
-#   ./dev.sh              # Start full development environment
-#   ./dev.sh db           # Start only database
-#   ./dev.sh backend      # Start only backend
-#   ./dev.sh frontend     # Start only frontend
-#   ./dev.sh test         # Run tests
-#   ./dev.sh clean        # Clean everything
+#   ./scripts/dev.sh              # Start full development environment
+#   ./scripts/dev.sh db           # Start only database
+#   ./scripts/dev.sh backend      # Start only backend
+#   ./scripts/dev.sh frontend     # Start only frontend
+#   ./scripts/dev.sh test         # Run tests
+#   ./scripts/dev.sh clean        # Clean everything
 # =============================================================================
 
 set -e
+
+# Determine project root and change to it
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
 # Colors for output
 RED='\033[0;31m'
@@ -193,7 +198,7 @@ clean_all() {
 show_help() {
     echo "Hodei Job Platform - Development Script"
     echo ""
-    echo "Usage: ./dev.sh [command]"
+    echo "Usage: ./scripts/dev.sh [command]"
     echo ""
     echo "Commands:"
     echo "  (no command)  Start full development environment"
@@ -209,7 +214,7 @@ show_help() {
     echo "  RUST_LOG=debug      Set Rust log level"
     echo ""
     echo "Quick Start:"
-    echo "  ./dev.sh            Start everything"
+    echo "  ./scripts/dev.sh    Start everything"
     echo "  just dev-db         Alternative: just command"
     echo "  just dev            Alternative: just command"
     echo ""

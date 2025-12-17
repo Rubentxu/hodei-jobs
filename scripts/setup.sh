@@ -6,12 +6,17 @@
 # in less than 5 minutes with all necessary tools and dependencies.
 #
 # Usage:
-#   ./setup.sh              # Full setup
-#   ./setup.sh --minimal    # Minimal setup (skip optional tools)
-#   ./setup.sh --help       # Show help
+#   ./scripts/setup.sh              # Full setup
+#   ./scripts/setup.sh --minimal    # Minimal setup (skip optional tools)
+#   ./scripts/setup.sh --help       # Show help
 # =============================================================================
 
 set -e
+
+# Determine project root and change to it
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
 # Colors for output
 RED='\033[0;31m'
@@ -314,6 +319,12 @@ build_project() {
     cd web && npm run build && cd ..
 
     print_success "Initial build complete"
+
+    if command -v docker &> /dev/null; then
+        print_info "Building Worker Docker Image (hodei-jobs-worker:latest)..."
+        docker build -f scripts/kubernetes/Dockerfile.worker -t hodei-jobs-worker:latest .
+        print_success "Worker image built"
+    fi
 }
 
 # Run setup database
@@ -352,7 +363,7 @@ show_completion() {
     echo -e "${GREEN}Your development environment is ready!${NC}\n"
 
     echo -e "${CYAN}Quick Start:${NC}"
-    echo -e "  ${YELLOW}./dev.sh${NC}              Start full development environment"
+    echo -e "  ${YELLOW}./scripts/dev.sh${NC}       Start full development environment"
     echo -e "  ${YELLOW}just dev${NC}              Alternative using just"
     echo -e "  ${YELLOW}just dev-db${NC}           Start database only"
     echo -e "  ${YELLOW}just dev-backend${NC}      Start backend with hot reload"
@@ -363,7 +374,7 @@ show_completion() {
     echo -e "  ${YELLOW}just test${NC}              Run all tests"
     echo -e "  ${YELLOW}just check${NC}             Lint and format code"
     echo -e "  ${YELLOW}just logs${NC}              View logs"
-    echo -e "  ${YELLOW}./dev.sh --help${NC}        Show all available commands"
+    echo -e "  ${YELLOW}./scripts/dev.sh --help${NC} Show all available commands"
     echo -e ""
 
     echo -e "${CYAN}Development URLs:${NC}"
@@ -392,15 +403,15 @@ show_usage() {
     cat << EOF
 Hodei Job Platform - Setup Script
 
-Usage: ./setup.sh [options]
+Usage: ./scripts/setup.sh [options]
 
 Options:
   --minimal    Skip installation of optional tools (VS Code, monitoring, etc.)
   --help       Show this help message
 
 Examples:
-  ./setup.sh              # Full setup
-  ./setup.sh --minimal    # Minimal setup
+  ./scripts/setup.sh              # Full setup
+  ./scripts/setup.sh --minimal    # Minimal setup
 
 This script will install:
   - Rust toolchain and development tools

@@ -25,16 +25,14 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use hodei_jobs::{
-    QueueJobRequest, JobDefinition, WorkerId, JobId,
-    RegisterWorkerRequest, WorkerInfo, ResourceCapacity,
-    WorkerMessage, WorkerHeartbeat, JobResultMessage,
-    worker_message::Payload as WorkerPayload,
-    server_message::Payload as ServerPayload,
+    JobDefinition, JobId, JobResultMessage, QueueJobRequest, RegisterWorkerRequest,
+    ResourceCapacity, WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage,
+    server_message::Payload as ServerPayload, worker_message::Payload as WorkerPayload,
 };
 
 mod common;
 
-use common::{TestStack, TestServerConfig, get_postgres_context, DockerVerifier};
+use common::{DockerVerifier, TestServerConfig, TestStack, get_postgres_context};
 
 // =============================================================================
 // NIVEL 1: Infraestructura Base
@@ -60,7 +58,7 @@ async fn test_02_postgres_testcontainer() {
             return;
         }
     };
-    
+
     println!("✓ PostgreSQL iniciado: {}", db.connection_string);
     assert!(!db.connection_string.is_empty());
 }
@@ -89,7 +87,7 @@ async fn test_03_grpc_server_starts() {
     // Verificar conexión
     let client = server.job_client().await;
     assert!(client.is_ok(), "Should create job client");
-    
+
     println!("✓ Server gRPC iniciado en {}", server.addr);
     server.shutdown().await;
 }
@@ -111,21 +109,29 @@ async fn test_04_worker_registration_with_otp() {
     };
 
     let worker_id = uuid::Uuid::new_v4().to_string();
-    
+
     // 1. Generar OTP
-    let otp = stack.server.generate_otp(&worker_id).await
+    let otp = stack
+        .server
+        .generate_otp(&worker_id)
+        .await
         .expect("Should generate OTP");
     println!("✓ OTP generado para worker: {}", worker_id);
 
     // 2. Registrar worker con OTP
-    let mut worker_client = stack.server.worker_client().await
+    let mut worker_client = stack
+        .server
+        .worker_client()
+        .await
         .expect("Should create worker client");
 
     let reg_request = RegisterWorkerRequest {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "Test Worker".to_string(),
             version: "1.0.0".to_string(),
             hostname: "test-host".to_string(),
@@ -148,13 +154,21 @@ async fn test_04_worker_registration_with_otp() {
         }),
     };
 
-    let reg_response = worker_client.register(reg_request).await
+    let reg_response = worker_client
+        .register(reg_request)
+        .await
         .expect("Should register worker")
         .into_inner();
 
     assert!(reg_response.success, "Registration should succeed");
-    assert!(!reg_response.session_id.is_empty(), "Should have session_id");
-    println!("✓ Worker registrado con session: {}", reg_response.session_id);
+    assert!(
+        !reg_response.session_id.is_empty(),
+        "Should have session_id"
+    );
+    println!(
+        "✓ Worker registrado con session: {}",
+        reg_response.session_id
+    );
 
     stack.shutdown().await;
 }
@@ -181,7 +195,9 @@ async fn test_05_worker_stream_connection() {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "Stream Test Worker".to_string(),
             ..Default::default()
         }),
@@ -195,7 +211,9 @@ async fn test_05_worker_stream_connection() {
     // Enviar heartbeat
     let heartbeat = WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             status: 2, // AVAILABLE
             usage: None,
             active_jobs: 0,
@@ -206,7 +224,9 @@ async fn test_05_worker_stream_connection() {
     tx.send(heartbeat).await.unwrap();
 
     let inbound = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let response = worker_client.worker_stream(inbound).await
+    let response = worker_client
+        .worker_stream(inbound)
+        .await
         .expect("Should connect to stream");
     let mut stream = response.into_inner();
 
@@ -241,7 +261,9 @@ async fn test_06_job_queued_and_dispatched() {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "Job Dispatch Test Worker".to_string(),
             capacity: Some(ResourceCapacity {
                 cpu_cores: 4.0,
@@ -263,7 +285,9 @@ async fn test_06_job_queued_and_dispatched() {
 
     let heartbeat = WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             status: 2, // AVAILABLE
             usage: None,
             active_jobs: 0,
@@ -287,7 +311,9 @@ async fn test_06_job_queued_and_dispatched() {
 
     let queue_request = QueueJobRequest {
         job_definition: Some(JobDefinition {
-            job_id: Some(JobId { value: job_id.clone() }),
+            job_id: Some(JobId {
+                value: job_id.clone(),
+            }),
             name: "Dispatch Test Job".to_string(),
             description: "Test job dispatch".to_string(),
             command: "echo".to_string(),
@@ -303,7 +329,11 @@ async fn test_06_job_queued_and_dispatched() {
         queued_by: "test".to_string(),
     };
 
-    let queue_response = job_client.queue_job(queue_request).await.unwrap().into_inner();
+    let queue_response = job_client
+        .queue_job(queue_request)
+        .await
+        .unwrap()
+        .into_inner();
     assert!(queue_response.success, "Job should be queued");
     println!("✓ Job encolado: {}", job_id);
 
@@ -318,7 +348,8 @@ async fn test_06_job_queued_and_dispatched() {
             }
         }
         None
-    }).await;
+    })
+    .await;
 
     match run_job_result {
         Ok(Some(run_job)) => {
@@ -375,11 +406,20 @@ async fn test_07_docker_provider_creates_container() {
     let spec = WorkerSpec::new(
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
-    );
+    )
+    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+        cpu_cores: 0.25,
+        memory_bytes: 256 * 1024 * 1024, // 256MB
+        disk_bytes: 1024 * 1024 * 1024,
+        gpu_count: 0,
+        gpu_type: None,
+    });
     let worker_id = spec.worker_id.clone();
 
     // Crear worker
-    let handle = provider.create_worker(&spec).await
+    let handle = provider
+        .create_worker(&spec)
+        .await
         .expect("Should create worker");
     println!("✓ Container creado: {}", handle.provider_resource_id);
 
@@ -391,7 +431,10 @@ async fn test_07_docker_provider_creates_container() {
     println!("✓ Container verificado via CLI");
 
     // Cleanup
-    provider.destroy_worker(&handle).await.expect("Should destroy");
+    provider
+        .destroy_worker(&handle)
+        .await
+        .expect("Should destroy");
     println!("✓ Container eliminado");
 }
 
@@ -399,10 +442,10 @@ async fn test_07_docker_provider_creates_container() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_08_docker_provider_container_lifecycle() {
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
     #[allow(unused_imports)]
     use hodei_jobs_domain::shared_kernel::WorkerState;
+    use hodei_jobs_domain::worker::WorkerSpec;
+    use hodei_jobs_domain::worker_provider::WorkerProvider;
     use hodei_jobs_infrastructure::providers::DockerProvider;
 
     let provider = match DockerProvider::new().await {
@@ -416,7 +459,14 @@ async fn test_08_docker_provider_container_lifecycle() {
     let spec = WorkerSpec::new(
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
-    );
+    )
+    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+        cpu_cores: 0.25,
+        memory_bytes: 256 * 1024 * 1024, // 256MB
+        disk_bytes: 1024 * 1024 * 1024,
+        gpu_count: 0,
+        gpu_type: None,
+    });
 
     // 1. Crear
     let handle = provider.create_worker(&spec).await.unwrap();
@@ -467,7 +517,9 @@ async fn test_09_multiple_jobs_queued() {
         let job_id = uuid::Uuid::new_v4().to_string();
         let queue_request = QueueJobRequest {
             job_definition: Some(JobDefinition {
-                job_id: Some(JobId { value: job_id.clone() }),
+                job_id: Some(JobId {
+                    value: job_id.clone(),
+                }),
                 name: format!("Batch Job {}", i),
                 description: format!("Batch job {} of 3", i),
                 command: "echo".to_string(),
@@ -483,7 +535,11 @@ async fn test_09_multiple_jobs_queued() {
             queued_by: "test".to_string(),
         };
 
-        let response = job_client.queue_job(queue_request).await.unwrap().into_inner();
+        let response = job_client
+            .queue_job(queue_request)
+            .await
+            .unwrap()
+            .into_inner();
         assert!(response.success, "Job {} should be queued", i);
     }
 
@@ -515,7 +571,10 @@ async fn test_10_scheduler_queue_status() {
 
     assert!(status_response.status.is_some(), "Should have queue status");
     let status = status_response.status.unwrap();
-    println!("✓ Queue status: pending={}, running={}", status.pending_jobs, status.running_jobs);
+    println!(
+        "✓ Queue status: pending={}, running={}",
+        status.pending_jobs, status.running_jobs
+    );
 
     stack.shutdown().await;
 }
