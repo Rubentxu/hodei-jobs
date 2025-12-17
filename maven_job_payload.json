@@ -1,0 +1,17 @@
+{
+  "job_name": "maven-build-example",
+  "command_type": "shell",
+  "command": "bash",
+  "args": [
+    "-c",
+    "cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean install"
+  ],
+  "env_vars": {
+    "MAVEN_OPTS": "-Xmx1024m"
+  },
+  "working_dir": "/tmp",
+  "timeout_secs": 600,
+  "cpu_cores": 1,
+  "memory_bytes": 1073741824,
+  "container_image": "ubuntu:22.04"
+}

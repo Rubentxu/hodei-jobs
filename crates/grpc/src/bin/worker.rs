@@ -98,7 +98,7 @@ impl JobExecutor {
         self.docker_available
     }
 
-    /// Execute a job from RunJobCommand with timeout support
+    /// Execute a job from RunJobCommand with timeout and cancellation support
     async fn execute_from_command(
         &self,
         job_id: &str,
@@ -107,6 +107,7 @@ impl JobExecutor {
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: Option<u64>,
+        _abort_recv: Option<mpsc::Receiver<()>>,
     ) -> Result<(i32, String, String), String> {
         let spec = command_spec.ok_or("No command spec provided")?;
 
@@ -665,6 +666,7 @@ impl Worker {
                                             working_dir,
                                             tx_job.clone(),
                                             None, // Timeout will be read from command spec
+                                            None, // Cancellation receiver (not implemented yet)
                                         )
                                         .await;
 

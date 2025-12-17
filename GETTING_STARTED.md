@@ -902,42 +902,89 @@ just clean          # Limpiar artefactos
 
 ---
 
-_¿Tienes preguntas? Abre un issue en el repositorio._
+## 🏗️ Ejemplo Avanzado: Job de Build Maven
 
-## 🏗️ Job Complejo: Estrategia de Build Maven (Git + asdf)
+Este ejemplo demuestra cómo ejecutar un job complejo de build Maven usando Hodei Jobs Platform. El job incluye:
 
-Este escenario valida la capacidad de la plataforma para manejar trabajos complejos que requieren:
-1.  **Aprovisionamiento de Entorno**: Uso de `asdf` para configurar Java y Maven dinám
-icamente.
-2.  **Integración con Git**: Clonado de repositorios externos.
-3.  **Procesos Largos**: Compilación y empaquetado de una aplicación Java.
-4.  **Logging Avanzado**: Captura de stdout y stderr en tiempo real.
+1. **Instalación de dependencias**: Java y Maven
+2. **Clonado de repositorio**: Descarga código fuente desde Git
+3. **Compilación**: Ejecuta `mvn clean install`
+4. **Logging en tiempo real**: Monitorea el progreso
 
-### 1. Definición del Job
-Usa el script de verificación preparado para ejecutar este flujo:
+### Opción 1: Ejecutar con CLI (Recomendado)
 
 ```bash
-# Leer el contenido del script para enviarlo como payload
-SCRIPT_CONTENT=$(cat scripts/verification/maven_build_job.sh | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
+# Encolar job Maven simple
+cargo run --bin hodei-jobs-cli -- job queue \
+  --name "maven-build-simple" \
+  --command "cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean install -B" \
+  --timeout 300
 
-# Enviar el job
-grpcurl -plaintext -d "{
-  \"job_definition\": {
-    \"name\": \"maven-complex-build\",
-    \"command\": \"/bin/bash\",
-    \"arguments\": [\"-c\", \"$SCRIPT_CONTENT\"],
-    \"requirements\": { \"cpu_cores\": 1.0, \"memory_bytes\": 1073741824 },
-    \"timeout\": { \"execution_timeout\": \"600s\" }
+# Ver logs en tiempo real
+just watch-logs
+```
+
+### Opción 2: Ejecutar con Script Completo (asdf + Git)
+
+Para un job más complejo que instala Java/Maven con asdf:
+
+```bash
+# Ejecutar el script de verificación
+./scripts/verification/maven_build_job.sh
+```
+
+Este script:
+- Instala asdf si no está disponible
+- Configura Java 21 y Maven 3.9.9
+- Clona el repositorio de ejemplo
+- Ejecuta el build completo
+- Muestra el resultado
+
+### Opción 3: Ejecutar con gRPC Directo
+
+```bash
+# Usar el payload JSON predefinido
+cat > /tmp/job_payload.json << 'EOF'
+{
+  "job_definition": {
+    "name": "maven-build-complex",
+    "command": "/bin/bash",
+    "arguments": ["-c", "cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean install -B"],
+    "requirements": {
+      "cpu_cores": 1.0,
+      "memory_bytes": 1073741824
+    },
+    "timeout": {
+      "execution_timeout": "600s"
+    }
   },
-  \"queued_by\": \"user\"
-}" localhost:50051 hodei.JobExecutionService/QueueJob
+  "queued_by": "user"
+}
+EOF
+
+# Enviar job
+grpcurl -plaintext -d @ localhost:50051 hodei.JobExecutionService/QueueJob < /tmp/job_payload.json
 ```
 
-### 2. Verificación
-Monitorea los logs para ver el progreso de la instalación y compilación:
+### Verificación del Resultado
 
 ```bash
-./scripts/watch_logs.sh
+# Ver todos los jobs
+curl -s http://localhost:8080/api/jobs | jq
+
+# Ver logs específicos
+just watch-logs
+
+# O monitorear en la web
+open http://localhost/jobs
 ```
 
-Deberías ver la instalación de Java/Maven, el clonado del repo y finalmente el `BUILD SUCCESS` de Maven.
+**Salida esperada:**
+- Clonado del repositorio ✅
+- Instalación de dependencias ✅
+- Compilación Maven ✅
+- BUILD SUCCESS ✅
+
+---
+
+_¿Tienes preguntas? Abre un issue en el repositorio._
