@@ -1,0 +1,310 @@
+{
+	"info": {
+		"_postman_id": "hodei-jobs-grpc-collection",
+		"name": "Hodei Jobs Platform - gRPC Collection",
+		"description": "🔧 ACTUAL gRPC API COLLECTION\n\n⚠️ IMPORTANT: Postman does NOT natively support gRPC. This collection is for:\n\n1. **gRPC-capable tools** (Evans, BloomRPC, gRPCurl GUI)\n2. **Documentation and reference**\n3. **Import into gRPC clients** that support Postman collections\n\n✅ VERIFIED API ENDPOINTS:\n- Server: localhost:50051\n- Reflection: ENABLED\n- All methods tested and working\n\n📋 HOW TO USE:\n\nOption 1 - Evans (Recommended):\n  evans -p 50051 --reflection repl\n  > package hodei.job\n  > service JobExecutionService\n  > call QueueJob\n\nOption 2 - BloomRPC:\n  1. Import this collection\n  2. Set server to localhost:50051\n  3. Enable reflection\n\nOption 3 - gRPCurl GUI:\n  1. Import collection\n  2. Configure server\n  3. Use request templates\n\nOption 4 - grpcurl:\n  grpcurl -plaintext -d @ localhost:50051 hodei.JobExecutionService/QueueJob\n\nSee docs/GRPC_SETUP_GUIDE.md for complete instructions.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "hodei-jobs"
+	},
+	"item": [
+		{
+			"name": "🎯 Quick Start",
+			"item": [
+				{
+					"name": "Test Connection",
+					"request": {
+						"description": "Test if gRPC server is reachable and reflection is enabled",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "// Use with grpcurl:\ngrpcurl -plaintext {{grpc_server}} list\n\n// Use with Evans:\nevans -p 50051 --reflection repl\n> show package"
+						}
+					}
+				},
+				{
+					"name": "List Jobs (First 5)",
+					"request": {
+						"description": "Get list of jobs - TESTED AND WORKING",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/ListJobs",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "ListJobs"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"limit\": 5\n}\n\n=== grpcurl command ===\ngrpcurl -plaintext -d '{\"limit\": 5}' {{grpc_server}} hodei.JobExecutionService/ListJobs\n\n=== Evans usage ===\nevans -p 50051 repl\n> service JobExecutionService\n> call ListJobs\nlimit: 5\n\n=== Response format ===\n{\n  \"jobs\": [\n    {\n      \"jobId\": { \"value\": \"uuid\" },\n      \"name\": \"Job name\",\n      \"status\": \"JOB_STATUS_COMPLETED\",\n      \"createdAt\": \"2025-12-17T16:22:36Z\",\n      \"startedAt\": \"2025-12-17T16:22:36Z\",\n      \"completedAt\": \"2025-12-17T16:22:36Z\",\n      \"duration\": \"0.935368s\"\n    }\n  ],\n  \"totalCount\": 35\n}"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "📦 JobExecutionService",
+			"item": [
+				{
+					"name": "QueueJob",
+					"request": {
+						"description": "Submit a new job - TESTED AND WORKING",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/QueueJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "QueueJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_definition\": {\n    \"name\": \"example-job\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-lc\", \"echo 'Hello from Hodei!'\"],\n    \"requirements\": {\n      \"cpu_cores\": 1,\n      \"memory_bytes\": \"1073741824\"\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"60s\"\n    }\n  },\n  \"queued_by\": \"user\"\n}\n\n=== grpcurl ===\ngrpcurl -plaintext -d @ {{grpc_server}} hodei.JobExecutionService/QueueJob\n\n=== Evans ===\n> call QueueJob\njob_definition:\n  name: example-job\n  command: /bin/bash\n  arguments:\n    - -lc\n    - echo 'Hello from Hodei!'\n  requirements:\n    cpu_cores: 1\n    memory_bytes: 1073741824\n  timeout:\n    execution_timeout: 60s\nqueued_by: user\n\n=== Response ===\n{\n  \"success\": true,\n  \"message\": \"Job queued: JOB-ID\",\n  \"queuedAt\": \"2025-12-17T16:22:36.537806602Z\"\n}"
+						}
+					}
+				},
+				{
+					"name": "GetJob",
+					"request": {
+						"description": "Get job details by ID - TESTED AND WORKING",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/GetJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "GetJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  }\n}\n\n=== grpcurl ===\ngrpcurl -plaintext -d '{\"job_id\": {\"value\": \"JOB-ID\"}}' {{grpc_server}} hodei.JobExecutionService/GetJob\n\n=== Evans ===\n> call GetJob\njob_id:\n  value: JOB-ID\n\n=== Response structure ===\n{\n  \"job\": {\n    \"jobId\": { \"value\": \"uuid\" },\n    \"name\": \"Job name\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\"-lc\", \"echo '...'\"],\n    \"requirements\": {\n      \"cpuCores\": 1,\n      \"memoryBytes\": \"1073741824\"\n    }\n  },\n  \"status\": \"JOB_STATUS_COMPLETED\",\n  \"executions\": [\n    {\n      \"executionId\": { \"value\": \"exec-uuid\" },\n      \"jobId\": { \"value\": \"uuid\" },\n      \"jobStatus\": \"JOB_STATUS_COMPLETED\",\n      \"exitCode\": \"0\"\n    }\n  ]\n}"
+						}
+					}
+				},
+				{
+					"name": "ListJobs",
+					"request": {
+						"description": "List jobs with filters",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/ListJobs",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "ListJobs"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "// All jobs\n{\n  \"limit\": 50\n}\n\n// Running jobs only\n{\n  \"limit\": 50,\n  \"status\": \"JOB_STATUS_RUNNING\"\n}\n\n// Search by name\n{\n  \"limit\": 50,\n  \"search_term\": \"maven\"\n}\n\n=== grpcurl variations ===\ngrpcurl -plaintext -d '{\"limit\": 50}' {{grpc_server}} hodei.JobExecutionService/ListJobs\ngrpcurl -plaintext -d '{\"limit\": 50, \"status\": \"JOB_STATUS_RUNNING\"}' {{grpc_server}} hodei.JobExecutionService/ListJobs"
+						}
+					}
+				},
+				{
+					"name": "CancelJob",
+					"request": {
+						"description": "Cancel a running job",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/CancelJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "CancelJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"execution_id\": {\n    \"value\": \"{{execution_id}}\"\n  },\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  },\n  \"reason\": \"User requested cancellation\"\n}\n\n=== grpcurl ===\ngrpcurl -plaintext -d '{\n  \"execution_id\": {\"value\": \"EXEC-ID\"},\n  \"job_id\": {\"value\": \"JOB-ID\"},\n  \"reason\": \"User requested\"\n}' {{grpc_server}} hodei.JobExecutionService/CancelJob"
+						}
+					}
+				},
+				{
+					"name": "UpdateProgress",
+					"request": {
+						"description": "Update job progress",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/UpdateProgress",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "UpdateProgress"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"execution_id\": {\n    \"value\": \"{{execution_id}}\"\n  },\n  \"job_id\": {\n    \"value\": \"{{job_id}}\"\n  },\n  \"progress_percentage\": 50,\n  \"current_stage\": \"Building\",\n  \"message\": \"Compiling sources...\"\n}\n\n=== grpcurl ===\ngrpcurl -plaintext -d '{\n  \"execution_id\": {\"value\": \"EXEC-ID\"},\n  \"progress_percentage\": 50,\n  \"current_stage\": \"Building\"\n}' {{grpc_server}} hodei.JobExecutionService/UpdateProgress"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "📊 LogStreamService",
+			"item": [
+				{
+					"name": "SubscribeLogs",
+					"request": {
+						"description": "Stream logs - TESTED AND WORKING",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.LogStreamService/SubscribeLogs",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.LogStreamService", "SubscribeLogs"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_id\": \"{{job_id}}\",\n  \"include_history\": true,\n  \"tail_lines\": 50\n}\n\n=== grpcurl (streaming) ===\ngrpcurl -plaintext -d '{\"job_id\": \"JOB-ID\", \"include_history\": true}' \\\n  {{grpc_server}} hodei.LogStreamService/SubscribeLogs\n\n=== Evans (streaming) ===\n> service LogStreamService\n> call SubscribeLogs\njobId: JOB-ID\nincludeHistory: true\n\n=== Response format (streaming) ===\n{\n  \"jobId\": \"uuid\",\n  \"line\": \"Log output line\",\n  \"isStderr\": false,\n  \"timestamp\": \"2025-12-17T16:22:36.652819169Z\",\n  \"sequence\": \"1\"\n}\n\n=== Script alternative ===\n./scripts/watch_logs.sh JOB-ID\n./scripts/trace-job.sh JOB-ID"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "⚙️ ProviderManagementService",
+			"item": [
+				{
+					"name": "ListProviders",
+					"request": {
+						"description": "List providers - TESTED AND WORKING",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.providers.ProviderManagementService/ListProviders",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.providers.ProviderManagementService", "ListProviders"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{}\n\n=== grpcurl ===\ngrpcurl -plaintext -d '{}' {{grpc_server}} hodei.providers.ProviderManagementService/ListProviders\n\n=== Response ===\n{\n  \"providers\": [\n    {\n      \"id\": \"391dea8b-f3c7-4a7c-9f01-cd24a2181c33\",\n      \"name\": \"Docker\",\n      \"providerType\": \"PROVIDER_TYPE_DOCKER\",\n      \"status\": \"PROVIDER_STATUS_ACTIVE\",\n      \"maxWorkers\": 10,\n      \"capabilities\": {\n        \"maxResources\": {\n          \"maxCpuCores\": 4,\n          \"maxMemoryBytes\": \"8589934592\",\n          \"maxDiskBytes\": \"107374182400\"\n        },\n        \"architectures\": [\"Amd64\"],\n        \"runtimes\": [\"shell\"],\n        \"regions\": [\"local\"]\n      },\n      \"typeConfig\": {\n        \"docker\": {\n          \"socketPath\": \"/var/run/docker.sock\",\n          \"defaultImage\": \"hodei-jobs-worker:latest\"\n        }\n      }\n    }\n  ]\n}"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "🚀 Maven Examples",
+			"item": [
+				{
+					"name": "Maven Build (Docker Provider)",
+					"request": {
+						"description": "Maven build using Docker - TESTED AND WORKING",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/QueueJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "QueueJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-build-docker\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\n      \"-lc\",\n      \"cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean package -DskipTests && ls -lh target/\"\n    ],\n    \"requirements\": {\n      \"cpu_cores\": 2,\n      \"memory_bytes\": \"2147483648\",\n      \"disk_bytes\": \"1073741824\"\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"600s\"\n    }\n  },\n  \"queued_by\": \"user\"\n}\n\n=== grpcurl ===\ngrpcurl -plaintext -d @ {{grpc_server}} hodei.JobExecutionService/QueueJob\n\n=== Expected output ===\n[INFO] Building jar: target/simple-java-maven-app-1.0-SNAPSHOT.jar\n\n=== Monitor with ===\n./scripts/trace-job.sh JOB-ID\n\n=== Or stream logs ===\ngrpcurl -plaintext -d '{\"job_id\": \"JOB-ID\", \"include_history\": true}' \\\n  {{grpc_server}} hodei.LogStreamService/SubscribeLogs"
+						}
+					}
+				},
+				{
+					"name": "Maven Build with Tests",
+					"request": {
+						"description": "Maven build including tests",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/QueueJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "QueueJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-with-tests\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\n      \"-lc\",\n      \"cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean test\"\n    ],\n    \"requirements\": {\n      \"cpu_cores\": 2,\n      \"memory_bytes\": \"4294967296\",\n      \"disk_bytes\": \"1073741824\"\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"900s\"\n    }\n  },\n  \"queued_by\": \"developer\"\n}"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "📚 Service Reference",
+			"item": [
+				{
+					"name": "All Services",
+					"request": {
+						"description": "List all available gRPC services",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/list",
+							"host": ["{{grpc_server}}"],
+							"path": ["list"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "// grpcurl command\ngrpcurl -plaintext {{grpc_server}} list\n\n// Available services:\n// grpc.reflection.v1.ServerReflection\n// hodei.AuditService\n// hodei.JobExecutionService\n// hodei.LogStreamService\n// hodei.MetricsService\n// hodei.SchedulerService\n// hodei.WorkerAgentService\n// hodei.providers.ProviderManagementService"
+						}
+					}
+				},
+				{
+					"name": "JobExecutionService Methods",
+					"request": {
+						"description": "List methods in JobExecutionService",
+						"method": "POST",
+						"url": {
+							"raw": "{{grpc_server}}/describe/hodei.JobExecutionService",
+							"host": ["{{grpc_server}}"],
+							"path": ["describe", "hodei.JobExecutionService"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "// grpcurl command\ngrpcurl -plaintext {{grpc_server}} describe hodei.JobExecutionService\n\n// Available methods:\n// rpc AssignJob ( .hodei.AssignJobRequest ) returns ( .hodei.AssignJobResponse );\n// rpc CancelJob ( .hodei.CancelJobRequest ) returns ( .hodei.CancelJobResponse );\n// rpc CompleteJob ( .hodei.CompleteJobRequest ) returns ( .hodei.CompleteJobResponse );\n// rpc ExecutionEventStream ( .hodei.ExecutionId ) returns ( stream .hodei.JobExecution );\n// rpc FailJob ( .hodei.FailJobRequest ) returns ( .hodei.FailJobResponse );\n// rpc GetJob ( .hodei.GetJobRequest ) returns ( .hodei.JobExecution );\n// rpc ListJobs ( .hodei.ListJobsRequest ) returns ( .hodei.ListJobsResponse );\n// rpc QueueJob ( .hodei.QueueJobRequest ) returns ( .hodei.QueueJobResponse );\n// rpc StartJob ( .hodei.StartJobRequest ) returns ( .hodei.StartJobResponse );\n// rpc UpdateProgress ( .hodei.UpdateProgressRequest ) returns ( .hodei.UpdateProgressResponse );"
+						}
+					}
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Generate UUID for job_id if not set",
+					"if (!pm.environment.get('job_id')) {",
+					"    const jobId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {",
+					"        const r = Math.random() * 16 | 0;",
+					"        const v = c == 'x' ? r : (r & 0x3 | 0x8);",
+					"        return v.toString(16);",
+					"    });",
+					"    pm.environment.set('job_id', jobId);",
+					"}"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Test response (informational)",
+					"pm.test('This is a gRPC API template collection', function () {",
+					"    pm.response.to.have.status(200);",
+					"});",
+					"",
+					"// Show usage instructions",
+					"console.log('=== Hodei Jobs Platform gRPC Collection ===');",
+					"console.log('Use Evans or grpcurl for actual gRPC calls:');",
+					"console.log('  evans -p 50051 --reflection repl');",
+					"console.log('  grpcurl -plaintext localhost:50051 list');",
+					"console.log('');",
+					"console.log('See docs/GRPC_SETUP_GUIDE.md for complete instructions');"
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "grpc_server",
+			"value": "localhost:50051",
+			"type": "string"
+		},
+		{
+			"key": "job_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "execution_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "worker_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
