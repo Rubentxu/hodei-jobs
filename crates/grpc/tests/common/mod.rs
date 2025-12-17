@@ -81,7 +81,10 @@ use hodei_jobs_infrastructure::persistence::{
     DatabaseConfig, PostgresJobQueue, PostgresJobRepository, PostgresWorkerBootstrapTokenStore,
     PostgresWorkerRegistry,
 };
-use hodei_jobs_infrastructure::providers::{DockerProvider, TestWorkerProvider};
+use hodei_jobs_infrastructure::providers::DockerProvider;
+
+#[cfg(test)]
+use hodei_jobs_infrastructure::providers::TestWorkerProvider;
 
 use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
 

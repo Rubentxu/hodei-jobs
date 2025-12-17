@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "assert_matches",
  "async-stream",
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-application"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-cli"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "chrono",
  "clap",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-domain"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-grpc"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-infrastructure"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-interface"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
