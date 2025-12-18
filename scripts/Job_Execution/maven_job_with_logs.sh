@@ -204,9 +204,11 @@ cleanup() {
     print_warning "Log streaming stopped by user"
     # Kill background processes
     jobs -p | xargs -r kill 2>/dev/null || true
+    # Always exit with 0 for graceful termination
     exit 0
 }
-trap cleanup INT TERM
+# Use EXIT to catch all termination signals
+trap cleanup EXIT INT TERM
 
 # Check initial status - job might have already failed
 sleep 1
