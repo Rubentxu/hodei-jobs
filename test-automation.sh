@@ -76,7 +76,7 @@ queue_job() {
     echo ""
 
     print_info "Or use the organized script:"
-    echo "  ./scripts/Job\ Execution/maven_job_with_logs.sh --simple"
+    echo "  ./scripts/Job_Execution/maven_job_with_logs.sh --simple"
     echo ""
 
     # Actually queue a job
@@ -109,17 +109,17 @@ monitor_logs() {
         echo ""
 
         print_info "Option 2: Using organized scripts"
-        echo "  ./scripts/Monitoring\ &\ Debugging/watch_logs.sh"
-        echo "  ./scripts/Monitoring\ &\ Debugging/watch_logs.sh $JOB_ID"
+        echo "  ./scripts/Monitoring_and_Debugging/watch_logs.sh"
+        echo "  ./scripts/Monitoring_and_Debugging/watch_logs.sh $JOB_ID"
         echo ""
 
         print_info "Option 3: Trace specific job"
-        echo "  ./scripts/Job\ Execution/trace-job.sh $JOB_ID"
+        echo "  ./scripts/Job_Execution/trace-job.sh $JOB_ID"
         echo ""
 
         # Actually monitor
         print_info "Starting log monitor for 10 seconds..."
-        timeout 10 "./scripts/Monitoring & Debugging/watch_logs.sh" "$JOB_ID" 2>&1 || true
+        timeout 10 "./scripts/Monitoring_and_Debugging/watch_logs.sh" "$JOB_ID" 2>&1 || true
     else
         print_warning "No job ID found. Queue a job first."
         print_info "Use: $0 job"
@@ -193,9 +193,9 @@ case "${1:-full}" in
         echo "  just test-auto-provision   - Test worker provisioning"
         echo ""
         echo "Using Organized Scripts:"
-        echo "  ./scripts/Core\ Development/start.sh --build-worker"
-        echo "  ./scripts/Job\ Execution/maven_job_with_logs.sh --simple"
-        echo "  ./scripts/Monitoring\ &\ Debugging/watch_logs.sh"
+        echo "  ./scripts/Core_Development/start.sh --build-worker"
+        echo "  ./scripts/Job_Execution/maven_job_with_logs.sh --simple"
+        echo "  ./scripts/Monitoring_and_Debugging/watch_logs.sh"
         ;;
     *)
         echo "Unknown command: $1"
