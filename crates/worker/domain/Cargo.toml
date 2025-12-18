@@ -1,0 +1,13 @@
+[package]
+name = "hodei-worker-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+hodei-shared = { path = "../../shared" }
+# Allow proto dependency for now to avoid massive mapping
+hodei-jobs = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }

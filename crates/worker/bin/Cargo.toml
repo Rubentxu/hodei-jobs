@@ -1,0 +1,23 @@
+[package]
+name = "hodei-worker-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+hodei-worker-domain = { path = "../domain" }
+hodei-worker-application = { path = "../application" }
+hodei-worker-infrastructure = { path = "../infrastructure" }
+hodei-shared = { path = "../../shared" }
+hodei-jobs = { workspace = true }
+
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tonic = { workspace = true }
+uuid = { workspace = true }
+hostname = "0.4.2"
+num_cpus = "1.16"
+anyhow = { workspace = true }
+prost-types = { workspace = true }

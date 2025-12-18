@@ -1,0 +1,16 @@
+[package]
+name = "hodei-worker-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+hodei-worker-domain = { path = "../domain" }
+hodei-shared = { path = "../../shared" }
+hodei-jobs = { workspace = true }
+
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }

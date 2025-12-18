@@ -1,0 +1,33 @@
+[package]
+name = "hodei-server-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Internal
+hodei-server-domain = { path = "../domain" }
+hodei-server-application = { path = "../application" }
+hodei-server-infrastructure = { path = "../infrastructure" }
+hodei-server-interface = { path = "../interface" }
+hodei-shared = { path = "../../shared" }
+hodei-jobs = { workspace = true }
+
+# Async & Runtime
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+# Config & CLI
+config = { workspace = true }
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# HTTP/gRPC
+tonic = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }

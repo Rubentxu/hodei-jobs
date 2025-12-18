@@ -1,0 +1,21 @@
+[package]
+name = "hodei-server-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Core dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+hodei-shared = { path = "../../shared" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3.31"
+
+[dev-dependencies]
+tokio-test = { workspace = true }

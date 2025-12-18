@@ -1,0 +1,47 @@
+[package]
+name = "hodei-server-interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Internal crates
+hodei-server-domain = { path = "../domain" }
+hodei-server-application = { path = "../application" }
+hodei-server-infrastructure = { path = "../infrastructure" }
+hodei-shared = { path = "../../shared" }
+hodei-jobs = { workspace = true } # Proto definitions
+
+# Web
+axum = { workspace = true, features = ["macros"] }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["cors", "trace", "fs"] }
+hyper = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+http-body-util = { workspace = true }
+
+# gRPC
+tonic = { workspace = true }
+tonic-web = { workspace = true }
+tonic-reflection = { workspace = true }
+prost = { workspace = true }
+
+# Utils
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+prost-types = { workspace = true }
+uuid = { workspace = true }
+async-stream = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres"] }
