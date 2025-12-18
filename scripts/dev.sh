@@ -78,9 +78,9 @@ check_requirements() {
         missing_tools+=("docker")
     fi
 
-    # Check docker-compose
-    if ! command -v docker-compose &> /dev/null; then
-        missing_tools+=("docker-compose")
+    # Check docker compose
+    if ! command -v docker compose &> /dev/null; then
+        missing_tools+=("docker compose")
     fi
 
     # Check just
@@ -111,7 +111,7 @@ check_requirements() {
 # Start database
 start_database() {
     print_header "Starting Database"
-    docker-compose -f docker-compose.dev.yml up -d postgres
+    docker compose -f docker-compose.dev.yml up -d postgres
 
     # Wait for database to be ready
     print_info "Waiting for database to be ready..."
@@ -189,7 +189,7 @@ clean_all() {
     cd web && rm -rf node_modules dist && cd ..
 
     print_info "Removing Docker volumes..."
-    docker-compose -f docker-compose.dev.yml down -v
+    docker compose -f docker-compose.dev.yml down -v
 
     print_success "Clean complete"
 }

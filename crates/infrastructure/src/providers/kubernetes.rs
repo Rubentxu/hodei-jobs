@@ -19,8 +19,8 @@ use tracing::{debug, info};
 
 use hodei_jobs_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
-    worker::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
-    worker_provider::{
+    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
+    workers::{
         HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
         WorkerProvider,
     },

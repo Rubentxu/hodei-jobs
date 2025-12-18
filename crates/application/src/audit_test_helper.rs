@@ -362,8 +362,8 @@ impl DbAuditTestHelper {
     /// Find events by type
     pub async fn find_by_event_type(
         &self,
-        event_type: &str,
-        limit: usize,
+        _event_type: &str,
+        _limit: usize,
     ) -> Result<Vec<AuditLog>, AuditTestError> {
         // This is inefficient without a proper query, but for tests it's fine to fetch all (if possible) or just search.
         // The Repository trait likely has find_all or similar?
@@ -387,7 +387,7 @@ impl DbAuditTestHelper {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use hodei_jobs_domain::job_execution::JobSpec;
+    use hodei_jobs_domain::jobs::JobSpec;
     use hodei_jobs_domain::shared_kernel::JobId;
 
     fn create_job_created_event(

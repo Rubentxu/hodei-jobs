@@ -1,9 +1,8 @@
 use hodei_jobs_domain::{
-    job_execution::{Job, JobSpec},
+    jobs::{Job, JobRepository, JobSpec},
     shared_kernel::{JobId, JobState},
 };
 use hodei_jobs_infrastructure::persistence::{DatabaseConfig, PostgresJobRepository};
-use hodei_jobs_domain::job_execution::JobRepository;
 
 mod common;
 
@@ -25,12 +24,12 @@ async fn test_postgres_job_lifecycle() {
     repo.run_migrations()
         .await
         .expect("Failed to run migrations");
-    
+
     // 1. Create and Save Job
     let job_id = JobId::new();
     let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
     let job = Job::new(job_id.clone(), spec);
-    
+
     repo.save(&job).await.expect("Failed to save job");
 
     // 2. Find by ID
@@ -47,13 +46,22 @@ async fn test_postgres_job_lifecycle() {
     // 4. Update
     let mut updated_job = found_job.clone();
     updated_job.state = JobState::Running;
-    repo.update(&updated_job).await.expect("Failed to update job");
+    repo.update(&updated_job)
+        .await
+        .expect("Failed to update job");
 
-    let found_updated = repo.find_by_id(&job_id).await.expect("Failed to find updated job").unwrap();
+    let found_updated = repo
+        .find_by_id(&job_id)
+        .await
+        .expect("Failed to find updated job")
+        .unwrap();
     assert_eq!(found_updated.state, JobState::Running);
 
     // 5. Delete
     repo.delete(&job_id).await.expect("Failed to delete job");
-    let found_deleted = repo.find_by_id(&job_id).await.expect("Failed to find deleted job");
+    let found_deleted = repo
+        .find_by_id(&job_id)
+        .await
+        .expect("Failed to find deleted job");
     assert!(found_deleted.is_none());
 }

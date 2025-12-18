@@ -13,9 +13,12 @@ use prost_types::Timestamp;
 use std::collections::HashMap;
 use std::env;
 use std::process::Command as StdCommand;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tokio_stream::StreamExt;
@@ -143,6 +146,91 @@ impl JobExecutor {
         }
     }
 
+    /// Stream command output in real-time (like Jenkins/K8s console output)
+    /// This function spawns the process and streams stdout/stderr as they are produced
+    async fn stream_command_output(
+        &self,
+        mut child: tokio::process::Child,
+        job_id: &str,
+        log_sender: &mpsc::Sender<WorkerMessage>,
+    ) -> Result<(i32, String, String), String> {
+        let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stderr_reader = BufReader::new(stderr).lines();
+
+        let mut stdout_buffer = String::new();
+        let mut stderr_buffer = String::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        // Stream stdout and stderr concurrently in real-time
+        loop {
+            if stdout_done && stderr_done {
+                break;
+            }
+
+            tokio::select! {
+                // Bias towards stdout for more predictable ordering
+                biased;
+
+                line = stdout_reader.next_line(), if !stdout_done => {
+                    match line {
+                        Ok(Some(l)) => {
+                            // Send log immediately as it's produced (REAL-TIME!)
+                            let _ = log_sender.send(create_log_message(job_id, &l, false)).await;
+                            stdout_buffer.push_str(&l);
+                            stdout_buffer.push('\n');
+                        }
+                        Ok(None) => {
+                            stdout_done = true;
+                        }
+                        Err(e) => {
+                            warn!("Stdout read error: {}", e);
+                            stdout_done = true;
+                        }
+                    }
+                }
+
+                line = stderr_reader.next_line(), if !stderr_done => {
+                    match line {
+                        Ok(Some(l)) => {
+                            // Send log immediately as it's produced (REAL-TIME!)
+                            let _ = log_sender.send(create_log_message(job_id, &l, true)).await;
+                            stderr_buffer.push_str(&l);
+                            stderr_buffer.push('\n');
+                        }
+                        Ok(None) => {
+                            stderr_done = true;
+                        }
+                        Err(e) => {
+                            warn!("Stderr read error: {}", e);
+                            stderr_done = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Wait for process to complete
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| format!("Failed to wait for process: {}", e))?;
+
+        let exit_code = status.code().unwrap_or(-1);
+
+        info!(
+            "Command completed - stdout: {} bytes, stderr: {} bytes, exit_code: {}",
+            stdout_buffer.len(),
+            stderr_buffer.len(),
+            exit_code
+        );
+
+        Ok((exit_code, stdout_buffer, stderr_buffer))
+    }
+
     async fn execute_shell(
         &self,
         job_id: &str,
@@ -174,11 +262,13 @@ impl JobExecutor {
             ))
             .await;
 
-        // IMPORTANT: Always use /bin/bash -c to execute commands
-        // This is the standard practice in Jenkins agents, Kubernetes Jobs, GitHub Actions
-        // It ensures proper shell expansion, PATH resolution, and consistent behavior
-        let mut cmd = StdCommand::new("/bin/bash");
-        cmd.arg("-c").arg(&full_command);
+        // IMPORTANT: Use tokio::process::Command for async streaming
+        // This enables real-time log streaming like Jenkins/K8s console
+        let mut cmd = TokioCommand::new("/bin/bash");
+        cmd.arg("-c")
+            .arg(&full_command)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         // Set environment variables
         for (key, value) in env_vars {
@@ -186,43 +276,17 @@ impl JobExecutor {
         }
 
         // Set working directory if specified
-        if let Some(dir) = working_dir {
+        if let Some(ref dir) = working_dir {
             cmd.current_dir(dir);
         }
 
-        // Execute with timeout support (can be added later)
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to execute command: {}", e))?;
+        // Spawn the process (non-blocking)
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
-
-        info!(
-            "Command completed - stdout: {} bytes, stderr: {} bytes, exit_code: {}",
-            stdout.len(),
-            stderr.len(),
-            exit_code
-        );
-
-        // Send stdout logs line by line (like Jenkins/K8s)
-        for line in stdout.lines() {
-            let _ = log_sender
-                .send(create_log_message(job_id, line, false))
-                .await;
-        }
-
-        // Send stderr logs line by line (like Jenkins/K8s)
-        for line in stderr.lines() {
-            if !line.is_empty() {
-                let _ = log_sender
-                    .send(create_log_message(job_id, line, true))
-                    .await;
-            }
-        }
-
-        Ok((exit_code, stdout, stderr))
+        // Stream output in real-time
+        self.stream_command_output(child, job_id, &log_sender).await
     }
 
     /// Execute shell command with timeout (like Kubernetes Jobs)
@@ -315,9 +379,13 @@ impl JobExecutor {
             .send(create_log_message(job_id, "EOF", false))
             .await;
 
-        // Execute script with interpreter
-        let mut cmd = StdCommand::new(interpreter);
-        cmd.arg("-c").arg(content);
+        // IMPORTANT: Use tokio::process::Command for async streaming
+        // This enables real-time log streaming like Jenkins/K8s console
+        let mut cmd = TokioCommand::new(interpreter);
+        cmd.arg("-c")
+            .arg(content)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         // Set environment variables
         for (key, value) in env_vars {
@@ -325,32 +393,17 @@ impl JobExecutor {
         }
 
         // Set working directory if specified
-        if let Some(dir) = working_dir {
+        if let Some(ref dir) = working_dir {
             cmd.current_dir(dir);
         }
 
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to execute script: {}", e))?;
+        // Spawn the process (non-blocking)
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn script: {}", e))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
-
-        // Send stdout logs
-        for line in stdout.lines() {
-            let _ = log_sender
-                .send(create_log_message(job_id, line, false))
-                .await;
-        }
-        // Send stderr logs
-        for line in stderr.lines() {
-            let _ = log_sender
-                .send(create_log_message(job_id, line, true))
-                .await;
-        }
-
-        Ok((exit_code, stdout, stderr))
+        // Stream output in real-time
+        self.stream_command_output(child, job_id, &log_sender).await
     }
 
     /// Execute script with timeout (like Kubernetes Jobs)
@@ -404,6 +457,7 @@ impl JobExecutor {
         args: &[String],
         env_vars: &HashMap<String, String>,
         image: Option<&str>,
+        log_sender: mpsc::Sender<WorkerMessage>,
     ) -> Result<(i32, String, String), String> {
         let image = image.unwrap_or("alpine:latest");
 
@@ -428,24 +482,43 @@ impl JobExecutor {
         docker_args.push(command.to_string());
         docker_args.extend(args.iter().cloned());
 
-        info!("Running: docker {}", docker_args.join(" "));
+        let docker_cmd_str = format!("docker {}", docker_args.join(" "));
+        info!("Running: {}", docker_cmd_str);
 
-        let output = StdCommand::new("docker")
+        // Send log entry
+        let _ = log_sender
+            .send(create_log_message(
+                job_id,
+                &format!("$ {}", docker_cmd_str),
+                false,
+            ))
+            .await;
+
+        // IMPORTANT: Use tokio::process::Command for async streaming
+        // This enables real-time log streaming like Jenkins/K8s console
+        let child = TokioCommand::new("docker")
             .args(&docker_args)
-            .output()
-            .map_err(|e| format!("Failed to execute docker: {}", e))?;
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn docker: {}", e))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        // Stream output in real-time
+        let result = self.stream_command_output(child, job_id, &log_sender).await;
 
-        if output.status.success() {
-            info!("Job {} completed successfully", job_id);
-        } else {
-            warn!("Job {} failed with exit code {}", job_id, exit_code);
+        match &result {
+            Ok((exit_code, _, _)) if *exit_code == 0 => {
+                info!("Job {} completed successfully", job_id);
+            }
+            Ok((exit_code, _, _)) => {
+                warn!("Job {} failed with exit code {}", job_id, exit_code);
+            }
+            Err(e) => {
+                error!("Job {} failed: {}", job_id, e);
+            }
         }
 
-        Ok((exit_code, stdout, stderr))
+        result
     }
 }
 
@@ -870,7 +943,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod performance_tests {
-    use super::*;
 
     // =============================================================================
     // Performance Testing

@@ -9,7 +9,7 @@ authors.workspace = true
 # Internal dependencies
 hodei-jobs-domain = { workspace = true }
 hodei-jobs-application = { workspace = true }
-hodei-jobs-infrastructure = { workspace = true }
+hodei-jobs-infrastructure = { workspace = true, features = ["test-utils"] }
 hodei-jobs = { workspace = true }
 
 # Async runtime

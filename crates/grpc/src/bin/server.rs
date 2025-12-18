@@ -11,22 +11,24 @@ use hodei_jobs::{
     scheduler_service_server::SchedulerServiceServer,
     worker_agent_service_server::WorkerAgentServiceServer,
 };
-use hodei_jobs_application::audit_cleanup::{AuditCleanupService, AuditRetentionConfig};
-use hodei_jobs_application::audit_usecases::AuditService;
-use hodei_jobs_application::job_controller::JobController;
-use hodei_jobs_application::job_execution_usecases::{CancelJobUseCase, CreateJobUseCase};
-use hodei_jobs_application::provider_registry::ProviderRegistry;
-use hodei_jobs_application::smart_scheduler::SchedulerConfig;
-use hodei_jobs_application::worker_provisioning_impl::{
+use hodei_jobs_application::audit::AuditService;
+use hodei_jobs_application::audit::cleanup::{AuditCleanupService, AuditRetentionConfig};
+use hodei_jobs_application::jobs::cancel::CancelJobUseCase;
+use hodei_jobs_application::jobs::controller::JobController;
+use hodei_jobs_application::jobs::create::CreateJobUseCase;
+use hodei_jobs_application::providers::registry::ProviderRegistry;
+use hodei_jobs_application::scheduling::SchedulerConfig;
+use hodei_jobs_application::workers::provisioning_impl::{
     DefaultWorkerProvisioningService, ProvisioningConfig,
 };
 use hodei_jobs_domain::shared_kernel::ProviderId;
-use hodei_jobs_domain::worker_provider::WorkerProvider;
+use hodei_jobs_domain::workers::WorkerProvider;
 use hodei_jobs_grpc::services::{
     AuditServiceImpl, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc,
     MetricsServiceImpl, ProviderManagementServiceImpl, SchedulerServiceImpl,
     WorkerAgentServiceImpl,
 };
+use hodei_jobs_infrastructure::persistence::postgres::PostgresAuditRepository;
 use hodei_jobs_infrastructure::persistence::{
     PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
     PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
@@ -34,7 +36,6 @@ use hodei_jobs_infrastructure::persistence::{
 use hodei_jobs_infrastructure::providers::{
     DockerProvider, FirecrackerConfig, FirecrackerProvider, KubernetesConfig, KubernetesProvider,
 };
-use hodei_jobs_infrastructure::repositories::PostgresAuditRepository;
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -168,20 +169,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Event Bus
     let event_bus_impl =
-        hodei_jobs_infrastructure::event_bus::postgres::PostgresEventBus::new(pool.clone());
+        hodei_jobs_infrastructure::messaging::postgres::PostgresEventBus::new(pool.clone());
     let event_bus = std::sync::Arc::new(event_bus_impl);
 
     // Cast to traits
     let job_repository = std::sync::Arc::new(job_repository_impl)
-        as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
+        as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
     let job_queue = std::sync::Arc::new(job_queue_impl)
-        as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+        as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
     let worker_registry = std::sync::Arc::new(worker_registry_impl)
-        as std::sync::Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
+        as std::sync::Arc<dyn hodei_jobs_domain::workers::WorkerRegistry>;
     let token_store = std::sync::Arc::new(token_store_impl)
-        as std::sync::Arc<dyn hodei_jobs_domain::otp_token_store::WorkerBootstrapTokenStore>;
+        as std::sync::Arc<dyn hodei_jobs_domain::iam::WorkerBootstrapTokenStore>;
     let provider_config_repo = std::sync::Arc::new(provider_config_repo_impl)
-        as std::sync::Arc<dyn hodei_jobs_domain::provider_config::ProviderConfigRepository>;
+        as std::sync::Arc<dyn hodei_jobs_domain::providers::ProviderConfigRepository>;
 
     let provider_registry =
         std::sync::Arc::new(ProviderRegistry::new(provider_config_repo.clone()));
@@ -226,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Keep track of provisioning service to inject into controller
     let mut provisioning_service_for_controller: Option<
-        std::sync::Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>,
+        std::sync::Arc<dyn hodei_jobs_application::workers::WorkerProvisioningService>,
     > = None;
 
     let scheduler_service = if provisioning_enabled {
@@ -241,18 +242,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match DockerProvider::new().await {
                 Ok(provider) => {
                     info!("  ✓ Docker provider initialized");
-                    let provider_id = provider.provider_id().clone();
+                    let provider_id: ProviderId = provider.provider_id().clone();
                     providers.insert(
                         provider_id.clone(),
                         std::sync::Arc::new(provider) as std::sync::Arc<dyn WorkerProvider>,
                     );
 
                     // Register provider in ProviderConfigRepository
-                    let docker_config = hodei_jobs_domain::provider_config::ProviderConfig::new(
+                    let docker_config = hodei_jobs_domain::providers::ProviderConfig::new(
                         "Docker".to_string(),
-                        hodei_jobs_domain::worker::ProviderType::Docker,
-                        hodei_jobs_domain::provider_config::ProviderTypeConfig::Docker(
-                            hodei_jobs_domain::provider_config::DockerConfig::default(),
+                        hodei_jobs_domain::workers::ProviderType::Docker,
+                        hodei_jobs_domain::providers::ProviderTypeConfig::Docker(
+                            hodei_jobs_domain::providers::DockerConfig::default(),
                         ),
                     )
                     .with_max_workers(10);
@@ -281,7 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         env::var("HODEI_K8S_NAMESPACE")
                             .unwrap_or_else(|_| "hodei-jobs-workers".to_string())
                     );
-                    let provider_id = provider.provider_id().clone();
+                    let provider_id: ProviderId = provider.provider_id().clone();
                     providers.insert(
                         provider_id,
                         std::sync::Arc::new(provider) as std::sync::Arc<dyn WorkerProvider>,
@@ -305,7 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         env::var("HODEI_FC_DATA_DIR")
                             .unwrap_or_else(|_| "/var/lib/hodei/firecracker".to_string())
                     );
-                    let provider_id = provider.provider_id().clone();
+                    let provider_id: ProviderId = provider.provider_id().clone();
                     providers.insert(
                         provider_id,
                         std::sync::Arc::new(provider) as std::sync::Arc<dyn WorkerProvider>,
@@ -337,9 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 providers,
                 provisioning_config,
             ))
-                as std::sync::Arc<
-                    dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService,
-                >;
+                as std::sync::Arc<dyn hodei_jobs_application::workers::WorkerProvisioningService>;
 
             // Save for controller
             provisioning_service_for_controller = Some(provisioning_service.clone());
@@ -409,9 +408,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let sender =
             std::sync::Arc::new(GrpcWorkerCommandSender::new(worker_service_for_controller))
-                as std::sync::Arc<
-                    dyn hodei_jobs_application::worker_command_sender::WorkerCommandSender,
-                >;
+                as std::sync::Arc<dyn hodei_jobs_application::workers::WorkerCommandSender>;
 
         let controller = std::sync::Arc::new(JobController::new(
             job_queue_for_controller,

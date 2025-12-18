@@ -6,12 +6,9 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use hodei_jobs_application::job_execution_usecases::{
-    CancelJobUseCase, CreateJobRequest, CreateJobUseCase, JobSpecRequest,
-};
-use hodei_jobs_domain::job_execution::JobRepository;
+use hodei_jobs_application::jobs::cancel::CancelJobUseCase;
+use hodei_jobs_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
 use hodei_jobs_domain::shared_kernel::{DomainError, JobId};
-use hodei_jobs_domain::worker_registry::WorkerRegistry;
 use uuid::Uuid;
 
 use hodei_jobs::{
@@ -27,16 +24,16 @@ use hodei_jobs::{
 pub struct JobExecutionServiceImpl {
     create_job_usecase: Arc<CreateJobUseCase>,
     cancel_job_usecase: Arc<CancelJobUseCase>,
-    job_repository: Arc<dyn JobRepository>,
-    worker_registry: Arc<dyn WorkerRegistry>,
+    job_repository: Arc<dyn hodei_jobs_domain::jobs::JobRepository>,
+    worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
 }
 
 impl JobExecutionServiceImpl {
     pub fn new(
         create_job_usecase: Arc<CreateJobUseCase>,
         cancel_job_usecase: Arc<CancelJobUseCase>,
-        job_repository: Arc<dyn JobRepository>,
-        worker_registry: Arc<dyn WorkerRegistry>,
+        job_repository: Arc<dyn hodei_jobs_domain::jobs::JobRepository>,
+        worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
     ) -> Self {
         Self {
             create_job_usecase,
@@ -96,7 +93,7 @@ impl JobExecutionServiceImpl {
         }
     }
 
-    fn map_job_to_summary(job: hodei_jobs_domain::job_execution::Job) -> JobSummary {
+    fn map_job_to_summary(job: hodei_jobs_domain::jobs::Job) -> JobSummary {
         let duration = job.execution_duration().map(|d| prost_types::Duration {
             seconds: d.as_secs() as i64,
             nanos: d.subsec_nanos() as i32,
@@ -122,7 +119,7 @@ impl JobExecutionServiceImpl {
         }
     }
 
-    fn map_job_to_definition(job: &hodei_jobs_domain::job_execution::Job) -> JobDefinition {
+    fn map_job_to_definition(job: &hodei_jobs_domain::jobs::Job) -> JobDefinition {
         let cmd_vec = job.spec.command_vec();
         let command = cmd_vec.first().cloned().unwrap_or_default();
         let arguments = if cmd_vec.len() > 1 {
@@ -305,7 +302,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .map_err(Self::to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
-        let context = hodei_jobs_domain::job_execution::ExecutionContext::new(
+        let context = hodei_jobs_domain::jobs::ExecutionContext::new(
             job_id.clone(),
             provider_id.clone(),
             provider_execution_id.clone(),

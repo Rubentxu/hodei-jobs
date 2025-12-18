@@ -12,14 +12,14 @@ use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
 use hodei_jobs::{
-    JobDefinition, JobId, JobLogEntry, JobStatus, QueueJobRequest, ResourceRequirements,
-    SubscribeLogsRequest, log_stream_service_client::LogStreamServiceClient,
+    JobDefinition, JobId, JobLogEntry, QueueJobRequest, ResourceRequirements, SubscribeLogsRequest,
+    log_stream_service_client::LogStreamServiceClient,
 };
 use uuid::Uuid;
 
 mod common;
 
-use common::{TestStack, get_postgres_context};
+use common::TestStack;
 
 // =============================================================================
 // E2E Test: Complete Job Flow with TestWorkerProvider (FAST)

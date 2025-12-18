@@ -16,10 +16,10 @@ use hodei_jobs::{
     worker_message::Payload as WorkerPayload,
 };
 
-use hodei_jobs_application::{job_controller::JobController, smart_scheduler::SchedulerConfig};
-use hodei_jobs_domain::job_execution::{Job, JobSpec};
+use hodei_jobs_application::{jobs::controller::JobController, smart_scheduler::SchedulerConfig};
+use hodei_jobs_domain::jobs::{Job, JobSpec};
 use hodei_jobs_domain::shared_kernel::ProviderId;
-use hodei_jobs_domain::worker::{ProviderType, WorkerHandle, WorkerSpec as DomainWorkerSpec};
+use hodei_jobs_domain::workers::{ProviderType, WorkerHandle, WorkerSpec as DomainWorkerSpec};
 use hodei_jobs_infrastructure::repositories::{
     InMemoryJobQueue, InMemoryJobRepository, InMemoryWorkerRegistry,
 };
@@ -96,12 +96,11 @@ async fn create_client(addr: SocketAddr) -> WorkerAgentServiceClient<Channel> {
 #[tokio::test]
 async fn job_controller_dispatches_run_job_to_connected_worker() {
     // Infrastructure for controller (in-memory is OK for tests)
-    let job_repository = Arc::new(InMemoryJobRepository::new())
-        as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-    let job_queue =
-        Arc::new(InMemoryJobQueue::new()) as Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+    let job_repository =
+        Arc::new(InMemoryJobRepository::new()) as Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
+    let job_queue = Arc::new(InMemoryJobQueue::new()) as Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
     let worker_registry = Arc::new(InMemoryWorkerRegistry::new())
-        as Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
+        as Arc<dyn hodei_jobs_domain::workers::WorkerRegistry>;
 
     // Create worker service with registry+repo so Register/Heartbeat and JobResult update persistence
     let log_service = hodei_jobs_grpc::services::LogStreamService::new();
@@ -185,7 +184,7 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
 
     // Controller that dispatches via gRPC sender
     let sender = Arc::new(GrpcWorkerCommandSender::new(worker_service.clone()))
-        as Arc<dyn hodei_jobs_application::worker_command_sender::WorkerCommandSender>;
+        as Arc<dyn hodei_jobs_application::workers::WorkerCommandSender>;
 
     let controller = JobController::new(
         job_queue,
@@ -197,7 +196,7 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
         None,
     );
 
-    let processed = controller.run_once().await.unwrap();
+    let processed: usize = controller.run_once().await.unwrap();
     assert_eq!(processed, 1);
 
     // Worker should receive RunJob

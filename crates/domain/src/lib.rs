@@ -1,40 +1,43 @@
+#![allow(ambiguous_glob_reexports)]
 // Hodei Job Platform - Domain Layer
-// Bounded Contexts:
+// Bounded Contexts reorganizados según DDD:
 // - shared_kernel: Tipos base, IDs y errores compartidos
-// - job_execution: Job aggregate, JobSpec, JobQueue
-// - job_execution_coordination: ExecutionContext, coordination services
-// - worker: Worker aggregate, WorkerSpec, WorkerHandle, ProviderType
-// - worker_provider: WorkerProvider trait, ProviderCapabilities, JobRequirements
-// - provider_config: ProviderConfig, ProviderTypeConfig (configuración de providers)
+// - event_bus: Traits de mensajería
+// - jobs: Job aggregate, JobSpec, JobQueue, templates y coordinación
+// - workers: Worker aggregate, WorkerSpec, WorkerHandle, ProviderType
+// - providers: ProviderConfig y configuración de providers
+// - scheduling: Estrategias de scheduling y selección
+// - audit: AuditLog y repositorio de auditoría
+// - iam: Tokens OTP y autenticación
 
-pub mod audit;
 pub mod event_bus;
-pub mod events;
-pub mod job_execution;
-pub mod job_execution_coordination;
-pub mod job_scheduler;
-pub mod job_template;
-pub mod otp_token_store;
-pub mod provider_config;
-pub mod request_context;
 pub mod shared_kernel;
-pub mod worker;
-pub mod worker_provider;
-pub mod worker_registry;
+
+// Bounded Contexts
+pub mod audit;
+pub mod iam;
+pub mod jobs;
+pub mod providers;
+pub mod scheduling;
+pub mod workers;
+
+// Legacy exports para retrocompatibilidad durante la migración
+pub mod events;
+pub mod request_context;
 
 #[cfg(test)]
 mod tests;
 
+// Re-exports para facilitar el uso de los bounded contexts
 pub use event_bus::*;
 pub use events::*;
 pub use request_context::*;
-pub use job_execution::*;
-pub use job_execution_coordination::*;
-pub use job_scheduler::*;
-pub use job_template::*;
-pub use otp_token_store::*;
-pub use provider_config::*;
 pub use shared_kernel::*;
-pub use worker::*;
-pub use worker_provider::*;
-pub use worker_registry::*;
+
+// Re-exports de bounded contexts
+pub use audit::*;
+pub use iam::*;
+pub use jobs::*;
+pub use providers::*;
+pub use scheduling::*;
+pub use workers::*;

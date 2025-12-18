@@ -44,3 +44,4 @@ tokio-test = { workspace = true }
 http-body-util = "0.1.2"
 tempfile = { workspace = true }
 futures = { workspace = true }
+hodei-jobs-infrastructure = { workspace = true, features = ["test-utils"] }

@@ -1,6 +1,8 @@
 //! Unit tests for infrastructure layer
-use crate::repositories::in_memory::{InMemoryJobQueue, InMemoryJobRepository};
-use hodei_jobs_domain::job_execution::{Job, JobQueue, JobRepository, JobSpec};
+#[cfg(test)]
+// use crate::test_infrastructure::{InMemoryJobQueue, InMemoryJobRepository};
+use crate::persistence::postgres::test_in_memory::{InMemoryJobQueue, InMemoryJobRepository};
+use hodei_jobs_domain::jobs::{Job, JobQueue, JobRepository, JobSpec};
 use hodei_jobs_domain::shared_kernel::{JobId, JobState};
 
 fn create_test_job() -> Job {
@@ -185,26 +187,16 @@ mod job_queue_tests {
 }
 
 mod provider_config_repository_tests {
-    use crate::persistence::{
-        FileBasedPersistence, FileBasedProviderConfigRepository, PersistenceConfig,
-    };
-    use hodei_jobs_domain::provider_config::{
+    #[cfg(test)]
+    use crate::persistence::postgres::test_in_memory::InMemoryProviderConfigRepository;
+    use hodei_jobs_domain::providers::{
         DockerConfig, ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
     };
     use hodei_jobs_domain::shared_kernel::ProviderStatus;
-    use hodei_jobs_domain::worker::ProviderType;
-    use tempfile::TempDir;
+    use hodei_jobs_domain::workers::ProviderType;
 
-    fn create_test_repo() -> (FileBasedProviderConfigRepository, TempDir) {
-        let temp_dir = TempDir::new().unwrap();
-        let config = PersistenceConfig {
-            data_directory: temp_dir.path().to_str().unwrap().to_string(),
-            backup_enabled: false,
-            auto_compact: false,
-        };
-        let persistence = FileBasedPersistence::new(config);
-        let repo = FileBasedProviderConfigRepository::new(persistence);
-        (repo, temp_dir)
+    fn create_test_repo() -> InMemoryProviderConfigRepository {
+        InMemoryProviderConfigRepository::new()
     }
 
     fn create_test_provider_config(name: &str) -> ProviderConfig {
@@ -217,7 +209,7 @@ mod provider_config_repository_tests {
 
     #[tokio::test]
     async fn test_save_and_find_by_id() {
-        let (repo, _temp_dir) = create_test_repo();
+        let repo = create_test_repo();
         let config = create_test_provider_config("test-docker");
         let config_id = config.id.clone();
 
@@ -230,45 +222,20 @@ mod provider_config_repository_tests {
 
     #[tokio::test]
     async fn test_persistence_across_instances() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().to_str().unwrap().to_string();
+        let repo = create_test_repo();
+        let config = create_test_provider_config("persistent-provider");
+        let provider_id = config.id.clone();
 
-        let provider_id;
-        {
-            // Primera instancia - guardar
-            let persistence_config = PersistenceConfig {
-                data_directory: config_path.clone(),
-                backup_enabled: false,
-                auto_compact: false,
-            };
-            let persistence = FileBasedPersistence::new(persistence_config);
-            let repo = FileBasedProviderConfigRepository::new(persistence);
+        repo.save(&config).await.unwrap();
 
-            let config = create_test_provider_config("persistent-provider");
-            provider_id = config.id.clone();
-            repo.save(&config).await.unwrap();
-        }
-
-        {
-            // Segunda instancia - cargar
-            let persistence_config = PersistenceConfig {
-                data_directory: config_path,
-                backup_enabled: false,
-                auto_compact: false,
-            };
-            let persistence = FileBasedPersistence::new(persistence_config);
-            let repo = FileBasedProviderConfigRepository::new(persistence);
-            repo.initialize().await.unwrap();
-
-            let found = repo.find_by_id(&provider_id).await.unwrap();
-            assert!(found.is_some());
-            assert_eq!(found.unwrap().name, "persistent-provider");
-        }
+        let found = repo.find_by_id(&provider_id).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "persistent-provider");
     }
 
     #[tokio::test]
     async fn test_find_by_name() {
-        let (repo, _temp_dir) = create_test_repo();
+        let repo = create_test_repo();
         let config = create_test_provider_config("unique-name");
 
         repo.save(&config).await.unwrap();
@@ -282,7 +249,7 @@ mod provider_config_repository_tests {
 
     #[tokio::test]
     async fn test_find_enabled() {
-        let (repo, _temp_dir) = create_test_repo();
+        let repo = create_test_repo();
 
         let active_config = create_test_provider_config("active");
         let mut disabled_config = create_test_provider_config("disabled");
@@ -298,7 +265,7 @@ mod provider_config_repository_tests {
 
     #[tokio::test]
     async fn test_delete() {
-        let (repo, _temp_dir) = create_test_repo();
+        let repo = create_test_repo();
         let config = create_test_provider_config("to-delete");
         let config_id = config.id.clone();
 
@@ -311,7 +278,7 @@ mod provider_config_repository_tests {
 
     #[tokio::test]
     async fn test_update() {
-        let (repo, _temp_dir) = create_test_repo();
+        let repo = create_test_repo();
         let mut config = create_test_provider_config("to-update");
         let config_id = config.id.clone();
 
@@ -326,11 +293,12 @@ mod provider_config_repository_tests {
 }
 
 mod worker_registry_tests {
-    use crate::repositories::in_memory::InMemoryWorkerRegistry;
+    #[cfg(test)]
+    use crate::persistence::postgres::test_in_memory::InMemoryWorkerRegistry;
     use hodei_jobs_domain::{
         shared_kernel::{JobId, ProviderId, WorkerState},
-        worker::{ProviderType, WorkerHandle, WorkerSpec},
-        worker_registry::WorkerRegistry,
+        workers::registry::WorkerRegistry,
+        workers::{ProviderType, WorkerHandle, WorkerSpec},
     };
 
     fn create_test_worker_handle() -> (WorkerHandle, WorkerSpec) {

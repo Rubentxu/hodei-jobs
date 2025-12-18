@@ -13,11 +13,11 @@ use hodei_jobs::providers::{
     provider_management_service_server::ProviderManagementService,
 };
 use hodei_jobs_application::ProviderRegistry;
-use hodei_jobs_domain::provider_config::{
+use hodei_jobs_domain::providers::{
     DockerConfig, KubernetesConfig, ProviderConfig, ProviderTypeConfig,
 };
 use hodei_jobs_domain::shared_kernel::{ProviderId, ProviderStatus};
-use hodei_jobs_domain::worker::ProviderType;
+use hodei_jobs_domain::workers::ProviderType;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -101,7 +101,7 @@ impl ProviderManagementServiceImpl {
 
     fn domain_to_proto_capabilities(
         &self,
-        caps: &hodei_jobs_domain::worker_provider::ProviderCapabilities,
+        caps: &hodei_jobs_domain::workers::ProviderCapabilities,
     ) -> ProtoProviderCapabilities {
         ProtoProviderCapabilities {
             max_resources: Some(ProtoResourceLimits {

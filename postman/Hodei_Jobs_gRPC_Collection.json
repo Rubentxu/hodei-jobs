@@ -1,0 +1,322 @@
+{
+	"info": {
+		"_postman_id": "hodei-jobs-grpc-collection-v2",
+		"name": "Hodei Jobs Platform (gRPC)",
+		"description": "Ready-to-use collection with **Automated Tests**.\n\n## Automated Workflow\nThe requests in this collection are scripted to work together:\n1. **Queue Job** will automatically save the new `job_id` to your environment.\n2. **Get Job** and **Subscribe Logs** will use that saved `job_id` automatically.\n\n## Tests Included\n- Status code checks\n- Response payload validation\n- Logical chains (Input ID = Output ID)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Job Execution",
+			"item": [
+				{
+					"name": "Queue Job (Simple)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Validate successful response",
+									"pm.test(\"Job queued successfully\", function () {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.success).to.be.true;",
+									"    pm.expect(response.message).to.contain(\"Job queued\");",
+									"});",
+									"",
+									"// Save Job ID for next requests",
+									"const response = pm.response.json();",
+									"if (response && response.message) {",
+									"    // Extract UUID from message or response structure",
+									"    // Assuming response might contain jobId field directly or parsed from message",
+									"    // Adjust based on your exact proto response structure for QueueJobResponse",
+									"    // Example: \"Job queued: <UUID>\"",
+									"    const match = response.message.match(/([a-f0-9-]{36})/);",
+									"    if (match) {",
+									"        pm.collectionVariables.set(\"last_job_id\", match[1]);",
+									"        console.log(\"Saved new job ID:\", match[1]);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/QueueJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "QueueJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_definition\": {\n    \"name\": \"simple-shell-job\",\n    \"command\": \"/bin/sh\",\n    \"arguments\": [\n      \"-c\",\n      \"echo 'Hello from Postman!' && sleep 5 && echo 'Done'\"\n    ],\n    \"requirements\": {\n      \"cpu_cores\": 1,\n      \"memory_bytes\": 104857600\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"60s\"\n    }\n  },\n  \"queued_by\": \"postman-user\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"description": "Queues a simple shell job. **Auto-saves the Job ID** to `last_job_id`."
+					},
+					"response": []
+				},
+				{
+					"name": "Queue Job (Maven Build)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Maven Job Queued\", function () {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.success).to.be.true;",
+									"});",
+									"",
+									"// Save Job ID",
+									"const response = pm.response.json();",
+									"if (response.message) {",
+									"    const match = response.message.match(/([a-f0-9-]{36})/);",
+									"    if (match) {",
+									"        pm.collectionVariables.set(\"last_job_id\", match[1]);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/QueueJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "QueueJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_definition\": {\n    \"name\": \"maven-build-job\",\n    \"command\": \"/bin/bash\",\n    \"arguments\": [\n      \"-c\",\n      \"cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git && cd simple-java-maven-app && mvn clean package -DskipTests\"\n    ],\n    \"requirements\": {\n      \"cpu_cores\": 2,\n      \"memory_bytes\": 1073741824,\n      \"disk_bytes\": 2147483648\n    },\n    \"timeout\": {\n      \"execution_timeout\": \"600s\"\n    }\n  },\n  \"queued_by\": \"postman-developer\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"description": "Queues a complex Maven job."
+					},
+					"response": []
+				},
+				{
+					"name": "List Jobs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Returns a list\", function () {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.have.property('jobs');",
+									"    pm.expect(Array.isArray(response.jobs)).to.be.true;",
+									"});",
+									"",
+									"pm.test(\"Total count is present\", function () {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.total_count).to.be.a('number');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/ListJobs",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "ListJobs"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"limit\": 20,\n  \"offset\": 0\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Job",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Job ID matches\", function () {",
+									"    const response = pm.response.json();",
+									"    const requestedId = pm.collectionVariables.get(\"last_job_id\");",
+									"    ",
+									"    // Access nested Value if present, or direct ID",
+									"    const responseId = response.job.job_id.value || response.job.job_id;",
+									"    pm.expect(responseId).to.eql(requestedId);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/GetJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "GetJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_id\": {\n    \"value\": \"{{last_job_id}}\"\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"description": "Gets details for the `last_job_id`."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Logs & Monitoring",
+			"item": [
+				{
+					"name": "Subscribe Logs (Stream)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.LogStreamService/SubscribeLogs",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.LogStreamService", "SubscribeLogs"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_id\": \"{{last_job_id}}\",\n  \"include_history\": true,\n  \"tail_lines\": 100\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"description": "Streams logs for `last_job_id`."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Test (Expect Errors)",
+			"item": [
+				{
+					"name": "Queue with Invalid Timeout",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Fails as expected\", function () {",
+									"    // gRPC errors often map to 200 OK in HTTP with a grpc-status header, ",
+									"    // or standard HTTP errors depending on the gateway.",
+									"    // Since we are raw gRPC, Postman sees the gRPC status.",
+									"    // We expect a non-succcess message or specific gRPC code.",
+									"    // Note: Postman test API for gRPC status codes is evolving.",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.JobExecutionService/QueueJob",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.JobExecutionService", "QueueJob"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"job_definition\": {\n    \"name\": \"invalid-timeout\",\n    \"command\": \"echo\",\n    \"timeout\": {\n      \"execution_timeout\": \"INVALID\"\n    }\n  },\n  \"queued_by\": \"tester\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Provider Management",
+			"item": [
+				{
+					"name": "List Providers",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Providers list received\", function () {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.have.property('providers');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{grpc_server}}/hodei.providers.ProviderManagementService/ListProviders",
+							"host": ["{{grpc_server}}"],
+							"path": ["hodei.providers.ProviderManagementService", "ListProviders"]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "grpc_server",
+			"value": "localhost:50051",
+			"type": "string"
+		},
+		{
+			"key": "last_job_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

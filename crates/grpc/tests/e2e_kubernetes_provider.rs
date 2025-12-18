@@ -592,8 +592,8 @@ async fn test_07_kubernetes_provider_creates_pod() {
         return;
     }
 
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerSpec;
     use hodei_jobs_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
 
     let verifier = match KubernetesVerifier::new() {
@@ -621,7 +621,7 @@ async fn test_07_kubernetes_provider_creates_pod() {
         .build()
         .expect("Should build config");
 
-    let provider = match KubernetesProvider::with_config(config).await {
+    let provider: KubernetesProvider = match KubernetesProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: KubernetesProvider not available: {}", e);
@@ -634,7 +634,7 @@ async fn test_07_kubernetes_provider_creates_pod() {
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
     )
-    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+    .with_resources(hodei_jobs_domain::workers::ResourceRequirements {
         cpu_cores: 0.25,                 // 0.25 cores
         memory_bytes: 256 * 1024 * 1024, // 256MB
         disk_bytes: 1024 * 1024 * 1024,
@@ -678,8 +678,8 @@ async fn test_08_kubernetes_provider_pod_lifecycle() {
     }
 
     use hodei_jobs_domain::shared_kernel::WorkerState;
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerSpec;
     use hodei_jobs_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
 
     let verifier = match KubernetesVerifier::new() {
@@ -718,7 +718,7 @@ async fn test_08_kubernetes_provider_pod_lifecycle() {
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
     )
-    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+    .with_resources(hodei_jobs_domain::workers::ResourceRequirements {
         cpu_cores: 0.25,                 // 0.25 cores
         memory_bytes: 256 * 1024 * 1024, // 256MB
         disk_bytes: 1024 * 1024 * 1024,
@@ -857,7 +857,7 @@ async fn test_11_kubernetes_provider_health_check() {
         return;
     }
 
-    use hodei_jobs_domain::worker_provider::{HealthStatus, WorkerProvider};
+    use hodei_jobs_domain::workers::{HealthStatus, WorkerProvider};
     use hodei_jobs_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
 
     let config = KubernetesConfig::builder()
@@ -903,7 +903,7 @@ async fn test_12_kubernetes_provider_capabilities() {
         return;
     }
 
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
     use hodei_jobs_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
 
     let config = KubernetesConfig::builder()
@@ -911,7 +911,7 @@ async fn test_12_kubernetes_provider_capabilities() {
         .build()
         .expect("Should build config");
 
-    let provider = match KubernetesProvider::with_config(config).await {
+    let provider: KubernetesProvider = match KubernetesProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: {}", e);

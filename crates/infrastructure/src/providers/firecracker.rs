@@ -16,8 +16,8 @@ use tracing::{debug, info, warn};
 
 use hodei_jobs_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
-    worker::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
-    worker_provider::{
+    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
+    workers::{
         HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
         WorkerProvider,
     },
@@ -373,17 +373,18 @@ impl IpPool {
             });
         }
 
-        let base_ip: Ipv4Addr = parts[0].parse().map_err(|_| {
-            DomainError::InvalidProviderConfig {
-                message: format!("Invalid IP address: {}", parts[0]),
-            }
-        })?;
+        let base_ip: Ipv4Addr =
+            parts[0]
+                .parse()
+                .map_err(|_| DomainError::InvalidProviderConfig {
+                    message: format!("Invalid IP address: {}", parts[0]),
+                })?;
 
-        let mask_bits: u8 = parts[1].parse().map_err(|_| {
-            DomainError::InvalidProviderConfig {
+        let mask_bits: u8 = parts[1]
+            .parse()
+            .map_err(|_| DomainError::InvalidProviderConfig {
                 message: format!("Invalid mask bits: {}", parts[1]),
-            }
-        })?;
+            })?;
 
         if mask_bits > 30 {
             return Err(DomainError::InvalidProviderConfig {
@@ -520,7 +521,10 @@ impl FirecrackerProvider {
     }
 
     /// Create a new FirecrackerProvider with a specific provider ID
-    pub async fn with_provider_id(provider_id: ProviderId, config: FirecrackerConfig) -> Result<Self> {
+    pub async fn with_provider_id(
+        provider_id: ProviderId,
+        config: FirecrackerConfig,
+    ) -> Result<Self> {
         let mut provider = Self::with_config(config).await?;
         provider.provider_id = provider_id;
         Ok(provider)
@@ -568,30 +572,21 @@ impl FirecrackerProvider {
         // Check Jailer binary if enabled
         if config.use_jailer && !config.jailer_path.exists() {
             return Err(DomainError::InfrastructureError {
-                message: format!(
-                    "Jailer binary not found: {}",
-                    config.jailer_path.display()
-                ),
+                message: format!("Jailer binary not found: {}", config.jailer_path.display()),
             });
         }
 
         // Check kernel
         if !config.kernel_path.exists() {
             return Err(DomainError::InfrastructureError {
-                message: format!(
-                    "Kernel not found: {}",
-                    config.kernel_path.display()
-                ),
+                message: format!("Kernel not found: {}", config.kernel_path.display()),
             });
         }
 
         // Check rootfs
         if !config.rootfs_path.exists() {
             return Err(DomainError::InfrastructureError {
-                message: format!(
-                    "Rootfs not found: {}",
-                    config.rootfs_path.display()
-                ),
+                message: format!("Rootfs not found: {}", config.rootfs_path.display()),
             });
         }
 
@@ -677,7 +672,10 @@ impl FirecrackerProvider {
             warn!("Warning bringing up TAP device: {}", stderr);
         }
 
-        info!("Created TAP device {} for VM {} with IP {}", tap_name, vm_id, ip);
+        info!(
+            "Created TAP device {} for VM {} with IP {}",
+            tap_name, vm_id, ip
+        );
         Ok(tap_name)
     }
 
@@ -739,10 +737,7 @@ impl FirecrackerProvider {
              HODEI_SERVER_ADDRESS={} \
              HODEI_VM_IP={} \
              HODEI_GATEWAY={}",
-            worker_id,
-            server_address,
-            vm_ip,
-            self.config.network.gateway_ip
+            worker_id, server_address, vm_ip, self.config.network.gateway_ip
         );
 
         if let Some(token) = otp_token {
@@ -774,14 +769,15 @@ impl FirecrackerProvider {
             self.build_firecracker_command(&socket_path)
         };
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to start Firecracker: {}", e),
-            })?;
+        let child = cmd.spawn().map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to start Firecracker: {}", e),
+        })?;
 
         let pid = child.id().unwrap_or(0);
-        info!("Started Firecracker process (PID: {}) for VM {}", pid, vm_id);
+        info!(
+            "Started Firecracker process (PID: {}) for VM {}",
+            pid, vm_id
+        );
 
         // Wait for socket to be available
         for _ in 0..50 {
@@ -798,13 +794,8 @@ impl FirecrackerProvider {
         }
 
         // Configure VM via API
-        self.configure_vm_api(
-            &socket_path,
-            spec,
-            &rootfs_path,
-            vm_ip,
-            tap_device,
-        ).await?;
+        self.configure_vm_api(&socket_path, spec, &rootfs_path, vm_ip, tap_device)
+            .await?;
 
         // Start the VM
         self.start_vm_api(&socket_path).await?;
@@ -820,9 +811,12 @@ impl FirecrackerProvider {
 
     fn build_jailer_command(&self, vm_id: &str, socket_path: &Path) -> Command {
         let mut cmd = Command::new(&self.config.jailer_path);
-        cmd.arg("--id").arg(vm_id)
-            .arg("--exec-file").arg(&self.config.firecracker_path)
-            .arg("--chroot-base-dir").arg(&self.config.data_dir);
+        cmd.arg("--id")
+            .arg(vm_id)
+            .arg("--exec-file")
+            .arg(&self.config.firecracker_path)
+            .arg("--chroot-base-dir")
+            .arg(&self.config.data_dir);
 
         if let Some(uid) = self.config.jailer_uid {
             cmd.arg("--uid").arg(uid.to_string());
@@ -864,18 +858,21 @@ impl FirecrackerProvider {
             "ht_enabled": self.config.default_resources.ht_enabled
         });
 
-        self.api_put(&socket_path_str, "/machine-config", &machine_config).await?;
+        self.api_put(&socket_path_str, "/machine-config", &machine_config)
+            .await?;
 
         // Configure boot source
         let otp_token = spec.environment.get("HODEI_OTP_TOKEN").map(|s| s.as_str());
-        let boot_args = self.build_boot_args(&spec.worker_id, &spec.server_address, otp_token, vm_ip);
+        let boot_args =
+            self.build_boot_args(&spec.worker_id, &spec.server_address, otp_token, vm_ip);
 
         let boot_source = serde_json::json!({
             "kernel_image_path": self.config.kernel_path.to_string_lossy(),
             "boot_args": boot_args
         });
 
-        self.api_put(&socket_path_str, "/boot-source", &boot_source).await?;
+        self.api_put(&socket_path_str, "/boot-source", &boot_source)
+            .await?;
 
         // Configure root drive
         let drive_config = serde_json::json!({
@@ -885,7 +882,8 @@ impl FirecrackerProvider {
             "is_read_only": false
         });
 
-        self.api_put(&socket_path_str, "/drives/rootfs", &drive_config).await?;
+        self.api_put(&socket_path_str, "/drives/rootfs", &drive_config)
+            .await?;
 
         // Configure network interface
         let mac = self.generate_mac_address(vm_ip);
@@ -895,7 +893,12 @@ impl FirecrackerProvider {
             "host_dev_name": tap_device
         });
 
-        self.api_put(&socket_path_str, "/network-interfaces/eth0", &network_config).await?;
+        self.api_put(
+            &socket_path_str,
+            "/network-interfaces/eth0",
+            &network_config,
+        )
+        .await?;
 
         Ok(())
     }
@@ -912,20 +915,28 @@ impl FirecrackerProvider {
     }
 
     /// Send PUT request to Firecracker API via Unix socket
-    async fn api_put(&self, socket_path: &str, endpoint: &str, body: &serde_json::Value) -> Result<()> {
-        let body_str = serde_json::to_string(body).map_err(|e| {
-            DomainError::InfrastructureError {
+    async fn api_put(
+        &self,
+        socket_path: &str,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        let body_str =
+            serde_json::to_string(body).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize API request: {}", e),
-            }
-        })?;
+            })?;
 
         // Use curl for simplicity (production would use hyper with Unix socket)
         let output = Command::new("curl")
             .args([
-                "-X", "PUT",
-                "--unix-socket", socket_path,
-                "-H", "Content-Type: application/json",
-                "-d", &body_str,
+                "-X",
+                "PUT",
+                "--unix-socket",
+                socket_path,
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                &body_str,
                 &format!("http://localhost{}", endpoint),
             ])
             .output()
@@ -948,7 +959,10 @@ impl FirecrackerProvider {
     /// Generate MAC address from IP
     fn generate_mac_address(&self, ip: Ipv4Addr) -> String {
         let octets = ip.octets();
-        format!("AA:FC:00:{:02X}:{:02X}:{:02X}", octets[1], octets[2], octets[3])
+        format!(
+            "AA:FC:00:{:02X}:{:02X}:{:02X}",
+            octets[1], octets[2], octets[3]
+        )
     }
 
     /// Map MicroVMState to WorkerState
@@ -977,7 +991,10 @@ impl WorkerProvider for FirecrackerProvider {
         &self.capabilities
     }
 
-    async fn create_worker(&self, spec: &WorkerSpec) -> std::result::Result<WorkerHandle, ProviderError> {
+    async fn create_worker(
+        &self,
+        spec: &WorkerSpec,
+    ) -> std::result::Result<WorkerHandle, ProviderError> {
         let worker_id = spec.worker_id.clone();
         let vm_id = Self::vm_id(&worker_id);
 
@@ -1013,9 +1030,12 @@ impl WorkerProvider for FirecrackerProvider {
         })?;
 
         // Start microVM
-        let pid = self.start_microvm(&vm_id, spec, vm_ip, &tap_device).await.map_err(|e| {
-            ProviderError::ProvisioningFailed(format!("Failed to start microVM: {}", e))
-        })?;
+        let pid = self
+            .start_microvm(&vm_id, spec, vm_ip, &tap_device)
+            .await
+            .map_err(|e| {
+                ProviderError::ProvisioningFailed(format!("Failed to start microVM: {}", e))
+            })?;
 
         // Track VM instance
         let instance = MicroVMInstance {
@@ -1033,7 +1053,10 @@ impl WorkerProvider for FirecrackerProvider {
             vms.insert(worker_id.clone(), instance);
         }
 
-        info!("MicroVM {} created successfully (IP: {}, PID: {})", vm_id, vm_ip, pid);
+        info!(
+            "MicroVM {} created successfully (IP: {}, PID: {})",
+            vm_id, vm_ip, pid
+        );
 
         let handle = WorkerHandle::new(
             worker_id,
@@ -1048,7 +1071,10 @@ impl WorkerProvider for FirecrackerProvider {
         Ok(handle)
     }
 
-    async fn get_worker_status(&self, handle: &WorkerHandle) -> std::result::Result<WorkerState, ProviderError> {
+    async fn get_worker_status(
+        &self,
+        handle: &WorkerHandle,
+    ) -> std::result::Result<WorkerState, ProviderError> {
         let vms = self.active_vms.read().await;
 
         match vms.get(&handle.worker_id) {
@@ -1057,7 +1083,10 @@ impl WorkerProvider for FirecrackerProvider {
         }
     }
 
-    async fn destroy_worker(&self, handle: &WorkerHandle) -> std::result::Result<(), ProviderError> {
+    async fn destroy_worker(
+        &self,
+        handle: &WorkerHandle,
+    ) -> std::result::Result<(), ProviderError> {
         let vm_id = &handle.provider_resource_id;
         info!("Destroying Firecracker microVM: {}", vm_id);
 
@@ -1073,11 +1102,9 @@ impl WorkerProvider for FirecrackerProvider {
                 let action = serde_json::json!({
                     "action_type": "SendCtrlAltDel"
                 });
-                let _ = self.api_put(
-                    &instance.socket_path.to_string_lossy(),
-                    "/actions",
-                    &action,
-                ).await;
+                let _ = self
+                    .api_put(&instance.socket_path.to_string_lossy(), "/actions", &action)
+                    .await;
 
                 // Wait for graceful shutdown
                 tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_secs)).await;
@@ -1170,20 +1197,14 @@ impl WorkerProvider for FirecrackerProvider {
         // Check kernel
         if !self.config.kernel_path.exists() {
             return Ok(HealthStatus::Degraded {
-                reason: format!(
-                    "Kernel not found: {}",
-                    self.config.kernel_path.display()
-                ),
+                reason: format!("Kernel not found: {}", self.config.kernel_path.display()),
             });
         }
 
         // Check rootfs
         if !self.config.rootfs_path.exists() {
             return Ok(HealthStatus::Degraded {
-                reason: format!(
-                    "Rootfs not found: {}",
-                    self.config.rootfs_path.display()
-                ),
+                reason: format!("Rootfs not found: {}", self.config.rootfs_path.display()),
             });
         }
 
@@ -1206,7 +1227,10 @@ mod tests {
     #[test]
     fn test_firecracker_config_default() {
         let config = FirecrackerConfig::default();
-        assert_eq!(config.firecracker_path, PathBuf::from("/usr/bin/firecracker"));
+        assert_eq!(
+            config.firecracker_path,
+            PathBuf::from("/usr/bin/firecracker")
+        );
         assert_eq!(config.jailer_path, PathBuf::from("/usr/bin/jailer"));
         assert!(config.use_jailer);
         assert_eq!(config.boot_timeout_secs, 30);
@@ -1225,7 +1249,10 @@ mod tests {
             .build()
             .expect("should build config");
 
-        assert_eq!(config.firecracker_path, PathBuf::from("/custom/firecracker"));
+        assert_eq!(
+            config.firecracker_path,
+            PathBuf::from("/custom/firecracker")
+        );
         assert_eq!(config.jailer_path, PathBuf::from("/custom/jailer"));
         assert_eq!(config.data_dir, PathBuf::from("/custom/data"));
         assert!(!config.use_jailer);
@@ -1234,9 +1261,7 @@ mod tests {
 
     #[test]
     fn test_firecracker_config_builder_validation() {
-        let result = FirecrackerConfig::builder()
-            .data_dir("")
-            .build();
+        let result = FirecrackerConfig::builder().data_dir("").build();
 
         assert!(result.is_err());
     }

@@ -1,7 +1,7 @@
-use hodei_jobs_domain::provider_config::{DockerConfig, ProviderConfig, ProviderTypeConfig};
-use hodei_jobs_domain::provider_config::ProviderConfigRepository;
+use hodei_jobs_domain::providers::config::ProviderConfigRepository;
+use hodei_jobs_domain::providers::config::{DockerConfig, ProviderConfig, ProviderTypeConfig};
 use hodei_jobs_domain::shared_kernel::{ProviderId, ProviderStatus};
-use hodei_jobs_domain::worker::ProviderType;
+use hodei_jobs_domain::workers::ProviderType;
 use hodei_jobs_infrastructure::persistence::{DatabaseConfig, PostgresProviderConfigRepository};
 
 mod common;
@@ -70,7 +70,9 @@ async fn test_postgres_provider_config_repository_lifecycle() {
     updated.status = ProviderStatus::Disabled;
     updated.updated_at = chrono::Utc::now();
 
-    repo.update(&updated).await.expect("Failed to update provider");
+    repo.update(&updated)
+        .await
+        .expect("Failed to update provider");
 
     let found_updated = repo
         .find_by_id(&provider.id)
@@ -85,7 +87,9 @@ async fn test_postgres_provider_config_repository_lifecycle() {
         .expect("Failed to check exists_by_name");
     assert!(exists);
 
-    repo.delete(&provider.id).await.expect("Failed to delete provider");
+    repo.delete(&provider.id)
+        .await
+        .expect("Failed to delete provider");
 
     let deleted = repo
         .find_by_id(&provider.id)

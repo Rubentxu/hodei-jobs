@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 mod common;
 
-use common::{TestServerConfig, TestStack, get_postgres_context};
+use common::TestStack;
 
 // =============================================================================
 // Test Helpers
@@ -351,7 +351,7 @@ echo "Line 3: Done""#;
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Stderr logging test - worker process not executing commands properly"]
+
 async fn test_e2e_stderr_logging() {
     println!("\n🧪 E2E Test: Stderr Logging");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

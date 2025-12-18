@@ -7,17 +7,16 @@ pub mod docker;
 pub mod firecracker;
 pub mod kubernetes;
 
-#[cfg(any(test, feature = "test"))]
-pub mod test_worker_provider;
-
-pub use docker::DockerProvider;
+pub use docker::{DockerProvider, DockerProviderBuilder};
 pub use firecracker::{
     FirecrackerConfig, FirecrackerConfigBuilder, FirecrackerNetworkConfig, FirecrackerProvider,
-    IpPool, MicroVMResources,
 };
 pub use kubernetes::{
     KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesToleration,
 };
 
-#[cfg(any(test, feature = "test"))]
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_worker_provider;
+
+#[cfg(any(test, feature = "test-utils"))]
 pub use test_worker_provider::{TestWorkerConfig, TestWorkerProvider, TestWorkerProviderBuilder};

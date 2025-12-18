@@ -389,11 +389,11 @@ async fn test_06_job_queued_and_dispatched() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_07_docker_provider_creates_container() {
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerSpec;
     use hodei_jobs_infrastructure::providers::DockerProvider;
 
-    let provider = match DockerProvider::new().await {
+    let provider: DockerProvider = match DockerProvider::new().await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: DockerProvider not available: {}", e);
@@ -407,7 +407,7 @@ async fn test_07_docker_provider_creates_container() {
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
     )
-    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+    .with_resources(hodei_jobs_domain::workers::ResourceRequirements {
         cpu_cores: 0.25,
         memory_bytes: 256 * 1024 * 1024, // 256MB
         disk_bytes: 1024 * 1024 * 1024,
@@ -444,11 +444,11 @@ async fn test_07_docker_provider_creates_container() {
 async fn test_08_docker_provider_container_lifecycle() {
     #[allow(unused_imports)]
     use hodei_jobs_domain::shared_kernel::WorkerState;
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerSpec;
     use hodei_jobs_infrastructure::providers::DockerProvider;
 
-    let provider = match DockerProvider::new().await {
+    let provider: DockerProvider = match DockerProvider::new().await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: {}", e);
@@ -460,7 +460,7 @@ async fn test_08_docker_provider_container_lifecycle() {
         "alpine:latest".to_string(),
         "http://localhost:50051".to_string(),
     )
-    .with_resources(hodei_jobs_domain::worker::ResourceRequirements {
+    .with_resources(hodei_jobs_domain::workers::ResourceRequirements {
         cpu_cores: 0.25,
         memory_bytes: 256 * 1024 * 1024, // 256MB
         disk_bytes: 1024 * 1024 * 1024,

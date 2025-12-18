@@ -12,10 +12,10 @@ use hodei_jobs::{
     worker_agent_service_server::WorkerAgentServiceServer,
 };
 
-use hodei_jobs_application::job_execution_usecases::CreateJobUseCase;
+use hodei_jobs_application::jobs::create::CreateJobUseCase;
 use hodei_jobs_application::smart_scheduler::SchedulerConfig;
 use hodei_jobs_domain::shared_kernel::{ProviderId, WorkerState};
-use hodei_jobs_domain::worker::{ProviderType, WorkerHandle, WorkerSpec};
+use hodei_jobs_domain::workers::{ProviderType, WorkerHandle, WorkerSpec};
 use hodei_jobs_grpc::services::{SchedulerServiceImpl, WorkerAgentServiceImpl};
 use hodei_jobs_infrastructure::persistence::{
     DatabaseConfig, PostgresJobQueue, PostgresJobRepository, PostgresWorkerRegistry,
@@ -40,10 +40,10 @@ async fn start_test_server(db_url: String) -> (SocketAddr, oneshot::Sender<()>) 
     worker_registry.run_migrations().await.unwrap();
 
     let job_repository =
-        Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-    let job_queue = Arc::new(job_queue) as Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+        Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
+    let job_queue = Arc::new(job_queue) as Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
     let worker_registry =
-        Arc::new(worker_registry) as Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
+        Arc::new(worker_registry) as Arc<dyn hodei_jobs_domain::workers::WorkerRegistry>;
 
     // Register a worker in DB so scheduler can assign.
     let worker_spec = WorkerSpec::new(

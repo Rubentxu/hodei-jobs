@@ -8,24 +8,21 @@ use axum::{
     response::Json as AxumJson,
     routing::{get, post},
 };
-use hodei_jobs_application::{
-    ProviderRegistry,
-    job_execution_usecases::{
-        CancelJobResponse, CancelJobUseCase, CreateJobRequest, CreateJobResponse, CreateJobUseCase,
-        GetJobStatusUseCase, TrackJobResponse,
-    },
-    provider_usecases::{
-        GetProviderResponse, GetProviderUseCase, ListProvidersRequest, ListProvidersResponse,
-        ListProvidersUseCase, RegisterProviderRequest, RegisterProviderResponse,
-        RegisterProviderUseCase,
-    },
+use hodei_jobs_application::jobs::cancel::{CancelJobResponse, CancelJobUseCase};
+use hodei_jobs_application::jobs::create::{CreateJobRequest, CreateJobResponse, CreateJobUseCase};
+use hodei_jobs_application::jobs::queries::{GetJobStatusUseCase, TrackJobResponse};
+use hodei_jobs_application::providers::ProviderRegistry;
+use hodei_jobs_application::providers::usecases::{
+    GetProviderResponse, GetProviderUseCase, ListProvidersRequest, ListProvidersResponse,
+    ListProvidersUseCase, RegisterProviderRequest, RegisterProviderResponse,
+    RegisterProviderUseCase,
 };
-use hodei_jobs_domain::provider_config::ProviderTypeConfig;
-use hodei_jobs_infrastructure::event_bus::postgres::PostgresEventBus;
-use hodei_jobs_infrastructure::persistence::{
-    PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
+use hodei_jobs_domain::providers::ProviderTypeConfig;
+use hodei_jobs_infrastructure::messaging::postgres::PostgresEventBus;
+use hodei_jobs_infrastructure::persistence::postgres::{
+    PostgresAuditRepository, PostgresJobQueue, PostgresJobRepository,
+    PostgresProviderConfigRepository,
 };
-use hodei_jobs_infrastructure::repositories::PostgresAuditRepository;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use std::env;
@@ -44,9 +41,7 @@ pub trait CreateJobUseCaseTrait: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl RegisterProviderUseCaseTrait
-    for hodei_jobs_application::provider_usecases::RegisterProviderUseCase
-{
+impl RegisterProviderUseCaseTrait for hodei_jobs_application::providers::RegisterProviderUseCase {
     async fn execute(
         &self,
         request: RegisterProviderRequest,
@@ -56,7 +51,7 @@ impl RegisterProviderUseCaseTrait
 }
 
 #[async_trait::async_trait]
-impl ListProvidersUseCaseTrait for hodei_jobs_application::provider_usecases::ListProvidersUseCase {
+impl ListProvidersUseCaseTrait for hodei_jobs_application::providers::ListProvidersUseCase {
     async fn execute(
         &self,
         request: ListProvidersRequest,
@@ -66,7 +61,7 @@ impl ListProvidersUseCaseTrait for hodei_jobs_application::provider_usecases::Li
 }
 
 #[async_trait::async_trait]
-impl GetProviderUseCaseTrait for hodei_jobs_application::provider_usecases::GetProviderUseCase {
+impl GetProviderUseCaseTrait for hodei_jobs_application::providers::GetProviderUseCase {
     async fn execute(
         &self,
         provider_id: hodei_jobs_domain::shared_kernel::ProviderId,
@@ -142,7 +137,7 @@ pub trait GetAuditLogsUseCaseTrait: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl GetAuditLogsUseCaseTrait for hodei_jobs_application::audit_usecases::AuditService {
+impl GetAuditLogsUseCaseTrait for hodei_jobs_application::audit::AuditService {
     async fn execute(
         &self,
         correlation_id: String,
@@ -269,7 +264,7 @@ async fn create_job(
 
     // Convertir DTO de API a DTO de aplicación
     let app_request = CreateJobRequest {
-        spec: hodei_jobs_application::job_execution_usecases::JobSpecRequest {
+        spec: hodei_jobs_application::jobs::create::JobSpecRequest {
             command: request.spec.command,
             image: request.spec.image,
             env: request.spec.env,
@@ -494,13 +489,13 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
     let event_bus = std::sync::Arc::new(PostgresEventBus::new(pool.clone()));
 
     let provider_repository = std::sync::Arc::new(provider_repository)
-        as std::sync::Arc<dyn hodei_jobs_domain::provider_config::ProviderConfigRepository>;
+        as std::sync::Arc<dyn hodei_jobs_domain::providers::ProviderConfigRepository>;
     let provider_registry = std::sync::Arc::new(ProviderRegistry::new(provider_repository));
 
     let job_repository = std::sync::Arc::new(job_repository)
-        as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-    let job_queue = std::sync::Arc::new(job_queue)
-        as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+        as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
+    let job_queue =
+        std::sync::Arc::new(job_queue) as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
 
     let create_job_usecase =
         CreateJobUseCase::new(job_repository.clone(), job_queue, event_bus.clone());
@@ -513,9 +508,8 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
     let get_provider_usecase = GetProviderUseCase::new(provider_registry);
 
     let audit_repository = PostgresAuditRepository::new(pool.clone());
-    let audit_service = hodei_jobs_application::audit_usecases::AuditService::new(
-        std::sync::Arc::new(audit_repository),
-    );
+    let audit_service =
+        hodei_jobs_application::audit::AuditService::new(std::sync::Arc::new(audit_repository));
 
     Ok(AppState {
         create_job_usecase: std::sync::Arc::new(create_job_usecase),
@@ -543,7 +537,7 @@ pub async fn start_server(addr: SocketAddr) -> Result<(), Box<dyn std::error::Er
 
 /// Implementaciones de traits para use cases
 #[async_trait::async_trait]
-impl CreateJobUseCaseTrait for hodei_jobs_application::job_execution_usecases::CreateJobUseCase {
+impl CreateJobUseCaseTrait for hodei_jobs_application::jobs::create::CreateJobUseCase {
     async fn execute(
         &self,
         request: CreateJobRequest,
@@ -553,9 +547,7 @@ impl CreateJobUseCaseTrait for hodei_jobs_application::job_execution_usecases::C
 }
 
 #[async_trait::async_trait]
-impl GetJobStatusUseCaseTrait
-    for hodei_jobs_application::job_execution_usecases::GetJobStatusUseCase
-{
+impl GetJobStatusUseCaseTrait for hodei_jobs_application::jobs::queries::GetJobStatusUseCase {
     async fn execute(
         &self,
         job_id: hodei_jobs_domain::shared_kernel::JobId,
@@ -565,7 +557,7 @@ impl GetJobStatusUseCaseTrait
 }
 
 #[async_trait::async_trait]
-impl CancelJobUseCaseTrait for hodei_jobs_application::job_execution_usecases::CancelJobUseCase {
+impl CancelJobUseCaseTrait for hodei_jobs_application::jobs::cancel::CancelJobUseCase {
     async fn execute(
         &self,
         job_id: hodei_jobs_domain::shared_kernel::JobId,
@@ -586,7 +578,7 @@ mod tests {
     use futures::stream::BoxStream;
     use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
     use hodei_jobs_domain::events::DomainEvent;
-    use hodei_jobs_infrastructure::persistence::{FileBasedPersistence, PersistenceConfig};
+
     use http_body_util::BodyExt;
     use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
@@ -634,25 +626,15 @@ mod tests {
         let job_repository = std::sync::Arc::new(
             hodei_jobs_infrastructure::repositories::InMemoryJobRepository::new(),
         )
-            as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
+            as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
         let job_queue =
             std::sync::Arc::new(hodei_jobs_infrastructure::repositories::InMemoryJobQueue::new())
-                as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+                as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
 
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let data_directory = temp_dir.keep().to_string_lossy().to_string();
-
-        let persistence = FileBasedPersistence::new(PersistenceConfig {
-            data_directory,
-            backup_enabled: false,
-            auto_compact: false,
-        });
         let provider_repo =
-            hodei_jobs_infrastructure::persistence::FileBasedProviderConfigRepository::new(
-                persistence,
-            );
+            hodei_jobs_infrastructure::repositories::in_memory::InMemoryProviderConfigRepository::new();
         let provider_repo = std::sync::Arc::new(provider_repo)
-            as std::sync::Arc<dyn hodei_jobs_domain::provider_config::ProviderConfigRepository>;
+            as std::sync::Arc<dyn hodei_jobs_domain::providers::ProviderConfigRepository>;
         let provider_registry = std::sync::Arc::new(ProviderRegistry::new(provider_repo));
 
         let shared_audit_logs = Arc::new(Mutex::new(Vec::new()));
@@ -676,7 +658,7 @@ mod tests {
             list_providers_usecase: std::sync::Arc::new(list_providers_usecase),
             get_provider_usecase: std::sync::Arc::new(get_provider_usecase),
             get_audit_logs_usecase: std::sync::Arc::new(
-                hodei_jobs_application::audit_usecases::AuditService::new(std::sync::Arc::new(
+                hodei_jobs_application::audit::AuditService::new(std::sync::Arc::new(
                     MockAuditRepository::new_with_logs(shared_audit_logs),
                 )),
             ),

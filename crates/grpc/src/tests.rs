@@ -84,7 +84,8 @@ mod service_creation_tests {
         JobExecutionServiceImpl, MetricsServiceImpl, SchedulerServiceImpl, WorkerAgentServiceImpl,
     };
     use futures::stream::BoxStream;
-    use hodei_jobs_application::job_execution_usecases::{CancelJobUseCase, CreateJobUseCase};
+    use hodei_jobs_application::jobs::cancel::CancelJobUseCase;
+    use hodei_jobs_application::jobs::create::CreateJobUseCase;
     use hodei_jobs_application::smart_scheduler::SchedulerConfig;
     use hodei_jobs_domain::event_bus::{EventBus, EventBusError};
     use hodei_jobs_infrastructure::repositories::in_memory::{
@@ -123,11 +124,11 @@ mod service_creation_tests {
     #[test]
     fn test_job_execution_service_creation() {
         let job_repository = std::sync::Arc::new(InMemoryJobRepository::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
+            as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
         let job_queue = std::sync::Arc::new(InMemoryJobQueue::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+            as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
         let worker_registry = std::sync::Arc::new(InMemoryWorkerRegistry::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
+            as std::sync::Arc<dyn hodei_jobs_domain::workers::WorkerRegistry>;
         let event_bus = std::sync::Arc::new(MockEventBus);
 
         let create_job_usecase =
@@ -152,11 +153,11 @@ mod service_creation_tests {
     #[test]
     fn test_scheduler_service_creation() {
         let job_repository = std::sync::Arc::new(InMemoryJobRepository::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
+            as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
         let job_queue = std::sync::Arc::new(InMemoryJobQueue::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
+            as std::sync::Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
         let worker_registry = std::sync::Arc::new(InMemoryWorkerRegistry::new())
-            as std::sync::Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
+            as std::sync::Arc<dyn hodei_jobs_domain::workers::WorkerRegistry>;
 
         let event_bus = std::sync::Arc::new(MockEventBus);
         let create_job_usecase =

@@ -64,14 +64,15 @@ use hodei_jobs::{
     worker_agent_service_server::WorkerAgentServiceServer,
 };
 
-use hodei_jobs_application::job_controller::JobController;
-use hodei_jobs_application::job_execution_usecases::{CancelJobUseCase, CreateJobUseCase};
+use hodei_jobs_application::jobs::cancel::CancelJobUseCase;
+use hodei_jobs_application::jobs::controller::JobController;
+use hodei_jobs_application::jobs::create::CreateJobUseCase;
 use hodei_jobs_application::smart_scheduler::SchedulerConfig;
-use hodei_jobs_application::worker_provisioning_impl::{
+use hodei_jobs_application::workers::provisioning_impl::{
     DefaultWorkerProvisioningService, ProvisioningConfig,
 };
 use hodei_jobs_domain::shared_kernel::ProviderId;
-use hodei_jobs_domain::worker_provider::WorkerProvider;
+use hodei_jobs_domain::workers::WorkerProvider;
 use hodei_jobs_grpc::services::{
     JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc, SchedulerServiceImpl,
     WorkerAgentServiceImpl,
@@ -380,12 +381,12 @@ impl TestServer {
 
         // Arc wrappers
         let job_repository =
-            Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::job_execution::JobRepository>;
-        let job_queue = Arc::new(job_queue) as Arc<dyn hodei_jobs_domain::job_execution::JobQueue>;
-        let worker_registry = Arc::new(worker_registry)
-            as Arc<dyn hodei_jobs_domain::worker_registry::WorkerRegistry>;
-        let token_store = Arc::new(token_store)
-            as Arc<dyn hodei_jobs_domain::otp_token_store::WorkerBootstrapTokenStore>;
+            Arc::new(job_repository) as Arc<dyn hodei_jobs_domain::jobs::JobRepository>;
+        let job_queue = Arc::new(job_queue) as Arc<dyn hodei_jobs_domain::jobs::JobQueue>;
+        let worker_registry =
+            Arc::new(worker_registry) as Arc<dyn hodei_jobs_domain::workers::WorkerRegistry>;
+        let token_store =
+            Arc::new(token_store) as Arc<dyn hodei_jobs_domain::iam::WorkerBootstrapTokenStore>;
 
         // Create use cases
         let event_bus = Arc::new(MockEventBus);
@@ -423,13 +424,13 @@ impl TestServer {
 
         // Create provisioning service (with provider)
         let provisioning_service: Option<
-            Arc<dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService>,
+            Arc<dyn hodei_jobs_application::workers::WorkerProvisioningService>,
         > = if config.enable_docker_provider || config.enable_test_provider {
             // Initialize provider (Docker or Test)
             let mut providers: HashMap<ProviderId, Arc<dyn WorkerProvider>> = HashMap::new();
 
             if config.enable_docker_provider {
-                let docker_provider = DockerProvider::new().await?;
+                let docker_provider: DockerProvider = DockerProvider::new().await?;
                 let provider_id = docker_provider.provider_id().clone();
                 providers.insert(
                     provider_id,
@@ -471,7 +472,7 @@ impl TestServer {
                 provisioning_config,
             ))
                 as Arc<
-                    dyn hodei_jobs_application::worker_provisioning::WorkerProvisioningService,
+                    dyn hodei_jobs_application::workers::WorkerProvisioningService,
                 >)
         } else {
             None
@@ -521,7 +522,7 @@ impl TestServer {
         // Start JobController if enabled
         let controller_handle = if config.enable_job_controller {
             let sender = Arc::new(GrpcWorkerCommandSender::new(worker_service.clone()))
-                as Arc<dyn hodei_jobs_application::worker_command_sender::WorkerCommandSender>;
+                as Arc<dyn hodei_jobs_application::workers::WorkerCommandSender>;
 
             let controller = Arc::new(JobController::new(
                 job_queue,
@@ -682,9 +683,10 @@ impl TestStack {
 pub async fn is_docker_available() -> bool {
     match DockerProvider::new().await {
         Ok(provider) => {
+            let provider: DockerProvider = provider;
             matches!(
                 provider.health_check().await,
-                Ok(hodei_jobs_domain::worker_provider::HealthStatus::Healthy)
+                Ok(hodei_jobs_domain::workers::HealthStatus::Healthy)
             )
         }
         Err(_) => false,

@@ -3,12 +3,14 @@
 //! Uses TestContainers for PostgreSQL. Pattern: Single Instance + Resource Pooling.
 
 use hodei_jobs_domain::{
-    provider_config::{DockerConfig, ProviderConfig, ProviderConfigRepository, ProviderTypeConfig},
+    providers::config::{
+        DockerConfig, ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
+    },
     shared_kernel::ProviderStatus,
-    worker::ProviderType,
+    workers::ProviderType,
 };
 use hodei_jobs_infrastructure::persistence::{DatabaseConfig, PostgresProviderConfigRepository};
-use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
@@ -32,12 +34,13 @@ async fn get_postgres_context() -> &'static PostgresTestContext {
                 .expect("Failed to start Postgres container");
 
             let host = container.get_host().await.expect("Failed to get host");
-            let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("Failed to get port");
 
-            let connection_string = format!(
-                "postgres://postgres:postgres@{}:{}/postgres",
-                host, port
-            );
+            let connection_string =
+                format!("postgres://postgres:postgres@{}:{}/postgres", host, port);
 
             PostgresTestContext {
                 _container: container,
@@ -50,7 +53,7 @@ async fn get_postgres_context() -> &'static PostgresTestContext {
 /// Create a repository connected to the shared container
 async fn create_test_repository() -> PostgresProviderConfigRepository {
     let ctx = get_postgres_context().await;
-    
+
     let config = DatabaseConfig {
         url: ctx.connection_string.clone(),
         max_connections: 5,

@@ -19,20 +19,19 @@
 use async_trait::async_trait;
 use hodei_jobs_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerState},
-    worker::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
-    worker_provider::{
-        HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
-        WorkerProvider,
+    workers::provider_api::{
+        HealthStatus, LogEntry, ProviderCapabilities, ProviderError, ResourceLimits, WorkerProvider,
     },
+    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
 };
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command as AsyncCommand;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 /// Test Worker Provider for fast E2E testing
 ///
@@ -436,7 +435,7 @@ impl WorkerProvider for TestWorkerProvider {
             });
         }
 
-        let workers = self.active_workers.read().await;
+        let _workers = self.active_workers.read().await;
         Ok(HealthStatus::Healthy)
     }
 }

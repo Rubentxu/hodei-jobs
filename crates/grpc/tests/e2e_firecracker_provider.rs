@@ -33,16 +33,14 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use hodei_jobs::{
-    QueueJobRequest, JobDefinition, WorkerId, JobId,
-    RegisterWorkerRequest, WorkerInfo, ResourceCapacity,
-    WorkerMessage, WorkerHeartbeat, JobResultMessage,
-    worker_message::Payload as WorkerPayload,
-    server_message::Payload as ServerPayload,
+    JobDefinition, JobId, JobResultMessage, QueueJobRequest, RegisterWorkerRequest,
+    ResourceCapacity, WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage,
+    server_message::Payload as ServerPayload, worker_message::Payload as WorkerPayload,
 };
 
 mod common;
 
-use common::{TestStack, TestServerConfig, get_postgres_context};
+use common::{TestServerConfig, TestStack, get_postgres_context};
 
 // =============================================================================
 // Helper Functions
@@ -55,28 +53,27 @@ fn should_run_fc_tests() -> bool {
 fn get_firecracker_path() -> PathBuf {
     PathBuf::from(
         std::env::var("HODEI_FC_FIRECRACKER_PATH")
-            .unwrap_or_else(|_| "/usr/bin/firecracker".to_string())
+            .unwrap_or_else(|_| "/usr/bin/firecracker".to_string()),
     )
 }
 
 fn get_kernel_path() -> PathBuf {
     PathBuf::from(
         std::env::var("HODEI_FC_KERNEL_PATH")
-            .unwrap_or_else(|_| "/var/lib/hodei/vmlinux".to_string())
+            .unwrap_or_else(|_| "/var/lib/hodei/vmlinux".to_string()),
     )
 }
 
 fn get_rootfs_path() -> PathBuf {
     PathBuf::from(
         std::env::var("HODEI_FC_ROOTFS_PATH")
-            .unwrap_or_else(|_| "/var/lib/hodei/rootfs.ext4".to_string())
+            .unwrap_or_else(|_| "/var/lib/hodei/rootfs.ext4".to_string()),
     )
 }
 
 fn get_data_dir() -> PathBuf {
     PathBuf::from(
-        std::env::var("HODEI_FC_DATA_DIR")
-            .unwrap_or_else(|_| "/tmp/hodei-fc-test".to_string())
+        std::env::var("HODEI_FC_DATA_DIR").unwrap_or_else(|_| "/tmp/hodei-fc-test".to_string()),
     )
 }
 
@@ -114,12 +111,15 @@ impl FirecrackerVerifier {
 
     pub fn check_all_requirements(&self) -> Vec<String> {
         let mut missing = Vec::new();
-        
+
         if !self.is_kvm_available() {
             missing.push("/dev/kvm not available".to_string());
         }
         if !self.is_firecracker_available() {
-            missing.push(format!("Firecracker binary not found at {:?}", self.firecracker_path));
+            missing.push(format!(
+                "Firecracker binary not found at {:?}",
+                self.firecracker_path
+            ));
         }
         if !self.is_kernel_available() {
             missing.push(format!("Kernel not found at {:?}", self.kernel_path));
@@ -127,7 +127,7 @@ impl FirecrackerVerifier {
         if !self.is_rootfs_available() {
             missing.push(format!("Rootfs not found at {:?}", self.rootfs_path));
         }
-        
+
         missing
     }
 
@@ -136,9 +136,9 @@ impl FirecrackerVerifier {
     }
 
     pub fn can_run_full_tests(&self) -> bool {
-        self.is_kvm_available() 
-            && self.is_firecracker_available() 
-            && self.is_kernel_available() 
+        self.is_kvm_available()
+            && self.is_firecracker_available()
+            && self.is_kernel_available()
             && self.is_rootfs_available()
     }
 
@@ -146,11 +146,11 @@ impl FirecrackerVerifier {
         let output = std::process::Command::new(&self.firecracker_path)
             .arg("--version")
             .output()?;
-        
+
         if !output.status.success() {
             anyhow::bail!("Failed to get Firecracker version");
         }
-        
+
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 }
@@ -181,11 +181,14 @@ async fn test_01_firecracker_available() {
 
     // Check Firecracker binary
     if !verifier.is_firecracker_available() {
-        eprintln!("⚠ Firecracker binary not found at {:?}", get_firecracker_path());
+        eprintln!(
+            "⚠ Firecracker binary not found at {:?}",
+            get_firecracker_path()
+        );
         eprintln!("  Download from: https://github.com/firecracker-microvm/firecracker/releases");
         return;
     }
-    
+
     match verifier.get_firecracker_version() {
         Ok(version) => println!("✓ Firecracker disponible: {}", version),
         Err(_) => println!("✓ Firecracker disponible (version unknown)"),
@@ -196,7 +199,9 @@ async fn test_01_firecracker_available() {
         println!("✓ Kernel disponible: {:?}", get_kernel_path());
     } else {
         println!("⚠ Kernel no encontrado: {:?}", get_kernel_path());
-        println!("  Download from: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.9/x86_64/vmlinux-5.10.217");
+        println!(
+            "  Download from: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.9/x86_64/vmlinux-5.10.217"
+        );
     }
 
     if verifier.is_rootfs_available() {
@@ -223,7 +228,7 @@ async fn test_02_postgres_testcontainer() {
             return;
         }
     };
-    
+
     println!("✓ PostgreSQL iniciado: {}", db.connection_string);
     assert!(!db.connection_string.is_empty());
 }
@@ -256,7 +261,7 @@ async fn test_03_grpc_server_starts() {
 
     let client = server.job_client().await;
     assert!(client.is_ok(), "Should create job client");
-    
+
     println!("✓ Server gRPC iniciado en {}", server.addr);
     server.shutdown().await;
 }
@@ -283,19 +288,27 @@ async fn test_04_worker_registration_with_otp() {
     };
 
     let worker_id = uuid::Uuid::new_v4().to_string();
-    
-    let otp = stack.server.generate_otp(&worker_id).await
+
+    let otp = stack
+        .server
+        .generate_otp(&worker_id)
+        .await
         .expect("Should generate OTP");
     println!("✓ OTP generado para worker: {}", worker_id);
 
-    let mut worker_client = stack.server.worker_client().await
+    let mut worker_client = stack
+        .server
+        .worker_client()
+        .await
         .expect("Should create worker client");
 
     let reg_request = RegisterWorkerRequest {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "Firecracker Test Worker".to_string(),
             version: "1.0.0".to_string(),
             hostname: "fc-microvm".to_string(),
@@ -318,13 +331,21 @@ async fn test_04_worker_registration_with_otp() {
         }),
     };
 
-    let reg_response = worker_client.register(reg_request).await
+    let reg_response = worker_client
+        .register(reg_request)
+        .await
         .expect("Should register worker")
         .into_inner();
 
     assert!(reg_response.success, "Registration should succeed");
-    assert!(!reg_response.session_id.is_empty(), "Should have session_id");
-    println!("✓ Worker registrado con session: {}", reg_response.session_id);
+    assert!(
+        !reg_response.session_id.is_empty(),
+        "Should have session_id"
+    );
+    println!(
+        "✓ Worker registrado con session: {}",
+        reg_response.session_id
+    );
 
     stack.shutdown().await;
 }
@@ -355,7 +376,9 @@ async fn test_05_worker_stream_connection() {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "FC Stream Test Worker".to_string(),
             ..Default::default()
         }),
@@ -367,7 +390,9 @@ async fn test_05_worker_stream_connection() {
 
     let heartbeat = WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             status: 2, // AVAILABLE
             usage: None,
             active_jobs: 0,
@@ -378,7 +403,9 @@ async fn test_05_worker_stream_connection() {
     tx.send(heartbeat).await.unwrap();
 
     let inbound = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let response = worker_client.worker_stream(inbound).await
+    let response = worker_client
+        .worker_stream(inbound)
+        .await
         .expect("Should connect to stream");
     let mut stream = response.into_inner();
 
@@ -415,7 +442,9 @@ async fn test_06_job_queued_and_dispatched() {
         auth_token: otp,
         session_id: String::new(),
         worker_info: Some(WorkerInfo {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             name: "FC Job Dispatch Test Worker".to_string(),
             capacity: Some(ResourceCapacity {
                 cpu_cores: 1.0,
@@ -436,7 +465,9 @@ async fn test_06_job_queued_and_dispatched() {
 
     let heartbeat = WorkerMessage {
         payload: Some(WorkerPayload::Heartbeat(WorkerHeartbeat {
-            worker_id: Some(WorkerId { value: worker_id.clone() }),
+            worker_id: Some(WorkerId {
+                value: worker_id.clone(),
+            }),
             status: 2,
             usage: None,
             active_jobs: 0,
@@ -458,7 +489,9 @@ async fn test_06_job_queued_and_dispatched() {
 
     let queue_request = QueueJobRequest {
         job_definition: Some(JobDefinition {
-            job_id: Some(JobId { value: job_id.clone() }),
+            job_id: Some(JobId {
+                value: job_id.clone(),
+            }),
             name: "FC Dispatch Test Job".to_string(),
             description: "Test job dispatch for Firecracker".to_string(),
             command: "echo".to_string(),
@@ -474,7 +507,11 @@ async fn test_06_job_queued_and_dispatched() {
         queued_by: "fc-test".to_string(),
     };
 
-    let queue_response = job_client.queue_job(queue_request).await.unwrap().into_inner();
+    let queue_response = job_client
+        .queue_job(queue_request)
+        .await
+        .unwrap()
+        .into_inner();
     assert!(queue_response.success, "Job should be queued");
     println!("✓ Job encolado: {}", job_id);
 
@@ -488,7 +525,8 @@ async fn test_06_job_queued_and_dispatched() {
             }
         }
         None
-    }).await;
+    })
+    .await;
 
     match run_job_result {
         Ok(Some(run_job)) => {
@@ -532,8 +570,8 @@ async fn test_07_firecracker_provider_creates_vm() {
         return;
     }
 
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerSpec;
     use hodei_jobs_infrastructure::providers::{FirecrackerConfig, FirecrackerProvider};
 
     let verifier = FirecrackerVerifier::new().expect("Should create verifier");
@@ -556,7 +594,7 @@ async fn test_07_firecracker_provider_creates_vm() {
         .build()
         .expect("Should build config");
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: FirecrackerProvider not available: {}", e);
@@ -582,7 +620,10 @@ async fn test_07_firecracker_provider_creates_vm() {
     println!("✓ MicroVM creado: {}", handle.provider_resource_id);
 
     // Cleanup
-    provider.destroy_worker(&handle).await.expect("Should destroy");
+    provider
+        .destroy_worker(&handle)
+        .await
+        .expect("Should destroy");
     println!("✓ MicroVM eliminado");
 }
 
@@ -595,9 +636,9 @@ async fn test_08_firecracker_provider_vm_lifecycle() {
         return;
     }
 
-    use hodei_jobs_domain::worker::WorkerSpec;
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
     use hodei_jobs_domain::shared_kernel::WorkerState;
+    use hodei_jobs_domain::workers::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerSpec;
     use hodei_jobs_infrastructure::providers::{FirecrackerConfig, FirecrackerProvider};
 
     let verifier = FirecrackerVerifier::new().expect("Should create verifier");
@@ -620,7 +661,7 @@ async fn test_08_firecracker_provider_vm_lifecycle() {
         .build()
         .expect("Should build config");
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: {}", e);
@@ -628,11 +669,8 @@ async fn test_08_firecracker_provider_vm_lifecycle() {
         }
     };
 
-    let spec = WorkerSpec::new(
-        "unused".to_string(),
-        "http://localhost:50051".to_string(),
-    )
-    .with_env("TEST_VAR", "lifecycle_test");
+    let spec = WorkerSpec::new("unused".to_string(), "http://localhost:50051".to_string())
+        .with_env("TEST_VAR", "lifecycle_test");
 
     // 1. Crear
     let handle = match provider.create_worker(&spec).await {
@@ -692,7 +730,9 @@ async fn test_09_multiple_jobs_queued() {
         let job_id = uuid::Uuid::new_v4().to_string();
         let queue_request = QueueJobRequest {
             job_definition: Some(JobDefinition {
-                job_id: Some(JobId { value: job_id.clone() }),
+                job_id: Some(JobId {
+                    value: job_id.clone(),
+                }),
                 name: format!("FC Batch Job {}", i),
                 description: format!("Firecracker batch job {} of 3", i),
                 command: "echo".to_string(),
@@ -708,7 +748,11 @@ async fn test_09_multiple_jobs_queued() {
             queued_by: "fc-test".to_string(),
         };
 
-        let response = job_client.queue_job(queue_request).await.unwrap().into_inner();
+        let response = job_client
+            .queue_job(queue_request)
+            .await
+            .unwrap()
+            .into_inner();
         assert!(response.success, "Job {} should be queued", i);
     }
 
@@ -745,7 +789,10 @@ async fn test_10_scheduler_queue_status() {
 
     assert!(status_response.status.is_some(), "Should have queue status");
     let status = status_response.status.unwrap();
-    println!("✓ Queue status: pending={}, running={}", status.pending_jobs, status.running_jobs);
+    println!(
+        "✓ Queue status: pending={}, running={}",
+        status.pending_jobs, status.running_jobs
+    );
 
     stack.shutdown().await;
 }
@@ -759,7 +806,7 @@ async fn test_11_firecracker_provider_health_check() {
         return;
     }
 
-    use hodei_jobs_domain::worker_provider::{HealthStatus, WorkerProvider};
+    use hodei_jobs_domain::workers::{HealthStatus, WorkerProvider};
     use hodei_jobs_infrastructure::providers::{FirecrackerConfig, FirecrackerProvider};
 
     let verifier = FirecrackerVerifier::new().expect("Should create verifier");
@@ -778,7 +825,7 @@ async fn test_11_firecracker_provider_health_check() {
         .build()
         .expect("Should build config");
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: {}", e);
@@ -786,7 +833,10 @@ async fn test_11_firecracker_provider_health_check() {
         }
     };
 
-    let health = provider.health_check().await.expect("Health check should not fail");
+    let health = provider
+        .health_check()
+        .await
+        .expect("Health check should not fail");
 
     match health {
         HealthStatus::Healthy => {
@@ -813,7 +863,7 @@ async fn test_12_firecracker_provider_capabilities() {
         return;
     }
 
-    use hodei_jobs_domain::worker_provider::WorkerProvider;
+    use hodei_jobs_domain::workers::WorkerProvider;
     use hodei_jobs_infrastructure::providers::{FirecrackerConfig, FirecrackerProvider};
 
     let verifier = FirecrackerVerifier::new().expect("Should create verifier");
@@ -832,7 +882,7 @@ async fn test_12_firecracker_provider_capabilities() {
         .build()
         .expect("Should build config");
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: {}", e);
@@ -843,18 +893,39 @@ async fn test_12_firecracker_provider_capabilities() {
     let capabilities = provider.capabilities();
 
     println!("✓ FirecrackerProvider capabilities:");
-    println!("  - Max CPU: {} cores", capabilities.max_resources.max_cpu_cores);
-    println!("  - Max Memory: {} GB", capabilities.max_resources.max_memory_bytes / (1024 * 1024 * 1024));
-    println!("  - GPU Support: {} (Firecracker doesn't support GPU)", capabilities.gpu_support);
+    println!(
+        "  - Max CPU: {} cores",
+        capabilities.max_resources.max_cpu_cores
+    );
+    println!(
+        "  - Max Memory: {} GB",
+        capabilities.max_resources.max_memory_bytes / (1024 * 1024 * 1024)
+    );
+    println!(
+        "  - GPU Support: {} (Firecracker doesn't support GPU)",
+        capabilities.gpu_support
+    );
     println!("  - Architectures: {:?}", capabilities.architectures);
-    println!("  - Persistent Storage: {}", capabilities.persistent_storage);
+    println!(
+        "  - Persistent Storage: {}",
+        capabilities.persistent_storage
+    );
     println!("  - Custom Networking: {}", capabilities.custom_networking);
-    println!("  - Estimated startup time: {:?}", provider.estimated_startup_time());
+    println!(
+        "  - Estimated startup time: {:?}",
+        provider.estimated_startup_time()
+    );
 
     // Firecracker specific assertions
-    assert!(!capabilities.gpu_support, "Firecracker doesn't support GPU passthrough");
+    assert!(
+        !capabilities.gpu_support,
+        "Firecracker doesn't support GPU passthrough"
+    );
     assert_eq!(capabilities.max_resources.max_gpu_count, 0);
-    assert!(provider.estimated_startup_time().as_millis() < 1000, "Firecracker should boot in < 1 second");
+    assert!(
+        provider.estimated_startup_time().as_millis() < 1000,
+        "Firecracker should boot in < 1 second"
+    );
 }
 
 /// Test 13: IP Pool allocation (unit test, no infrastructure needed)

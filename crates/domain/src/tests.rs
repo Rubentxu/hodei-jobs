@@ -1,6 +1,6 @@
 //! Unit tests for domain layer
+use crate::jobs::*;
 use crate::shared_kernel::*;
-use crate::job_execution::*;
 
 mod shared_kernel_tests {
     use super::*;
@@ -167,12 +167,9 @@ mod job_execution_tests {
     fn test_job_submit_to_provider() {
         let mut job = create_test_job();
         let provider_id = ProviderId::new();
-        let context = ExecutionContext::new(
-            job.id.clone(),
-            provider_id.clone(),
-            "exec-123".to_string(),
-        );
-        
+        let context =
+            ExecutionContext::new(job.id.clone(), provider_id.clone(), "exec-123".to_string());
+
         assert!(job.submit_to_provider(provider_id.clone(), context).is_ok());
         // PRD v6.0: Submitted -> Scheduled
         assert_eq!(job.state, JobState::Scheduled);
@@ -183,12 +180,9 @@ mod job_execution_tests {
     fn test_job_mark_running() {
         let mut job = create_test_job();
         let provider_id = ProviderId::new();
-        let context = ExecutionContext::new(
-            job.id.clone(),
-            provider_id.clone(),
-            "exec-123".to_string(),
-        );
-        
+        let context =
+            ExecutionContext::new(job.id.clone(), provider_id.clone(), "exec-123".to_string());
+
         job.submit_to_provider(provider_id, context).unwrap();
         assert!(job.mark_running().is_ok());
         assert_eq!(job.state, JobState::Running);
@@ -205,21 +199,18 @@ mod job_execution_tests {
     fn test_job_complete_success() {
         let mut job = create_test_job();
         let provider_id = ProviderId::new();
-        let context = ExecutionContext::new(
-            job.id.clone(),
-            provider_id.clone(),
-            "exec-123".to_string(),
-        );
-        
+        let context =
+            ExecutionContext::new(job.id.clone(), provider_id.clone(), "exec-123".to_string());
+
         job.submit_to_provider(provider_id, context).unwrap();
         job.mark_running().unwrap();
-        
+
         let result = JobResult::Success {
             exit_code: 0,
             output: "Success".to_string(),
             error_output: "".to_string(),
         };
-        
+
         assert!(job.complete(result).is_ok());
         assert_eq!(job.state, JobState::Succeeded);
     }
@@ -258,7 +249,7 @@ mod job_execution_tests {
     fn test_job_prepare_retry() {
         let mut job = create_test_job();
         job.fail("Error".to_string()).unwrap();
-        
+
         assert!(job.prepare_retry().is_ok());
         assert_eq!(job.state, JobState::Pending);
         assert_eq!(job.attempts, 2);
@@ -268,12 +259,9 @@ mod job_execution_tests {
     fn test_execution_context_creation() {
         let job_id = JobId::new();
         let provider_id = ProviderId::new();
-        let context = ExecutionContext::new(
-            job_id.clone(),
-            provider_id.clone(),
-            "exec-123".to_string(),
-        );
-        
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-123".to_string());
+
         assert_eq!(context.job_id, job_id);
         assert_eq!(context.provider_id, provider_id);
         assert_eq!(context.status, ExecutionStatus::Submitted);
@@ -281,12 +269,9 @@ mod job_execution_tests {
 
     #[test]
     fn test_execution_context_update_status() {
-        let mut context = ExecutionContext::new(
-            JobId::new(),
-            ProviderId::new(),
-            "exec-123".to_string(),
-        );
-        
+        let mut context =
+            ExecutionContext::new(JobId::new(), ProviderId::new(), "exec-123".to_string());
+
         context.update_status(ExecutionStatus::Running);
         assert_eq!(context.status, ExecutionStatus::Running);
         assert!(context.started_at.is_some());
@@ -294,8 +279,8 @@ mod job_execution_tests {
 }
 
 mod provider_type_tests {
-    use crate::worker::ProviderType;
-    use crate::worker_provider::ProviderCapabilities;
+    use crate::workers::ProviderCapabilities;
+    use crate::workers::ProviderType;
 
     #[test]
     fn test_provider_type_display() {
@@ -321,14 +306,23 @@ mod provider_type_tests {
 
 mod worker_tests {
     use super::*;
-    use crate::worker::{Worker, WorkerSpec, WorkerHandle, ProviderType, ProviderCategory};
+    use crate::workers::{ProviderCategory, ProviderType, Worker, WorkerHandle, WorkerSpec};
 
     #[test]
     fn test_provider_type_category() {
         assert_eq!(ProviderType::Docker.category(), ProviderCategory::Container);
-        assert_eq!(ProviderType::Kubernetes.category(), ProviderCategory::Container);
-        assert_eq!(ProviderType::Lambda.category(), ProviderCategory::Serverless);
-        assert_eq!(ProviderType::EC2.category(), ProviderCategory::VirtualMachine);
+        assert_eq!(
+            ProviderType::Kubernetes.category(),
+            ProviderCategory::Container
+        );
+        assert_eq!(
+            ProviderType::Lambda.category(),
+            ProviderCategory::Serverless
+        );
+        assert_eq!(
+            ProviderType::EC2.category(),
+            ProviderCategory::VirtualMachine
+        );
     }
 
     #[test]
@@ -344,13 +338,13 @@ mod worker_tests {
             ProviderId::new(),
         );
         let mut worker = Worker::new(handle, spec);
-        
+
         // PRD v6.0: Estado inicial es Creating
         assert_eq!(*worker.state(), WorkerState::Creating);
-        
+
         worker.mark_connecting().unwrap();
         assert_eq!(*worker.state(), WorkerState::Connecting);
-        
+
         worker.mark_ready().unwrap();
         assert!(worker.state().can_accept_jobs());
     }

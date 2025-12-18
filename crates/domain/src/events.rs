@@ -1,4 +1,4 @@
-use crate::job_execution::JobSpec;
+use crate::jobs::JobSpec;
 use crate::shared_kernel::{JobId, JobState, ProviderId, ProviderStatus, WorkerId, WorkerState};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,9 @@ impl std::fmt::Display for TerminationReason {
             TerminationReason::LifetimeExceeded => write!(f, "LIFETIME_EXCEEDED"),
             TerminationReason::HealthCheckFailed => write!(f, "HEALTH_CHECK_FAILED"),
             TerminationReason::ManualTermination => write!(f, "MANUAL_TERMINATION"),
-            TerminationReason::ProviderError { message } => write!(f, "PROVIDER_ERROR: {}", message),
+            TerminationReason::ProviderError { message } => {
+                write!(f, "PROVIDER_ERROR: {}", message)
+            }
         }
     }
 }
@@ -316,11 +318,23 @@ mod tests {
     fn test_termination_reason_display() {
         assert_eq!(TerminationReason::Unregistered.to_string(), "UNREGISTERED");
         assert_eq!(TerminationReason::IdleTimeout.to_string(), "IDLE_TIMEOUT");
-        assert_eq!(TerminationReason::LifetimeExceeded.to_string(), "LIFETIME_EXCEEDED");
-        assert_eq!(TerminationReason::HealthCheckFailed.to_string(), "HEALTH_CHECK_FAILED");
-        assert_eq!(TerminationReason::ManualTermination.to_string(), "MANUAL_TERMINATION");
         assert_eq!(
-            TerminationReason::ProviderError { message: "connection lost".to_string() }.to_string(),
+            TerminationReason::LifetimeExceeded.to_string(),
+            "LIFETIME_EXCEEDED"
+        );
+        assert_eq!(
+            TerminationReason::HealthCheckFailed.to_string(),
+            "HEALTH_CHECK_FAILED"
+        );
+        assert_eq!(
+            TerminationReason::ManualTermination.to_string(),
+            "MANUAL_TERMINATION"
+        );
+        assert_eq!(
+            TerminationReason::ProviderError {
+                message: "connection lost".to_string()
+            }
+            .to_string(),
             "PROVIDER_ERROR: connection lost"
         );
     }
@@ -329,53 +343,71 @@ mod tests {
     fn test_event_type_method() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string()]);
-        
+
         let events = vec![
-            (DomainEvent::JobCreated {
-                job_id: job_id.clone(),
-                spec,
-                occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
-            }, "JobCreated"),
-            (DomainEvent::WorkerTerminated {
-                worker_id: WorkerId::new(),
-                provider_id: ProviderId::new(),
-                reason: TerminationReason::Unregistered,
-                occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
-            }, "WorkerTerminated"),
-            (DomainEvent::WorkerDisconnected {
-                worker_id: WorkerId::new(),
-                last_heartbeat: None,
-                occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
-            }, "WorkerDisconnected"),
-            (DomainEvent::WorkerProvisioned {
-                worker_id: WorkerId::new(),
-                provider_id: ProviderId::new(),
-                spec_summary: "test".to_string(),
-                occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
-            }, "WorkerProvisioned"),
-            (DomainEvent::JobRetried {
-                job_id: JobId::new(),
-                attempt: 2,
-                max_attempts: 3,
-                occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
-            }, "JobRetried"),
-            (DomainEvent::JobAssigned {
-                job_id: JobId::new(),
-                worker_id: WorkerId::new(),
-                occurred_at: Utc::now(),
-                correlation_id: None,
-                actor: None,
-            }, "JobAssigned"),
+            (
+                DomainEvent::JobCreated {
+                    job_id: job_id.clone(),
+                    spec,
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "JobCreated",
+            ),
+            (
+                DomainEvent::WorkerTerminated {
+                    worker_id: WorkerId::new(),
+                    provider_id: ProviderId::new(),
+                    reason: TerminationReason::Unregistered,
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "WorkerTerminated",
+            ),
+            (
+                DomainEvent::WorkerDisconnected {
+                    worker_id: WorkerId::new(),
+                    last_heartbeat: None,
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "WorkerDisconnected",
+            ),
+            (
+                DomainEvent::WorkerProvisioned {
+                    worker_id: WorkerId::new(),
+                    provider_id: ProviderId::new(),
+                    spec_summary: "test".to_string(),
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "WorkerProvisioned",
+            ),
+            (
+                DomainEvent::JobRetried {
+                    job_id: JobId::new(),
+                    attempt: 2,
+                    max_attempts: 3,
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "JobRetried",
+            ),
+            (
+                DomainEvent::JobAssigned {
+                    job_id: JobId::new(),
+                    worker_id: WorkerId::new(),
+                    occurred_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "JobAssigned",
+            ),
         ];
 
         for (event, expected_type) in events {

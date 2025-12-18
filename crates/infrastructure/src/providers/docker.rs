@@ -17,10 +17,10 @@ use bollard::{
 use chrono::Utc;
 use futures_util::StreamExt;
 use hodei_jobs_domain::{
-    provider_config::DockerConfig,
+    providers::DockerConfig,
     shared_kernel::{DomainError, ProviderId, Result, WorkerState},
-    worker::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
-    worker_provider::{
+    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
+    workers::{
         HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
         WorkerProvider,
     },

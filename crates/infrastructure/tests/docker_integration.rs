@@ -4,10 +4,10 @@
 //! Pattern: Single Instance + Resource Pooling for TestContainers optimization.
 
 use hodei_jobs_domain::{
-    provider_config::DockerConfig,
+    providers::config::DockerConfig,
     shared_kernel::WorkerState,
-    worker::{ProviderType, WorkerSpec},
-    worker_provider::WorkerProvider,
+    workers::WorkerProvider,
+    workers::{ProviderType, WorkerSpec},
 };
 use hodei_jobs_infrastructure::providers::DockerProvider;
 use tokio::sync::OnceCell;
@@ -31,7 +31,10 @@ async fn skip_if_no_docker() -> bool {
     match DockerProvider::new().await {
         Ok(provider) => {
             let health = provider.health_check().await;
-            !matches!(health, Ok(hodei_jobs_domain::worker_provider::HealthStatus::Healthy))
+            !matches!(
+                health,
+                Ok(hodei_jobs_domain::workers::provider_api::HealthStatus::Healthy)
+            )
         }
         Err(_) => true,
     }
@@ -40,7 +43,7 @@ async fn skip_if_no_docker() -> bool {
 /// Create a test WorkerSpec
 fn create_test_worker_spec(name: &str) -> WorkerSpec {
     WorkerSpec::new(
-        "alpine:latest".to_string(),
+        "nginx:alpine".to_string(),
         "http://localhost:8080".to_string(),
     )
     .with_label("test.name", name)
@@ -59,7 +62,10 @@ async fn test_docker_provider_health_check() {
 
     assert!(health.is_ok());
     let status = health.unwrap();
-    assert!(matches!(status, hodei_jobs_domain::worker_provider::HealthStatus::Healthy));
+    assert!(matches!(
+        status,
+        hodei_jobs_domain::workers::provider_api::HealthStatus::Healthy
+    ));
 }
 
 #[tokio::test]
@@ -100,7 +106,11 @@ async fn test_docker_provider_create_and_destroy_worker() {
 
     // Create worker
     let handle = provider.create_worker(&spec).await;
-    assert!(handle.is_ok(), "Failed to create worker: {:?}", handle.err());
+    assert!(
+        handle.is_ok(),
+        "Failed to create worker: {:?}",
+        handle.err()
+    );
 
     let handle = handle.unwrap();
     assert_eq!(handle.provider_type, ProviderType::Docker);
@@ -118,7 +128,11 @@ async fn test_docker_provider_create_and_destroy_worker() {
 
     // Destroy worker
     let destroy_result = provider.destroy_worker(&handle).await;
-    assert!(destroy_result.is_ok(), "Failed to destroy worker: {:?}", destroy_result.err());
+    assert!(
+        destroy_result.is_ok(),
+        "Failed to destroy worker: {:?}",
+        destroy_result.err()
+    );
 }
 
 #[tokio::test]
@@ -129,7 +143,7 @@ async fn test_docker_provider_get_worker_logs() {
     }
 
     let provider = get_docker_provider().await;
-    
+
     // Use echo command to generate some logs
     let mut spec = create_test_worker_spec("logs_test");
     spec.image = "alpine:latest".to_string();
@@ -163,7 +177,10 @@ async fn test_docker_provider_worker_lifecycle() {
     let handle = provider.create_worker(&spec).await.expect("Create failed");
 
     // 2. Verify running (PRD v6.0: Ready o Connecting)
-    let state = provider.get_worker_status(&handle).await.expect("Status failed");
+    let state = provider
+        .get_worker_status(&handle)
+        .await
+        .expect("Status failed");
     assert!(
         matches!(state, WorkerState::Ready | WorkerState::Connecting),
         "Worker not running: {:?}",
@@ -171,12 +188,21 @@ async fn test_docker_provider_worker_lifecycle() {
     );
 
     // 3. Get logs
-    let _logs = provider.get_worker_logs(&handle, Some(5)).await.expect("Logs failed");
+    let _logs = provider
+        .get_worker_logs(&handle, Some(5))
+        .await
+        .expect("Logs failed");
 
     // 4. Destroy
-    provider.destroy_worker(&handle).await.expect("Destroy failed");
+    provider
+        .destroy_worker(&handle)
+        .await
+        .expect("Destroy failed");
 
     // 5. Verify destroyed
     let status_after = provider.get_worker_status(&handle).await;
-    assert!(status_after.is_err(), "Worker should not exist after destroy");
+    assert!(
+        status_after.is_err(),
+        "Worker should not exist after destroy"
+    );
 }

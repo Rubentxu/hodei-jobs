@@ -11,8 +11,8 @@
 
 use hodei_jobs_domain::{
     shared_kernel::{WorkerId, WorkerState},
-    worker::{ProviderType, WorkerSpec},
-    worker_provider::{HealthStatus, WorkerProvider},
+    workers::{HealthStatus, WorkerHandle, WorkerProvider},
+    workers::{ProviderType, WorkerSpec},
 };
 use hodei_jobs_infrastructure::providers::{FirecrackerConfig, FirecrackerProvider};
 use std::path::PathBuf;
@@ -28,12 +28,10 @@ fn get_test_config() -> FirecrackerConfig {
                 .unwrap_or_else(|_| "/usr/bin/firecracker".to_string()),
         )
         .jailer_path(
-            std::env::var("HODEI_FC_JAILER_PATH")
-                .unwrap_or_else(|_| "/usr/bin/jailer".to_string()),
+            std::env::var("HODEI_FC_JAILER_PATH").unwrap_or_else(|_| "/usr/bin/jailer".to_string()),
         )
         .data_dir(
-            std::env::var("HODEI_FC_DATA_DIR")
-                .unwrap_or_else(|_| "/tmp/hodei-fc-test".to_string()),
+            std::env::var("HODEI_FC_DATA_DIR").unwrap_or_else(|_| "/tmp/hodei-fc-test".to_string()),
         )
         .kernel_path(
             std::env::var("HODEI_FC_KERNEL_PATH")
@@ -56,7 +54,7 @@ async fn test_firecracker_provider_health_check() {
     }
 
     let config = get_test_config();
-    
+
     // Skip if requirements not met
     if !PathBuf::from("/dev/kvm").exists() {
         println!("⚠ Skipping: /dev/kvm not available");
@@ -67,7 +65,7 @@ async fn test_firecracker_provider_health_check() {
         return;
     }
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             println!("⚠ Skipping: Provider creation failed: {}", e);
@@ -101,13 +99,13 @@ async fn test_firecracker_provider_capabilities() {
     }
 
     let config = get_test_config();
-    
+
     if !PathBuf::from("/dev/kvm").exists() {
         println!("⚠ Skipping: /dev/kvm not available");
         return;
     }
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             println!("⚠ Skipping: Provider creation failed: {}", e);
@@ -125,7 +123,10 @@ async fn test_firecracker_provider_capabilities() {
     assert!(!capabilities.architectures.is_empty());
 
     println!("✓ Provider capabilities:");
-    println!("  - Max CPU: {} cores", capabilities.max_resources.max_cpu_cores);
+    println!(
+        "  - Max CPU: {} cores",
+        capabilities.max_resources.max_cpu_cores
+    );
     println!(
         "  - Max Memory: {} GB",
         capabilities.max_resources.max_memory_bytes / (1024 * 1024 * 1024)
@@ -135,7 +136,10 @@ async fn test_firecracker_provider_capabilities() {
 
     let startup_time = provider.estimated_startup_time();
     println!("  - Estimated startup time: {:?}", startup_time);
-    assert!(startup_time.as_millis() < 1000, "Firecracker should boot in < 1 second");
+    assert!(
+        startup_time.as_millis() < 1000,
+        "Firecracker should boot in < 1 second"
+    );
 }
 
 #[tokio::test]
@@ -146,7 +150,7 @@ async fn test_firecracker_provider_create_and_destroy_worker() {
     }
 
     let config = get_test_config();
-    
+
     // Verify all requirements
     if !PathBuf::from("/dev/kvm").exists() {
         println!("⚠ Skipping: /dev/kvm not available");
@@ -161,7 +165,7 @@ async fn test_firecracker_provider_create_and_destroy_worker() {
         return;
     }
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             println!("⚠ Skipping: Provider creation failed: {}", e);
@@ -230,13 +234,13 @@ async fn test_firecracker_provider_destroy_nonexistent_worker() {
     }
 
     let config = get_test_config();
-    
+
     if !PathBuf::from("/dev/kvm").exists() {
         println!("⚠ Skipping: /dev/kvm not available");
         return;
     }
 
-    let provider = match FirecrackerProvider::with_config(config).await {
+    let provider: FirecrackerProvider = match FirecrackerProvider::with_config(config).await {
         Ok(p) => p,
         Err(e) => {
             println!("⚠ Skipping: Provider creation failed: {}", e);
@@ -246,7 +250,7 @@ async fn test_firecracker_provider_destroy_nonexistent_worker() {
 
     // Create a handle for a non-existent worker
     let worker_id = WorkerId::new();
-    let handle = hodei_jobs_domain::worker::WorkerHandle::new(
+    let handle = WorkerHandle::new(
         worker_id,
         "fc-nonexistent".to_string(),
         ProviderType::Custom("firecracker".to_string()),
@@ -255,7 +259,10 @@ async fn test_firecracker_provider_destroy_nonexistent_worker() {
 
     // Destroy should be idempotent (not fail for non-existent)
     let result = provider.destroy_worker(&handle).await;
-    assert!(result.is_ok(), "Destroy should be idempotent for non-existent VMs");
+    assert!(
+        result.is_ok(),
+        "Destroy should be idempotent for non-existent VMs"
+    );
     println!("✓ Destroy is idempotent for non-existent VMs");
 }
 

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use hodei_jobs_application::audit_test_helper::DbAuditTestHelper;
 use hodei_jobs_domain::audit::AuditRepository;
-use hodei_jobs_infrastructure::repositories::PostgresAuditRepository;
+use hodei_jobs_infrastructure::persistence::postgres::PostgresAuditRepository;
 use uuid::Uuid;
 
 /// Helper to create audit infrastructure for tests

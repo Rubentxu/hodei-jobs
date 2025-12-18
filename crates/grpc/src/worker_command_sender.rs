@@ -4,8 +4,8 @@ use hodei_jobs::{
     RunJobCommand, ScriptCommand, ServerMessage, ShellCommand,
     server_message::Payload as ServerPayload,
 };
-use hodei_jobs_application::worker_command_sender::WorkerCommandSender;
-use hodei_jobs_domain::job_execution::{CommandType, Job};
+use hodei_jobs_application::workers::WorkerCommandSender;
+use hodei_jobs_domain::jobs::{CommandType, Job};
 use hodei_jobs_domain::shared_kernel::{Result, WorkerId};
 use std::collections::HashMap;
 use tonic::Status;

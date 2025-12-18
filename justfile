@@ -260,6 +260,14 @@ logs-db:
 watch-logs:
     @./scripts/watch_logs.sh
 
+# Run Maven job with live log streaming
+maven-job:
+    @./scripts/maven_job_with_logs.sh
+
+# Run Maven job (complex version with asdf)
+maven-job-complex:
+    @./scripts/maven_job_with_logs.sh --complex
+
 # Start server with Docker-in-Docker for worker provisioning
 dev-server:
     @echo "🚀 Starting Hodei server with Docker-in-Docker support..."
@@ -277,7 +285,7 @@ dev-full:
 # Clean phantom workers from database
 clean-workers:
     @echo "🧹 Cleaning phantom workers from database..."
-    @docker exec hodei-jobs-postgres psql -U hodei -d hodei -c "DELETE FROM workers WHERE last_heartbeat < NOW() - INTERVAL '2 minutes';" || true
+    @docker exec hodei-jobs-postgres psql -U postgres -d hodei -c "DELETE FROM workers WHERE last_heartbeat < NOW() - INTERVAL '2 minutes';" || true
     @echo "✅ Phantom workers cleaned"
 
 # Test worker auto-provisioning flow
@@ -309,13 +317,11 @@ test-shell-features:
     @sleep 5
     @echo "✅ Shell feature tests queued"
 
-# Build and deploy worker with improvements
-build-worker:
-    @echo "🔨 Building worker with improvements..."
-    @cargo build --bin worker --release
-    @echo "✅ Worker compiled: target/release/worker"
-    @docker build -t hodei-jobs-worker:latest . --no-cache
-    @echo "✅ Docker image built: hodei-jobs-worker:latest"
+# Rebuild worker Docker image and restart containers
+rebuild-worker:
+    @echo "🔨 Rebuilding worker Docker image..."
+    @./scripts/rebuild_worker.sh --restart
+    @echo "✅ Worker rebuilt and restarted"
 
 # Check system status
 status:

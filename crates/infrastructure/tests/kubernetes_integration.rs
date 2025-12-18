@@ -11,8 +11,8 @@
 
 use hodei_jobs_domain::{
     shared_kernel::{WorkerId, WorkerState},
-    worker::{ProviderType, WorkerSpec},
-    worker_provider::{HealthStatus, WorkerProvider},
+    workers::{HealthStatus, WorkerHandle, WorkerProvider},
+    workers::{ProviderType, WorkerSpec},
 };
 use hodei_jobs_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
 use std::time::Duration;
@@ -76,7 +76,10 @@ async fn test_kubernetes_provider_create_and_destroy_worker() {
     // Verify provider is healthy
     let health = provider.health_check().await.expect("Health check failed");
     assert!(
-        matches!(health, HealthStatus::Healthy | HealthStatus::Degraded { .. }),
+        matches!(
+            health,
+            HealthStatus::Healthy | HealthStatus::Degraded { .. }
+        ),
         "Provider must be healthy or degraded to run tests"
     );
 
@@ -163,7 +166,7 @@ async fn test_kubernetes_provider_destroy_nonexistent_worker() {
 
     // Create a handle for a non-existent worker
     let worker_id = WorkerId::new();
-    let handle = hodei_jobs_domain::worker::WorkerHandle::new(
+    let handle = WorkerHandle::new(
         worker_id,
         "hodei-jobs-worker-nonexistent".to_string(),
         ProviderType::Kubernetes,
@@ -172,7 +175,10 @@ async fn test_kubernetes_provider_destroy_nonexistent_worker() {
 
     // Destroy should be idempotent (not fail for non-existent)
     let result = provider.destroy_worker(&handle).await;
-    assert!(result.is_ok(), "Destroy should be idempotent for non-existent pods");
+    assert!(
+        result.is_ok(),
+        "Destroy should be idempotent for non-existent pods"
+    );
     println!("✓ Destroy is idempotent for non-existent pods");
 }
 
@@ -195,7 +201,10 @@ async fn test_kubernetes_provider_capabilities() {
     assert!(!capabilities.architectures.is_empty());
 
     println!("✓ Provider capabilities:");
-    println!("  - Max CPU: {} cores", capabilities.max_resources.max_cpu_cores);
+    println!(
+        "  - Max CPU: {} cores",
+        capabilities.max_resources.max_cpu_cores
+    );
     println!(
         "  - Max Memory: {} GB",
         capabilities.max_resources.max_memory_bytes / (1024 * 1024 * 1024)

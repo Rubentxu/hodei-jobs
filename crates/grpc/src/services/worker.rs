@@ -23,11 +23,13 @@ use hodei_jobs::{
 use chrono::Utc;
 use hodei_jobs_domain::event_bus::EventBus;
 use hodei_jobs_domain::events::DomainEvent;
-use hodei_jobs_domain::job_execution::JobRepository;
-use hodei_jobs_domain::otp_token_store::{OtpToken, WorkerBootstrapTokenStore};
+use hodei_jobs_domain::iam::OtpToken;
+#[cfg(test)]
+use hodei_jobs_domain::jobs::JobRepository;
 use hodei_jobs_domain::shared_kernel::WorkerState;
 use hodei_jobs_domain::shared_kernel::{JobId, JobResult, JobState};
-use hodei_jobs_domain::worker_registry::WorkerRegistry;
+#[cfg(test)]
+use hodei_jobs_domain::workers::registry::WorkerRegistry;
 
 use super::log_stream::LogStreamService;
 use crate::interceptors::RequestContextExt;
@@ -58,9 +60,9 @@ pub struct WorkerAgentServiceImpl {
     otp_tokens: Arc<RwLock<HashMap<String, InMemoryOtpState>>>,
     /// Channel para enviar comandos a workers conectados
     worker_channels: Arc<RwLock<HashMap<String, mpsc::Sender<Result<ServerMessage, Status>>>>>,
-    worker_registry: Option<Arc<dyn WorkerRegistry>>,
-    job_repository: Option<Arc<dyn JobRepository>>,
-    token_store: Option<Arc<dyn WorkerBootstrapTokenStore>>,
+    worker_registry: Option<Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>>,
+    job_repository: Option<Arc<dyn hodei_jobs_domain::jobs::JobRepository>>,
+    token_store: Option<Arc<dyn hodei_jobs_domain::iam::WorkerBootstrapTokenStore>>,
     /// Channel para log streaming
     log_service: Option<LogStreamService>,
     /// Event Bus para publicar eventos de dominio
@@ -76,9 +78,9 @@ impl Default for WorkerAgentServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_jobs_domain::job_execution::{ExecutionContext, Job, JobSpec};
+    use hodei_jobs_domain::jobs::{ExecutionContext, Job, JobSpec};
     use hodei_jobs_domain::shared_kernel::{ProviderId, WorkerId};
-    use hodei_jobs_domain::worker::{ProviderType, WorkerHandle, WorkerSpec};
+    use hodei_jobs_domain::workers::{ProviderType, WorkerHandle, WorkerSpec};
     use hodei_jobs_infrastructure::persistence::{DatabaseConfig, PostgresWorkerRegistry};
     use hodei_jobs_infrastructure::repositories::{InMemoryJobRepository, InMemoryWorkerRegistry};
     use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
@@ -243,8 +245,8 @@ mod tests {
 
     #[tokio::test]
     async fn hu_6_5_job_result_updates_job_repository() {
-        let job_repository = Arc::new(InMemoryJobRepository::new());
-        let worker_registry = Arc::new(InMemoryWorkerRegistry::new());
+        let job_repository: Arc<dyn JobRepository> = Arc::new(InMemoryJobRepository::new());
+        let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
         let log_service = LogStreamService::new();
 
         let bus = Arc::new(MockEventBus::new());
@@ -333,8 +335,8 @@ mod tests {
     }
     #[tokio::test]
     async fn test_job_result_publishes_event_with_correlation_id() {
-        let job_repository = Arc::new(InMemoryJobRepository::new());
-        let worker_registry = Arc::new(InMemoryWorkerRegistry::new());
+        let job_repository: Arc<dyn JobRepository> = Arc::new(InMemoryJobRepository::new());
+        let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
         let log_service = LogStreamService::new();
         let bus = Arc::new(MockEventBus::new());
 
@@ -450,8 +452,8 @@ impl WorkerAgentServiceImpl {
     }
 
     pub fn with_registry(
-        worker_registry: Arc<dyn WorkerRegistry>,
-        event_bus: Arc<dyn EventBus>,
+        worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
+        event_bus: Arc<dyn hodei_jobs_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -466,9 +468,9 @@ impl WorkerAgentServiceImpl {
     }
 
     pub fn with_registry_and_log_service(
-        worker_registry: Arc<dyn WorkerRegistry>,
+        worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
         log_service: LogStreamService,
-        event_bus: Arc<dyn EventBus>,
+        event_bus: Arc<dyn hodei_jobs_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -483,10 +485,10 @@ impl WorkerAgentServiceImpl {
     }
 
     pub fn with_registry_job_repository_and_log_service(
-        worker_registry: Arc<dyn WorkerRegistry>,
-        job_repository: Arc<dyn JobRepository>,
+        worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
+        job_repository: Arc<dyn hodei_jobs_domain::jobs::JobRepository>,
         log_service: LogStreamService,
-        event_bus: Arc<dyn EventBus>,
+        event_bus: Arc<dyn hodei_jobs_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -501,11 +503,11 @@ impl WorkerAgentServiceImpl {
     }
 
     pub fn with_registry_job_repository_token_store_and_log_service(
-        worker_registry: Arc<dyn WorkerRegistry>,
-        job_repository: Arc<dyn JobRepository>,
-        token_store: Arc<dyn WorkerBootstrapTokenStore>,
+        worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
+        job_repository: Arc<dyn hodei_jobs_domain::jobs::JobRepository>,
+        token_store: Arc<dyn hodei_jobs_domain::iam::WorkerBootstrapTokenStore>,
         log_service: LogStreamService,
-        event_bus: Arc<dyn EventBus>,
+        event_bus: Arc<dyn hodei_jobs_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -527,15 +529,17 @@ impl WorkerAgentServiceImpl {
         Ok(hodei_jobs_domain::shared_kernel::WorkerId(id))
     }
 
-    fn token_store(&self) -> Option<&Arc<dyn WorkerBootstrapTokenStore>> {
+    fn token_store(&self) -> Option<&Arc<dyn hodei_jobs_domain::iam::WorkerBootstrapTokenStore>> {
         self.token_store.as_ref()
     }
 
-    fn worker_registry(&self) -> Option<&Arc<dyn WorkerRegistry>> {
+    fn worker_registry(
+        &self,
+    ) -> Option<&Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>> {
         self.worker_registry.as_ref()
     }
 
-    fn job_repository(&self) -> Option<&Arc<dyn JobRepository>> {
+    fn job_repository(&self) -> Option<&Arc<dyn hodei_jobs_domain::jobs::JobRepository>> {
         self.job_repository.as_ref()
     }
 

@@ -8,17 +8,15 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use hodei_jobs_application::job_execution_usecases::{
-    CreateJobRequest, CreateJobUseCase, JobSpecRequest,
-};
-use hodei_jobs_application::smart_scheduler::{SchedulerConfig, SchedulingService};
-use hodei_jobs_application::worker_provisioning::WorkerProvisioningService;
-use hodei_jobs_domain::job_execution::{ExecutionContext, JobQueue, JobRepository};
-use hodei_jobs_domain::job_scheduler::SchedulingContext;
+use hodei_jobs_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
+use hodei_jobs_application::scheduling::{SchedulerConfig, SchedulingService};
+use hodei_jobs_application::workers::WorkerProvisioningService;
+use hodei_jobs_domain::jobs::{ExecutionContext, JobQueue, JobRepository};
+use hodei_jobs_domain::scheduling::{ProviderSelectionStrategy, SchedulingContext};
 use hodei_jobs_domain::shared_kernel::{
     DomainError, JobId, JobState, Result as DomainResult, WorkerId, WorkerState,
 };
-use hodei_jobs_domain::worker_registry::{WorkerFilter, WorkerRegistry};
+use hodei_jobs_domain::workers::registry::{WorkerFilter, WorkerRegistry};
 use uuid::Uuid;
 
 use hodei_jobs::{
@@ -32,20 +30,21 @@ use hodei_jobs::{
 #[derive(Clone)]
 pub struct SchedulerServiceImpl {
     create_job_usecase: Arc<CreateJobUseCase>,
-    job_repository: Arc<dyn JobRepository>,
-    job_queue: Arc<dyn JobQueue>,
-    worker_registry: Arc<dyn WorkerRegistry>,
+    job_repository: Arc<dyn hodei_jobs_domain::jobs::JobRepository>,
+    job_queue: Arc<dyn hodei_jobs_domain::jobs::JobQueue>,
+    worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
     scheduling_service: Arc<RwLock<SchedulingService>>,
     /// Optional provisioning service for creating workers on-demand
-    provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+    provisioning_service:
+        Option<Arc<dyn hodei_jobs_application::workers::provisioning::WorkerProvisioningService>>,
 }
 
 impl SchedulerServiceImpl {
     pub fn new(
         create_job_usecase: Arc<CreateJobUseCase>,
-        job_repository: Arc<dyn JobRepository>,
-        job_queue: Arc<dyn JobQueue>,
-        worker_registry: Arc<dyn WorkerRegistry>,
+        job_repository: Arc<dyn hodei_jobs_domain::jobs::JobRepository>,
+        job_queue: Arc<dyn hodei_jobs_domain::jobs::JobQueue>,
+        worker_registry: Arc<dyn hodei_jobs_domain::workers::registry::WorkerRegistry>,
         scheduler_config: SchedulerConfig,
     ) -> Self {
         Self {
@@ -120,7 +119,7 @@ impl SchedulerServiceImpl {
     }
 
     fn persist_decision_metadata(
-        job: &mut hodei_jobs_domain::job_execution::Job,
+        job: &mut hodei_jobs_domain::jobs::Job,
         worker_id: &WorkerId,
         execution_id: &str,
         score: f64,
@@ -142,7 +141,7 @@ impl SchedulerServiceImpl {
 
     fn build_decision_from_job(
         job_id: GrpcJobId,
-        job: &hodei_jobs_domain::job_execution::Job,
+        job: &hodei_jobs_domain::jobs::Job,
     ) -> SchedulingDecision {
         let selected_worker_id = job
             .metadata
@@ -188,7 +187,7 @@ impl SchedulerServiceImpl {
 
     async fn build_scheduling_context(
         &self,
-        job: hodei_jobs_domain::job_execution::Job,
+        job: hodei_jobs_domain::jobs::Job,
     ) -> DomainResult<SchedulingContext> {
         let available_workers = self.worker_registry.find_available().await?;
         let pending_jobs_count = self.job_queue.len().await?;
@@ -296,9 +295,8 @@ impl SchedulerService for SchedulerServiceImpl {
             .map_err(Self::to_status)?;
 
         match decision {
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::AssignToWorker {
-                worker_id,
-                ..
+            hodei_jobs_domain::scheduling::SchedulingDecision::AssignToWorker {
+                worker_id, ..
             } => {
                 let worker = self
                     .worker_registry
@@ -360,7 +358,7 @@ impl SchedulerService for SchedulerServiceImpl {
                     scheduled_at: Some(Self::now_timestamp()),
                 }))
             }
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::Enqueue { reason, .. } => {
+            hodei_jobs_domain::scheduling::SchedulingDecision::Enqueue { reason, .. } => {
                 job.metadata
                     .insert("scheduler.reasons".to_string(), reason.clone());
                 self.job_repository
@@ -385,7 +383,7 @@ impl SchedulerService for SchedulerServiceImpl {
                     scheduled_at: Some(Self::now_timestamp()),
                 }))
             }
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::Reject { reason, .. } => {
+            hodei_jobs_domain::scheduling::SchedulingDecision::Reject { reason, .. } => {
                 job.state = JobState::Failed;
                 job.error_message = Some(reason.clone());
                 self.job_repository
@@ -410,7 +408,7 @@ impl SchedulerService for SchedulerServiceImpl {
                     scheduled_at: Some(Self::now_timestamp()),
                 }))
             }
-            hodei_jobs_domain::job_scheduler::SchedulingDecision::ProvisionWorker {
+            hodei_jobs_domain::scheduling::SchedulingDecision::ProvisionWorker {
                 provider_id,
                 ..
             } => {
@@ -555,42 +553,28 @@ impl SchedulerService for SchedulerServiceImpl {
         if let Some(v) = plugin_cfg.get("worker_strategy") {
             scheduler_config.worker_strategy = match v.as_str() {
                 "first_available" => {
-                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::FirstAvailable
+                    hodei_jobs_domain::scheduling::WorkerSelectionStrategy::FirstAvailable
                 }
                 "least_loaded" => {
-                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::LeastLoaded
+                    hodei_jobs_domain::scheduling::WorkerSelectionStrategy::LeastLoaded
                 }
-                "round_robin" => {
-                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::RoundRobin
-                }
+                "round_robin" => hodei_jobs_domain::scheduling::WorkerSelectionStrategy::RoundRobin,
                 "most_capacity" => {
-                    hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::MostCapacity
+                    hodei_jobs_domain::scheduling::WorkerSelectionStrategy::MostCapacity
                 }
-                "affinity" => hodei_jobs_domain::job_scheduler::WorkerSelectionStrategy::Affinity,
+                "affinity" => hodei_jobs_domain::scheduling::WorkerSelectionStrategy::Affinity,
                 _ => scheduler_config.worker_strategy,
             };
         }
 
         if let Some(v) = plugin_cfg.get("provider_strategy") {
             scheduler_config.provider_strategy = match v.as_str() {
-                "first_available" => {
-                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::FirstAvailable
-                }
-                "lowest_cost" => {
-                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::LowestCost
-                }
-                "fastest_startup" => {
-                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::FastestStartup
-                }
-                "most_capacity" => {
-                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::MostCapacity
-                }
-                "round_robin" => {
-                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::RoundRobin
-                }
-                "healthiest" => {
-                    hodei_jobs_domain::job_scheduler::ProviderSelectionStrategy::Healthiest
-                }
+                "first_available" => ProviderSelectionStrategy::FirstAvailable,
+                "lowest_cost" => ProviderSelectionStrategy::LowestCost,
+                "fastest_startup" => ProviderSelectionStrategy::FastestStartup,
+                "most_capacity" => ProviderSelectionStrategy::MostCapacity,
+                "round_robin" => ProviderSelectionStrategy::RoundRobin,
+                "healthiest" => ProviderSelectionStrategy::Healthiest,
                 _ => scheduler_config.provider_strategy,
             };
         }
