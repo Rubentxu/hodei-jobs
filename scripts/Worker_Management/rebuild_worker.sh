@@ -74,7 +74,7 @@ fi
 print_success "Docker is running"
 
 # Check if we're in the project root
-if [[ ! -f "Cargo.toml" ]]; then
+if [[ ! -f "$PROJECT_ROOT/Cargo.toml" ]]; then
     print_error "Not in project root directory"
     exit 1
 fi
