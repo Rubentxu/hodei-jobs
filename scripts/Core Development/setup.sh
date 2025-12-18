@@ -363,7 +363,7 @@ show_completion() {
     echo -e "${GREEN}Your development environment is ready!${NC}\n"
 
     echo -e "${CYAN}Quick Start:${NC}"
-    echo -e "  ${YELLOW}./scripts/dev.sh${NC}       Start full development environment"
+    echo -e "  ${YELLOW}./scripts/Core\\ Development/dev.sh${NC}       Start full development environment"
     echo -e "  ${YELLOW}just dev${NC}              Alternative using just"
     echo -e "  ${YELLOW}just dev-db${NC}           Start database only"
     echo -e "  ${YELLOW}just dev-backend${NC}      Start backend with hot reload"
@@ -374,7 +374,7 @@ show_completion() {
     echo -e "  ${YELLOW}just test${NC}              Run all tests"
     echo -e "  ${YELLOW}just check${NC}             Lint and format code"
     echo -e "  ${YELLOW}just logs${NC}              View logs"
-    echo -e "  ${YELLOW}./scripts/dev.sh --help${NC} Show all available commands"
+    echo -e "  ${YELLOW}./scripts/Core\\ Development/dev.sh --help${NC} Show all available commands"
     echo -e ""
 
     echo -e "${CYAN}Development URLs:${NC}"

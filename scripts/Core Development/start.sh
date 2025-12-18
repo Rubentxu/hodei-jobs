@@ -94,7 +94,7 @@ fi
 # Cleanup if requested
 if $CLEANUP; then
     print_info "Running cleanup..."
-    ./scripts/cleanup.sh --force
+    ./scripts/Core\ Development/cleanup.sh --force
     print_success "Cleanup completed"
 fi
 

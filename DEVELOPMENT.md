@@ -378,7 +378,7 @@ cargo install just bacon
 ### 2. Run Setup
 
 ```bash
-./scripts/setup.sh
+./scripts/Core\ Development/setup.sh
 ```
 
 This will install all dependencies and build the project.
@@ -386,7 +386,7 @@ This will install all dependencies and build the project.
 ### 3. Start Development
 
 ```bash
-./scripts/dev.sh
+./scripts/Core\ Development/dev.sh
 ```
 
 That's it! Backend and frontend will start with hot reload.
@@ -422,13 +422,13 @@ That's it! Backend and frontend will start with hot reload.
 
 ```bash
 # Full environment
-./scripts/dev.sh
+./scripts/Core\ Development/dev.sh
 
 # Individual services
-./scripts/dev.sh db           # Database only
-./scripts/dev.sh backend      # Backend with hot reload
-./scripts/dev.sh frontend     # Frontend with HMR
-./scripts/dev.sh test         # Run all tests
+./scripts/Core\ Development/dev.sh db           # Database only
+./scripts/Core\ Development/dev.sh backend      # Backend with hot reload
+./scripts/Core\ Development/dev.sh frontend     # Frontend with HMR
+./scripts/Core\ Development/dev.sh test         # Run all tests
 ```
 
 ### Option 2: Using Just Commands
@@ -878,7 +878,7 @@ just logs-db
 just clean-all
 
 # Rebuild from scratch
-./scripts/setup.sh
+./scripts/Core\ Development/setup.sh
 ```
 
 ### Rust Compilation Errors

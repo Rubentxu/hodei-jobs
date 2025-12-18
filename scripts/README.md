@@ -1,52 +1,110 @@
 # Hodei Scripts
 
-Scripts for building, deploying, and managing the Hodei worker images.
-
-## Directory Structure
-
-```
-scripts/
-├── rebuild_worker.sh       # Rebuild worker image
-├── start.sh               # Quick start script
-├── setup.sh               # Development environment setup
-├── cleanup.sh             # Clean up Docker resources
-├── e2e/                   # E2E test scripts
-│   └── run-docker-e2e.sh
-├── verification/          # Job verification scripts
-│   └── maven_build_job.sh
-├── watch_logs.sh          # Monitor job logs
-├── run_maven_job.sh       # Run Maven test job
-└── submit_optimized_job.sh # Submit optimized job
-```
+Scripts for building, deploying, and managing the Hodei Jobs Platform v8.0.
 
 ## Quick Start
 
-### Build Worker Image
-
-The worker image is built from the centralized `Dockerfile.worker` in the project root:
+### 1. Development Environment Setup
 
 ```bash
-# Using the rebuild script
-./scripts/rebuild_worker.sh
+# First time setup (installs all dependencies)
+./scripts/setup.sh
 
-# Or directly with Docker
-docker build -f Dockerfile.worker -t hodei-worker:latest .
+# Start development environment (hot reload)
+./scripts/dev.sh
 ```
 
-### Docker/Kubernetes Providers
+### 2. Production Start
+
+```bash
+# Start production environment
+./scripts/start.sh --build-worker
+```
+
+### 3. Run Test Jobs
+
+```bash
+# Maven job (simple - delegates to maven_job_with_logs.sh)
+./scripts/run_maven_job.sh
+
+# Maven job with live logs (--simple or --complex)
+./scripts/maven_job_with_logs.sh --simple
+./scripts/maven_job_with_logs.sh --complex
+
+# Trace specific job
+./scripts/trace-job.sh <job-id>
+```
+
+## Scripts Directory Structure
+
+```
+scripts/
+├── Core Development
+│   ├── setup.sh              # Initial development environment setup
+│   ├── dev.sh                # Rapid development workflow (hot reload)
+│   ├── start.sh              # Production quick start
+│   └── cleanup.sh            # Clean up Docker resources
+│
+├── Worker Management
+│   ├── rebuild_worker.sh     # Rebuild worker image with latest code
+│   └── generate-certificates.sh # Generate PKI certificates for mTLS
+│
+├── Job Execution
+│   ├── run_maven_job.sh      # Run Maven build verification job (delegates to maven_job_with_logs.sh)
+│   ├── maven_job_with_logs.sh # Maven job with live log streaming (--simple | --complex)
+│   └── trace-job.sh          # Trace job from submission to completion
+│
+├── Monitoring & Debugging
+│   ├── watch_logs.sh         # Monitor job logs in real-time with LogBatching
+│   ├── list-jobs.sh          # List jobs with filters and search
+│   └── test_e2e.sh           # Run end-to-end tests
+│
+└── Firecracker Provider
+    └── firecracker/          # Firecracker microVM provider (optional)
+```
+
+## Worker Agent v8.0 - HPC Ready
+
+### Optimizations Included
+
+The worker agent v8.0 includes these optimizations **automatically**:
+
+| Optimization | Script Reference | Description |
+|--------------|------------------|-------------|
+| **LogBatching** | `watch_logs.sh`, `maven_job_with_logs.sh` | 90-99% reduction in gRPC calls |
+| **Zero-Copy I/O** | Internal to worker | Memory-efficient streaming |
+| **Secret Injection** | Internal to worker | Secure via stdin with JSON |
+| **mTLS** | `generate-certificates.sh` | Zero Trust PKI infrastructure |
+| **Cached Metrics** | Internal to worker | 35s TTL cache, non-blocking |
+| **Write-Execute Pattern** | Internal to worker | Jenkins/K8s-style script execution |
+| **Backpressure Handling** | Internal to worker | try_send() for async stability |
+
+### Using New Features
+
+**Generate mTLS Certificates** (for Zero Trust):
+```bash
+./scripts/generate-certificates.sh
+```
+
+**Monitor Performance** (logs show batching):
+```bash
+./scripts/watch_logs.sh
+```
+
+## Docker/Kubernetes Providers
 
 Both providers use the same worker image:
 
 ```bash
-# Build image
-docker build -f Dockerfile.worker -t hodei-worker:latest .
+# Build worker image
+docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
 
 # Enable Docker provider
 export HODEI_DOCKER_ENABLED=1
 
 # Enable Kubernetes provider
 export HODEI_K8S_ENABLED=1
-export HODEI_K8S_NAMESPACE=hodei-workers
+export HODEI_K8S_NAMESPACE=hodei-jobs-workers
 ```
 
 ## Image Building
@@ -57,13 +115,13 @@ Standard multi-stage build with Debian runtime and asdf support:
 
 ```bash
 # Build for local development
-docker build -f Dockerfile.worker -t hodei-worker:latest .
+docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
 
 # Build with specific tag
-docker build -f Dockerfile.worker -t hodei-worker:v1.0.0 .
+docker build -f Dockerfile.worker -t hodei-jobs-worker:v8.0 .
 
-# Build for E2E tests
-docker build -f Dockerfile.worker -t hodei-worker:e2e-test .
+# Rebuild worker with latest code
+./scripts/rebuild_worker.sh
 ```
 
 The Dockerfile.worker includes:
@@ -71,6 +129,67 @@ The Dockerfile.worker includes:
 - asdf for managing runtime versions (Node.js, Python, etc.)
 - Debian slim runtime with minimal dependencies
 - Non-root user for security
+
+## Common Tasks
+
+### Monitor Jobs
+
+```bash
+# Watch all running jobs (with LogBatching)
+./scripts/watch_logs.sh
+
+# Watch specific job
+./scripts/watch_logs.sh <job-id>
+
+# List jobs with filters
+./scripts/list-jobs.sh --running
+./scripts/list-jobs.sh --search maven
+./scripts/list-jobs.sh --status COMPLETED
+```
+
+### Run Tests
+
+```bash
+# E2E tests (complete job flow)
+./scripts/test_e2e.sh --e2e
+
+# Maven build test only
+./scripts/test_e2e.sh --maven
+
+# All tests (unit, integration, e2e)
+./scripts/test_e2e.sh --all
+
+# Specific test types
+./scripts/test_e2e.sh --unit
+./scripts/test_e2e.sh --integration
+```
+
+### Certificate Management
+
+```bash
+# Generate new mTLS certificates (Zero Trust)
+./scripts/generate-certificates.sh
+
+# Certificates are created in: certs/
+# - Root CA (10 years)
+# - Intermediate CA (3 years)
+# - Worker certificates (90 days)
+# - Server certificates (1 year)
+```
+
+### Worker Management
+
+```bash
+# Rebuild worker with latest code
+./scripts/rebuild_worker.sh
+
+# Rebuild and restart containers
+./scripts/rebuild_worker.sh --restart
+
+# Setup development environment
+./scripts/setup.sh
+./scripts/setup.sh --minimal
+```
 
 ## Troubleshooting
 
@@ -85,11 +204,75 @@ sudo usermod -aG docker $USER
 **Worker image not found**
 ```bash
 # Build the worker image
-docker build -f Dockerfile.worker -t hodei-worker:latest .
+docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
+
+# Or use the rebuild script
+./scripts/rebuild_worker.sh --restart
+```
+
+**API not responding**
+```bash
+# Check system status
+docker ps --filter "name=hodei"
+
+# Check job status
+./scripts/list-jobs.sh
+
+# Trace specific job without logs
+./scripts/trace-job.sh <job-id> --no-logs
+```
+
+**Certificate errors (mTLS)**
+```bash
+# Regenerate mTLS certificates
+./scripts/generate-certificates.sh
+```
+
+**Development environment not ready**
+```bash
+# Run full setup
+./scripts/setup.sh
+
+# Or minimal setup
+./scripts/setup.sh --minimal
+
+# Start development
+./scripts/dev.sh
+```
+
+## Performance Tips
+
+### v8.0 Optimizations
+
+1. **LogBatching is automatic** - No configuration needed
+   - Logs are batched automatically every 100ms or 100 entries
+   - Watch for "batch" messages in logs
+
+2. **Metrics are cached** - Reduces overhead
+   - 35-second cache TTL
+   - Non-blocking collection
+
+3. **Backpressure handling** - Prevents blocking
+   - Uses try_send() instead of await
+   - Monitors dropped messages
+
+### Monitoring Performance
+
+```bash
+# Watch logs to see batching in action
+./scripts/watch_logs.sh
+
+# List jobs to see performance
+./scripts/list-jobs.sh --limit 10
+
+# Trace specific job performance
+./scripts/trace-job.sh <job-id>
 ```
 
 ## Related Documentation
 
-- [Getting Started Guide](../GETTING_STARTED.md)
-- [Kubernetes Guide](../GETTING_STARTED_KUBERNETES.md)
-- [Deployment Guide](../docs/DEPLOYMENT.md)
+- [Getting Started Guide](../GETTING_STARTED.md) - Complete setup guide
+- [Kubernetes Guide](../GETTING_STARTED_KUBERNETES.md) - K8s provider setup
+- [Architecture Documentation](../docs/architecture.md) - System design
+- [Workflow Documentation](../docs/workflows.md) - Detailed workflows (v8.0)
+- [Security Documentation](../docs/security/) - mTLS and PKI (v8.0)

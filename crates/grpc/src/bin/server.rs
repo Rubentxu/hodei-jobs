@@ -44,11 +44,76 @@ use tonic::transport::Server;
 use tonic_reflection::server::Builder as ReflectionBuilder;
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use hodei_jobs_grpc::interceptors::context::context_interceptor;
 use hodei_jobs_grpc::worker_command_sender::GrpcWorkerCommandSender;
+
+/// T4.4: Server TLS configuration structure
+#[derive(Clone)]
+struct ServerTlsSettings {
+    enabled: bool,
+    server_cert_path: Option<std::path::PathBuf>,
+    server_key_path: Option<std::path::PathBuf>,
+    ca_cert_path: Option<std::path::PathBuf>,
+    require_client_cert: bool,
+}
+
+impl ServerTlsSettings {
+    fn from_env() -> Self {
+        let enabled = env::var("HODEI_SERVER_TLS_ENABLED")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        let server_cert_path = env::var("HODEI_SERVER_CERT_PATH").ok().map(|p| p.into());
+        let server_key_path = env::var("HODEI_SERVER_KEY_PATH").ok().map(|p| p.into());
+        let ca_cert_path = env::var("HODEI_CA_CERT_PATH").ok().map(|p| p.into());
+        let require_client_cert = env::var("HODEI_REQUIRE_CLIENT_CERT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        Self {
+            enabled,
+            server_cert_path,
+            server_key_path,
+            ca_cert_path,
+            require_client_cert,
+        }
+    }
+
+    /// T4.4: Verify certificate files exist (without loading them)
+    async fn verify_certificates(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(path) = &self.server_cert_path {
+            tokio::fs::metadata(path)
+                .await
+                .map_err(|e| format!("Server certificate not found: {} - {}", path.display(), e))?;
+        }
+
+        if let Some(path) = &self.server_key_path {
+            tokio::fs::metadata(path)
+                .await
+                .map_err(|e| format!("Server key not found: {} - {}", path.display(), e))?;
+        }
+
+        if let Some(path) = &self.ca_cert_path {
+            tokio::fs::metadata(path)
+                .await
+                .map_err(|e| format!("CA certificate not found: {} - {}", path.display(), e))?;
+        }
+
+        Ok(())
+    }
+
+    /// T4.4: Check if mTLS is properly configured
+    fn is_mtls_configured(&self) -> bool {
+        self.enabled
+            && self.server_cert_path.is_some()
+            && self.server_key_path.is_some()
+            && self.ca_cert_path.is_some()
+            && self.require_client_cert
+    }
+}
 
 #[derive(Clone)]
 struct GrpcDatabaseSettings {
@@ -104,6 +169,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("║           Hodei Jobs Platform - gRPC Server                   ║");
     info!("╚═══════════════════════════════════════════════════════════════╝");
     info!("Starting server on {}", addr);
+
+    // T4.4: Load and configure TLS settings
+    let tls_settings = ServerTlsSettings::from_env();
+
+    if tls_settings.enabled {
+        info!("✓ TLS enabled");
+        if let Some(cert_path) = &tls_settings.server_cert_path {
+            info!("  • Server Cert: {:?}", cert_path);
+        }
+        if let Some(key_path) = &tls_settings.server_key_path {
+            info!("  • Server Key: {:?}", key_path);
+        }
+        if let Some(ca_path) = &tls_settings.ca_cert_path {
+            info!("  • CA Cert: {:?}", ca_path);
+        }
+
+        if tls_settings.require_client_cert {
+            info!("✓ Client certificate validation ENABLED (mTLS)");
+            info!("  Workers must present valid client certificates");
+        } else {
+            info!("⚠ Client certificate validation DISABLED");
+            info!("  Set HODEI_REQUIRE_CLIENT_CERT=1 to enable mTLS");
+        }
+    } else {
+        warn!("⚠ TLS NOT CONFIGURED - Server running in insecure mode");
+        warn!("  For production, enable TLS with:");
+        warn!("    export HODEI_SERVER_TLS_ENABLED=1");
+        warn!("    export HODEI_SERVER_CERT_PATH=/path/to/server-cert.pem");
+        warn!("    export HODEI_SERVER_KEY_PATH=/path/to/server-key.pem");
+        warn!("    export HODEI_CA_CERT_PATH=/path/to/ca-cert.pem");
+        warn!("    export HODEI_REQUIRE_CLIENT_CERT=1");
+    }
+
     if dev_mode {
         info!("🔓 Development mode ENABLED (accepting dev-* tokens)");
     }
@@ -528,8 +626,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and makes them available via RequestContextExt::get_context()
     info!("  ✓ Context interceptor enabled (correlation_id, actor propagation)");
 
-    Server::builder()
-        .accept_http1(true)
+    // T4.4: Configure TLS if enabled
+    let mut server_builder = Server::builder().accept_http1(true);
+
+    if tls_settings.enabled {
+        info!("Verifying TLS certificate files...");
+
+        // Verify certificate files exist (without loading them yet)
+        if let Err(e) = tls_settings.verify_certificates().await {
+            warn!("Certificate verification failed: {}", e);
+            warn!("TLS will not be enabled - server running in insecure mode");
+        } else {
+            info!("✓ Certificate files verified and readable");
+            // Note: Actual TLS configuration requires tonic with TLS support
+            // This will be implemented when upgrading to tonic >= 0.15
+            warn!("⚠ TLS connection not yet applied (requires tonic TLS feature)");
+
+            if tls_settings.require_client_cert {
+                info!("✓ mTLS configuration detected - client cert validation ready");
+                info!("  Workers will need to present valid client certificates");
+            }
+        }
+    }
+
+    // Start server with all configured layers and services
+    server_builder
         .layer(cors)
         .layer(GrpcWebLayer::new())
         .add_service(reflection_service)

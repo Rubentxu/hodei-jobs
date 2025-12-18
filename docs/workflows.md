@@ -1,577 +1,653 @@
-# Flujos de Trabajo
+# Workflows del Sistema
 
-**Versión**: 7.0  
-**Última Actualización**: 2025-12-14
+**Versión**: 8.0  
+**Última Actualización**: 2025-12-18
 
-## Flujo Completo de Ejecución de Job
+## Índice
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Cliente
-    participant GW as gRPC Gateway
-    participant JS as Job Service
-    participant SS as Smart Scheduler
-    participant P as Provider (Docker/K8s/FC)
-    participant WS as Worker Service
-    participant W as Worker Agent
-    participant LS as Log Stream
-
-    %% Fase 1: Creación
-    C->>GW: QueueJob(JobDefinition)
-    GW->>JS: Crear Job con CommandType
-    JS->>JS: Validar constraints
-    JS->>JS: Guardar (Pending)
-    JS-->>GW: job_id
-    GW-->>C: QueueJobResponse
-
-    %% Fase 2: Scheduling + Provisioning
-    SS->>JS: GetPendingJobs
-    JS-->>SS: Lista de jobs
-    SS->>WS: GetAvailableWorkers
-    WS-->>SS: Lista de workers
-    
-    alt Worker disponible
-        SS->>SS: Match job↔worker
-    else No hay worker
-        SS->>P: create_worker(WorkerSpec)
-        P->>P: Start container
-        SS->>WS: generate_otp(worker_id)
-        P-->>SS: WorkerHandle
-        Note over SS,W: Worker inicia con HODEI_TOKEN
-    end
-    
-    SS->>JS: AssignJob(job_id, worker_id)
-    JS->>JS: Actualizar (Scheduled)
-
-    %% Fase 3: Worker Registration (OTP)
-    W->>WS: Register(auth_token=OTP)
-    WS->>WS: validate_otp()
-    WS-->>W: session_id
-
-    %% Fase 4: Bidirectional Stream
-    W->>WS: WorkerStream (connect)
-    WS->>W: RunJobCommand(job_id, CommandSpec)
-    
-    loop Durante ejecución
-        W->>LS: LogEntry (streaming)
-        W->>WS: WorkerHeartbeat
-    end
-
-    %% Fase 5: Resultado
-    W->>WS: JobResultMessage(exit_code)
-    WS->>JS: Actualizar (Succeeded/Failed)
-    JS-->>C: Notificación (opcional)
-
-    %% Fase 6: Cleanup (opcional)
-    SS->>P: destroy_worker(handle)
-```
+1. [Worker Agent Startup](#worker-agent-startup)
+2. [Job Execution Workflow](#job-execution-workflow)
+3. [Log Streaming Workflow](#log-streaming-workflow)
+4. [Metrics Collection Workflow](#metrics-collection-workflow)
+5. [Secret Injection Workflow](#secret-injection-workflow)
+6. [Certificate Management Workflow](#certificate-management-workflow)
 
 ---
 
-## Flujo de Registro y Gestión de Worker (PRD v6.0)
+## Worker Agent Startup
+
+### Flujo Completo de Inicialización
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant P as Provider
-    participant S as Server
+    participant OS as Operating System
     participant W as Worker Agent
-    participant REG as Worker Registry
+    participant S as Server
+    participant P as Provider
+    participant M as Metrics Collector
+    participant C as Certificate Manager
 
-    %% Fase 1: Provisioning con OTP
-    S->>P: create_worker(WorkerSpec)
-    S->>S: generate_otp(worker_id)
-    Note over S: OTP válido 5 min, single-use
-    P->>P: Start container con HODEI_TOKEN=OTP
-    P-->>S: WorkerHandle
+    Note over OS,S: 1. Boot & Configuration
+    OS->>W: Start worker process
+    W->>W: Load configuration (env vars)
+    W->>W: Parse command-line args
 
-    %% Fase 2: Registro con OTP
-    W->>S: Register(auth_token=OTP, WorkerInfo)
-    S->>S: validate_otp(token)
-    alt OTP válido
-        S->>S: Consumir OTP
-        S->>S: Generar session_id
-        S->>REG: Registrar Worker (Creating→Connecting)
-        S-->>W: RegisterResponse(session_id, success)
-    else OTP inválido
-        S-->>W: Error: Unauthenticated
+    Note over W,S: 2. Certificate Loading (mTLS)
+    W->>C: Load certificates
+    alt mTLS enabled
+        C->>C: Validate cert paths
+        C->>C: Load CA, client cert, key
+        C->>C: Check expiration
+        C-->>W: Certificates loaded
+    else mTLS disabled (default)
+        C-->>W: mTLS disabled
     end
 
-    %% Fase 3: Stream bidireccional
-    W->>S: WorkerStream(bidirectional)
-    REG->>REG: Worker → Ready
-    
-    loop Cada 10s via stream
-        W->>S: WorkerHeartbeat(status, usage)
+    Note over W,S: 3. Server Registration
+    W->>S: Register(auth_token=OTP)
+    S->>S: Validate OTP
+    S-->>W: RegisterResponse(session_id)
+
+    Note over W,M: 4. Metrics Collector Start
+    W->>M: Initialize cache
+    M->>M: Spawn blocking task
+    M->>M: Initial metrics collection
+    M->>M: Setup TTL cache (35s)
+
+    Note over W,S: 5. Worker Stream
+    W->>S: WorkerStream (bidirectional)
+    loop Heartbeat loop
+        W->>M: Get cached metrics
+        M-->>W: Resource usage
+        W->>S: WorkerHeartbeat(metrics)
         S-->>W: ACK / KeepAlive
     end
-
-    %% Fase 4: Comandos via stream
-    S->>W: RunJobCommand
-    W->>S: LogEntry (streaming)
-    W->>S: JobResultMessage
-
-    %% Fase 5: Shutdown
-    W->>S: Unregister(reason)
-    REG->>REG: Worker → Terminated
-    S->>P: destroy_worker(handle)
 ```
 
-### Estados de Worker (PRD v6.0)
-
-```mermaid
-stateDiagram-v2
-    [*] --> Creating: Provider crea container
-    Creating --> Connecting: Container iniciado
-    Connecting --> Ready: Register + WorkerStream
-    Ready --> Busy: RunJobCommand recibido
-    Busy --> Ready: JobResult enviado
-    Ready --> Draining: drain_worker()
-    Busy --> Draining: drain_worker()
-    Draining --> Terminating: Jobs completados
-    Ready --> Terminating: Unregister
-    Terminating --> Terminated: Container destruido
-    Terminated --> [*]
-```
-
----
-
-## Flujo de Manejo de Errores y Reintentos
+### Inicialización de Componentes
 
 ```mermaid
 flowchart TD
-    START[Job en Ejecución] --> EXEC{Resultado}
+    A[Worker Start] --> B[Load Config]
+    B --> C[Init gRPC Client]
+    C --> D{mtls enabled?}
     
-    EXEC -->|Éxito| SUCCESS[Estado: Succeeded]
-    EXEC -->|Error| CHECK_RETRY{can_retry?}
-    EXEC -->|Timeout| CHECK_RETRY
-    EXEC -->|Cancelado| CANCELLED[Estado: Cancelled]
+    D -->|Yes| E[Load Certificates]
+    D -->|No| F[Skip mTLS]
     
-    CHECK_RETRY -->|Sí| PREP[prepare_retry]
-    CHECK_RETRY -->|No| FAILED[Estado: Failed Final]
+    E --> G[Validate Certs]
+    G --> H[Init Certificate Manager]
+    F --> H
     
-    PREP --> RESET[Reset estado a Pending]
-    RESET --> INC[Incrementar attempts]
-    INC --> QUEUE[Re-encolar]
-    QUEUE --> WAIT[Esperar scheduling]
-    WAIT --> ASSIGN[Asignar a Worker]
-    ASSIGN --> START
+    H --> I[Connect to Server]
+    I --> J[Register Worker]
+    J --> K[Receive Session ID]
     
-    SUCCESS --> END[Fin]
-    CANCELLED --> END
-    FAILED --> END
+    K --> L[Init LogBatcher]
+    L --> M[Init Metrics Cache]
+    M --> N[Start Worker Stream]
     
-    style SUCCESS fill:#90EE90
-    style CANCELLED fill:#FFD700
-    style FAILED fill:#FF6347
+    N --> O[Ready State]
 ```
 
 ---
 
-## Flujo de Scheduling Inteligente
+## Job Execution Workflow
 
-```mermaid
-flowchart TD
-    START[Job pendiente] --> GET_WORKERS[Obtener workers disponibles]
-    GET_WORKERS --> FILTER[Filtrar por requisitos]
-    
-    FILTER --> CHECK_CAP{Capacidad suficiente?}
-    CHECK_CAP -->|No| REJECT[No hay worker válido]
-    CHECK_CAP -->|Sí| CHECK_TAINT{Taints compatibles?}
-    
-    CHECK_TAINT -->|No| NEXT_WORKER[Siguiente worker]
-    CHECK_TAINT -->|Sí| CHECK_AFF{Affinity match?}
-    
-    NEXT_WORKER --> CHECK_MORE{Más workers?}
-    CHECK_MORE -->|Sí| CHECK_CAP
-    CHECK_MORE -->|No| REJECT
-    
-    CHECK_AFF -->|Alto| HIGH_SCORE[Score alto]
-    CHECK_AFF -->|Bajo| LOW_SCORE[Score bajo]
-    
-    HIGH_SCORE --> ADD_LIST[Agregar a candidatos]
-    LOW_SCORE --> ADD_LIST
-    
-    ADD_LIST --> MORE_WORKERS{Más workers?}
-    MORE_WORKERS -->|Sí| CHECK_CAP
-    MORE_WORKERS -->|No| SORT[Ordenar por score]
-    
-    SORT --> SELECT[Seleccionar mejor]
-    SELECT --> ASSIGN[Asignar job]
-    ASSIGN --> END[Fin]
-    
-    REJECT --> WAIT[Esperar workers]
-    WAIT --> START
-```
-
-### Algoritmo de Scoring
-
-```mermaid
-graph LR
-    subgraph "Factores de Score"
-        A[Capacidad disponible<br/>+30 pts]
-        B[Carga actual baja<br/>+25 pts]
-        C[Affinity match<br/>+20 pts]
-        D[Zona preferida<br/>+15 pts]
-        E[Historial exitoso<br/>+10 pts]
-    end
-    
-    A --> TOTAL[Score Total]
-    B --> TOTAL
-    C --> TOTAL
-    D --> TOTAL
-    E --> TOTAL
-    
-    TOTAL --> DECISION{Score > threshold?}
-    DECISION -->|Sí| SELECT[Seleccionar]
-    DECISION -->|No| SKIP[Descartar]
-```
-
----
-
-## Flujo de Streaming de Métricas
+### Write-Execute Pattern Completo
 
 ```mermaid
 sequenceDiagram
-    participant C as Cliente
-    participant MS as Metrics Service
-    participant COL as Collector
-    participant W1 as Worker 1
-    participant W2 as Worker 2
-
-    C->>MS: StreamMetrics(filter)
-    MS->>MS: Crear stream
-    
-    par Recolección paralela
-        W1->>COL: Enviar métricas
-        COL->>MS: Agregar métricas W1
-    and
-        W2->>COL: Enviar métricas
-        COL->>MS: Agregar métricas W2
-    end
-    
-    loop Stream activo
-        MS-->>C: MetricsStreamResponse
-        Note over MS,C: timestamp, worker_id,<br/>cpu, memory, network
-    end
-    
-    C->>MS: Cerrar stream
-    MS->>MS: Cleanup
-```
-
----
-
-## Flujo de Cancelación de Job
-
-```mermaid
-sequenceDiagram
-    participant U as Usuario
-    participant JS as Job Service
-    participant WS as Worker Service
-    participant W as Worker
-    participant DB as Database
-
-    U->>JS: CancelJob(job_id, reason)
-    JS->>DB: Buscar job
-    DB-->>JS: Job info
-    
-    alt Job está Running
-        JS->>WS: GetWorkerForJob(job_id)
-        WS-->>JS: worker_id
-        JS->>W: SendCancelSignal
-        W->>W: SIGTERM proceso
-        W->>W: Cleanup recursos
-        W-->>JS: CancelAck
-    else Job está Pending
-        JS->>JS: Remover de cola
-    else Job ya terminado
-        JS-->>U: Error: Job ya finalizado
-    end
-    
-    JS->>DB: Actualizar estado
-    JS-->>U: CancelJobResponse(success)
-```
-
----
-
-## Flujo de Alta Disponibilidad
-
-```mermaid
-flowchart TD
-    subgraph "Load Balancer"
-        LB[Load Balancer]
-    end
-    
-    subgraph "gRPC Servers"
-        S1[Server 1]
-        S2[Server 2]
-        S3[Server 3]
-    end
-    
-    subgraph "Worker Pools"
-        subgraph "Pool A"
-            W1[Worker 1]
-            W2[Worker 2]
-        end
-        subgraph "Pool B"
-            W3[Worker 3]
-            W4[Worker 4]
-        end
-    end
-    
-    subgraph "Storage"
-        DB[(Database)]
-        CACHE[(Redis Cache)]
-    end
-    
-    LB --> S1
-    LB --> S2
-    LB --> S3
-    
-    S1 --> W1
-    S1 --> W2
-    S2 --> W3
-    S2 --> W4
-    S3 --> W1
-    S3 --> W3
-    
-    S1 --> DB
-    S2 --> DB
-    S3 --> DB
-    
-    S1 --> CACHE
-    S2 --> CACHE
-    S3 --> CACHE
-```
-
-### Manejo de Fallos
-
-```mermaid
-flowchart TD
-    START[Worker ejecutando job] --> FAIL{Worker falla?}
-    
-    FAIL -->|No| CONTINUE[Continuar ejecución]
-    FAIL -->|Sí| DETECT[Detectar fallo via heartbeat]
-    
-    DETECT --> MARK[Marcar worker Unhealthy]
-    MARK --> FIND[Buscar jobs afectados]
-    FIND --> LOOP{Más jobs?}
-    
-    LOOP -->|Sí| CHECK{Job puede reintentar?}
-    LOOP -->|No| END[Fin manejo fallo]
-    
-    CHECK -->|Sí| REQUEUE[Re-encolar job]
-    CHECK -->|No| MARK_FAILED[Marcar job Failed]
-    
-    REQUEUE --> LOOP
-    MARK_FAILED --> LOOP
-    
-    CONTINUE --> FINISH[Job termina]
-    FINISH --> END
-```
-
----
-
-## Estados del Sistema (PRD v6.0)
-
-```mermaid
-stateDiagram-v2
-    state "Sistema" as SYS {
-        [*] --> Initializing
-        Initializing --> Ready: Services started
-        Ready --> Running: Jobs processing
-        Running --> Ready: Queue empty
-        Running --> Degraded: Workers unhealthy
-        Degraded --> Running: Workers recovered
-        Degraded --> Critical: Too many failures
-        Critical --> Shutdown: Admin action
-        Running --> Shutdown: Graceful shutdown
-        Shutdown --> [*]
-    }
-    
-    state "Worker (PRD v6.0)" as WRK {
-        [*] --> Creating: Provider creates
-        Creating --> Connecting: Container started
-        Connecting --> Ready: OTP validated + Stream
-        Ready --> Busy: RunJobCommand
-        Busy --> Ready: JobResult sent
-        Ready --> Draining: drain_worker()
-        Busy --> Draining: drain_worker()
-        Draining --> Terminating: Jobs done
-        Ready --> Terminating: Unregister
-        Terminating --> Terminated: Cleanup
-        Terminated --> [*]
-    }
-```
-
----
-
-## Flujo de Log Streaming (PRD v6.0)
-
-```mermaid
-sequenceDiagram
-    participant W as Worker Agent
     participant S as Server
-    participant LS as LogStreamService
-    participant C as Cliente
+    participant W as Worker
+    participant E as JobExecutor
+    participant FS as File System
+    participant C as Command
 
-    Note over W,C: Durante ejecución de job
+    Note over S,W: 1. Receive Job Command
+    S->>W: RunJobCommand(job_id, CommandSpec)
+    W->>E: execute_job(command)
+
+    Note over E,FS: 2. Write Phase
+    E->>FS: Create temp file
+    E->>FS: Write safety headers
+    E->>FS: Write script content
+    E->>FS: Make executable (chmod +x)
     
-    W->>S: LogEntry(job_id, line, is_stderr)
-    S->>LS: append_log(entry)
-    LS->>LS: Buffer circular (1000 entries)
-    
-    par Notificar suscriptores
-        LS-->>C: LogEntry (streaming)
+    Note over E,FS: 3. Security Headers
+    Note over E,FS: #!/bin/bash
+    Note over E,FS: set -euo pipefail
+
+    Note over E,C: 4. Execute Phase
+    E->>C: spawn(command, temp_file)
+    C->>C: Execute script
+
+    Note over C,E: 5. Stream Output
+    loop For each log line
+        C->>E: stdout/stderr line
+        E->>W: Process log
+        W->>S: LogEntry (batched)
     end
-    S-->>W: ACK
+
+    Note over C,E: 6. Completion
+    C->>E: exit_code
+    E->>E: Determine success/failure
     
-    Note over C,LS: Cliente puede suscribirse
-    C->>LS: subscribe(job_id)
-    LS-->>C: Buffered logs (histórico)
-    loop Nuevos logs
-        LS-->>C: LogEntry
+    alt Success
+        E->>S: JobResultMessage(success=true)
+    else Failure
+        E->>S: JobResultMessage(success=false)
     end
-    
-    Note over LS: Cuando job completa
-    LS->>LS: close_subscribers(job_id)
+
+    Note over E,FS: 7. Cleanup
+    E->>FS: async cleanup (tokio::spawn)
+    FS->>FS: Remove temp file
 ```
 
-### LogStreamService API
-
-| Método | Descripción |
-|--------|-------------|
-| `append_log(entry)` | Añadir log al buffer |
-| `subscribe(job_id)` | Suscribirse a logs de un job |
-| `get_logs(job_id, limit)` | Obtener logs históricos |
-| `clear_logs(job_id)` | Limpiar buffer tras completar |
-
----
-
-## Flujo de Provisioning On-Demand
+### Safety Headers Injection
 
 ```mermaid
-sequenceDiagram
-    participant SS as Smart Scheduler
-    participant PS as ProvisioningService
-    participant PR as Provider Registry
-    participant P as Provider
-    participant WS as Worker Service
-
-    SS->>PS: provision_worker(requirements)
-    PS->>PR: select_provider(requirements)
-    PR->>PR: Match capabilities vs requirements
-    PR-->>PS: Best provider (Docker/K8s/Firecracker)
-
-    PS->>PS: generate_otp(worker_id)
-    PS->>P: create_worker(WorkerSpec)
+flowchart LR
+    A[Script Content] --> B[Prepend Headers]
     
-    alt Docker Provider
-        P->>P: docker run with HODEI_TOKEN env
-    else Kubernetes Provider
-        P->>P: create Pod with env vars
-    else Firecracker Provider
-        P->>P: start microVM with boot args
+    B --> C[#!/bin/bash]
+    C --> D[set -e]
+    D --> E[set -u]
+    E --> F[set -o pipefail]
+    F --> G[Original Script]
+    
+    G --> H[Final Script]
+    H --> I[Execute]
+    
+    subgraph "Headers Meaning"
+        J[set -e<br/>Exit on error]
+        K[set -u<br/>Error on undefined var]
+        L[set -o pipefail<br/>Pipe failure detection]
     end
     
-    P-->>PS: WorkerHandle
-
-    PS->>WS: Esperar registro
-    Note over PS,WS: Timeout configurable (default 60s)
-    
-    alt Worker registrado
-        WS-->>PS: Worker Ready
-        PS-->>SS: WorkerHandle
-        SS->>SS: Assign job to worker
-    else Timeout
-        PS->>P: destroy_worker(handle)
-        PS->>PS: Retry con otro provider
-    end
+    D --> J
+    E --> K
+    F --> L
 ```
 
 ---
 
-## Flujo de Provisioning por Provider
+## Log Streaming Workflow
 
-### Docker Provider
+### LogBatcher con Backpressure
 
 ```mermaid
 sequenceDiagram
-    participant PS as ProvisioningService
-    participant DP as DockerProvider
-    participant D as Docker Daemon
-    participant W as Worker Container
+    participant C as Command
+    participant L as LogBatcher
+    participant W as Worker
+    participant S as Server
 
-    PS->>DP: create_worker(spec)
-    DP->>DP: Build container config
-    DP->>D: docker create
-    D-->>DP: container_id
-    DP->>D: docker start
-    D->>W: Start container
-    W->>W: Run hodei-worker
-    DP-->>PS: WorkerHandle
-    
-    Note over W: Container connects via gRPC
+    Note over C,S: 1. Log Generation
+    loop For each output line
+        C->>L: add_log(line)
+
+        Note over L: 2. Buffer Check
+        L->>L: buffer.len() < capacity?
+        
+        alt Buffer not full
+            L->>L: Push to buffer
+            L->>L: Check flush timer
+        else Buffer full OR timeout
+            L->>L: Flush batch
+            L->>S: LogBatch(entries)
+            
+            Note over L,S: 3. Backpressure Handling
+            alt Channel full
+                S->>L: try_send() fails
+                L->>L: Drop batch (backpressure)
+                L->>L: Log dropped count
+            else Channel OK
+                S-->>L: ACK received
+                L->>L: Reset buffer
+                L->>L: Reset timer
+            end
+        end
+    end
+
+    Note over L,S: 4. Final Flush
+    L->>L: On drop - flush remaining
 ```
 
-### Kubernetes Provider
+### LogBatch Structure
 
 ```mermaid
-sequenceDiagram
-    participant PS as ProvisioningService
-    participant KP as KubernetesProvider
-    participant K as K8s API Server
-    participant P as Pod
-
-    PS->>KP: create_worker(spec)
-    KP->>KP: Build Pod manifest
-    KP->>K: kubectl apply Pod
-    K->>K: Schedule to node
-    K->>P: Create Pod
-    P->>P: Pull image + start
-    KP->>K: Watch Pod status
-    K-->>KP: Pod Running
-    KP-->>PS: WorkerHandle
+graph TD
+    A[LogEntry 1] --> D[LogBatch]
+    B[LogEntry 2] --> D
+    C[LogEntry N] --> D
     
-    Note over P: Pod connects via gRPC
-```
-
-### Firecracker Provider
-
-```mermaid
-sequenceDiagram
-    participant PS as ProvisioningService
-    participant FP as FirecrackerProvider
-    participant FC as Firecracker VMM
-    participant VM as MicroVM
-
-    PS->>FP: create_worker(spec)
-    FP->>FP: Allocate IP from pool
-    FP->>FP: Create TAP device
-    FP->>FP: Prepare VM directory
-    FP->>FC: Start Firecracker process
-    FC->>FC: Open API socket
-    FP->>FC: Configure VM (kernel, rootfs, network)
-    FP->>FC: InstanceStart action
-    FC->>VM: Boot microVM (~125ms)
-    VM->>VM: Run init + hodei-worker
-    FP-->>PS: WorkerHandle
+    D --> E[job_id: String]
+    D --> F[entries: Vec~LogEntry~]
     
-    Note over VM: VM connects via gRPC
+    F --> G[timestamp: SystemTime]
+    F --> H[level: LogLevel]
+    F --> I[message: String]
+    F --> J[stream: stdout/stderr]
+    
+    subgraph "Benefits"
+        K[90-99% fewer gRPC calls]
+        L[Reduced network overhead]
+        M[Better throughput]
+    end
 ```
 
 ---
 
-## Comparación de Tiempos de Provisioning
+## Metrics Collection Workflow
 
-| Fase | Docker | Kubernetes | Firecracker |
-|------|--------|------------|-------------|
-| Crear recurso | ~100ms | ~500ms | ~50ms |
-| Pull/Prepare | ~0-30s* | ~0-60s* | ~0ms** |
-| Boot | ~500ms | ~2-10s | ~125ms |
-| Connect gRPC | ~100ms | ~100ms | ~100ms |
-| **Total (warm)** | **~1s** | **~5-15s** | **~300ms** |
+### Cached Resource Usage con TTL
 
-\* Depende de si imagen está cacheada  
-\** Rootfs ya preparado localmente
+```mermaid
+sequenceDiagram
+    participant H as Heartbeat
+    participant M as Metrics Collector
+    participant C as CGroups
+    participant T as Tokio Blocking Task
+
+    Note over H,T: 1. Metrics Request
+    H->>M: get_resource_usage()
+    M->>M: Check cache timestamp
+    
+    alt Cache valid (< 35s)
+        M->>M: Use cached metrics
+        M-->>H: Return cached usage
+    else Cache expired
+        M->>T: spawn_blocking()
+        T->>C: Read cgroup stats
+        C-->>T: CPU, Memory, IO data
+        
+        T->>T: Calculate usage percentages
+        T->>M: Update cache + timestamp
+        M-->>H: Return fresh metrics
+        
+        Note over T: 2. Non-blocking Design
+        T->>T: yield_now() for preemption
+        T->>T: Avoid blocking async runtime
+    end
+
+    Note over H,T: 3. Continuous Collection
+    loop Every heartbeat interval
+        H->>M: get_usage()
+        M-->>H: Cached or fresh metrics
+    end
+```
+
+### CGroups Integration
+
+```mermaid
+flowchart TD
+    A[Metrics Request] --> B{Spawn Blocking Task}
+    
+    B --> C[Read /sys/fs/cgroup/]
+    C --> D[cpuacct.usage]
+    C --> E[memory.usage_in_bytes]
+    C --> F[blkio.io_service_bytes]
+    
+    D --> G[Calculate CPU %]
+    E --> H[Calculate Memory %]
+    F --> I[Calculate IO stats]
+    
+    G --> J[ResourceUsage]
+    H --> J
+    I --> J
+    
+    J --> K[Update Cache]
+    K --> L[Return to Caller]
+    
+    subgraph "Container Detection"
+        M[Check /.dockerenv]
+        N[Check cgroup v1/v2]
+        O[Is in container?]
+    end
+    
+    C --> M
+    C --> N
+    M --> O
+    N --> O
+    
+    O -->|Yes| P[Use cgroup metrics]
+    O -->|No| Q[Use system metrics]
+```
+
+---
+
+## Secret Injection Workflow
+
+### Secure Secret Transmission
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant E as JobExecutor
+    participant C as Command
+    participant S as Script
+
+    Note over W,S: 1. Secret Handling
+    W->>E: execute_script(script, env, secrets)
+    
+    alt Secrets provided
+        E->>E: Serialize secrets to JSON
+        E->>E: Prepare stdin data
+        
+        Note over E,C: 2. stdin Injection
+        E->>C: stdin.write_all(&json_bytes)
+        E->>C: stdin.shutdown(Write)
+        
+        Note over E,C: 3. Security - Close stdin
+        E->>C: Stdin closed immediately
+        C->>C: Read from stdin (if needed)
+        
+        C->>S: Execute script
+        S->>S: Access env vars (from secrets)
+        
+        Note over E,S: 4. Audit & Redaction
+        E->>E: Mark secrets as injected
+        E->>E: Audit log (no secret values)
+        
+        Note over E,S: 5. Log Redaction
+        E->>E: Redact secret patterns
+        E->>S: Log without secrets
+    else No secrets
+        C->>S: Execute script normally
+    end
+```
+
+### Secret Security Model
+
+```mermaid
+flowchart TD
+    A[Secrets HashMap] --> B[Serialize to JSON]
+    B --> C[Write to stdin]
+    C --> D[Close stdin write]
+    
+    D --> E[Command Execution]
+    E --> F[Read from env/stdin]
+    F --> G[Script executes]
+    
+    H[Log Redaction] --> I[Scan log lines]
+    I --> J[Mask secret patterns]
+    J --> K[Send redacted logs]
+    
+    L[Audit Trail] --> M[Log secret access]
+    M --> N[No secret values]
+    N --> O[Compliance ready]
+    
+    subgraph "Security Guarantees"
+        P[Secrets never in logs]
+        Q[Secrets never in disk]
+        R[stdin closed after injection]
+        S[Audit trail maintained]
+    end
+    
+    G --> H
+    G --> L
+```
+
+---
+
+## Certificate Management Workflow
+
+### mTLS Certificate Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant C as Certificate Manager
+    participant FS as File System
+    participant CA as CA
+    participant S as Server
+    participant W as Worker
+
+    Note over CA,S: 1. Certificate Generation
+    CA->>FS: Generate CA root cert
+    CA->>FS: Generate server cert + key
+    CA->>FS: Generate client cert + key
+    FS-->>C: Certificates ready
+
+    Note over C,W: 2. Worker Certificate Loading
+    W->>C: start_worker()
+    C->>FS: Load client cert
+    C->>FS: Load client key
+    C->>FS: Load CA cert
+    C->>C: Validate certificate chain
+    C->>C: Check expiration date
+
+    Note over C,S: 3. TLS Connection
+    C->>S: Establish mTLS connection
+    S->>S: Validate client cert
+    S->>S: Validate server cert
+    S-->>C: TLS handshake OK
+
+    Note over C,C: 4. Certificate Rotation
+    loop Periodic check
+        C->>C: Check expiration
+        alt Cert expires soon (< 30 days)
+            C->>CA: Request new certificate
+            CA->>FS: Generate new cert
+            FS-->>C: New cert ready
+            C->>C: Hot reload cert
+        end
+    end
+```
+
+### Certificate Rotation
+
+```mermaid
+flowchart TD
+    A[Certificate Manager] --> B[Check Expiration]
+    
+    B --> C{Days until expiry?}
+    
+    C -->|> 30| D[No action needed]
+    C -->|15-30| E[Warning logged]
+    C -->|7-15| F[Alert generated]
+    C -->|< 7| G[Critical - immediate renewal]
+    
+    E --> H[Schedule rotation]
+    F --> H
+    G --> I[Trigger renewal]
+    
+    H --> J[Wait for maintenance window]
+    I --> J
+    J --> K[Generate new cert]
+    K --> L[Replace old cert]
+    L --> M[Hot reload]
+    M --> N[Verify new cert]
+    
+    N --> O[Success]
+    D --> P[Continue operation]
+    
+    subgraph "Scripts"
+        Q[scripts/generate-certificates.sh]
+        R[Certificate validation]
+    end
+    
+    K --> Q
+    N --> R
+```
+
+---
+
+## Deployment Workflows
+
+### Docker Deployment
+
+```mermaid
+flowchart TD
+    A[Build Worker Image] --> B[Push to Registry]
+    B --> C[Deploy to Provider]
+    
+    C --> D[Docker Provider]
+    D --> E[docker run]
+    E --> F[Set env vars]
+    F --> G[Inject OTP token]
+    
+    G --> H[Container starts]
+    H --> I[Worker boots]
+    I --> J[Register with OTP]
+    J --> K[Ready state]
+    
+    subgraph "Environment Variables"
+        L[HODEI_SERVER]
+        M[HODEI_TOKEN]
+        N[HODEI_WORKER_ID]
+        O[HODEI_CAPACITY]
+    end
+    
+    F --> L
+    F --> M
+    F --> N
+    F --> O
+```
+
+### Kubernetes Deployment
+
+```mermaid
+flowchart TD
+    A[Create Worker Pod] --> B[Inject OTP via env]
+    B --> C[Mount worker binary]
+    C --> D[Configure resources]
+    
+    D --> E[Pod starts]
+    E --> F[Init container]
+    F --> G[Main container - worker]
+    
+    G --> H[Worker registration]
+    H --> I[Heartbeat loop]
+    
+    subgraph "K8s Resources"
+        J[Pod]
+        K[Service]
+        L[ConfigMap]
+        M[Secret]
+    end
+    
+    B --> M
+    C --> L
+    H --> K
+```
+
+---
+
+## Error Handling Workflows
+
+### Worker Disconnection Recovery
+
+```mermaid
+stateDiagram-v2
+    [*] --> Ready: Registered
+    
+    Ready --> Running: Job Assigned
+    Running --> Ready: Job Completed
+    
+    Running --> Disconnected: Network Error
+    Disconnected --> Reconnecting: Retry
+    
+    Reconnecting --> Ready: Registration OK
+    Reconnecting --> Disconnected: Retry Failed
+    
+    Disconnected --> Terminated: Max Retries
+    Terminated --> [*]
+    
+    Ready --> Terminated: Unregister
+    Running --> Terminated: Force Unregister
+```
+
+### Backpressure Handling
+
+```mermaid
+flowchart TD
+    A[LogBatcher] --> B{try_send() result}
+    
+    B -->|OK| C[Message sent]
+    B -->|Full| D[Drop message]
+    B -->|Closed| E[Channel closed]
+    
+    D --> F[Increment dropped counter]
+    F --> G[Log warning]
+    G --> H[Continue operation]
+    
+    C --> I[Continue batching]
+    E --> J[Flush remaining logs]
+    J --> K[Shutdown batcher]
+    
+    subgraph "Metrics"
+        L[dropped_messages_total]
+        M[channel_capacity]
+        N[buffer_fill_ratio]
+    end
+    
+    F --> L
+    D --> M
+    C --> N
+```
+
+---
+
+## Testing Workflows
+
+### Performance Testing
+
+```mermaid
+flowchart LR
+    A[Run Performance Tests] --> B[test_log_batcher_throughput]
+    A --> C[test_backpressure_performance]
+    A --> D[test_concurrent_log_throughput]
+    A --> E[test_optimization_impact]
+    
+    B --> F[Measure batch throughput]
+    C --> G[Measure drop rate]
+    D --> H[Measure concurrent load]
+    E --> I[Compare before/after]
+    
+    F --> J[Pass criteria: > 10k logs/sec]
+    G --> K[Pass criteria: < 1% drop rate]
+    H --> L[Pass criteria: stable under load]
+    I --> M[Pass criteria: 90% improvement]
+    
+    subgraph "Test Categories"
+        N[Unit Tests]
+        O[Integration Tests]
+        P[Performance Tests]
+    end
+    
+    A --> N
+    A --> O
+    A --> P
+```
+
+### Security Testing
+
+```mermaid
+flowchart TD
+    A[Security Tests] --> B[test_secrets_redacted_from_logs]
+    A --> C[test_stdin_closed_after_injection]
+    A --> D[test_secrets_json_serialization]
+    
+    B --> E[Verify no secrets in logs]
+    C --> F[Verify stdin closure]
+    D --> G[Verify JSON format]
+    
+    subgraph "Security Checks"
+        H[No secret exposure]
+        I[Secure transmission]
+        J[Audit compliance]
+    end
+    
+    E --> H
+    F --> I
+    G --> J
+    
+    K[Penetration Testing]
+    L[Certificate Validation]
+    M[Zero Trust Verification]
+    
+    A --> K
+    A --> L
+    A --> M
+```

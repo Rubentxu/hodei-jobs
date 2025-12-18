@@ -154,3 +154,5 @@ scripts/extract-codebase.sh
 scripts/maven_job_with_logs.sh
 .sqlx/
 web-stich/
+*.txt
+*.csv

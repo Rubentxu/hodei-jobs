@@ -76,50 +76,11 @@ fi
 
 print_success "API is reachable"
 
-# Read script content
-SCRIPT_PATH="scripts/verification/maven_build_job.sh"
-if [[ ! -f "$SCRIPT_PATH" ]]; then
-    print_error "Maven build script not found: $SCRIPT_PATH"
-    exit 1
-fi
+print_header "Redirecting to Maven Job with Logs"
 
-print_success "Found Maven build script"
+print_info "This script now delegates to maven_job_with_logs.sh --complex"
+print_info "which provides better user experience with live log streaming."
+echo ""
 
-# Escape script content for JSON
-SCRIPT_CONTENT=$(cat "$SCRIPT_PATH" | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
-
-print_header "Submitting Maven Build Job"
-
-# Submit job
-RESPONSE=$(grpcurl -plaintext -d "{
-  \"job_definition\": {
-    \"name\": \"maven-complex-build\",
-    \"command\": \"/bin/bash\",
-    \"arguments\": [\"-c\", \"$SCRIPT_CONTENT\"],
-    \"requirements\": {
-      \"cpu_cores\": 2.0,
-      \"memory_bytes\": 4294967296,
-      \"disk_bytes\": 1073741824
-    },
-    \"timeout\": {
-      \"execution_timeout\": \"1800s\"
-    }
-  },
-  \"queued_by\": \"user\"
-}" localhost:50051 hodei.JobExecutionService/QueueJob 2>&1)
-
-if echo "$RESPONSE" | grep -q '"success": true'; then
-    JOB_ID=$(echo "$RESPONSE" | grep -o '[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}' | head -1)
-    print_success "Job queued successfully!"
-    echo -e "\n${CYAN}Job ID:${NC} $JOB_ID"
-    echo -e "\n${CYAN}To monitor logs:${NC}"
-    echo "  ./scripts/watch_logs.sh"
-    echo -e "\n${CYAN}To check job status:${NC}"
-    echo "  grpcurl -plaintext -d '{\"job_id\": {\"value\": \"$JOB_ID\"}}' localhost:50051 hodei.JobExecutionService/GetJob"
-else
-    print_error "Failed to queue job"
-    echo "$RESPONSE"
-    exit 1
-fi
-
-print_success "Done!"
+# Delegate to maven_job_with_logs.sh with --complex flag
+exec "$PROJECT_ROOT/scripts/Job Execution/maven_job_with_logs.sh" --complex

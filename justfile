@@ -258,15 +258,27 @@ logs-db:
 
 # Watch job logs (requires hodei-server running)
 watch-logs:
-    @./scripts/watch_logs.sh
+    @./scripts/Monitoring\ &\ Debugging/watch_logs.sh
 
 # Run Maven job with live log streaming
 maven-job:
-    @./scripts/maven_job_with_logs.sh
+    @./scripts/Job\ Execution/maven_job_with_logs.sh --simple
 
 # Run Maven job (complex version with asdf)
 maven-job-complex:
-    @./scripts/maven_job_with_logs.sh --complex
+    @./scripts/Job\ Execution/maven_job_with_logs.sh --complex
+
+# Generate mTLS certificates for Zero Trust security
+cert-generate:
+    @echo "🔐 Generating mTLS certificates..."
+    @./scripts/Worker\ Management/generate-certificates.sh
+    @echo "✅ Certificates generated in certs/ directory"
+
+# Rebuild worker Docker image and restart containers
+rebuild-worker:
+    @echo "🔨 Rebuilding worker Docker image..."
+    @./scripts/Worker\ Management/rebuild_worker.sh --restart
+    @echo "✅ Worker rebuilt and restarted"
 
 # Start server with Docker-in-Docker for worker provisioning
 dev-server:
@@ -317,12 +329,6 @@ test-shell-features:
     @sleep 5
     @echo "✅ Shell feature tests queued"
 
-# Rebuild worker Docker image and restart containers
-rebuild-worker:
-    @echo "🔨 Rebuilding worker Docker image..."
-    @./scripts/rebuild_worker.sh --restart
-    @echo "✅ Worker rebuilt and restarted"
-
 # Check system status
 status:
     @echo "📊 System Status:"
@@ -337,8 +343,8 @@ status:
     @npm --version 2>/dev/null || echo "npm not installed"
 
 help:
-    @echo "Hodei Job Platform - Development Commands"
-    @echo "=========================================="
+    @echo "Hodei Job Platform v8.0 - Development Commands"
+    @echo "================================================"
     @echo ""
     @echo "Quick Start:"
     @echo "  just dev              Start full development environment"
@@ -356,10 +362,12 @@ help:
     @echo "  just db-shell         Open database shell"
     @echo ""
     @echo "Testing:"
-    @echo "  just test             Run all tests"
+    @echo "  just test             Run all tests (277 tests)"
     @echo "  just test-backend     Run backend tests"
     @echo "  just test-frontend    Run frontend tests"
     @echo "  just test-e2e         Run E2E tests"
+    @echo "  just maven-job        Run Maven job (simple)"
+    @echo "  just maven-job-complex Run Maven job (complex with asdf)"
     @echo ""
     @echo "Code Quality:"
     @echo "  just check            Run lint and format"
@@ -367,10 +375,26 @@ help:
     @echo "  just format           Format code"
     @echo "  just typecheck        Type check"
     @echo ""
+    @echo "Certificates (v8.0):"
+    @echo "  just cert-generate    Generate mTLS certificates for Zero Trust"
+    @echo ""
+    @echo "Worker Management:"
+    @echo "  just rebuild-worker   Rebuild worker image with latest code"
+    @echo ""
     @echo "Utilities:"
     @echo "  just status           Show system status"
     @echo "  just logs             Show all logs"
+    @echo "  just watch-logs       Monitor job logs in real-time"
     @echo "  just clean            Clean build artifacts"
     @echo "  just clean-all        Clean everything (destructive!)"
+    @echo ""
+    @echo "Worker Agent v8.0 Features:"
+    @echo "  - LogBatching (90-99% gRPC overhead reduction)"
+    @echo "  - Zero-Copy I/O (memory efficient)"
+    @echo "  - Secret Injection (stdin, JSON)"
+    @echo "  - mTLS/Zero Trust (PKI infrastructure)"
+    @echo "  - Cached Metrics (35s TTL, non-blocking)"
+    @echo "  - Write-Execute Pattern (Jenkins/K8s style)"
+    @echo "  - Backpressure Handling (try_send)"
     @echo ""
     @echo "For more information: https://github.com/your-org/hodei-job-platform"

@@ -1,7 +1,7 @@
 # Casos de Uso
 
-**Versión**: 7.0  
-**Última Actualización**: 2025-12-14
+**Versión**: 8.0  
+**Última Actualización**: 2025-12-18
 
 ## Diagrama General de Casos de Uso
 
@@ -71,6 +71,40 @@ graph TB
     PROVIDER --> UC17
     
     ADMIN --> UC17
+```
+
+## Nuevos Casos de Uso - Worker Agent v8.0
+
+### Casos de Uso de Performance (T1.1-T1.10)
+
+```mermaid
+graph TB
+    subgraph "Performance Optimization"
+        UC21[LogBatching - Batch Transmission]
+        UC22[Backpressure Handling]
+        UC23[Write-Execute Pattern]
+        UC24[Safety Headers Injection]
+        UC25[Async Temp File Cleanup]
+    end
+    
+    subgraph "Security Enhancement"
+        UC26[Secret Injection via stdin]
+        UC27[Log Redaction]
+        UC28[Secure Permissions]
+    end
+    
+    subgraph "Efficiency Improvements"
+        UC29[Zero-Copy Log Reads]
+        UC30[Cached Metrics Collection]
+        UC31[CGroups Integration]
+        UC32[Non-blocking Metrics]
+    end
+    
+    subgraph "Zero Trust Architecture"
+        UC33[mTLS Configuration]
+        UC34[Certificate Management]
+        UC35[PKI Infrastructure]
+    end
 ```
 
 ---
@@ -255,14 +289,15 @@ sequenceDiagram
         S-->>W: Error: Unauthenticated
     end
 
-    Note over S,W: Fase 3: Stream bidireccional
+    Note over S,W: Fase 3: Stream bidireccional con Optimizaciones v8.0
     W->>S: WorkerStream (bidireccional)
     loop Comunicación continua
-        W->>S: WorkerHeartbeat
+        W->>S: WorkerHeartbeat (cached metrics)
         S-->>W: ACK / KeepAlive
         S->>W: RunJobCommand
-        W->>S: LogEntry (streaming)
-        W->>S: JobResultMessage
+        W->>W: Write-Execute Pattern (T1.6-T1.7)
+        W->>S: LogBatch (batched logs, T1.1-T1.5)
+        W->>S: JobResultMessage (with secrets audit, T2.1-T2.3)
     end
 ```
 
@@ -466,7 +501,259 @@ sequenceDiagram
 
 ---
 
-## Matriz de Casos de Uso por Actor (PRD v6.0)
+## UC Nuevo: LogBatching para Optimización de Performance (T1.1-T1.5)
+
+**Actor Principal:** Worker Agent
+
+**Descripción:** El worker implementa batching de logs para reducir 90-99% la sobrecarga de red.
+
+```mermaid
+sequenceDiagram
+    participant C as Command Output
+    participant L as LogBatcher
+    participant S as Server
+    
+    loop For each log line
+        C->>L: add_log_entry(line)
+        
+        alt Buffer not full
+            L->>L: Append to buffer
+        else Buffer full OR timeout
+            L->>S: flush_log_batch()
+            S-->>L: ACK
+            L->>L: Reset buffer
+        end
+    end
+    
+    Note over L,S: Backpressure Handling
+    L->>S: try_send(LogBatch)
+    alt Channel full
+        S-->>L: Drop (backpressure)
+        L->>L: Increment dropped counter
+    else OK
+        S-->>L: ACK received
+    end
+```
+
+**Beneficios:**
+- Reducción 90-99% en llamadas gRPC
+- Backpressure handling con `try_send()`
+- Flush automático por capacidad o tiempo
+- Thread-safe con `Arc<Mutex<>>`
+
+---
+
+## UC Nuevo: Write-Execute Pattern para Scripts (T1.6-T1.7)
+
+**Actor Principal:** Worker Agent
+
+**Descripción:** Ejecución robusta de scripts usando patrón inspirado en Jenkins/K8s.
+
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant W as Worker
+    participant E as JobExecutor
+    participant FS as File System
+    participant C as Command
+    
+    S->>W: RunJobCommand(script)
+    W->>E: execute_script_robust()
+    
+    E->>FS: Create temp file
+    E->>FS: Write safety headers (#!/bin/bash, set -euo pipefail)
+    E->>FS: Write script content
+    E->>FS: chmod +x
+    
+    E->>C: spawn command
+    
+    loop Streaming logs
+        C->>E: stdout/stderr line
+        E->>W: Process line
+        W->>S: LogEntry (batched)
+    end
+    
+    C->>E: exit_code
+    E->>S: JobResultMessage
+    
+    Note over E,FS: Async Cleanup
+    E->>FS: tokio::spawn(cleanup temp file)
+```
+
+**Características:**
+- Safety headers automáticos
+- Gestión segura de archivos temporales
+- Cleanup asíncrono no bloqueante
+- Robustez en ejecución
+
+---
+
+## UC Nuevo: Secret Injection via stdin (T2.1-T2.3)
+
+**Actor Principal:** Worker Agent
+
+**Descripción:** Inyección segura de secretos via stdin sin exposición en logs.
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant E as JobExecutor
+    participant C as Command
+    participant S as Script
+    
+    W->>E: execute_script(script, env, secrets)
+    
+    alt Secrets provided
+        E->>E: Serialize secrets to JSON
+        E->>C: stdin.write_all(&json)
+        E->>C: stdin.shutdown(Write)
+        
+        Note over E,C: Stdin closed immediately
+        
+        C->>S: Execute script
+        S->>S: Access secrets from env
+        
+        Note over E,S: Log Redaction
+        E->>W: Redact secret patterns
+        W->>S: Send redacted logs only
+        
+        Note over E,S: Audit
+        E->>E: Log secret access (no values)
+    else No secrets
+        C->>S: Execute normally
+    end
+```
+
+**Seguridad:**
+- Secrets via stdin (no disk)
+- Redacción automática en logs
+- Auditoría sin valores
+- Cumplimiento compliance
+
+---
+
+## UC Nuevo: Zero-Copy I/O para Logs (T3.1-T3.2)
+
+**Actor Principal:** Worker Agent
+
+**Descripción:** Lectura zero-copy de logs usando FramedRead + BytesCodec.
+
+```mermaid
+sequenceDiagram
+    participant F as FramedRead
+    participant B as BytesCodec
+    participant W as Worker
+    
+    W->>F: Create with source
+    
+    loop Read chunks
+        F->>B: next().await
+        
+        alt Some chunk
+            B-->>F: Ok(Bytes)
+            F->>W: Direct Bytes slice (no copy)
+            W->>W: Process directly
+        else None
+            F-->>W: None (EOF)
+        end
+    end
+```
+
+**Beneficios:**
+- Zero-copy de datos
+- Bytes slice directo
+- Sin allocaciones heap
+- Mejor performance memoria
+
+---
+
+## UC Nuevo: Métricas Asíncronas con Cache TTL (T3.3-T3.5)
+
+**Actor Principal:** Worker Agent
+
+**Descripción:** Sistema de métricas con cache de 35s y tareas bloqueantes.
+
+```mermaid
+sequenceDiagram
+    participant H as Heartbeat
+    participant M as Metrics Collector
+    participant T as Blocking Task
+    participant C as CGroups
+    
+    H->>M: get_usage()
+    M->>M: Check cache timestamp
+    
+    alt Cache valid
+        M-->>H: Return cached
+    else Expired
+        M->>T: spawn_blocking()
+        T->>C: Read cgroup stats
+        C-->>T: cpu, mem, io
+        T->>M: Update cache
+        M-->>H: Return fresh metrics
+    end
+    
+    Note over T: yield_now() for preemption
+```
+
+**Características:**
+- Cache TTL 35 segundos
+- spawn_blocking para I/O intensivo
+- yield_now para preemption
+- Integración cgroups
+
+---
+
+## UC Nuevo: mTLS Certificate Management (T4.1-T4.5)
+
+**Actor Principal:** Worker Agent / System
+
+**Descripción:** Infraestructura completa mTLS para Zero Trust security.
+
+```mermaid
+sequenceDiagram
+    participant CM as Certificate Manager
+    participant FS as File System
+    participant CA as CA
+    participant S as Server
+    
+    Note over CA,CM: 1. Certificate Generation
+    CA->>FS: Generate CA root
+    CA->>FS: Generate server cert
+    CA->>FS: Generate client cert
+    FS-->>CM: Certs ready
+    
+    Note over CM,S: 2. Worker mTLS Setup
+    CM->>FS: Load client cert + key
+    CM->>FS: Load CA cert
+    CM->>CM: Validate chain
+    CM->>CM: Check expiration
+    
+    Note over CM,S: 3. TLS Connection
+    CM->>S: Connect with mTLS
+    S->>S: Validate client cert
+    S-->>CM: Handshake OK
+    
+    Note over CM,CM: 4. Certificate Rotation
+    loop Periodic
+        CM->>CM: Check expiration
+        alt Expires soon
+            CM->>CA: Request new cert
+            CA->>FS: Generate new cert
+            CM->>CM: Hot reload
+        end
+    end
+```
+
+**Infraestructura:**
+- PKI completa con CA
+- Certificados cliente/servidor
+- Rotación automática
+- Monitoreo expiración
+
+---
+
+## Matriz de Casos de Uso por Actor (PRD v8.0)
 
 | Caso de Uso | Usuario | Worker Agent | Scheduler | Provider | Admin |
 |-------------|---------|--------------|-----------|----------|-------|
@@ -489,9 +776,29 @@ sequenceDiagram
 | Stream Logs | ✅ | | | | ✅ |
 | Ver Métricas | | | | | ✅ |
 
+### Casos de Uso Nuevos v8.0
+
+| Caso de Uso v8.0 | Usuario | Worker Agent | Scheduler | Provider | Admin |
+|------------------|---------|--------------|-----------|----------|-------|
+| **LogBatching** | | ✅ | | | |
+| **Backpressure Handling** | | ✅ | | | |
+| **Write-Execute Pattern** | | ✅ | | | |
+| **Safety Headers Injection** | | ✅ | | | |
+| **Async Temp File Cleanup** | | ✅ | | | |
+| **Secret Injection via stdin** | | ✅ | | | |
+| **Log Redaction** | | ✅ | | | |
+| **Secure Permissions** | | ✅ | | | |
+| **Zero-Copy I/O** | | ✅ | | | |
+| **Cached Metrics (35s TTL)** | | ✅ | | | |
+| **CGroups Integration** | | ✅ | | | |
+| **Non-blocking Metrics** | | ✅ | | | |
+| **mTLS Configuration** | | ✅ | | | ✅ |
+| **Certificate Management** | | ✅ | | | ✅ |
+| **PKI Infrastructure** | | | | | ✅ |
+
 ---
 
-## UC Nuevo: Ejecución de Job via Stream (PRD v6.0)
+## UC Nuevo: Ejecución de Job via Stream (PRD v8.0)
 
 **Actor Principal:** Worker Agent
 
@@ -507,19 +814,34 @@ sequenceDiagram
     
     S->>W: RunJobCommand(job_id, CommandSpec)
     W->>W: Parsear CommandSpec
-    
+
     alt Shell Command
         W->>E: execute_shell(cmd, args)
     else Script Command
-        W->>E: execute_script(interpreter, content)
+        W->>E: execute_script_robust(interpreter, content) [T1.6-T1.7]
+
+        Note over E: Write-Execute Pattern
+        E->>FS: Create temp file
+        E->>FS: Write safety headers
+        E->>FS: Write script
+        E->>FS: chmod +x
+        E->>C: Execute
+
+        Note over E,C: Secret Injection (T2.1-T2.3)
+        alt Secrets provided
+            E->>C: stdin.write_all(JSON secrets)
+            E->>C: stdin.shutdown()
+        end
     end
-    
+
     loop Durante ejecución
         E-->>W: stdout/stderr line
-        W->>S: LogEntry(job_id, line, is_stderr)
+        W->>W: Redact secrets (T2.2)
+        W->>L: Add to LogBatcher (T1.1-T1.5)
+        L->>S: LogBatch (batched)
         S-->>W: ACK
     end
-    
+
     alt Éxito
         E-->>W: exit_code = 0
         W->>S: JobResultMessage(success=true, exit_code=0)
@@ -527,7 +849,10 @@ sequenceDiagram
         E-->>W: exit_code != 0
         W->>S: JobResultMessage(success=false, error_message)
     end
-    
+
+    Note over E,FS: Async Cleanup
+    E->>FS: tokio::spawn(remove temp file)
+
     S-->>W: ACK
 ```
 

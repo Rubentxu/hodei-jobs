@@ -1,7 +1,7 @@
 # Arquitectura del Sistema
 
-**Versión**: 7.0  
-**Última Actualización**: 2025-12-14
+**Versión**: 8.0  
+**Última Actualización**: 2025-12-18
 
 ## Domain-Driven Design (DDD)
 
@@ -85,7 +85,182 @@ graph TB
     REPO --> PG
 ```
 
-## Comunicación Server ↔ Worker Agent (PRD v6.0)
+## Worker Agent - Optimizaciones v8.0
+
+### LogBatching & Backpressure (T1.1-T1.5)
+
+El worker agent implementa un sistema de batching de logs para reducir significativamente la sobrecarga de red:
+
+```mermaid
+graph TD
+    A[LogEntry generada] --> B{Buffer lleno?}
+    B -->|No| C[Agregar a buffer]
+    B -->|Sí| D[Flush LogBatch]
+    D --> E[Enviar LogBatch vía gRPC]
+    E --> F[Reset buffer]
+    C --> G[Timer flush interval]
+    G --> H{Timeout?}
+    H -->|Sí| D
+    H -->|No| I[Aguardar]
+    I --> G
+    
+    J[ServerMessage] --> K[try_send()?]
+    K -->|Full| L[Drop message<br/>Backpressure]
+    K -->|OK| M[Continuar]
+```
+
+**Beneficios:**
+- **90-99% reducción** en llamadas gRPC (de línea por línea a batches)
+- **Backpressure handling** con `try_send()` para evitar bloqueos
+- **Flush automático** por capacidad o intervalo de tiempo
+- **Thread-safe** usando `Arc<Mutex<LogBatcher>>`
+
+### Write-Execute Pattern (T1.6-T1.7)
+
+Patrón robusto de ejecución de scripts inspirado en Jenkins/K8s:
+
+```mermaid
+flowchart TD
+    A[Recibir RunJobCommand] --> B[Crear archivo temporal]
+    B --> C[Escribir script + safety headers]
+    C --> D[Hacer archivo ejecutable]
+    D --> E[Ejecutar con Command]
+    E --> F[Stream logs en tiempo real]
+    F --> G[Enviar JobResult]
+    G --> H[Limpiar archivo temporal<br/>async con tokio::spawn]
+    
+    subgraph "Safety Headers"
+        I[set -e<br/>exit on error]
+        J[set -u<br/>undefined variables error]
+        K[set -o pipefail<br/>pipe failure detection]
+    end
+    
+    C --> I
+    C --> J
+    C --> K
+```
+
+**Características:**
+- Inyección automática de safety headers (`set -euo pipefail`)
+- Gestión segura de archivos temporales
+- Cleanup asíncrono no bloqueante
+- Ejecución robusta con manejo de errores
+
+### Secret Injection (T2.1-T2.3)
+
+Inyección segura de secretos via stdin:
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant E as JobExecutor
+    
+    W->>E: execute_script(script, env, secrets)
+    E->>E: Serializar secrets a JSON
+    E->>E: stdin.write_all(&json)
+    E->>E: stdin.shutdown() [Write]
+    E->>Command: spawn()
+    Command->>Command: Leer secrets desde stdin
+    Command->>Command: Ejecutar script con env
+    Note over E,Command: Stdin cerrado después<br/>de inyección - seguridad
+```
+
+**Seguridad:**
+- Secrets nunca aparecen en logs (redacción automática)
+- Transmisión via stdin con cierre inmediato
+- JSON serializado para múltiples secretos
+- Auditoría de acceso a secretos
+
+### Zero-Copy I/O (T3.1-T3.2)
+
+Optimización de lectura de logs:
+
+```rust
+// FramedRead + BytesCodec para zero-copy
+let mut framed = FramedRead::new(source, BytesCodec::new());
+while let Some(chunk) = framed.next().await {
+    // Direct Bytes slice - no copy
+    let bytes = chunk?;
+    // Process directly from Bytes
+}
+```
+
+**Beneficios:**
+- **Zero-copy** de datos de log
+- **BytesCodec** para decodificación eficiente
+- **FramedRead** para manejo de límites
+- Reducción de allocaciones de memoria
+
+### Métricas Asíncronas (T3.3-T3.5)
+
+Sistema de métricas con cache TTL:
+
+```mermaid
+graph LR
+    A[Métricas Request] --> B{Cache válido?}
+    B -->|Sí| C[Return cached]
+    B -->|No| D[Spawn blocking task]
+    D --> E[Recolectar desde cgroups]
+    E --> F[Update cache + timestamp]
+    F --> G[Return fresh metrics]
+    G --> H[Background update]
+    
+    subgraph "Cache TTL"
+        I[35 segundos TTL]
+        J[Instant timestamp]
+        K[Atomic update]
+    end
+    
+    F --> I
+```
+
+**Características:**
+- **Cache TTL** de 35 segundos
+- **spawn_blocking** para tareas intensivas
+- **yield_now** para permitir preemption
+- Integración cgroups para containers
+
+### mTLS Infrastructure (T4.1-T4.5)
+
+Infraestructura completa de mTLS para Zero Trust:
+
+```mermaid
+graph TD
+    A[CertificatePaths] --> B[Load certs]
+    B --> C[ServerTlsSettings]
+    C --> D[CertificateExpiration checker]
+    
+    subgraph "PKI Infrastructure"
+        E[CA Root Certificate]
+        F[Server Certificate]
+        G[Client Certificate]
+        H[Certificate Revocation]
+    end
+    
+    subgraph "Certificate Management"
+        I[Auto-rotation]
+        J[Validity tracking]
+        K[Expiration alerts]
+    end
+    
+    E --> F
+    E --> G
+    D --> I
+    D --> J
+    D --> K
+    
+    script[scripts/generate-certificates.sh]
+    doc1[docs/security/PKI-DESIGN.md]
+    doc2[docs/security/CERTIFICATE-MANAGEMENT.md]
+    
+    script --> E
+    doc1 --> E
+    doc2 --> E
+```
+
+**Nota:** Requiere upgrade a `tonic >= 0.15` para habilitar TLS features.
+
+## Comunicación Server ↔ Worker Agent (PRD v8.0)
 
 ```mermaid
 sequenceDiagram
@@ -103,14 +278,16 @@ sequenceDiagram
     S->>S: validate_otp(token)
     S-->>W: RegisterResponse(session_id)
     
-    Note over S,W: 3. Bidirectional Stream
+    Note over S,W: 3. Bidirectional Stream con Optimizaciones
     W->>S: WorkerStream (bidirectional)
+    
     loop Heartbeat + Commands
-        W->>S: WorkerHeartbeat
+        W->>S: WorkerHeartbeat (cached metrics)
         S-->>W: ACK / KeepAlive
         S->>W: RunJobCommand
-        W->>S: LogEntry (streaming)
-        W->>S: JobResultMessage
+        W->>W: Write-Execute Pattern
+        W->>S: LogBatch (batched logs)
+        W->>S: JobResultMessage (with secrets audit)
     end
     
     Note over S,W: 4. Shutdown
@@ -345,9 +522,10 @@ hodei-job-platform/
 │   │
 │   ├── grpc/             # hodei-jobs-grpc - gRPC Services
 │   │   ├── services/             # Service implementations
+│   │   ├── proto/                # Protocol Buffers (LogBatch message)
 │   │   └── bin/
-│   │       ├── server.rs         # Control plane server
-│   │       └── worker.rs         # Worker agent
+│   │       ├── server.rs         # Control plane server (mTLS ready)
+│   │       └── worker.rs         # Worker agent (HPC-ready)
 │   │
 │   ├── interface/        # hodei-jobs-interface - REST API (Axum)
 │   │
@@ -356,10 +534,14 @@ hodei-job-platform/
 ├── proto/                # Protocol Buffers definitions
 ├── deploy/
 │   └── kubernetes/       # K8s manifests (RBAC, NetworkPolicy)
-└── scripts/
-    ├── docker/           # Docker image build scripts
-    ├── kubernetes/       # K8s image build scripts
-    └── firecracker/      # Firecracker rootfs build scripts
+├── scripts/
+│   ├── docker/           # Docker image build scripts
+│   ├── kubernetes/       # K8s image build scripts
+│   ├── firecracker/      # Firecracker rootfs build scripts
+│   └── generate-certificates.sh  # PKI certificate generation
+└── docs/security/
+    ├── PKI-DESIGN.md     # mTLS PKI architecture
+    └── CERTIFICATE-MANAGEMENT.md  # Operations guide
 ```
 
 ```mermaid
@@ -396,6 +578,102 @@ graph LR
     INFRA --> APP
     INFRA --> GRPC
 ```
+
+## Worker Agent - Componentes Internos (v8.0)
+
+El worker agent (`crates/grpc/src/bin/worker.rs`) es un sistema de alta performance con los siguientes componentes:
+
+### Core Components
+
+```mermaid
+classDiagram
+    class WorkerClient {
+        +connection: GrpcConnection
+        +stream: BidirectionalStream
+        +register_worker() Result
+        +start_worker_stream() Result
+    }
+    
+    class LogBatcher {
+        +tx: mpsc::Sender~WorkerMessage~
+        +buffer: Vec~LogEntry~
+        +capacity: usize
+        +flush_interval: Duration
+        +last_flush: Instant
+        +flush() Task
+        +add_entry() Result
+    }
+    
+    class JobExecutor {
+        +execute_shell() Result
+        +execute_script_robust() Result
+        +inject_secrets() Result
+        +cleanup_temp_files() Task
+    }
+    
+    class MetricsCollector {
+        +cache: CachedResourceUsage
+        +cache_ttl: Duration
+        +get_usage() Result
+        +spawn_blocking_task() Task
+    }
+    
+    class CertificateManager {
+        +paths: CertificatePaths
+        +expiration: CertificateExpiration
+        +load_certificates() Task
+        +check_expiration() Task
+    }
+    
+    WorkerClient --> LogBatcher
+    WorkerClient --> JobExecutor
+    WorkerClient --> MetricsCollector
+    CertificateManager --> WorkerClient
+```
+
+### Data Structures
+
+```rust
+// LogBatcher - Batched log transmission
+struct LogBatcher {
+    tx: mpsc::Sender<WorkerMessage>,
+    buffer: Vec<LogEntry>,
+    capacity: usize,
+    flush_interval: Duration,
+    last_flush: Instant,
+}
+
+// CachedResourceUsage - TTL cache for metrics
+struct CachedResourceUsage {
+    usage: ResourceUsage,
+    timestamp: Instant,
+}
+const METRICS_CACHE_TTL_SECS: u64 = 35;
+
+// CertificatePaths - mTLS configuration
+struct CertificatePaths {
+    pub client_cert_path: PathBuf,
+    pub client_key_path: PathBuf,
+    pub ca_cert_path: PathBuf,
+}
+
+// LogBatch message - Reduced network overhead
+message LogBatch {
+    string job_id = 1;
+    repeated LogEntry entries = 2;
+}
+```
+
+### Performance Characteristics
+
+| Componente | Optimización | Beneficio |
+|-----------|--------------|-----------|
+| **LogBatcher** | Batch de 100 entries, flush cada 100ms | 90-99% reducción gRPC calls |
+| **Backpressure** | try_send() con drop en full | Prevenir blocking del async runtime |
+| **Zero-Copy I/O** | FramedRead + BytesCodec | Reducción allocaciones memoria |
+| **Metrics Cache** | TTL 35s + spawn_blocking | Non-blocking metrics collection |
+| **Write-Execute** | Temp files + async cleanup | Robustez en ejecución scripts |
+| **Secret Injection** | stdin + JSON serialization | Seguridad sin exposición logs |
 
 ## Worker Providers
 
