@@ -13,8 +13,9 @@ set -e
 
 # Determine project root and change to it
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-cd "$PROJECT_ROOT"
+cd "$SCRIPT_DIR"
+cd ../..
+PROJECT_ROOT="$(pwd)"
 
 # Colors
 RED='\033[0;31m'
