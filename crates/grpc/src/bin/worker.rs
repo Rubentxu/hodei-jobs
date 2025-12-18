@@ -24,6 +24,42 @@ const LOG_FLUSH_INTERVAL_MS: u64 = 100;
 /// Recommended: 8KB - 64KB for optimal performance.
 const BYTES_CODEC_BUFFER_SIZE: usize = 8192; // 8KB buffer
 
+/// T3.6: Metrics cache TTL (Time To Live) in seconds
+/// Cache is considered fresh for 35s (5s buffer beyond 30s collection interval)
+const METRICS_CACHE_TTL_SECS: u64 = 35;
+
+/// T3.6: Cached resource metrics with timestamp for TTL validation
+#[derive(Clone, Debug)]
+struct CachedResourceUsage {
+    usage: ResourceUsage,
+    timestamp: Instant,
+}
+
+impl CachedResourceUsage {
+    /// Create a new cached metrics entry
+    fn new(usage: ResourceUsage) -> Self {
+        Self {
+            timestamp: Instant::now(),
+            usage,
+        }
+    }
+
+    /// Check if cache is still fresh (within TTL)
+    fn is_fresh(&self) -> bool {
+        self.timestamp.elapsed() < Duration::from_secs(METRICS_CACHE_TTL_SECS)
+    }
+
+    /// Get the age of the cache in seconds
+    fn age_secs(&self) -> u64 {
+        self.timestamp.elapsed().as_secs()
+    }
+
+    /// Get the underlying usage
+    fn get_usage(&self) -> &ResourceUsage {
+        &self.usage
+    }
+}
+
 use hodei_jobs::{
     JobResultMessage, LogEntry, RegisterWorkerRequest, ResourceCapacity, ResourceUsage,
     UnregisterWorkerRequest, WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage,
@@ -1105,14 +1141,16 @@ impl Worker {
         let tx_for_heartbeat = tx.clone();
         let tx_for_jobs = tx.clone();
 
-        // T3.5: Create shared cache for resource metrics (low-priority task)
-        let metrics_cache = Arc::new(tokio::sync::RwLock::new(ResourceUsage {
-            cpu_cores: 0.0,
-            memory_bytes: 0,
-            disk_bytes: 0,
-            gpu_count: 0,
-            custom_usage: HashMap::new(),
-        }));
+        // T3.6: Create shared cache for resource metrics with TTL (T3.5 & T3.6)
+        let metrics_cache = Arc::new(tokio::sync::RwLock::new(CachedResourceUsage::new(
+            ResourceUsage {
+                cpu_cores: 0.0,
+                memory_bytes: 0,
+                disk_bytes: 0,
+                gpu_count: 0,
+                custom_usage: HashMap::new(),
+            },
+        )));
 
         // T3.5: Spawn low-priority metrics collection task
         // Runs every 30s, doesn't block the main execution path
@@ -1144,10 +1182,14 @@ impl Worker {
                     custom_usage: HashMap::new(),
                 };
 
-                // Update cache (non-blocking write)
+                // Update cache with new timestamp (T3.6: TTL support)
+                let cached_usage = CachedResourceUsage::new(usage);
                 let mut cache = metrics_cache_for_collector.write().await;
-                *cache = usage;
-                debug!("Metrics updated in cache");
+                *cache = cached_usage;
+                debug!(
+                    "Metrics updated in cache (TTL: {}s)",
+                    METRICS_CACHE_TTL_SECS
+                );
             }
         });
 
@@ -1164,10 +1206,23 @@ impl Worker {
                 let jobs = heartbeat_jobs.read().await;
                 let status = if jobs.is_empty() { 2 } else { 3 }; // 2=AVAILABLE, 3=BUSY
 
-                // Read metrics from cache (non-blocking)
+                // Read metrics from cache with TTL validation (T3.6)
                 let usage = {
                     let cache = metrics_cache_for_heartbeat.read().await;
-                    cache.clone()
+                    let usage = cache.get_usage().clone();
+                    let is_fresh = cache.is_fresh();
+                    let age = cache.age_secs();
+
+                    if !is_fresh {
+                        warn!(
+                            "Metrics cache is stale (age: {}s, TTL: {}s)",
+                            age, METRICS_CACHE_TTL_SECS
+                        );
+                    } else {
+                        debug!("Using fresh metrics (age: {}s)", age);
+                    }
+
+                    usage
                 };
 
                 drop(jobs);
@@ -1177,7 +1232,7 @@ impl Worker {
                     warn!("Heartbeat channel closed");
                     break;
                 }
-                debug!("Heartbeat sent (using cached metrics)");
+                debug!("Heartbeat sent (using cached metrics with TTL)");
             }
         });
 
@@ -2113,5 +2168,104 @@ mod metrics_tests {
         println!("CPU Usage: {:.2}%", cpu_usage);
         println!("Memory Usage: {:.2}%", memory_usage);
         println!("===================================\n");
+    }
+
+    /// T3.6: Test that CachedResourceUsage is properly initialized with timestamp
+    #[tokio::test]
+    async fn test_cached_resource_usage_initialization() {
+        let usage = ResourceUsage {
+            cpu_cores: 2.0,
+            memory_bytes: 4_000_000_000,
+            disk_bytes: 50_000_000_000,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        };
+
+        let cached = CachedResourceUsage::new(usage.clone());
+
+        // Verify timestamp is set
+        assert!(cached.timestamp.elapsed().as_millis() < 100);
+
+        // Verify usage is stored correctly
+        assert_eq!(cached.get_usage().cpu_cores, 2.0);
+        assert_eq!(cached.get_usage().memory_bytes, 4_000_000_000);
+    }
+
+    /// T3.6: Test TTL freshness validation
+    #[tokio::test]
+    async fn test_cached_resource_usage_ttl_freshness() {
+        let usage = ResourceUsage {
+            cpu_cores: 1.0,
+            memory_bytes: 2_000_000_000,
+            disk_bytes: 25_000_000_000,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        };
+
+        let cached = CachedResourceUsage::new(usage);
+
+        // Immediately after creation, should be fresh
+        assert!(cached.is_fresh());
+        assert_eq!(cached.age_secs(), 0);
+    }
+
+    /// T3.6: Test that cache becomes stale after TTL expires
+    #[tokio::test]
+    async fn test_cached_resource_usage_ttl_expiration() {
+        let usage = ResourceUsage {
+            cpu_cores: 3.0,
+            memory_bytes: 6_000_000_000,
+            disk_bytes: 75_000_000_000,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        };
+
+        let cached = CachedResourceUsage::new(usage);
+
+        // Wait for TTL to expire (35s + buffer)
+        tokio::time::sleep(Duration::from_secs(METRICS_CACHE_TTL_SECS + 1)).await;
+
+        // Should now be stale
+        assert!(!cached.is_fresh());
+        assert!(cached.age_secs() >= METRICS_CACHE_TTL_SECS);
+    }
+
+    /// T3.6: Test cache updates with new timestamp
+    #[tokio::test]
+    async fn test_cached_resource_usage_update() {
+        let usage1 = ResourceUsage {
+            cpu_cores: 1.0,
+            memory_bytes: 1_000_000_000,
+            disk_bytes: 10_000_000_000,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        };
+
+        let usage2 = ResourceUsage {
+            cpu_cores: 2.0,
+            memory_bytes: 2_000_000_000,
+            disk_bytes: 20_000_000_000,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        };
+
+        let mut cached = CachedResourceUsage::new(usage1);
+
+        // Verify initial values
+        assert_eq!(cached.get_usage().cpu_cores, 1.0);
+
+        // Wait a bit
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Update with new usage
+        let initial_age = cached.age_secs();
+        cached = CachedResourceUsage::new(usage2);
+
+        // Verify new values
+        assert_eq!(cached.get_usage().cpu_cores, 2.0);
+
+        // Age should be reset
+        assert!(cached.age_secs() < 1);
+        assert!(cached.age_secs() < initial_age);
     }
 }
