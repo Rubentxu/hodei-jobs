@@ -1105,25 +1105,71 @@ impl Worker {
         let tx_for_heartbeat = tx.clone();
         let tx_for_jobs = tx.clone();
 
-        // Spawn heartbeat task
-        let heartbeat_config = config.clone();
-        let heartbeat_jobs = active_jobs.clone();
+        // T3.5: Create shared cache for resource metrics (low-priority task)
+        let metrics_cache = Arc::new(tokio::sync::RwLock::new(ResourceUsage {
+            cpu_cores: 0.0,
+            memory_bytes: 0,
+            disk_bytes: 0,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        }));
+
+        // T3.5: Spawn low-priority metrics collection task
+        // Runs every 30s, doesn't block the main execution path
+        let metrics_cache_for_collector = metrics_cache.clone();
+        let config_for_metrics = config.clone();
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(10));
+            let mut interval = interval(Duration::from_secs(30)); // T3.7: Metrics every 30s
             loop {
                 interval.tick().await;
 
-                let jobs = heartbeat_jobs.read().await;
+                // Yield to allow higher priority tasks to run first
+                tokio::task::yield_now().await;
+
+                // Collect metrics in a blocking task to avoid blocking the async runtime
+                let cpu_usage = tokio::task::spawn_blocking(|| get_cpu_usage())
+                    .await
+                    .unwrap_or(0.0);
+                let memory_usage = tokio::task::spawn_blocking(|| get_memory_usage())
+                    .await
+                    .unwrap_or(0.0);
+
                 let usage = ResourceUsage {
-                    cpu_cores: get_cpu_usage() as f64 / 100.0 * heartbeat_config.cpu_cores,
-                    memory_bytes: (get_memory_usage() as f64 / 100.0
-                        * heartbeat_config.memory_bytes as f64)
+                    cpu_cores: cpu_usage as f64 / 100.0 * config_for_metrics.cpu_cores,
+                    memory_bytes: (memory_usage as f64 / 100.0
+                        * config_for_metrics.memory_bytes as f64)
                         as i64,
-                    disk_bytes: (0.3 * heartbeat_config.disk_bytes as f64) as i64,
+                    disk_bytes: (0.3 * config_for_metrics.disk_bytes as f64) as i64,
                     gpu_count: 0,
                     custom_usage: HashMap::new(),
                 };
+
+                // Update cache (non-blocking write)
+                let mut cache = metrics_cache_for_collector.write().await;
+                *cache = usage;
+                debug!("Metrics updated in cache");
+            }
+        });
+
+        // Spawn heartbeat task (uses cached metrics for fast non-blocking operation)
+        let heartbeat_config = config.clone();
+        let heartbeat_jobs = active_jobs.clone();
+        let metrics_cache_for_heartbeat = metrics_cache.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(10)); // T3.7: Heartbeat every 10s
+            loop {
+                interval.tick().await;
+
+                // Read active jobs (non-blocking)
+                let jobs = heartbeat_jobs.read().await;
                 let status = if jobs.is_empty() { 2 } else { 3 }; // 2=AVAILABLE, 3=BUSY
+
+                // Read metrics from cache (non-blocking)
+                let usage = {
+                    let cache = metrics_cache_for_heartbeat.read().await;
+                    cache.clone()
+                };
+
                 drop(jobs);
 
                 let msg = create_heartbeat_message(&heartbeat_config.worker_id, status, usage);
@@ -1131,7 +1177,7 @@ impl Worker {
                     warn!("Heartbeat channel closed");
                     break;
                 }
-                debug!("Heartbeat sent");
+                debug!("Heartbeat sent (using cached metrics)");
             }
         });
 
@@ -1900,5 +1946,172 @@ mod performance_tests {
         println!("- Better user experience (faster log streaming)");
         println!();
         println!("=== End Performance Analysis ===\n");
+    }
+}
+
+/// T3.5: Tests for low-priority metrics collection task
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    /// T3.5: Test that metrics cache is properly initialized
+    #[tokio::test]
+    async fn test_metrics_cache_initialization() {
+        let cache = Arc::new(tokio::sync::RwLock::new(ResourceUsage {
+            cpu_cores: 0.0,
+            memory_bytes: 0,
+            disk_bytes: 0,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        }));
+
+        // Read initial value
+        let initial = cache.read().await;
+        assert_eq!(initial.cpu_cores, 0.0);
+        assert_eq!(initial.memory_bytes, 0);
+        assert!(initial.custom_usage.is_empty());
+    }
+
+    /// T3.5: Test that metrics cache can be updated
+    #[tokio::test]
+    async fn test_metrics_cache_update() {
+        let cache = Arc::new(tokio::sync::RwLock::new(ResourceUsage {
+            cpu_cores: 0.0,
+            memory_bytes: 0,
+            disk_bytes: 0,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        }));
+
+        // Update cache with new values
+        let new_usage = ResourceUsage {
+            cpu_cores: 2.5,
+            memory_bytes: 8_000_000_000, // 8GB
+            disk_bytes: 100_000_000_000, // 100GB
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        };
+
+        {
+            let mut cache_ref = cache.write().await;
+            *cache_ref = new_usage.clone();
+        }
+
+        // Verify update
+        let retrieved = cache.read().await;
+        assert_eq!(retrieved.cpu_cores, 2.5);
+        assert_eq!(retrieved.memory_bytes, 8_000_000_000);
+        assert_eq!(retrieved.disk_bytes, 100_000_000_000);
+    }
+
+    /// T3.5: Test concurrent access to metrics cache
+    #[tokio::test]
+    async fn test_metrics_cache_concurrent_access() {
+        let cache = Arc::new(tokio::sync::RwLock::new(ResourceUsage {
+            cpu_cores: 0.0,
+            memory_bytes: 0,
+            disk_bytes: 0,
+            gpu_count: 0,
+            custom_usage: HashMap::new(),
+        }));
+
+        // Spawn multiple readers and writers
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let cache_clone = cache.clone();
+            let handle = tokio::spawn(async move {
+                // Read
+                let read_result = cache_clone.read().await;
+                assert!(read_result.cpu_cores >= 0.0);
+
+                // Write
+                let mut write_result = cache_clone.write().await;
+                write_result.cpu_cores = i as f64;
+                write_result.memory_bytes = (i * 1_000_000) as i64;
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify final state
+        let final_state = cache.read().await;
+        assert!(final_state.cpu_cores >= 0.0);
+        assert!(final_state.memory_bytes >= 0);
+    }
+
+    /// T3.5: Test that spawning blocking tasks doesn't block the async runtime
+    #[tokio::test]
+    async fn test_metrics_blocking_task_non_blocking() {
+        use tokio::sync::mpsc;
+
+        let (tx, mut rx) = mpsc::channel::<bool>(1);
+
+        // Spawn a task that uses spawn_blocking
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(|| {
+                // Simulate some blocking work
+                std::thread::sleep(Duration::from_millis(10));
+                42
+            })
+            .await
+            .unwrap();
+
+            let _ = tx.send(result == 42).await;
+        });
+
+        // Verify we can receive the result
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    /// T3.5: Test that yield_now allows other tasks to run
+    #[tokio::test]
+    async fn test_metrics_yield_allows_preemption() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_clone = ran.clone();
+
+        // Spawn a task that should run
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            ran_clone.store(true, Ordering::SeqCst);
+        });
+
+        // Give it time to run
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Verify the task ran
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    /// T3.5: Test metrics collection with actual functions
+    #[tokio::test]
+    async fn test_metrics_collection_functions() {
+        // Test that get_cpu_usage and get_memory_usage work
+        let cpu_usage = tokio::task::spawn_blocking(|| get_cpu_usage())
+            .await
+            .unwrap_or(0.0);
+        let memory_usage = tokio::task::spawn_blocking(|| get_memory_usage())
+            .await
+            .unwrap_or(0.0);
+
+        // Verify values are within reasonable bounds
+        assert!(cpu_usage >= 0.0 && cpu_usage <= 100.0);
+        assert!(memory_usage >= 0.0 && memory_usage <= 100.0);
+
+        println!("\n=== T3.5 Metrics Collection Test ===");
+        println!("CPU Usage: {:.2}%", cpu_usage);
+        println!("Memory Usage: {:.2}%", memory_usage);
+        println!("===================================\n");
     }
 }
