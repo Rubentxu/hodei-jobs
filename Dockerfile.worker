@@ -68,16 +68,20 @@ ENV ASDF_DIR=/usr/local/lib/asdf
 # Copy worker binary
 COPY --from=builder /app/target/release/worker /usr/local/bin/hodei-jobs-worker
 
-WORKDIR /app
-
-# Create non-root user with writable home
-RUN mkdir -p /tmp/hodei \
-    && useradd -r -u 1000 -g root -d /tmp/hodei hodei \
+# Create non-root user with writable home (T2.5)
+# Using /home/hodei for better isolation and consistency (T2.6)
+RUN mkdir -p /home/hodei \
+    && useradd -r -u 1000 -g root -d /home/hodei hodei \
+    && chown -R hodei:root /home/hodei \
+    && mkdir -p /tmp/hodei \
     && chown -R hodei:root /tmp/hodei
 
+# Set working directory to /home/hodei (T2.6)
+WORKDIR /home/hodei
+
 # Set asdf directories to writable locations
-ENV ASDF_DATA_DIR=/tmp/hodei/.asdf
-ENV ASDF_CONFIG_FILE=/tmp/hodei/.asdfrc
+ENV ASDF_DATA_DIR=/home/hodei/.asdf
+ENV ASDF_CONFIG_FILE=/home/hodei/.asdfrc
 
 USER hodei
 

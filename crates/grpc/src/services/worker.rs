@@ -962,6 +962,27 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         svc.append_log(entry).await;
                                     }
                                 }
+                                WorkerPayload::LogBatch(batch) => {
+                                    // Process batched logs efficiently
+                                    info!(
+                                        "Received log batch for job {}: {} entries",
+                                        batch.job_id,
+                                        batch.entries.len()
+                                    );
+
+                                    // Forward to LogStreamService for client subscribers
+                                    if let Some(ref svc) = log_service {
+                                        for entry in batch.entries {
+                                            let log_entry = LogEntry {
+                                                job_id: entry.job_id,
+                                                line: entry.line,
+                                                is_stderr: entry.is_stderr,
+                                                timestamp: entry.timestamp,
+                                            };
+                                            svc.append_log(log_entry).await;
+                                        }
+                                    }
+                                }
                                 WorkerPayload::Result(result) => {
                                     info!(
                                         "✅ Job {} completed: exit_code={}, success={}",

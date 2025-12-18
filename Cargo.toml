@@ -30,6 +30,7 @@ hodei-jobs = { path = "proto" }
 tokio = { version = "1.44", features = ["full"] }
 tokio-stream = "0.1"
 tokio-test = "0.4"
+tokio-util = { version = "0.7", features = ["codec"] }
 async-trait = "0.1"
 async-stream = "0.3"
 futures-core = "0.3"

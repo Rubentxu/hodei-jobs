@@ -80,10 +80,16 @@ message WorkerMessage {
     oneof payload {
         WorkerHeartbeatRequest heartbeat = 1;
         LogEntry log = 2;
+        LogBatch log_batch = 6;
         JobResultMessage result = 3;
         ResourceUsageMessage stats = 4;
         WorkerStatusMessage status = 5;
     }
+}
+
+message LogBatch {
+    string job_id = 1;
+    repeated LogEntry entries = 2;
 }
 
 message LogEntry {
@@ -244,19 +250,19 @@ message WorkerStatusStreamUpdate {
 service WorkerAgentService {
     // PRD v6.0: Registro inicial con OTP token
     rpc Register(RegisterWorkerRequest) returns (RegisterWorkerResponse);
-    
+
     // PRD v6.0: Canal bidireccional principal
     rpc Connect(stream WorkerMessage) returns (stream ServerMessage);
-    
+
     // Legacy: Obtener workers disponibles para scheduling
     rpc GetAvailableWorkers(GetAvailableWorkersRequest) returns (GetAvailableWorkersResponse);
-    
+
     // Legacy: Drenar worker (preparar para shutdown)
     rpc DrainWorker(DrainWorkerRequest) returns (DrainWorkerResponse);
-    
+
     // Legacy: Desregistrar worker
     rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);
-    
+
     // Legacy: Stream para actualizaciones de estado de workers
     rpc WorkerStatusStream(WorkerStatusStreamRequest) returns (stream WorkerStatusStreamUpdate);
 }

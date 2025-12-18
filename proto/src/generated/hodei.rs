@@ -350,7 +350,7 @@ pub struct RegisterWorkerResponse {
 /// PRD v6.0: Mensajes del Worker al Servidor (Connect stream)
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerMessage {
-    #[prost(oneof = "worker_message::Payload", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "worker_message::Payload", tags = "1, 2, 6, 3, 4, 5")]
     pub payload: ::core::option::Option<worker_message::Payload>,
 }
 /// Nested message and enum types in `WorkerMessage`.
@@ -361,6 +361,8 @@ pub mod worker_message {
         Heartbeat(super::WorkerHeartbeat),
         #[prost(message, tag = "2")]
         Log(super::LogEntry),
+        #[prost(message, tag = "6")]
+        LogBatch(super::LogBatch),
         #[prost(message, tag = "3")]
         Result(super::JobResultMessage),
         #[prost(message, tag = "4")]
@@ -368,6 +370,13 @@ pub mod worker_message {
         #[prost(message, tag = "5")]
         Status(super::WorkerStatusNotification),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LogBatch {
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub entries: ::prost::alloc::vec::Vec<LogEntry>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogEntry {

@@ -15,6 +15,7 @@ hodei-jobs = { workspace = true }
 # Async runtime
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 
@@ -44,6 +45,9 @@ opentelemetry = { workspace = true }
 config = { workspace = true }
 dotenvy = { workspace = true }
 sqlx = { workspace = true }
+
+# Utilities
+tempfile = { workspace = true }
 
 [[bin]]
 name = "server"
