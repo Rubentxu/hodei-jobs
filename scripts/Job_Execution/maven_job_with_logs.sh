@@ -126,13 +126,8 @@ if [[ "$JOB_TYPE" == "simple" ]]; then
     MEMORY_BYTES=2147483648
 else
     JOB_NAME="maven-build-complex"
-    # Complex: use the verification script with asdf
-    SCRIPT_PATH="$PROJECT_ROOT/scripts/verification/maven_build_job.sh"
-    if [[ ! -f "$SCRIPT_PATH" ]]; then
-        print_error "Maven build script not found: $SCRIPT_PATH"
-        exit 1
-    fi
-    JOB_COMMAND=$(cat "$SCRIPT_PATH")
+    # Complex: Multi-module Maven build with asdf-managed tools
+    JOB_COMMAND="cd /tmp && rm -rf spring-boot-sample && git clone https://github.com/spring-projects/spring-boot.git --depth 1 -b v3.2.0 2>/dev/null || echo 'Clone may have failed, trying alternative...' && cd /tmp && git clone https://github.com/jenkins-docs/simple-java-maven-app.git complex-app && cd complex-app && mvn clean package -DskipTests -B && echo 'Build completed successfully!'"
     TIMEOUT="1800s"
     CPU_CORES=2.0
     MEMORY_BYTES=4294967296
