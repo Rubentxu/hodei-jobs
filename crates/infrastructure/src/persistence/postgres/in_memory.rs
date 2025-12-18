@@ -54,7 +54,7 @@ pub mod test_in_memory {
             let jobs = self.jobs.read().await;
             Ok(jobs
                 .values()
-                .filter(|job| &job.state == state)
+                .filter(|job| job.state() == state)
                 .cloned()
                 .collect())
         }
@@ -65,7 +65,7 @@ pub mod test_in_memory {
                 .values()
                 .filter(|job| {
                     matches!(
-                        job.state,
+                        job.state(),
                         hodei_jobs_domain::shared_kernel::JobState::Pending
                     )
                 })
@@ -77,7 +77,7 @@ pub mod test_in_memory {
             let jobs = self.jobs.read().await;
             let total = jobs.len();
             let mut sorted_jobs: Vec<Job> = jobs.values().cloned().collect();
-            sorted_jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            sorted_jobs.sort_by(|a, b| b.created_at().cmp(a.created_at()));
 
             let page = sorted_jobs.into_iter().skip(offset).take(limit).collect();
             Ok((page, total))
@@ -88,8 +88,7 @@ pub mod test_in_memory {
             Ok(jobs
                 .values()
                 .find(|job| {
-                    job.execution_context
-                        .as_ref()
+                    job.execution_context()
                         .map(|ctx| ctx.provider_execution_id == execution_id)
                         .unwrap_or(false)
                 })
@@ -140,11 +139,6 @@ pub mod test_in_memory {
         async fn dequeue(&self) -> Result<Option<Job>> {
             let mut queue = self.queue.lock().unwrap();
             Ok(queue.pop_front())
-        }
-
-        async fn peek(&self) -> Result<Option<Job>> {
-            let queue = self.queue.lock().unwrap();
-            Ok(queue.front().cloned())
         }
 
         async fn len(&self) -> Result<usize> {

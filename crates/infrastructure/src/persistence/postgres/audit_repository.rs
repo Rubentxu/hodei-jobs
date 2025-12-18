@@ -245,80 +245,89 @@ impl AuditRepository for PostgresAuditRepository {
         let limit = query.limit.unwrap_or(100);
         let offset = query.offset.unwrap_or(0);
 
-        // Build dynamic WHERE clause
-        let mut conditions = Vec::new();
-        let mut param_idx = 1;
+        let mut count_qb: sqlx::QueryBuilder<sqlx::Postgres> =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM audit_logs ");
+        let mut select_qb: sqlx::QueryBuilder<sqlx::Postgres> =
+            sqlx::QueryBuilder::new("SELECT * FROM audit_logs ");
 
-        if query.event_type.is_some() {
-            conditions.push(format!("event_type = ${}", param_idx));
-            param_idx += 1;
-        }
-        if query.actor.is_some() {
-            conditions.push(format!("actor = ${}", param_idx));
-            param_idx += 1;
-        }
-        if query.start_time.is_some() {
-            conditions.push(format!("occurred_at >= ${}", param_idx));
-            param_idx += 1;
-        }
-        if query.end_time.is_some() {
-            conditions.push(format!("occurred_at <= ${}", param_idx));
-            param_idx += 1;
-        }
+        let mut has_where = false;
 
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let count_sql = format!("SELECT COUNT(*) as count FROM audit_logs {}", where_clause);
-        let select_sql = format!(
-            "SELECT * FROM audit_logs {} ORDER BY occurred_at DESC LIMIT ${} OFFSET ${}",
-            where_clause,
-            param_idx,
-            param_idx + 1
-        );
-
-        // Build count query
-        let mut count_query = sqlx::query(&count_sql);
         if let Some(ref et) = query.event_type {
-            count_query = count_query.bind(et);
-        }
-        if let Some(ref a) = query.actor {
-            count_query = count_query.bind(a);
-        }
-        if let Some(st) = query.start_time {
-            count_query = count_query.bind(st);
-        }
-        if let Some(et) = query.end_time {
-            count_query = count_query.bind(et);
+            if !has_where {
+                count_qb.push(" WHERE ");
+                select_qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                count_qb.push(" AND ");
+                select_qb.push(" AND ");
+            }
+            count_qb.push("event_type = ");
+            select_qb.push("event_type = ");
+            count_qb.push_bind(et);
+            select_qb.push_bind(et);
         }
 
-        let count_row = count_query.fetch_one(&self.pool).await.map_err(|e| {
+        if let Some(ref a) = query.actor {
+            if !has_where {
+                count_qb.push(" WHERE ");
+                select_qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                count_qb.push(" AND ");
+                select_qb.push(" AND ");
+            }
+            count_qb.push("actor = ");
+            select_qb.push("actor = ");
+            count_qb.push_bind(a);
+            select_qb.push_bind(a);
+        }
+
+        if let Some(st) = query.start_time {
+            if !has_where {
+                count_qb.push(" WHERE ");
+                select_qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                count_qb.push(" AND ");
+                select_qb.push(" AND ");
+            }
+            count_qb.push("occurred_at >= ");
+            select_qb.push("occurred_at >= ");
+            count_qb.push_bind(st);
+            select_qb.push_bind(st);
+        }
+
+        if let Some(et) = query.end_time {
+            if !has_where {
+                count_qb.push(" WHERE ");
+                select_qb.push(" WHERE ");
+                has_where = true;
+                let _ = has_where; // suppress warning
+            } else {
+                count_qb.push(" AND ");
+                select_qb.push(" AND ");
+            }
+            count_qb.push("occurred_at <= ");
+            select_qb.push("occurred_at <= ");
+            count_qb.push_bind(et);
+            select_qb.push_bind(et);
+        }
+
+        // Execute Count Query
+        let count_row = count_qb.build().fetch_one(&self.pool).await.map_err(|e| {
             DomainError::InfrastructureError {
                 message: format!("Failed to count audit logs: {}", e),
             }
         })?;
         let total_count: i64 = count_row.get("count");
 
-        // Build select query
-        let mut select_query = sqlx::query(&select_sql);
-        if let Some(ref et) = query.event_type {
-            select_query = select_query.bind(et);
-        }
-        if let Some(ref a) = query.actor {
-            select_query = select_query.bind(a);
-        }
-        if let Some(st) = query.start_time {
-            select_query = select_query.bind(st);
-        }
-        if let Some(et) = query.end_time {
-            select_query = select_query.bind(et);
-        }
-        select_query = select_query.bind(limit).bind(offset);
+        // Finish Select Query with Order and Pagination
+        select_qb.push(" ORDER BY occurred_at DESC LIMIT ");
+        select_qb.push_bind(limit);
+        select_qb.push(" OFFSET ");
+        select_qb.push_bind(offset);
 
-        let rows = select_query.fetch_all(&self.pool).await.map_err(|e| {
+        let rows = select_qb.build().fetch_all(&self.pool).await.map_err(|e| {
             DomainError::InfrastructureError {
                 message: format!("Failed to query audit logs: {}", e),
             }

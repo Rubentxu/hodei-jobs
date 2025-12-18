@@ -34,11 +34,11 @@ impl GetJobStatusUseCase {
 
         Ok(TrackJobResponse {
             job_id: job.id.to_string(),
-            status: job.state.to_string(),
-            result: job.result.as_ref().map(|r| r.to_string()),
-            created_at: Some(job.created_at.to_rfc3339()),
-            started_at: job.started_at.map(|t| t.to_rfc3339()),
-            completed_at: job.completed_at.map(|t| t.to_rfc3339()),
+            status: job.state().to_string(),
+            result: job.result().as_ref().map(|r| r.to_string()),
+            created_at: Some(job.created_at().to_rfc3339()),
+            started_at: job.started_at().map(|t| t.to_rfc3339()),
+            completed_at: job.completed_at().map(|t| t.to_rfc3339()),
         })
     }
 }

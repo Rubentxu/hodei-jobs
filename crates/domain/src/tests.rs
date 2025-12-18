@@ -151,16 +151,16 @@ mod job_execution_tests {
     #[test]
     fn test_job_creation() {
         let job = create_test_job();
-        assert_eq!(job.state, JobState::Pending);
-        assert_eq!(job.attempts, 0);
-        assert_eq!(job.max_attempts, 3);
+        assert_eq!(*job.state(), JobState::Pending);
+        assert_eq!(job.attempts(), 0);
+        assert_eq!(job.max_attempts(), 3);
     }
 
     #[test]
     fn test_job_queue() {
         let mut job = create_test_job();
         assert!(job.queue().is_ok());
-        assert_eq!(job.state, JobState::Pending);
+        assert_eq!(*job.state(), JobState::Pending);
     }
 
     #[test]
@@ -172,8 +172,8 @@ mod job_execution_tests {
 
         assert!(job.submit_to_provider(provider_id.clone(), context).is_ok());
         // PRD v6.0: Submitted -> Scheduled
-        assert_eq!(job.state, JobState::Scheduled);
-        assert!(job.started_at.is_some());
+        assert_eq!(*job.state(), JobState::Scheduled);
+        assert!(job.started_at().is_some());
     }
 
     #[test]
@@ -185,7 +185,7 @@ mod job_execution_tests {
 
         job.submit_to_provider(provider_id, context).unwrap();
         assert!(job.mark_running().is_ok());
-        assert_eq!(job.state, JobState::Running);
+        assert_eq!(*job.state(), JobState::Running);
     }
 
     #[test]
@@ -212,22 +212,22 @@ mod job_execution_tests {
         };
 
         assert!(job.complete(result).is_ok());
-        assert_eq!(job.state, JobState::Succeeded);
+        assert_eq!(*job.state(), JobState::Succeeded);
     }
 
     #[test]
     fn test_job_fail() {
         let mut job = create_test_job();
         assert!(job.fail("Test error".to_string()).is_ok());
-        assert_eq!(job.state, JobState::Failed);
-        assert_eq!(job.attempts, 1);
+        assert_eq!(*job.state(), JobState::Failed);
+        assert_eq!(job.attempts(), 1);
     }
 
     #[test]
     fn test_job_cancel() {
         let mut job = create_test_job();
         assert!(job.cancel().is_ok());
-        assert_eq!(job.state, JobState::Cancelled);
+        assert_eq!(*job.state(), JobState::Cancelled);
     }
 
     #[test]
@@ -240,8 +240,8 @@ mod job_execution_tests {
     #[test]
     fn test_job_cannot_retry_max_attempts() {
         let mut job = create_test_job();
-        job.attempts = 3;
-        job.state = JobState::Failed;
+        job.set_attempts(3);
+        job.set_state(JobState::Failed);
         assert!(!job.can_retry());
     }
 
@@ -251,8 +251,8 @@ mod job_execution_tests {
         job.fail("Error".to_string()).unwrap();
 
         assert!(job.prepare_retry().is_ok());
-        assert_eq!(job.state, JobState::Pending);
-        assert_eq!(job.attempts, 2);
+        assert_eq!(*job.state(), JobState::Pending);
+        assert_eq!(job.attempts(), 2);
     }
 
     #[test]

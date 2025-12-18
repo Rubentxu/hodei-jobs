@@ -323,7 +323,7 @@ mod tests {
             .await
             .expect("find_by_id")
             .expect("job exists");
-        assert!(matches!(job.state, JobState::Succeeded));
+        assert!(matches!(job.state(), JobState::Succeeded));
 
         let worker = worker_registry
             .get(&worker_id)
@@ -378,9 +378,9 @@ mod tests {
         let job_uuid = uuid::Uuid::new_v4();
         let job_id = JobId(job_uuid);
         let mut job = Job::new(job_id.clone(), JobSpec::new(vec!["echo".to_string()]));
-        job.metadata
+        job.metadata_mut()
             .insert("correlation_id".to_string(), "CORRl-123".to_string());
-        job.metadata
+        job.metadata_mut()
             .insert("actor".to_string(), "ACTOR-XYZ".to_string());
 
         let exec_ctx = ExecutionContext::new(
@@ -630,8 +630,8 @@ impl WorkerAgentServiceImpl {
                 JobState::Failed
             };
 
-            let correlation_id = job.metadata.get("correlation_id").cloned();
-            let actor = job.metadata.get("actor").cloned();
+            let correlation_id = job.metadata().get("correlation_id").cloned();
+            let actor = job.metadata().get("actor").cloned();
 
             let event = DomainEvent::JobStatusChanged {
                 job_id: job.id.clone(),
@@ -650,7 +650,7 @@ impl WorkerAgentServiceImpl {
         }
 
         if matches!(
-            job.state,
+            job.state(),
             JobState::Succeeded | JobState::Failed | JobState::Timeout | JobState::Cancelled
         ) {
             registry

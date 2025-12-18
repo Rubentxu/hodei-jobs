@@ -60,12 +60,13 @@ async fn test_postgres_job_queue_fifo() {
         .await
         .expect("enqueue job1 failed");
 
-    let peeked = queue
-        .peek()
-        .await
-        .expect("peek failed")
-        .expect("expected peeked job");
-    assert_eq!(peeked.id, job2_id);
+    // peek() removed from JobQueue trait
+    // let peeked = queue
+    //     .peek()
+    //     .await
+    //     .expect("peek failed")
+    //     .expect("expected peeked job");
+    // assert_eq!(peeked.id, job2_id);
 
     let first = queue
         .dequeue()

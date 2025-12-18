@@ -37,15 +37,26 @@ async fn test_postgres_job_lifecycle() {
     assert!(found.is_some());
     let found_job = found.unwrap();
     assert_eq!(found_job.id, job_id);
-    assert_eq!(found_job.state, JobState::Pending);
+    assert_eq!(*found_job.state(), JobState::Pending);
 
     // 3. Find pending
     let pending = repo.find_pending().await.expect("Failed to find pending");
     assert!(pending.iter().any(|j| j.id == job_id));
 
-    // 4. Update
     let mut updated_job = found_job.clone();
-    updated_job.state = JobState::Running;
+    let exec_ctx = hodei_jobs_domain::jobs::ExecutionContext::new(
+        updated_job.id.clone(),
+        hodei_jobs_domain::shared_kernel::ProviderId::new(),
+        "exec-test".to_string(),
+    );
+    updated_job
+        .submit_to_provider(
+            hodei_jobs_domain::shared_kernel::ProviderId::new(),
+            exec_ctx,
+        )
+        .expect("submit failed");
+    updated_job.mark_running().expect("mark_running failed");
+
     repo.update(&updated_job)
         .await
         .expect("Failed to update job");
@@ -55,7 +66,7 @@ async fn test_postgres_job_lifecycle() {
         .await
         .expect("Failed to find updated job")
         .unwrap();
-    assert_eq!(found_updated.state, JobState::Running);
+    assert_eq!(*found_updated.state(), JobState::Running);
 
     // 5. Delete
     repo.delete(&job_id).await.expect("Failed to delete job");

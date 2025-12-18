@@ -125,17 +125,17 @@ impl SchedulerServiceImpl {
         score: f64,
         reasons: &[String],
     ) {
-        job.metadata.insert(
+        job.metadata_mut().insert(
             "scheduler.selected_worker_id".to_string(),
             worker_id.to_string(),
         );
-        job.metadata.insert(
+        job.metadata_mut().insert(
             "scheduler.execution_id".to_string(),
             execution_id.to_string(),
         );
-        job.metadata
+        job.metadata_mut()
             .insert("scheduler.score".to_string(), score.to_string());
-        job.metadata
+        job.metadata_mut()
             .insert("scheduler.reasons".to_string(), reasons.join("\n"));
     }
 
@@ -144,32 +144,32 @@ impl SchedulerServiceImpl {
         job: &hodei_jobs_domain::jobs::Job,
     ) -> SchedulingDecision {
         let selected_worker_id = job
-            .metadata
+            .metadata()
             .get("scheduler.selected_worker_id")
             .and_then(|v| Uuid::parse_str(v).ok())
             .map(|_| GrpcWorkerId {
                 value: job
-                    .metadata
+                    .metadata()
                     .get("scheduler.selected_worker_id")
                     .cloned()
                     .unwrap_or_default(),
             });
 
         let execution_id = job
-            .metadata
+            .metadata()
             .get("scheduler.execution_id")
             .cloned()
             .filter(|s| !s.is_empty())
             .map(|value| ExecutionId { value });
 
         let score = job
-            .metadata
+            .metadata()
             .get("scheduler.score")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
 
         let reasons = job
-            .metadata
+            .metadata()
             .get("scheduler.reasons")
             .map(|s| s.lines().map(|l| l.to_string()).collect())
             .unwrap_or_else(Vec::new);
@@ -359,7 +359,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 }))
             }
             hodei_jobs_domain::scheduling::SchedulingDecision::Enqueue { reason, .. } => {
-                job.metadata
+                job.metadata_mut()
                     .insert("scheduler.reasons".to_string(), reason.clone());
                 self.job_repository
                     .update(&job)
@@ -384,8 +384,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 }))
             }
             hodei_jobs_domain::scheduling::SchedulingDecision::Reject { reason, .. } => {
-                job.state = JobState::Failed;
-                job.error_message = Some(reason.clone());
+                job.fail(reason.clone()).unwrap();
                 self.job_repository
                     .update(&job)
                     .await
@@ -455,11 +454,11 @@ impl SchedulerService for SchedulerServiceImpl {
                 );
 
                 // Enqueue the job - it will be assigned when the worker connects and becomes ready
-                job.metadata.insert(
+                job.metadata_mut().insert(
                     "scheduler.provisioned_worker_id".to_string(),
                     worker_id.to_string(),
                 );
-                job.metadata.insert(
+                job.metadata_mut().insert(
                     "scheduler.provisioning_provider_id".to_string(),
                     provider_id.to_string(),
                 );
@@ -727,13 +726,13 @@ impl SchedulerService for SchedulerServiceImpl {
                     continue;
                 };
 
-                let key = job.metadata.get("scheduler.execution_id").cloned();
+                let key = job.metadata().get("scheduler.execution_id").cloned();
                 if key.is_some() && key != last_emitted {
                     last_emitted = key;
                     yield Ok(SchedulerServiceImpl::build_decision_from_job(grpc_job_id.clone(), &job));
                 }
 
-                if matches!(job.state, JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::Timeout) {
+                if matches!(job.state(), JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::Timeout) {
                     break;
                 }
             }

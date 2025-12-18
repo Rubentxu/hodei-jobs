@@ -131,7 +131,7 @@ impl hodei_jobs_domain::jobs::JobRepository for PostgresJobRepository {
                 message: format!("Failed to serialize job spec: {}", e),
             })?;
 
-        let context_json = if let Some(ctx) = &job.execution_context {
+        let context_json = if let Some(ctx) = job.execution_context() {
             Some(
                 serde_json::to_value(ctx).map_err(|e| DomainError::InfrastructureError {
                     message: format!("Failed to serialize execution context: {}", e),
@@ -141,7 +141,7 @@ impl hodei_jobs_domain::jobs::JobRepository for PostgresJobRepository {
             None
         };
 
-        let result_json = if let Some(res) = &job.result {
+        let result_json = if let Some(res) = job.result() {
             Some(
                 serde_json::to_value(res).map_err(|e| DomainError::InfrastructureError {
                     message: format!("Failed to serialize result: {}", e),
@@ -152,11 +152,11 @@ impl hodei_jobs_domain::jobs::JobRepository for PostgresJobRepository {
         };
 
         let metadata_json =
-            serde_json::to_value(&job.metadata).map_err(|e| DomainError::InfrastructureError {
+            serde_json::to_value(job.metadata()).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to serialize metadata: {}", e),
             })?;
 
-        let provider_id = job.selected_provider.as_ref().map(|p| *p.as_uuid());
+        let provider_id = job.selected_provider().map(|p| *p.as_uuid());
 
         sqlx::query(
             r#"
@@ -181,16 +181,16 @@ impl hodei_jobs_domain::jobs::JobRepository for PostgresJobRepository {
         )
         .bind(job.id.0)
         .bind(spec_json)
-        .bind(Self::state_to_string(&job.state))
+        .bind(Self::state_to_string(job.state()))
         .bind(provider_id)
         .bind(context_json)
-        .bind(job.attempts as i32)
-        .bind(job.max_attempts as i32)
-        .bind(job.created_at)
-        .bind(job.started_at)
-        .bind(job.completed_at)
+        .bind(job.attempts() as i32)
+        .bind(job.max_attempts() as i32)
+        .bind(job.created_at())
+        .bind(job.started_at())
+        .bind(job.completed_at())
         .bind(result_json)
-        .bind(&job.error_message)
+        .bind(job.error_message())
         .bind(metadata_json)
         .execute(&self.pool)
         .await
@@ -401,19 +401,19 @@ fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
     let metadata: std::collections::HashMap<String, String> =
         serde_json::from_value(metadata_json).unwrap_or_default();
 
-    Ok(Job {
-        id: JobId(id),
+    Ok(Job::hydrate(
+        JobId(id),
         spec,
-        state: PostgresJobRepository::string_to_state(&state_str),
-        selected_provider: selected_provider_id.map(hodei_jobs_domain::shared_kernel::ProviderId),
+        PostgresJobRepository::string_to_state(&state_str),
+        selected_provider_id.map(hodei_jobs_domain::shared_kernel::ProviderId),
         execution_context,
-        attempts: attempts as u32,
-        max_attempts: max_attempts as u32,
+        attempts as u32,
+        max_attempts as u32,
         created_at,
         started_at,
         completed_at,
         result,
         error_message,
         metadata,
-    })
+    ))
 }

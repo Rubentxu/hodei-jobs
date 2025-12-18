@@ -163,11 +163,11 @@ impl JobTemplate {
         let mut job = Job::new(job_id, self.spec.clone());
 
         // Link job to template
-        job.metadata
+        job.metadata_mut()
             .insert("template_id".to_string(), self.id.to_string());
-        job.metadata
+        job.metadata_mut()
             .insert("template_name".to_string(), self.name.clone());
-        job.metadata
+        job.metadata_mut()
             .insert("template_version".to_string(), self.version.to_string());
 
         self.run_count += 1;
@@ -290,11 +290,11 @@ mod tests {
 
         assert_eq!(template.run_count, 1);
         assert_eq!(
-            job.metadata.get("template_id"),
+            job.metadata().get("template_id"),
             Some(&template.id.to_string())
         );
         assert_eq!(
-            job.metadata.get("template_name"),
+            job.metadata().get("template_name"),
             Some(&"test-job".to_string())
         );
     }

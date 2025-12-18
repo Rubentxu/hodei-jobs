@@ -47,7 +47,7 @@ impl CancelJobUseCase {
                 job_id: job_id.clone(),
             })?;
 
-        let old_state = job.state.clone();
+        let old_state = job.state().clone();
         job.cancel()?;
         self.job_repository.update(&job).await?;
 
@@ -86,7 +86,7 @@ impl CancelJobUseCase {
 
         Ok(CancelJobResponse {
             job_id: job.id.to_string(),
-            status: job.state.to_string(),
+            status: job.state().to_string(),
             message: "Job cancellation requested".to_string(),
         })
     }

@@ -145,8 +145,7 @@ impl JobController {
                 Ok(0)
             }
             hodei_jobs_domain::scheduling::SchedulingDecision::Reject { reason, .. } => {
-                job.state = JobState::Failed;
-                job.error_message = Some(reason);
+                job.fail(reason)?;
                 self.job_repository.update(&job).await?;
                 Ok(0)
             }
@@ -170,7 +169,7 @@ impl JobController {
         let exec_ctx = ExecutionContext::new(job.id.clone(), provider_id, provider_execution_id);
 
         job.submit_to_provider(worker.handle().provider_id.clone(), exec_ctx)?;
-        let old_state = job.state.clone();
+        let old_state = job.state().clone();
         job.mark_running()?;
 
         // Use job_id as correlation_id for traceability
@@ -217,8 +216,7 @@ impl JobController {
             .await
         {
             let _ = self.worker_registry.release_from_job(worker_id).await;
-            job.state = JobState::Failed;
-            job.error_message = Some(format!("dispatch_failed: {}", e));
+            job.fail(format!("dispatch_failed: {}", e))?;
         }
 
         Ok(())
@@ -300,10 +298,6 @@ mod tests {
 
         async fn dequeue(&self) -> Result<Option<Job>> {
             Ok(self.queue.lock().unwrap().pop_front())
-        }
-
-        async fn peek(&self) -> Result<Option<Job>> {
-            Ok(self.queue.lock().unwrap().front().cloned())
         }
 
         async fn len(&self) -> Result<usize> {
@@ -564,7 +558,7 @@ mod tests {
 
         let updated = job_repo.find_by_id(&job_id).await.unwrap().unwrap();
         assert!(matches!(
-            updated.state,
+            updated.state(),
             JobState::Running | JobState::Failed
         ));
 

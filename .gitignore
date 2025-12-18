@@ -57,7 +57,7 @@ temp/
 *.tmp
 build/
 logs_build/
-docs/alineamiento
+
 
 # -----------------------------------------------------------------------------
 # Build Artifacts
@@ -142,9 +142,7 @@ web/*.local
 *.pid
 *.seed
 *.pid.lock
-docs/epics/
-docs/analysis/
-docs/architecture
+docs/**/*
 
 # -----------------------------------------------------------------------------
 # Agent and Artifacts

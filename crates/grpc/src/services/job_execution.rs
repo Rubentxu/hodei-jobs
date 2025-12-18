@@ -100,7 +100,7 @@ impl JobExecutionServiceImpl {
         });
 
         let progress = job
-            .metadata
+            .metadata()
             .get("progress_percentage")
             .and_then(|p| p.parse::<i32>().ok())
             .unwrap_or(0);
@@ -110,10 +110,10 @@ impl JobExecutionServiceImpl {
                 value: job.id.to_string(),
             }),
             name: format!("Job {}", &job.id.to_string()[..8]),
-            status: Self::map_job_state(&job.state) as i32,
-            created_at: Some(Self::to_timestamp(job.created_at)),
-            started_at: job.started_at.map(Self::to_timestamp),
-            completed_at: job.completed_at.map(Self::to_timestamp),
+            status: Self::map_job_state(job.state()) as i32,
+            created_at: Some(Self::to_timestamp(*job.created_at())),
+            started_at: job.started_at().copied().map(Self::to_timestamp),
+            completed_at: job.completed_at().copied().map(Self::to_timestamp),
             duration,
             progress_percentage: progress,
         }
@@ -351,7 +351,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
-            .execution_context
+            .execution_context()
             .as_ref()
             .map(|c| c.provider_execution_id.as_str())
             != Some(execution_id.as_str())
@@ -394,7 +394,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
-            .execution_context
+            .execution_context()
             .as_ref()
             .map(|c| c.provider_execution_id.as_str())
             != Some(execution_id.as_str())
@@ -404,16 +404,16 @@ impl JobExecutionService for JobExecutionServiceImpl {
             ));
         }
 
-        job.metadata.insert(
+        job.metadata_mut().insert(
             "progress_percentage".to_string(),
             req.progress_percentage.to_string(),
         );
         if !req.current_stage.is_empty() {
-            job.metadata
+            job.metadata_mut()
                 .insert("current_stage".to_string(), req.current_stage);
         }
         if !req.message.is_empty() {
-            job.metadata
+            job.metadata_mut()
                 .insert("progress_message".to_string(), req.message);
         }
 
@@ -449,7 +449,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
-            .execution_context
+            .execution_context()
             .as_ref()
             .map(|c| c.provider_execution_id.as_str())
             != Some(execution_id.as_str())
@@ -499,7 +499,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
-            .execution_context
+            .execution_context()
             .as_ref()
             .map(|c| c.provider_execution_id.as_str())
             != Some(execution_id.as_str())
@@ -557,11 +557,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         let definition = Self::map_job_to_definition(&job);
-        let status = Self::map_job_state(&job.state);
+        let status = Self::map_job_state(job.state());
 
         // Create execution if exists
         let mut executions = Vec::new();
-        if let Some(ctx) = &job.execution_context {
+        if let Some(ctx) = job.execution_context() {
             let execution = JobExecution {
                 execution_id: Some(ExecutionId {
                     value: ctx.provider_execution_id.clone(),
@@ -574,9 +574,9 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 job_status: status as i32,
                 start_time: ctx.started_at.map(Self::to_timestamp),
                 end_time: ctx.completed_at.map(Self::to_timestamp),
-                retry_count: job.attempts as i32,
+                retry_count: job.attempts() as i32,
                 exit_code: job
-                    .result
+                    .result()
                     .as_ref()
                     .map(|r| match r {
                         hodei_jobs_domain::shared_kernel::JobResult::Success {
@@ -588,8 +588,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
                         _ => "0".to_string(),
                     })
                     .unwrap_or_default(),
-                error_message: job.error_message.clone().unwrap_or_default(),
-                metadata: job.metadata.clone(),
+                error_message: job.error_message().cloned().unwrap_or_default(),
+                metadata: job.metadata().clone(),
             };
             executions.push(execution);
         }
@@ -656,14 +656,14 @@ impl JobExecutionService for JobExecutionServiceImpl {
 
                 match job_repository.find_by_execution_id(&exec_id_clone).await {
                     Ok(Some(job)) => {
-                        let status = Self::map_job_state(&job.state) as i32;
+                        let status = Self::map_job_state(job.state()) as i32;
 
                         // Check if we should send an update (simple change detection)
                         // In a real implementation, we might want to check more fields or use a proper event bus
                         if status != last_status {
                             last_status = status;
 
-                            if let Some(ctx) = &job.execution_context {
+                            if let Some(ctx) = job.execution_context() {
                                 let execution = JobExecution {
                                     execution_id: Some(ExecutionId { value: ctx.provider_execution_id.clone() }),
                                     job_id: Some(GrpcJobId { value: job.id.to_string() }),
@@ -672,14 +672,14 @@ impl JobExecutionService for JobExecutionServiceImpl {
                                     job_status: status,
                                     start_time: ctx.started_at.map(Self::to_timestamp),
                                     end_time: ctx.completed_at.map(Self::to_timestamp),
-                                    retry_count: job.attempts as i32,
-                                    exit_code: job.result.as_ref().map(|r| match r {
+                                    retry_count: job.attempts() as i32,
+                                    exit_code: job.result().as_ref().map(|r| match r {
                                         hodei_jobs_domain::shared_kernel::JobResult::Success { exit_code, .. } => exit_code.to_string(),
                                         hodei_jobs_domain::shared_kernel::JobResult::Failed { exit_code, .. } => exit_code.to_string(),
                                         _ => "0".to_string(),
                                     }).unwrap_or_default(),
-                                    error_message: job.error_message.clone().unwrap_or_default(),
-                                    metadata: job.metadata.clone(),
+                                    error_message: job.error_message().cloned().unwrap_or_default(),
+                                    metadata: job.metadata().clone(),
                                 };
 
                                 if tx.send(Ok(execution)).await.is_err() {
@@ -690,7 +690,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
 
                         // Stop streaming if job is in a terminal state
                         if matches!(
-                            job.state,
+                            job.state(),
                             hodei_jobs_domain::shared_kernel::JobState::Succeeded
                                 | hodei_jobs_domain::shared_kernel::JobState::Failed
                                 | hodei_jobs_domain::shared_kernel::JobState::Cancelled

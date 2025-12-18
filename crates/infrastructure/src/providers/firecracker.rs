@@ -14,6 +14,12 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use bytes::Bytes;
+use http::{Request, Uri};
+use http_body_util::{BodyExt, Full};
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use hyperlocal::UnixConnector;
+
 use hodei_jobs_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
     workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
@@ -915,6 +921,7 @@ impl FirecrackerProvider {
     }
 
     /// Send PUT request to Firecracker API via Unix socket
+    /// Send PUT request to Firecracker API via Unix socket
     async fn api_put(
         &self,
         socket_path: &str,
@@ -926,30 +933,37 @@ impl FirecrackerProvider {
                 message: format!("Failed to serialize API request: {}", e),
             })?;
 
-        // Use curl for simplicity (production would use hyper with Unix socket)
-        let output = Command::new("curl")
-            .args([
-                "-X",
-                "PUT",
-                "--unix-socket",
-                socket_path,
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                &body_str,
-                &format!("http://localhost{}", endpoint),
-            ])
-            .output()
+        let url: Uri = hyperlocal::Uri::new(socket_path, endpoint).into();
+
+        let client = Client::builder(TokioExecutor::new()).build(UnixConnector);
+
+        let req = Request::put(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(Full::new(Bytes::from(body_str)))
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to build request: {}", e),
+            })?;
+
+        let res = client
+            .request(req)
             .await
             .map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to call Firecracker API: {}", e),
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
+        if !res.status().is_success() {
+            let status = res.status();
+            let body_bytes = res
+                .collect()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to read response body: {}", e),
+                })?
+                .to_bytes();
+            let body_str = String::from_utf8_lossy(&body_bytes);
             return Err(DomainError::InfrastructureError {
-                message: format!("Firecracker API error: {} {}", stdout, stderr),
+                message: format!("Firecracker API error {}: {}", status, body_str),
             });
         }
 

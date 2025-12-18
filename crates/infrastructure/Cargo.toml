@@ -23,6 +23,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+bytes = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
@@ -40,8 +41,11 @@ kube = { workspace = true }
 k8s-openapi = { workspace = true }
 
 # Firecracker microVM
+hyper = { workspace = true }
+http = { workspace = true }
 hyper-util = { workspace = true }
 hyperlocal = { workspace = true }
+http-body-util = { workspace = true }
 nix = { workspace = true }
 
 # Logging

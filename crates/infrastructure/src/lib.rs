@@ -120,11 +120,6 @@ pub mod test_infrastructure {
             Ok(queue.pop())
         }
 
-        async fn peek(&self) -> Result<Option<Job>> {
-            let queue = self.queue.lock().unwrap();
-            Ok(queue.last().cloned())
-        }
-
         async fn len(&self) -> Result<usize> {
             let queue = self.queue.lock().unwrap();
             Ok(queue.len())

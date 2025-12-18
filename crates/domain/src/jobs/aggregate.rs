@@ -326,27 +326,27 @@ pub struct Job {
     /// Especificación del job
     pub spec: JobSpec,
     /// Estado actual del job
-    pub state: JobState,
+    state: JobState,
     /// Provider seleccionado (si aplica)
-    pub selected_provider: Option<ProviderId>,
+    selected_provider: Option<ProviderId>,
     /// Contexto de ejecución (si el job está en ejecución)
-    pub execution_context: Option<ExecutionContext>,
+    execution_context: Option<ExecutionContext>,
     /// Número de intentos actuales
-    pub attempts: u32,
+    attempts: u32,
     /// Máximo número de intentos
-    pub max_attempts: u32,
+    max_attempts: u32,
     /// Fecha de creación
-    pub created_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
     /// Fecha de inicio de ejecución
-    pub started_at: Option<DateTime<Utc>>,
+    started_at: Option<DateTime<Utc>>,
     /// Fecha de finalización
-    pub completed_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
     /// Resultado del job (si completado)
-    pub result: Option<JobResult>,
+    result: Option<JobResult>,
     /// Mensaje de error (si falló)
-    pub error_message: Option<String>,
+    error_message: Option<String>,
     /// Metadatos adicionales
-    pub metadata: HashMap<String, String>,
+    metadata: HashMap<String, String>,
 }
 
 impl Job {
@@ -367,6 +367,83 @@ impl Job {
             error_message: None,
             metadata: HashMap::new(),
         }
+    }
+
+    /// Reconstructs a Job from persistence (Hydration)
+    pub fn hydrate(
+        id: JobId,
+        spec: JobSpec,
+        state: JobState,
+        selected_provider: Option<ProviderId>,
+        execution_context: Option<ExecutionContext>,
+        attempts: u32,
+        max_attempts: u32,
+        created_at: DateTime<Utc>,
+        started_at: Option<DateTime<Utc>>,
+        completed_at: Option<DateTime<Utc>>,
+        result: Option<JobResult>,
+        error_message: Option<String>,
+        metadata: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            id,
+            spec,
+            state,
+            selected_provider,
+            execution_context,
+            attempts,
+            max_attempts,
+            created_at,
+            started_at,
+            completed_at,
+            result,
+            error_message,
+            metadata,
+        }
+    }
+
+    // Getters
+    pub fn state(&self) -> &JobState {
+        &self.state
+    }
+    pub fn selected_provider(&self) -> Option<&ProviderId> {
+        self.selected_provider.as_ref()
+    }
+    pub fn execution_context(&self) -> Option<&ExecutionContext> {
+        self.execution_context.as_ref()
+    }
+    pub fn execution_context_mut(&mut self) -> Option<&mut ExecutionContext> {
+        self.execution_context.as_mut()
+    }
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+    pub fn created_at(&self) -> &DateTime<Utc> {
+        &self.created_at
+    }
+    pub fn started_at(&self) -> Option<&DateTime<Utc>> {
+        self.started_at.as_ref()
+    }
+    pub fn completed_at(&self) -> Option<&DateTime<Utc>> {
+        self.completed_at.as_ref()
+    }
+    pub fn result(&self) -> Option<&JobResult> {
+        self.result.as_ref()
+    }
+    pub fn result_mut(&mut self) -> Option<&mut JobResult> {
+        self.result.as_mut()
+    }
+    pub fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
+    }
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+    pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.metadata
     }
 
     /// Pone el job en cola
@@ -408,6 +485,8 @@ impl Job {
                 self.state = JobState::Running;
                 Ok(())
             }
+            // Allow idempotent Running -> Running transition
+            JobState::Running => Ok(()),
             _ => Err(DomainError::InvalidStateTransition {
                 from: self.state.clone(),
                 to: JobState::Running,
@@ -511,6 +590,14 @@ impl Job {
             None
         }
     }
+
+    pub fn set_attempts(&mut self, attempts: u32) {
+        self.attempts = attempts;
+    }
+
+    pub fn set_state(&mut self, state: JobState) {
+        self.state = state;
+    }
 }
 
 impl Aggregate for Job {
@@ -595,7 +682,7 @@ pub trait JobRepository: Send + Sync {
 pub trait JobQueue: Send + Sync {
     async fn enqueue(&self, job: Job) -> Result<()>;
     async fn dequeue(&self) -> Result<Option<Job>>;
-    async fn peek(&self) -> Result<Option<Job>>;
+    // Removed peek() as part of technical debt resolution
     async fn len(&self) -> Result<usize>;
     async fn is_empty(&self) -> Result<bool>;
     async fn clear(&self) -> Result<()>;

@@ -122,21 +122,21 @@ fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
         _ => JobState::Failed,
     };
 
-    Ok(Job {
-        id: JobId(id),
+    Ok(Job::hydrate(
+        JobId(id),
         spec,
         state,
-        selected_provider: selected_provider_id.map(ProviderId),
+        selected_provider_id.map(ProviderId),
         execution_context,
-        attempts: attempts as u32,
-        max_attempts: max_attempts as u32,
+        attempts as u32,
+        max_attempts as u32,
         created_at,
         started_at,
         completed_at,
         result,
         error_message,
         metadata,
-    })
+    ))
 }
 
 #[async_trait::async_trait]
@@ -187,32 +187,6 @@ impl JobQueue for PostgresJobQueue {
                     message: format!("Failed to remove dequeued job from queue: {}", e),
                 })?;
 
-            let job = map_row_to_job(row)?;
-            Ok(Some(job))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn peek(&self) -> Result<Option<Job>> {
-        let row: Option<sqlx::postgres::PgRow> = sqlx::query(
-            r#"
-            SELECT j.id, j.spec, j.state, j.selected_provider_id, j.execution_context, j.attempts, j.max_attempts,
-                   j.created_at, j.started_at, j.completed_at, j.result, j.error_message, j.metadata
-            FROM job_queue jq
-            JOIN jobs j ON jq.job_id = j.id
-            WHERE j.state = 'PENDING'
-            ORDER BY jq.enqueued_at ASC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to peek job: {}", e),
-        })?;
-
-        if let Some(row) = row {
             let job = map_row_to_job(row)?;
             Ok(Some(job))
         } else {

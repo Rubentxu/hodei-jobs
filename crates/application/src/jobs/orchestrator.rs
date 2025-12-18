@@ -11,7 +11,7 @@ use hodei_jobs_domain::{
     event_bus::EventBus,
     jobs::{Job, JobQueue, JobRepository},
     scheduling::{ProviderInfo, SchedulingContext, SchedulingDecision},
-    shared_kernel::{DomainError, JobId, JobState, ProviderId, Result, WorkerId},
+    shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId},
     workers::WorkerProvider,
     workers::WorkerSpec,
     workers::{WorkerRegistry, WorkerRegistryStats},
@@ -180,7 +180,7 @@ impl JobOrchestrator {
                 error!("Job {} rejected: {}", job_id, reason);
                 // Update job state to failed
                 if let Some(mut job) = self.job_repository.find_by_id(&job_id).await? {
-                    job.state = JobState::Failed;
+                    job.fail(reason)?;
                     self.job_repository.update(&job).await?;
                 }
             }
@@ -199,7 +199,7 @@ impl JobOrchestrator {
 
         // Update job state
         if let Some(mut job) = self.job_repository.find_by_id(job_id).await? {
-            job.state = JobState::Running;
+            job.mark_running()?;
             self.job_repository.update(&job).await?;
         }
 
@@ -313,6 +313,7 @@ mod tests {
     use hodei_jobs_domain::event_bus::EventBusError;
     use hodei_jobs_domain::events::DomainEvent;
     use hodei_jobs_domain::jobs::JobSpec;
+    use hodei_jobs_domain::shared_kernel::JobState;
     use std::collections::HashMap as StdHashMap;
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -407,10 +408,6 @@ mod tests {
 
         async fn dequeue(&self) -> Result<Option<Job>> {
             Ok(self.queue.lock().unwrap().pop_front())
-        }
-
-        async fn peek(&self) -> Result<Option<Job>> {
-            Ok(self.queue.lock().unwrap().front().cloned())
         }
 
         async fn len(&self) -> Result<usize> {

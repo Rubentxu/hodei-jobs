@@ -208,14 +208,14 @@ impl LogAggregator {
         // 4. Crear resultado agregado
         let aggregated_result = AggregatedExecutionResult {
             job_id: job_id.clone(),
-            result: job.result.clone().unwrap_or_else(|| JobResult::Failed {
+            result: job.result().cloned().unwrap_or_else(|| JobResult::Failed {
                 exit_code: -1,
                 error_message: "No result available".to_string(),
                 error_output: String::new(),
             }),
             logs,
             execution_metrics,
-            execution_context: job.execution_context.clone(),
+            execution_context: job.execution_context().cloned(),
             aggregated_at: Utc::now(),
         };
 
@@ -239,15 +239,15 @@ impl LogAggregator {
 
     /// Calcula métricas de ejecución basadas en el job y logs
     fn calculate_execution_metrics(&self, job: &Job, logs: &[JobLogEntry]) -> ExecutionMetrics {
-        let queue_time_ms = if let (created, Some(started)) = (job.created_at, job.started_at) {
-            started.signed_duration_since(created).num_milliseconds() as u64
+        let queue_time_ms = if let (created, Some(started)) = (job.created_at(), job.started_at()) {
+            started.signed_duration_since(*created).num_milliseconds() as u64
         } else {
             0
         };
 
         let execution_time_ms =
-            if let (Some(started), Some(completed)) = (job.started_at, job.completed_at) {
-                completed.signed_duration_since(started).num_milliseconds() as u64
+            if let (Some(started), Some(completed)) = (job.started_at(), job.completed_at()) {
+                completed.signed_duration_since(*started).num_milliseconds() as u64
             } else {
                 0
             };
@@ -292,14 +292,14 @@ impl LogAggregator {
 
         // Obtener tipo de provider
         let provider_type = job
-            .selected_provider
+            .selected_provider()
             .as_ref()
             .map(|id| id.to_string())
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Estimar costo
         let estimated_cost = job
-            .selected_provider
+            .selected_provider()
             .as_ref()
             .and_then(|_| job.spec.preferences.max_budget);
 
@@ -309,7 +309,7 @@ impl LogAggregator {
             total_time_ms,
             peak_memory_mb,
             avg_cpu_usage,
-            retry_count: job.attempts,
+            retry_count: job.attempts(),
             provider_type,
             estimated_cost,
         }
