@@ -8,53 +8,53 @@ Scripts for building, deploying, and managing the Hodei Jobs Platform v8.0.
 
 ```bash
 # First time setup (installs all dependencies)
-./scripts/setup.sh
+./scripts/Core_Development/setup.sh
 
 # Start development environment (hot reload)
-./scripts/dev.sh
+./scripts/Core_Development/dev.sh
 ```
 
 ### 2. Production Start
 
 ```bash
 # Start production environment
-./scripts/start.sh --build-worker
+./scripts/Core_Development/start.sh --build-worker
 ```
 
 ### 3. Run Test Jobs
 
 ```bash
 # Maven job (simple - delegates to maven_job_with_logs.sh)
-./scripts/run_maven_job.sh
+./scripts/Job_Execution/run_maven_job.sh
 
 # Maven job with live logs (--simple or --complex)
-./scripts/maven_job_with_logs.sh --simple
-./scripts/maven_job_with_logs.sh --complex
+./scripts/Job_Execution/maven_job_with_logs.sh --simple
+./scripts/Job_Execution/maven_job_with_logs.sh --complex
 
 # Trace specific job
-./scripts/trace-job.sh <job-id>
+./scripts/Job_Execution/trace-job.sh <job-id>
 ```
 
 ## Scripts Directory Structure
 
 ```
 scripts/
-├── Core Development
+├── Core_Development
 │   ├── setup.sh              # Initial development environment setup
 │   ├── dev.sh                # Rapid development workflow (hot reload)
 │   ├── start.sh              # Production quick start
 │   └── cleanup.sh            # Clean up Docker resources
 │
-├── Worker Management
+├── Worker_Management
 │   ├── rebuild_worker.sh     # Rebuild worker image with latest code
 │   └── generate-certificates.sh # Generate PKI certificates for mTLS
 │
-├── Job Execution
+├── Job_Execution
 │   ├── run_maven_job.sh      # Run Maven build verification job (delegates to maven_job_with_logs.sh)
 │   ├── maven_job_with_logs.sh # Maven job with live log streaming (--simple | --complex)
 │   └── trace-job.sh          # Trace job from submission to completion
 │
-├── Monitoring & Debugging
+├── Monitoring_and_Debugging
 │   ├── watch_logs.sh         # Monitor job logs in real-time with LogBatching
 │   ├── list-jobs.sh          # List jobs with filters and search
 │   └── test_e2e.sh           # Run end-to-end tests
@@ -83,12 +83,12 @@ The worker agent v8.0 includes these optimizations **automatically**:
 
 **Generate mTLS Certificates** (for Zero Trust):
 ```bash
-./scripts/generate-certificates.sh
+./scripts/Worker_Management/generate-certificates.sh
 ```
 
 **Monitor Performance** (logs show batching):
 ```bash
-./scripts/watch_logs.sh
+./scripts/Monitoring_and_Debugging/watch_logs.sh
 ```
 
 ## Docker/Kubernetes Providers
@@ -136,32 +136,32 @@ The Dockerfile.worker includes:
 
 ```bash
 # Watch all running jobs (with LogBatching)
-./scripts/watch_logs.sh
+./scripts/Monitoring_and_Debugging/watch_logs.sh
 
 # Watch specific job
-./scripts/watch_logs.sh <job-id>
+./scripts/Monitoring_and_Debugging/watch_logs.sh <job-id>
 
 # List jobs with filters
-./scripts/list-jobs.sh --running
-./scripts/list-jobs.sh --search maven
-./scripts/list-jobs.sh --status COMPLETED
+./scripts/Monitoring_and_Debugging/list-jobs.sh --running
+./scripts/Monitoring_and_Debugging/list-jobs.sh --search maven
+./scripts/Monitoring_and_Debugging/list-jobs.sh --status COMPLETED
 ```
 
 ### Run Tests
 
 ```bash
 # E2E tests (complete job flow)
-./scripts/test_e2e.sh --e2e
+./scripts/Monitoring_and_Debugging/test_e2e.sh --e2e
 
 # Maven build test only
-./scripts/test_e2e.sh --maven
+./scripts/Monitoring_and_Debugging/test_e2e.sh --maven
 
 # All tests (unit, integration, e2e)
-./scripts/test_e2e.sh --all
+./scripts/Monitoring_and_Debugging/test_e2e.sh --all
 
 # Specific test types
-./scripts/test_e2e.sh --unit
-./scripts/test_e2e.sh --integration
+./scripts/Monitoring_and_Debugging/test_e2e.sh --unit
+./scripts/Monitoring_and_Debugging/test_e2e.sh --integration
 ```
 
 ### Certificate Management
@@ -181,14 +181,14 @@ The Dockerfile.worker includes:
 
 ```bash
 # Rebuild worker with latest code
-./scripts/rebuild_worker.sh
+./scripts/Worker_Management/rebuild_worker.sh
 
 # Rebuild and restart containers
-./scripts/rebuild_worker.sh --restart
+./scripts/Worker_Management/rebuild_worker.sh --restart
 
 # Setup development environment
-./scripts/setup.sh
-./scripts/setup.sh --minimal
+./scripts/Core_Development/setup.sh
+./scripts/Core_Development/setup.sh --minimal
 ```
 
 ## Troubleshooting
@@ -207,7 +207,7 @@ sudo usermod -aG docker $USER
 docker build -f Dockerfile.worker -t hodei-jobs-worker:latest .
 
 # Or use the rebuild script
-./scripts/rebuild_worker.sh --restart
+./scripts/Worker_Management/rebuild_worker.sh --restart
 ```
 
 **API not responding**
@@ -225,19 +225,19 @@ docker ps --filter "name=hodei"
 **Certificate errors (mTLS)**
 ```bash
 # Regenerate mTLS certificates
-./scripts/generate-certificates.sh
+./scripts/Worker_Management/generate-certificates.sh
 ```
 
 **Development environment not ready**
 ```bash
 # Run full setup
-./scripts/setup.sh
+./scripts/Core_Development/setup.sh
 
 # Or minimal setup
-./scripts/setup.sh --minimal
+./scripts/Core_Development/setup.sh --minimal
 
 # Start development
-./scripts/dev.sh
+./scripts/Core_Development/dev.sh
 ```
 
 ## Performance Tips

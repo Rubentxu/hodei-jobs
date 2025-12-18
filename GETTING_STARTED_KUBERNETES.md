@@ -232,7 +232,7 @@ Para habilitar Zero Trust security con mTLS:
 
 ```bash
 # Desde el directorio del proyecto
-./scripts/Worker\ Management/generate-certificates.sh
+./scripts/Worker_Management/generate-certificates.sh
 ```
 
 Esto creará:

@@ -11,9 +11,9 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Core\ Development/start.sh              # Inicia la plataforma
-./scripts/Core\ Development/start.sh --build-worker   # Incluye build de worker
-./scripts/Core\ Development/start.sh --help          # Ver ayuda
+./scripts/Core_Development/start.sh              # Inicia la plataforma
+./scripts/Core_Development/start.sh --build-worker   # Incluye build de worker
+./scripts/Core_Development/start.sh --help          # Ver ayuda
 ```
 
 **Qué hace**:
@@ -34,9 +34,9 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Core\ Development/setup.sh              # Setup completo
-./scripts/Core\ Development/setup.sh --minimal    # Setup mínimo
-./scripts/Core\ Development/setup.sh --help       # Ver ayuda
+./scripts/Core_Development/setup.sh              # Setup completo
+./scripts/Core_Development/setup.sh --minimal    # Setup mínimo
+./scripts/Core_Development/setup.sh --help       # Ver ayuda
 ```
 
 **Qué instala**:
@@ -55,12 +55,12 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Core\ Development/dev.sh                # Full stack
-./scripts/Core\ Development/dev.sh db            # Solo base de datos
-./scripts/Core\ Development/dev.sh backend       # Solo backend
-./scripts/Core\ Development/dev.sh frontend      # Solo frontend
-./scripts/Core\ Development/dev.sh test          # Ejecutar tests
-./scripts/Core\ Development/dev.sh clean         # Limpiar todo
+./scripts/Core_Development/dev.sh                # Full stack
+./scripts/Core_Development/dev.sh db            # Solo base de datos
+./scripts/Core_Development/dev.sh backend       # Solo backend
+./scripts/Core_Development/dev.sh frontend      # Solo frontend
+./scripts/Core_Development/dev.sh test          # Ejecutar tests
+./scripts/Core_Development/dev.sh clean         # Limpiar todo
 ```
 
 **Características**:
@@ -77,8 +77,8 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Core\ Development/cleanup.sh              # Con confirmación
-./scripts/Core\ Development/cleanup.sh --force      # Sin confirmación
+./scripts/Core_Development/cleanup.sh              # Con confirmación
+./scripts/Core_Development/cleanup.sh --force      # Sin confirmación
 ```
 
 **Qué limpia**:
@@ -97,8 +97,8 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Worker\ Management/rebuild_worker.sh
-./scripts/Worker\ Management/rebuild_worker.sh --restart
+./scripts/Worker_Management/rebuild_worker.sh
+./scripts/Worker_Management/rebuild_worker.sh --restart
 ```
 
 **Qué hace**:
@@ -115,7 +115,7 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Worker\ Management/generate-certificates.sh
+./scripts/Worker_Management/generate-certificates.sh
 ```
 
 **Qué genera**:
@@ -133,7 +133,7 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Job\ Execution/run_maven_job.sh
+./scripts/Job_Execution/run_maven_job.sh
 ```
 
 **Qué hace**:
@@ -150,8 +150,8 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Job\ Execution/maven_job_with_logs.sh --simple   # Job simple
-./scripts/Job\ Execution/maven_job_with_logs.sh --complex  # Job con asdf
+./scripts/Job_Execution/maven_job_with_logs.sh --simple   # Job simple
+./scripts/Job_Execution/maven_job_with_logs.sh --complex  # Job con asdf
 ```
 
 **Qué hace**:
@@ -168,8 +168,8 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Job\ Execution/trace-job.sh <job-id>
-./scripts/Job\ Execution/trace-job.sh <job-id> --no-logs
+./scripts/Job_Execution/trace-job.sh <job-id>
+./scripts/Job_Execution/trace-job.sh <job-id> --no-logs
 ```
 
 **Qué muestra**:
@@ -187,8 +187,8 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Monitoring\ &\ Debugging/watch_logs.sh
-./scripts/Monitoring\ &\ Debugging/watch_logs.sh <job-id>
+./scripts/Monitoring_and_Debugging/watch_logs.sh
+./scripts/Monitoring_and_Debugging/watch_logs.sh <job-id>
 ```
 
 **Características**:
@@ -207,10 +207,10 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Monitoring\ &\ Debugging/list-jobs.sh                # Todos los jobs
-./scripts/Monitoring\ &\ Debugging/list-jobs.sh --running      # Solo en ejecución
-./scripts/Monitoring\ &\ Debugging/list-jobs.sh --search maven # Buscar por nombre
-./scripts/Monitoring\ &\ Debugging/list-jobs.sh --json         # Formato JSON
+./scripts/Monitoring_and_Debugging/list-jobs.sh                # Todos los jobs
+./scripts/Monitoring_and_Debugging/list-jobs.sh --running      # Solo en ejecución
+./scripts/Monitoring_and_Debugging/list-jobs.sh --search maven # Buscar por nombre
+./scripts/Monitoring_and_Debugging/list-jobs.sh --json         # Formato JSON
 ```
 
 **Filtros disponibles**:
@@ -228,11 +228,11 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 **Uso**:
 ```bash
-./scripts/Monitoring\ &\ Debugging/test_e2e.sh --e2e          # Tests E2E
-./scripts/Monitoring\ &\ Debugging/test_e2e.sh --maven        # Solo test Maven
-./scripts/Monitoring\ &\ Debugging/test_e2e.sh --all          # Todos los tests
-./scripts/Monitoring\ &\ Debugging/test_e2e.sh --unit         # Tests unitarios
-./scripts/Monitoring\ &\ Debugging/test_e2e.sh --integration  # Tests integración
+./scripts/Monitoring_and_Debugging/test_e2e.sh --e2e          # Tests E2E
+./scripts/Monitoring_and_Debugging/test_e2e.sh --maven        # Solo test Maven
+./scripts/Monitoring_and_Debugging/test_e2e.sh --all          # Todos los tests
+./scripts/Monitoring_and_Debugging/test_e2e.sh --unit         # Tests unitarios
+./scripts/Monitoring_and_Debugging/test_e2e.sh --integration  # Tests integración
 ```
 
 **Tests incluidos**:
@@ -253,55 +253,55 @@ Este documento describe todos los scripts disponibles en el proyecto organizados
 
 ```bash
 # 1. Setup inicial (solo primera vez)
-./scripts/Core\ Development/setup.sh
+./scripts/Core_Development/setup.sh
 
 # 2. Iniciar plataforma
-./scripts/Core\ Development/start.sh --build-worker
+./scripts/Core_Development/start.sh --build-worker
 
 # 3. Monitorear logs
-./scripts/Monitoring\ &\ Debugging/watch_logs.sh
+./scripts/Monitoring_and_Debugging/watch_logs.sh
 ```
 
 ### Desarrollo Local
 
 ```bash
 # Setup completo
-./scripts/Core\ Development/setup.sh
+./scripts/Core_Development/setup.sh
 
 # Iniciar desarrollo con hot reload
-./scripts/Core\ Development/dev.sh
+./scripts/Core_Development/dev.sh
 
 # Ejecutar tests E2E
-./scripts/Monitoring\ &\ Debugging/test_e2e.sh --all
+./scripts/Monitoring_and_Debugging/test_e2e.sh --all
 
 # Limpiar recursos
-./scripts/Core\ Development/cleanup.sh
+./scripts/Core_Development/cleanup.sh
 ```
 
 ### Certificados mTLS (Zero Trust)
 
 ```bash
 # Generar certificados PKI
-./scripts/Worker\ Management/generate-certificates.sh
+./scripts/Worker_Management/generate-certificates.sh
 
 # Reconstruir worker con certificados
-./scripts/Worker\ Management/rebuild_worker.sh --restart
+./scripts/Worker_Management/rebuild_worker.sh --restart
 ```
 
 ### Ejecución y Monitoreo de Jobs
 
 ```bash
 # Ejecutar job Maven con logs
-./scripts/Job\ Execution/maven_job_with_logs.sh --complex
+./scripts/Job_Execution/maven_job_with_logs.sh --complex
 
 # En otra terminal, monitorear
-./scripts/Monitoring\ &\ Debugging/watch_logs.sh
+./scripts/Monitoring_and_Debugging/watch_logs.sh
 
 # Listar jobs
-./scripts/Monitoring\ &\ Debugging/list-jobs.sh --running
+./scripts/Monitoring_and_Debugging/list-jobs.sh --running
 
 # Rastrear job específico
-./scripts/Job\ Execution/trace-job.sh <job-id>
+./scripts/Job_Execution/trace-job.sh <job-id>
 ```
 
 ---

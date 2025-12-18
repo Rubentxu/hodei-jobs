@@ -133,7 +133,7 @@ Las métricas se recolectan de forma **asíncrona con cache**:
 #### mTLS (Zero Trust) - Preparado para Producción
 ```bash
 # Generar certificados PKI
-./scripts/Worker\ Management/generate-certificates.sh
+./scripts/Worker_Management/generate-certificates.sh
 
 # Configurar mTLS (requiere tonic >= 0.15)
 export HODEI_MTLS_ENABLED=1
@@ -167,7 +167,7 @@ cargo run --bin hodei-jobs-cli -- job queue \
 ```bash
 just watch-logs
 # o
-./scripts/Monitoring\ &\ Debugging/watch_logs.sh
+./scripts/Monitoring_and_Debugging/watch_logs.sh
 ```
 
 ### Problema Conocido
@@ -339,7 +339,7 @@ Hemos simplificado el flujo de desarrollo para que sea ultra-rápido.
 ### 1. Setup Inicial (solo la primera vez)
 
 ```bash
-./scripts/Core\ Development/setup.sh
+./scripts/Core_Development/setup.sh
 ```
 
 Esto instalará:
@@ -353,7 +353,7 @@ Esto instalará:
 Si prefieres una instalación mínima (sin herramientas opcionales):
 
 ```bash
-./scripts/Core\ Development/setup.sh --minimal
+./scripts/Core_Development/setup.sh --minimal
 ```
 
 ### 2. Iniciar el Entorno de Desarrollo
@@ -361,10 +361,10 @@ Si prefieres una instalación mínima (sin herramientas opcionales):
 El script `dev.sh` levanta todo el entorno (base de datos, backend, frontend) con hot-reload habilitado.
 
 ```bash
-./scripts/Core\ Development/dev.sh
+./scripts/Core_Development/dev.sh
 ```
 
-El script `./scripts/Core\ Development/dev.sh` levantará automáticamente:
+El script `./scripts/Core_Development/dev.sh` levantará automáticamente:
 
 - PostgreSQL (en Docker)
 - Backend (con Hot Reload via Bacon)
@@ -373,9 +373,9 @@ El script `./scripts/Core\ Development/dev.sh` levantará automáticamente:
 También puedes usar comandos individuales si lo prefieres:
 
 ```bash
-./scripts/Core\ Development/dev.sh db       # Solo base de datos
-./scripts/Core\ Development/dev.sh backend  # Solo backend
-./scripts/Core\ Development/dev.sh frontend # Solo frontend
+./scripts/Core_Development/dev.sh db       # Solo base de datos
+./scripts/Core_Development/dev.sh backend  # Solo backend
+./scripts/Core_Development/dev.sh frontend # Solo frontend
 ```
 
 ### Verificar que todo funciona

@@ -258,26 +258,26 @@ logs-db:
 
 # Watch job logs (requires hodei-server running)
 watch-logs:
-    @./scripts/Monitoring\ &\ Debugging/watch_logs.sh
+    @./scripts/Monitoring_and_Debugging/watch_logs.sh
 
 # Run Maven job with live log streaming
 maven-job:
-    @./scripts/Job\ Execution/maven_job_with_logs.sh --simple
+    @./scripts/Job_Execution/maven_job_with_logs.sh --simple
 
 # Run Maven job (complex version with asdf)
 maven-job-complex:
-    @./scripts/Job\ Execution/maven_job_with_logs.sh --complex
+    @./scripts/Job_Execution/maven_job_with_logs.sh --complex
 
 # Generate mTLS certificates for Zero Trust security
 cert-generate:
     @echo "🔐 Generating mTLS certificates..."
-    @./scripts/Worker\ Management/generate-certificates.sh
+    @./scripts/Worker_Management/generate-certificates.sh
     @echo "✅ Certificates generated in certs/ directory"
 
 # Rebuild worker Docker image and restart containers
 rebuild-worker:
     @echo "🔨 Rebuilding worker Docker image..."
-    @./scripts/Worker\ Management/rebuild_worker.sh --restart
+    @./scripts/Worker_Management/rebuild_worker.sh --restart
     @echo "✅ Worker rebuilt and restarted"
 
 # Start server with Docker-in-Docker for worker provisioning

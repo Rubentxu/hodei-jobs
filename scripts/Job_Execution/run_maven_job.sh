@@ -83,4 +83,4 @@ print_info "which provides better user experience with live log streaming."
 echo ""
 
 # Delegate to maven_job_with_logs.sh with --complex flag
-exec "$PROJECT_ROOT/scripts/Job Execution/maven_job_with_logs.sh" --complex
+exec "$PROJECT_ROOT/scripts/Job_Execution/maven_job_with_logs.sh" --complex
