@@ -74,14 +74,6 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
-    /// Un provider ha sido marcado como no saludable
-    ProviderMarkedUnhealthy {
-        provider_id: ProviderId,
-        reason: String,
-        occurred_at: DateTime<Utc>,
-        correlation_id: Option<String>,
-        actor: Option<String>,
-    },
     /// Un job ha sido cancelado explícitamente
     JobCancelled {
         job_id: JobId,
@@ -221,7 +213,6 @@ impl DomainEvent {
             | DomainEvent::AutoScalingTriggered { correlation_id, .. }
             | DomainEvent::WorkerReconnected { correlation_id, .. }
             | DomainEvent::WorkerRecoveryFailed { correlation_id, .. }
-            | DomainEvent::ProviderMarkedUnhealthy { correlation_id, .. }
             | DomainEvent::ProviderRecovered { correlation_id, .. } => correlation_id.clone(),
         }
     }
@@ -246,7 +237,6 @@ impl DomainEvent {
             | DomainEvent::AutoScalingTriggered { actor, .. }
             | DomainEvent::WorkerReconnected { actor, .. }
             | DomainEvent::WorkerRecoveryFailed { actor, .. }
-            | DomainEvent::ProviderMarkedUnhealthy { actor, .. }
             | DomainEvent::ProviderRecovered { actor, .. } => actor.clone(),
         }
     }
@@ -271,7 +261,6 @@ impl DomainEvent {
             | DomainEvent::AutoScalingTriggered { occurred_at, .. }
             | DomainEvent::WorkerReconnected { occurred_at, .. }
             | DomainEvent::WorkerRecoveryFailed { occurred_at, .. }
-            | DomainEvent::ProviderMarkedUnhealthy { occurred_at, .. }
             | DomainEvent::ProviderRecovered { occurred_at, .. } => *occurred_at,
         }
     }
@@ -297,7 +286,6 @@ impl DomainEvent {
             DomainEvent::AutoScalingTriggered { .. } => "AutoScalingTriggered",
             DomainEvent::WorkerReconnected { .. } => "WorkerReconnected",
             DomainEvent::WorkerRecoveryFailed { .. } => "WorkerRecoveryFailed",
-            DomainEvent::ProviderMarkedUnhealthy { .. } => "ProviderMarkedUnhealthy",
             DomainEvent::ProviderRecovered { .. } => "ProviderRecovered",
         }
     }

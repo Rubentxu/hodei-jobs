@@ -134,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Use Cases
     let create_job_usecase = Arc::new(CreateJobUseCase::new(
         job_repository.clone(),
+        job_queue.clone(),
         event_bus.clone(),
     ));
     let cancel_job_usecase = Arc::new(CancelJobUseCase::new(
@@ -146,7 +147,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_registry.clone(),
         log_stream_service.clone(),
         event_bus.clone(),
-    );
+    )
+    .with_token_store(token_store.clone());
     let worker_service_for_controller = worker_service.clone();
 
     let job_service = JobExecutionServiceImpl::new(

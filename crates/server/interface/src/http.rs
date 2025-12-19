@@ -526,7 +526,8 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
     let job_queue =
         std::sync::Arc::new(job_queue) as std::sync::Arc<dyn hodei_server_domain::jobs::JobQueue>;
 
-    let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), event_bus.clone());
+    let create_job_usecase =
+        CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
     let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
     let cancel_job_usecase = CancelJobUseCase::new(job_repository, event_bus.clone());
 
@@ -669,7 +670,8 @@ mod tests {
         let shared_audit_logs = Arc::new(Mutex::new(Vec::new()));
         let event_bus = std::sync::Arc::new(MockEventBusWithAudit::new(shared_audit_logs.clone()));
 
-        let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), event_bus.clone());
+        let create_job_usecase =
+            CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
         let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
         let cancel_job_usecase = CancelJobUseCase::new(job_repository, event_bus.clone());
 

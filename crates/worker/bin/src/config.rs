@@ -30,14 +30,14 @@ impl Default for WorkerConfig {
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string()),
             worker_name: env::var("HODEI_WORKER_NAME")
                 .unwrap_or_else(|_| format!("Worker Agent on {}", hostname)),
-            server_addr: env::var("HODEI_SERVER_ADDR")
+            server_addr: env::var("HODEI_SERVER_ADDRESS")
                 .unwrap_or_else(|_| "http://localhost:50051".to_string()),
             // Capabilities updated: NO DOCKER, only shell
             capabilities: vec!["shell".to_string()],
             cpu_cores: num_cpus::get() as f64,
             memory_bytes: get_system_memory(),
             disk_bytes: get_disk_space(),
-            auth_token: env::var("HODEI_AUTH_TOKEN").unwrap_or_else(|_| String::new()),
+            auth_token: env::var("HODEI_OTP_TOKEN").unwrap_or_else(|_| String::new()),
             client_cert_path: env::var("HODEI_CLIENT_CERT_PATH")
                 .map(|p| std::path::PathBuf::from(p))
                 .ok(),

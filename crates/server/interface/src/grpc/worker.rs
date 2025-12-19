@@ -587,6 +587,14 @@ impl WorkerAgentServiceImpl {
         }
     }
 
+    pub fn with_token_store(
+        mut self,
+        token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
+    ) -> Self {
+        self.token_store = Some(token_store);
+        self
+    }
+
     pub fn with_registry_job_repository_and_log_service(
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
@@ -656,6 +664,9 @@ impl WorkerAgentServiceImpl {
         let Some(registry) = self.worker_registry() else {
             return Ok(());
         };
+        let Some(ref event_bus) = self.event_bus else {
+            return Ok(());
+        };
         let worker_id = Self::parse_worker_uuid(worker_id)?;
 
         // Worker may not exist in registry if it's registering directly without provisioning
@@ -672,11 +683,44 @@ impl WorkerAgentServiceImpl {
             Err(e) => return Err(Status::internal(e.to_string())),
         };
 
-        if matches!(worker.state(), WorkerState::Creating) {
+        // Update state in registry FIRST, then publish event
+        // This ensures consistency: when event handlers receive the event,
+        // the worker is already in the correct state in the registry
+        if matches!(
+            worker.state(),
+            WorkerState::Creating | WorkerState::Connecting
+        ) {
+            let old_state = worker.state().clone();
+
+            // 1. First update state in registry (persistence)
             registry
-                .update_state(&worker_id, WorkerState::Connecting)
+                .update_state(&worker_id, WorkerState::Ready)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
+
+            // 2. Then publish event for reactive handlers
+            use hodei_server_domain::events::DomainEvent;
+
+            let event = DomainEvent::WorkerStatusChanged {
+                worker_id: worker_id.clone(),
+                old_status: old_state,
+                new_status: WorkerState::Ready,
+                occurred_at: chrono::Utc::now(),
+                correlation_id: None,
+                actor: None,
+            };
+
+            event_bus.publish(&event).await.map_err(|e| {
+                Status::internal(format!(
+                    "Failed to publish WorkerStatusChanged event: {}",
+                    e
+                ))
+            })?;
+
+            info!(
+                "Worker {} state updated to Ready and event published",
+                worker_id
+            );
         }
 
         Ok(())

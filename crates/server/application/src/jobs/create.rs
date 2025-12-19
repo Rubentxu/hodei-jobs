@@ -135,18 +135,32 @@ use hodei_server_domain::request_context::RequestContext;
 /// Use Case: Create Job (UC-001)
 /// Note: JobQueue is not used directly here because PostgresJobRepository::save()
 /// automatically enqueues jobs in an atomic transaction when state is PENDING.
+/// However, we need job_queue to get queue depth for auto-scaling events.
 pub struct CreateJobUseCase {
     job_repository: Arc<dyn JobRepository>,
-    // job_queue: Arc<dyn JobQueue>, // Not needed - enqueue is atomic in save()
+    job_queue: Arc<dyn JobQueue>,
     event_bus: Arc<dyn EventBus>,
+    /// Threshold for triggering auto-scaling events
+    queue_depth_threshold: u64,
 }
 
 impl CreateJobUseCase {
-    pub fn new(job_repository: Arc<dyn JobRepository>, event_bus: Arc<dyn EventBus>) -> Self {
+    pub fn new(
+        job_repository: Arc<dyn JobRepository>,
+        job_queue: Arc<dyn JobQueue>,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Self {
         Self {
             job_repository,
+            job_queue,
             event_bus,
+            queue_depth_threshold: 5, // Default threshold
         }
+    }
+
+    pub fn with_queue_threshold(mut self, threshold: u64) -> Self {
+        self.queue_depth_threshold = threshold;
+        self
     }
 
     pub async fn execute(&self, request: CreateJobRequest) -> Result<CreateJobResponse> {
@@ -192,18 +206,46 @@ impl CreateJobUseCase {
             job_id
         );
 
-        // 6. Publicar evento
+        // 6. Publicar evento JobCreated
         let event = DomainEvent::JobCreated {
             job_id: job_id.clone(),
             spec: job_spec,
             occurred_at: Utc::now(),
-            correlation_id: request.correlation_id,
-            actor: request.actor,
+            correlation_id: request.correlation_id.clone(),
+            actor: request.actor.clone(),
         };
 
+        tracing::info!("🎯 About to publish JobCreated event for job: {}", job_id);
         if let Err(e) = self.event_bus.publish(&event).await {
             tracing::error!("Failed to publish JobCreated event: {}", e);
             // Non-blocking error, we continue as job is queued
+        } else {
+            tracing::info!(
+                "✅ JobCreated event published successfully for job: {}",
+                job_id
+            );
+        }
+
+        // 7. Publicar evento JobQueueDepthChanged para auto-scaling
+        // Esto permite que ProviderManager reactive workers si la cola crece
+        if let Ok(queue_depth) = self.job_queue.len().await {
+            let depth_event = DomainEvent::JobQueueDepthChanged {
+                queue_depth: queue_depth as u64,
+                threshold: self.queue_depth_threshold,
+                occurred_at: Utc::now(),
+                correlation_id: request.correlation_id,
+                actor: request.actor,
+            };
+
+            if let Err(e) = self.event_bus.publish(&depth_event).await {
+                tracing::warn!("Failed to publish JobQueueDepthChanged event: {}", e);
+            } else {
+                tracing::debug!(
+                    "📊 JobQueueDepthChanged event published: depth={}, threshold={}",
+                    queue_depth,
+                    self.queue_depth_threshold
+                );
+            }
         }
 
         Ok(CreateJobResponse {
@@ -467,9 +509,10 @@ mod tests {
     #[tokio::test]
     async fn test_create_job_publishes_event() {
         let repo = Arc::new(MockJobRepository);
+        let queue = Arc::new(MockJobQueue);
         let bus = Arc::new(MockEventBus::new());
 
-        let use_case = CreateJobUseCase::new(repo, bus.clone());
+        let use_case = CreateJobUseCase::new(repo, queue, bus.clone());
 
         let spec_request = JobSpecRequest {
             command: vec!["echo".to_string(), "hello".to_string()],
@@ -493,7 +536,10 @@ mod tests {
         assert!(result.is_ok());
 
         let events = bus.published.lock().unwrap();
-        assert_eq!(events.len(), 1);
+        // Ahora se publican 2 eventos: JobCreated y JobQueueDepthChanged
+        assert_eq!(events.len(), 2);
+
+        // El primer evento debe ser JobCreated
         match &events[0] {
             DomainEvent::JobCreated {
                 job_id: _,

@@ -1,12 +1,23 @@
 use crate::workers::WorkerProvisioningService;
 use futures::StreamExt;
-use hodei_server_domain::event_bus::{EventBus, EventBusError};
+use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobQueue;
-use hodei_server_domain::shared_kernel::{ProviderId, Result};
+use hodei_server_domain::shared_kernel::{DomainError, Result};
 use std::sync::Arc;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
+/// ProviderManager handles auto-scaling and worker provisioning based on events.
+///
+/// This is an abstract manager that delegates all provider-specific logic to
+/// the `WorkerProvisioningService` trait. Concrete implementations (Docker,
+/// Kubernetes, Cloud VMs, Firecracker, etc.) are handled by the provisioning service.
+///
+/// Listens to:
+/// - `JobQueueDepthChanged`: Triggers worker provisioning when queue exceeds threshold
+/// - `WorkerDisconnected`: Logs disconnection for health monitoring
+/// - `ProviderHealthChanged`: Handles provider health state changes
+/// - `WorkerTerminated`: Cleans up after worker termination
 pub struct ProviderManager<E, P, Q>
 where
     E: EventBus + 'static,
@@ -33,17 +44,13 @@ where
     }
 
     pub async fn subscribe_to_events(&self) -> Result<()> {
-        let event_bus = self.event_bus.clone();
-        let manager = Arc::new(self.clone()); // Need to be careful with cloning self, likely need Arc wrapper around inner logic or structure
-
-        // Since we can't easily clone 'self' into the async block if it holds Arcs directly without being Arc itself or having internal Arcs.
-        // Let's assume we spawn a task that captures Arcs.
-
-        let mut stream = event_bus.subscribe("hodei_events").await.map_err(|e| {
-            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+        let mut stream = self
+            .event_bus
+            .subscribe("hodei_events")
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to subscribe to events: {}", e),
-            }
-        })?;
+            })?;
 
         info!("ProviderManager subscribed to events");
 
@@ -66,6 +73,7 @@ where
                     }
                 }
             }
+            warn!("ProviderManager event stream ended");
         });
 
         Ok(())
@@ -81,31 +89,44 @@ where
             DomainEvent::JobQueueDepthChanged {
                 queue_depth,
                 threshold,
+                correlation_id,
                 ..
             } => {
                 if queue_depth > threshold {
                     info!(
-                        "Queue depth {} exceeds threshold {}. Triggering auto-scaling.",
+                        "📈 Queue depth {} exceeds threshold {}. Triggering auto-scaling.",
                         queue_depth, threshold
                     );
-                    // logic to trigger scaling
-                    // For now, simpler logic: just provision 1 worker using default provider
 
-                    // 1. Get available providers
+                    // Get available providers from the abstract provisioning service
                     let providers = provisioning_service
                         .list_providers()
                         .await
                         .unwrap_or_default();
+
                     if let Some(provider_id) = providers.first() {
-                        info!("Auto-scaling using provider {}", provider_id);
+                        // Check if provider is available
+                        let is_available = provisioning_service
+                            .is_provider_available(provider_id)
+                            .await
+                            .unwrap_or(false);
+
+                        if !is_available {
+                            warn!(
+                                "⚠️ Provider {} is not available for provisioning",
+                                provider_id
+                            );
+                            return Ok(());
+                        }
+
                         let reason = format!("Queue depth {} > {}", queue_depth, threshold);
 
-                        // Publish AutoScalingTriggered
+                        // Publish AutoScalingTriggered event
                         let trigger_event = DomainEvent::AutoScalingTriggered {
                             provider_id: provider_id.clone(),
-                            reason,
+                            reason: reason.clone(),
                             occurred_at: chrono::Utc::now(),
-                            correlation_id: None,
+                            correlation_id: correlation_id.clone(),
                             actor: Some("ProviderManager".to_string()),
                         };
 
@@ -113,21 +134,93 @@ where
                             error!("Failed to publish AutoScalingTriggered: {}", e);
                         }
 
-                        // In a real scenario, we would call provision_worker here async or delegate to another service
-                        // provisioning_service.provision_worker(...)
+                        // Get the default worker spec from the provisioning service
+                        // This is provider-agnostic - each provider defines its own defaults
+                        let worker_spec = match provisioning_service
+                            .default_worker_spec(provider_id)
+                        {
+                            Some(spec) => spec,
+                            None => {
+                                warn!(
+                                    "⚠️ No default worker spec for provider {}, cannot auto-provision",
+                                    provider_id
+                                );
+                                return Ok(());
+                            }
+                        };
+
+                        // Delegate provisioning to the abstract service
+                        // The actual implementation (Docker, K8s, etc.) is hidden
+                        info!(
+                            "🚀 Requesting worker provisioning via provider {} (reason: {})",
+                            provider_id, reason
+                        );
+
+                        match provisioning_service
+                            .provision_worker(provider_id, worker_spec)
+                            .await
+                        {
+                            Ok(result) => {
+                                info!(
+                                    "✅ Worker {} provisioned successfully via provider {}",
+                                    result.worker_id, result.provider_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ Failed to provision worker via provider {}: {}",
+                                    provider_id, e
+                                );
+                            }
+                        }
                     } else {
-                        warn!("No providers available for auto-scaling");
+                        warn!("⚠️ No providers available for auto-scaling");
                     }
+                } else {
+                    debug!(
+                        "Queue depth {} within threshold {}, no scaling needed",
+                        queue_depth, threshold
+                    );
                 }
             }
+
             DomainEvent::WorkerDisconnected { worker_id, .. } => {
                 info!(
-                    "Worker {} disconnected. Checking provider health.",
+                    "🔌 Worker {} disconnected. May trigger replacement provisioning.",
                     worker_id
                 );
-                // Implementation for health check logic
+                // Future: Could trigger replacement provisioning here based on policy
             }
-            _ => {}
+
+            DomainEvent::WorkerTerminated {
+                worker_id,
+                provider_id,
+                reason,
+                ..
+            } => {
+                info!(
+                    "💀 Worker {} terminated (provider: {}, reason: {})",
+                    worker_id, provider_id, reason
+                );
+                // Future: Could update provider capacity tracking or trigger replacement
+            }
+
+            DomainEvent::ProviderHealthChanged {
+                provider_id,
+                old_status,
+                new_status,
+                ..
+            } => {
+                info!(
+                    "🏥 Provider {} health changed: {:?} -> {:?}",
+                    provider_id, old_status, new_status
+                );
+                // Future: Could failover to another provider if one becomes unhealthy
+            }
+
+            _ => {
+                // Ignore other events
+            }
         }
         Ok(())
     }

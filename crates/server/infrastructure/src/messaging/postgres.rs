@@ -29,15 +29,25 @@ impl EventBus for PostgresEventBus {
         // Por simplicidad en esta fase, usaremos 'hodei_events' para todo
         let channel = "hodei_events";
 
-        debug!("Publishing event to channel {}: {}", channel, payload);
+        info!("🔥 Publishing event to channel {}: {}", channel, payload);
+
+        // CRITICAL: pg_notify requires a DEDICATED connection (not from pool)
+        // Get a fresh connection for NOTIFY
+        let mut conn = self.pool.acquire().await.map_err(|e| {
+            EventBusError::PublishError(format!("Failed to acquire connection: {}", e))
+        })?;
+
+        info!("✅ Acquired dedicated connection for NOTIFY");
 
         // Usamos pg_notify directamente
         sqlx::query("SELECT pg_notify($1, $2)")
             .bind(channel)
             .bind(payload)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| EventBusError::PublishError(e.to_string()))?;
+
+        info!("✅ NOTIFY executed successfully");
 
         Ok(())
     }

@@ -68,7 +68,7 @@ async fn start_test_server(db_url: String) -> (SocketAddr, oneshot::Sender<()>) 
 
     let event_bus = Arc::new(common::MockEventBus);
     let create_job_usecase =
-        CreateJobUseCase::new(job_repository.clone(), event_bus);
+        CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus);
     let scheduler_service = SchedulerServiceImpl::new(
         Arc::new(create_job_usecase),
         job_repository,

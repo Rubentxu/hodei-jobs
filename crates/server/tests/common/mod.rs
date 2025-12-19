@@ -391,7 +391,7 @@ impl TestServer {
         // Create use cases
         let event_bus = Arc::new(MockEventBus);
         let create_job_usecase =
-            CreateJobUseCase::new(job_repository.clone(), event_bus.clone());
+            CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
         let cancel_job_usecase = CancelJobUseCase::new(job_repository.clone(), event_bus.clone());
 
         // Create log stream service
@@ -409,7 +409,7 @@ impl TestServer {
 
         // Create job execution service
         let create_job_usecase2 =
-            CreateJobUseCase::new(job_repository.clone(), event_bus.clone());
+            CreateJobUseCase::new(job_repository.clone(), job_queue.clone(), event_bus.clone());
         let job_service = JobExecutionServiceImpl::new(
             Arc::new(create_job_usecase2),
             Arc::new(cancel_job_usecase),
