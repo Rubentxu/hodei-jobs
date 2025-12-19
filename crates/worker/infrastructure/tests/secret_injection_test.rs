@@ -1,7 +1,7 @@
 use hodei_jobs::{
     CommandSpec, LogEntry, WorkerMessage, command_spec::CommandType as ProtoCommandType,
 };
-use hodei_worker_infrastructure::JobExecutor;
+use hodei_worker_infrastructure::{InjectionStrategy, JobExecutor};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -34,6 +34,7 @@ async fn test_secret_injection_valid_json() {
             Some(5),
             None,
             secrets_json,
+            InjectionStrategy::EnvVars,
         )
         .await;
 
@@ -78,6 +79,7 @@ async fn test_secret_injection_invalid_json() {
             Some(5),
             None,
             secrets_json,
+            InjectionStrategy::EnvVars,
         )
         .await;
 
@@ -114,6 +116,7 @@ async fn test_secret_injection_no_secrets() {
             Some(5),
             None,
             secrets_json,
+            InjectionStrategy::EnvVars,
         )
         .await;
 
@@ -152,6 +155,7 @@ async fn test_secret_injection_uppercase_prefix() {
             Some(5),
             None,
             secrets_json,
+            InjectionStrategy::EnvVars,
         )
         .await;
 
@@ -201,6 +205,7 @@ async fn test_secret_injection_with_regular_env_vars() {
             Some(5),
             None,
             secrets_json,
+            InjectionStrategy::EnvVars,
         )
         .await;
 
@@ -252,6 +257,7 @@ async fn test_secret_injection_secret_override() {
             Some(5),
             None,
             secrets_json,
+            InjectionStrategy::EnvVars,
         )
         .await;
 

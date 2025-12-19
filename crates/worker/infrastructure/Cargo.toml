@@ -20,8 +20,10 @@ prost-types = { workspace = true }
 tracing = { workspace = true }
 hostname = "0.4.2"
 num_cpus = "1.16"
+serde = { workspace = true }
 serde_json = { workspace = true }
 sysinfo = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }
 x509-parser = { workspace = true }
 rcgen = { workspace = true }

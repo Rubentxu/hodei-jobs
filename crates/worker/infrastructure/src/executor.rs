@@ -13,6 +13,9 @@ use tracing::{error, info, warn};
 
 use crate::logging::{FileLogger, LogBatcher};
 use crate::metrics::WorkerMetrics;
+use crate::secret_injector::{
+    InjectionConfig, InjectionStrategy, PreparedExecution, SecretInjector,
+};
 
 fn current_timestamp() -> prost_types::Timestamp {
     let now = std::time::SystemTime::now();
@@ -50,62 +53,101 @@ impl JobExecutor {
         &self,
         job_id: &str,
         command_spec: Option<CommandSpec>,
-        mut env_vars: HashMap<String, String>,
+        env_vars: HashMap<String, String>,
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: Option<u64>,
-        stdin_content: Option<String>,
+        _stdin_content: Option<String>,
         secrets_json: Option<String>,
+        injection_strategy: InjectionStrategy,
     ) -> Result<(i32, String, String), String> {
         let timeout_secs = timeout_secs.unwrap_or(3600); // Default 1h
 
-        // Inject secrets as environment variables with SECRET_ prefix
-        if let Some(secrets_json_str) = secrets_json {
+        // Parse secrets if provided
+        let secrets = if let Some(secrets_json_str) = secrets_json {
             match serde_json::from_str::<HashMap<String, String>>(&secrets_json_str) {
                 Ok(secrets) => {
                     info!(
-                        "Injecting {} secrets as environment variables",
-                        secrets.len()
+                        "Parsed {} secrets for injection strategy: {:?}",
+                        secrets.len(),
+                        injection_strategy
                     );
-                    for (key, value) in secrets {
-                        let secret_key = format!("SECRET_{}", key.to_uppercase());
-                        env_vars.insert(secret_key, value);
-                    }
-                    info!("✓ Secrets injected successfully");
+                    Some(secrets)
                 }
                 Err(e) => {
                     warn!("Failed to parse secrets JSON: {}", e);
                     return Err(format!("Invalid secrets JSON: {}", e));
                 }
             }
-        }
+        } else {
+            None
+        };
+
+        // Inject secrets using the specified strategy
+        let config = InjectionConfig::with_strategy(injection_strategy);
+        let injector = SecretInjector::new(config);
+        let prepared_execution = if let Some(ref secrets) = secrets {
+            injector
+                .prepare_execution(job_id, secrets, &env_vars)
+                .map_err(|e| {
+                    format!("Failed to prepare execution with injection strategy: {}", e)
+                })?
+        } else {
+            PreparedExecution {
+                env_vars,
+                stdin_content: None,
+                secrets_dir: None,
+                strategy: injection_strategy,
+            }
+        };
+
+        // Extract secrets_dir for cleanup after execution
+        let secrets_dir = prepared_execution.secrets_dir.clone();
 
         match command_spec.and_then(|cs| cs.command_type) {
             Some(ProtoCommandType::Shell(shell)) => {
-                self.execute_shell_with_timeout(
-                    job_id,
-                    &shell.cmd,
-                    &shell.args,
-                    &env_vars,
-                    working_dir,
-                    log_sender,
-                    timeout_secs,
-                    stdin_content,
-                )
-                .await
+                let result = self
+                    .execute_shell_with_timeout(
+                        job_id,
+                        &shell.cmd,
+                        &shell.args,
+                        prepared_execution,
+                        working_dir,
+                        log_sender,
+                        timeout_secs,
+                    )
+                    .await;
+
+                // Cleanup tmpfs files if they were created
+                if let Some(ref dir) = secrets_dir {
+                    if let Err(e) = SecretInjector::cleanup_tmpfs_secrets(dir).await {
+                        warn!("Failed to cleanup tmpfs secrets directory: {}", e);
+                    }
+                }
+
+                result
             }
             Some(ProtoCommandType::Script(script)) => {
-                self.execute_script_with_timeout(
-                    job_id,
-                    &script.interpreter,
-                    &script.content,
-                    &env_vars,
-                    working_dir,
-                    log_sender,
-                    timeout_secs,
-                    stdin_content,
-                )
-                .await
+                let result = self
+                    .execute_script_with_timeout(
+                        job_id,
+                        &script.interpreter,
+                        &script.content,
+                        prepared_execution,
+                        working_dir,
+                        log_sender,
+                        timeout_secs,
+                    )
+                    .await;
+
+                // Cleanup tmpfs files if they were created
+                if let Some(ref dir) = secrets_dir {
+                    if let Err(e) = SecretInjector::cleanup_tmpfs_secrets(dir).await {
+                        warn!("Failed to cleanup tmpfs secrets directory: {}", e);
+                    }
+                }
+
+                result
             }
             None => Err("Empty command spec".to_string()),
         }
@@ -116,18 +158,17 @@ impl JobExecutor {
         job_id: &str,
         cmd: &str,
         args: &[String],
-        env_vars: &HashMap<String, String>,
+        prepared_execution: PreparedExecution,
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: u64,
-        stdin_content: Option<String>,
     ) -> Result<(i32, String, String), String> {
         info!("Executing shell command: {} {:?}", cmd, args);
 
         let mut command = TokioCommand::new(cmd);
         command
             .args(args)
-            .envs(env_vars)
+            .envs(prepared_execution.env_vars)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::piped());
@@ -141,6 +182,7 @@ impl JobExecutor {
             .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
         // 4. Stream output with timeout and stdin
+        let stdin_content = prepared_execution.stdin_content;
         match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
             self.stream_command_output(child, job_id, &log_sender, stdin_content),
@@ -157,11 +199,10 @@ impl JobExecutor {
         job_id: &str,
         interpreter: &str,
         content: &str,
-        env_vars: &HashMap<String, String>,
+        mut prepared_execution: PreparedExecution,
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: u64,
-        stdin_content: Option<String>,
     ) -> Result<(i32, String, String), String> {
         info!("Executing script with interpreter: {}", interpreter);
 
@@ -210,8 +251,9 @@ impl JobExecutor {
         }
 
         // 4. Prepare environment with HODEI_JOB_ID
-        let mut final_env = env_vars.clone();
-        final_env.insert("HODEI_JOB_ID".to_string(), job_id.to_string());
+        prepared_execution
+            .env_vars
+            .insert("HODEI_JOB_ID".to_string(), job_id.to_string());
 
         // 5. Execute
         let result = self
@@ -219,11 +261,10 @@ impl JobExecutor {
                 job_id,
                 interpreter,
                 &[script_path.to_string_lossy().to_string()],
-                &final_env,
+                prepared_execution,
                 working_dir,
                 log_sender,
                 timeout_secs,
-                stdin_content,
             )
             .await;
 

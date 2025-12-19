@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 use hodei_worker_infrastructure::{
-    CertificatePaths, JobExecutor,
+    CertificatePaths, InjectionStrategy, JobExecutor,
     metrics::{CachedResourceUsage, MetricsCollector, WorkerMetrics},
 };
 
@@ -236,6 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     Some(timeout_ms / 1000),
                                                     run_job.stdin,
                                                     run_job.secrets_json,
+                                                    InjectionStrategy::EnvVars,
                                                 ).await;
 
                                                 // Remove from registry when done
