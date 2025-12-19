@@ -169,7 +169,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      HODEI_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei
+      SERVER_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei
       HODEI_DEV_MODE: "1"
       HODEI_DOCKER_ENABLED: "1"
       HODEI_PROVISIONING_ENABLED: "1"

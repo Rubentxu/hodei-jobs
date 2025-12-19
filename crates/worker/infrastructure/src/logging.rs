@@ -1,22 +1,52 @@
 use hodei_jobs::{LogEntry, WorkerMessage, worker_message::Payload as WorkerPayload};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{error, warn};
 
-/// Log batching buffer capacity
-pub const LOG_BATCHER_CAPACITY: usize = 100;
+use crate::metrics::WorkerMetrics;
 
-/// Log flush interval in milliseconds
-pub const LOG_FLUSH_INTERVAL_MS: u64 = 100;
+/// FileLogger for local job log persistence
+pub struct FileLogger {
+    log_dir: PathBuf,
+}
 
-fn current_timestamp() -> prost_types::Timestamp {
-    let now = std::time::SystemTime::now();
-    let since_epoch = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(std::time::Duration::from_secs(0));
-    prost_types::Timestamp {
-        seconds: since_epoch.as_secs() as i64,
-        nanos: since_epoch.subsec_nanos() as i32,
+impl FileLogger {
+    pub fn new<P: AsRef<Path>>(log_dir: P) -> Self {
+        Self {
+            log_dir: log_dir.as_ref().to_path_buf(),
+        }
+    }
+
+    /// Appends a log entry to a job-specific log file
+    pub async fn log(&self, entry: &LogEntry) -> std::io::Result<()> {
+        if !self.log_dir.exists() {
+            tokio::fs::create_dir_all(&self.log_dir).await?;
+        }
+
+        let file_path = self.log_dir.join(format!("job-{}.log", entry.job_id));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file_path)
+            .await?;
+
+        let timestamp = entry
+            .timestamp
+            .as_ref()
+            .map(|t| format!("{}.{:03}Z", t.seconds, t.nanos / 1_000_000))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let prefix = if entry.is_stderr { "[ERR]" } else { "[OUT]" };
+        let line = format!("{} {} {}\n", timestamp, prefix, entry.line);
+
+        file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
+
+        Ok(())
     }
 }
 
@@ -33,17 +63,25 @@ pub struct LogBatcher {
     flush_interval: Duration,
     /// Timestamp of last flush
     last_flush: Instant,
+    /// Metrics collector
+    metrics: Arc<WorkerMetrics>,
 }
 
 impl LogBatcher {
     /// Create a new LogBatcher
-    pub fn new(tx: mpsc::Sender<WorkerMessage>, capacity: usize, flush_interval: Duration) -> Self {
+    pub fn new(
+        tx: mpsc::Sender<WorkerMessage>,
+        capacity: usize,
+        flush_interval: Duration,
+        metrics: Arc<WorkerMetrics>,
+    ) -> Self {
         Self {
             tx,
             buffer: Vec::with_capacity(capacity),
             capacity,
             flush_interval,
             last_flush: Instant::now(),
+            metrics,
         }
     }
 
@@ -89,6 +127,9 @@ impl LogBatcher {
                 // On backpressure, logs are dropped to prioritize job execution
                 // This is acceptable in high-performance scenarios
                 warn!("Log batch dropped due to backpressure");
+                self.metrics
+                    .dropped_logs
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 false
             }
         }

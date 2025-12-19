@@ -15,6 +15,7 @@ pub mod shared_kernel;
 
 // Bounded Contexts
 pub mod audit;
+pub mod credentials;
 pub mod iam;
 pub mod jobs;
 pub mod providers;
@@ -36,6 +37,7 @@ pub use shared_kernel::*;
 
 // Re-exports de bounded contexts
 pub use audit::*;
+pub use credentials::*;
 pub use iam::*;
 pub use jobs::*;
 pub use providers::*;

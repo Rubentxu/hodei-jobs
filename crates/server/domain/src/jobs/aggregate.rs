@@ -155,6 +155,8 @@ pub struct JobSpec {
     pub image: Option<String>,
     /// Directorio de trabajo (opcional)
     pub working_dir: Option<String>,
+    /// Entrada estándar (opcional, para secrets)
+    pub stdin: Option<String>,
     /// Preferencias del usuario
     pub preferences: JobPreferences,
 }
@@ -177,6 +179,7 @@ impl JobSpec {
             timeout_ms: 300_000, // 5 minutos por defecto
             image: None,
             working_dir: None,
+            stdin: None,
             preferences: JobPreferences::default(),
         }
     }
@@ -193,6 +196,7 @@ impl JobSpec {
             timeout_ms: 300_000,
             image: None,
             working_dir: None,
+            stdin: None,
             preferences: JobPreferences::default(),
         }
     }
@@ -224,6 +228,12 @@ impl JobSpec {
     /// Añade una constraint
     pub fn with_constraint(mut self, constraint: Constraint) -> Self {
         self.constraints.push(constraint);
+        self
+    }
+
+    /// Añade stdin
+    pub fn with_stdin(mut self, stdin: impl Into<String>) -> Self {
+        self.stdin = Some(stdin.into());
         self
     }
 

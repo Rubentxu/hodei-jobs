@@ -142,7 +142,8 @@ fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
 #[async_trait::async_trait]
 impl JobQueue for PostgresJobQueue {
     async fn enqueue(&self, job: Job) -> Result<()> {
-        sqlx::query(
+        tracing::info!("PostgresJobQueue::enqueue called for job_id: {}", job.id.0);
+        let result = sqlx::query(
             r#"
             INSERT INTO job_queue (job_id)
             VALUES ($1)
@@ -156,6 +157,7 @@ impl JobQueue for PostgresJobQueue {
             message: format!("Failed to enqueue job: {}", e),
         })?;
 
+        tracing::info!("PostgresJobQueue::enqueue result - rows_affected: {}", result.rows_affected());
         Ok(())
     }
 
@@ -195,7 +197,7 @@ impl JobQueue for PostgresJobQueue {
     }
 
     async fn len(&self) -> Result<usize> {
-        let row = sqlx::query!(
+        let row: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*) as count
             FROM job_queue jq
@@ -209,7 +211,7 @@ impl JobQueue for PostgresJobQueue {
             message: format!("Failed to get queue length: {}", e),
         })?;
 
-        Ok(row.count.unwrap_or(0) as usize)
+        Ok(row.0 as usize)
     }
 
     async fn is_empty(&self) -> Result<bool> {

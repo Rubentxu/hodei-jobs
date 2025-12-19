@@ -136,6 +136,9 @@ message RunJobMessage {
     repeated ArtifactOutput outputs = 5;
     int64 timeout_ms = 6;
     string working_dir = 7;
+    optional string stdin = 8;
+    // JSON-serialized secrets for secure injection
+    optional string secrets_json = 9;
 }
 
 message CommandSpec {
@@ -187,6 +190,7 @@ message WorkerHeartbeatRequest {
     repeated string active_job_ids = 4;
     map<string, string> metrics = 5;  // Métricas adicionales del worker
     google.protobuf.Timestamp timestamp = 6;
+    uint64 dropped_logs = 7;
 }
 
 message WorkerHeartbeatResponse {

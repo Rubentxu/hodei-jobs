@@ -14,9 +14,11 @@ pub mod worker;
 pub mod worker_command_sender;
 
 pub use audit::AuditServiceImpl;
+pub use interceptors::context::context_interceptor;
 pub use job_execution::JobExecutionServiceImpl;
 pub use log_stream::{LogStreamService, LogStreamServiceGrpc};
 pub use metrics::MetricsServiceImpl;
 pub use provider_management::ProviderManagementServiceImpl;
 pub use scheduler::SchedulerServiceImpl;
 pub use worker::WorkerAgentServiceImpl;
+pub use worker_command_sender::GrpcWorkerCommandSender;

@@ -1,6 +1,5 @@
 use hodei_jobs::{
-    LogEntry, WorkerMessage,
-    command_spec::CommandType as ProtoCommandType,
+    CommandSpec, LogEntry, WorkerMessage, command_spec::CommandType as ProtoCommandType,
 };
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -10,9 +9,10 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{BytesCodec, FramedRead};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
-use crate::logging::{LogBatcher, LOG_BATCHER_CAPACITY, LOG_FLUSH_INTERVAL_MS};
+use crate::logging::{FileLogger, LogBatcher};
+use crate::metrics::WorkerMetrics;
 
 fn current_timestamp() -> prost_types::Timestamp {
     let now = std::time::SystemTime::now();
@@ -26,28 +26,61 @@ fn current_timestamp() -> prost_types::Timestamp {
 }
 
 /// Job executor for local system commands (Shell, Scripts)
-pub struct JobExecutor;
+pub struct JobExecutor {
+    log_batch_size: usize,
+    log_flush_interval_ms: u64,
+    metrics: Arc<WorkerMetrics>,
+}
 
 impl JobExecutor {
-    pub fn new() -> Self {
-        Self
+    pub fn new(
+        log_batch_size: usize,
+        log_flush_interval_ms: u64,
+        metrics: Arc<WorkerMetrics>,
+    ) -> Self {
+        Self {
+            log_batch_size,
+            log_flush_interval_ms,
+            metrics,
+        }
     }
 
     /// Execute a job from RunJobCommand with timeout and cancellation support
     pub async fn execute_from_command(
         &self,
         job_id: &str,
-        command_spec: Option<hodei_jobs::CommandSpec>,
-        env_vars: HashMap<String, String>,
+        command_spec: Option<CommandSpec>,
+        mut env_vars: HashMap<String, String>,
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: Option<u64>,
-        _abort_recv: Option<mpsc::Receiver<()>>,
+        stdin_content: Option<String>,
+        secrets_json: Option<String>,
     ) -> Result<(i32, String, String), String> {
-        let spec = command_spec.ok_or("No command spec provided")?;
-        let timeout_secs = timeout_secs.unwrap_or(3600);
+        let timeout_secs = timeout_secs.unwrap_or(3600); // Default 1h
 
-        match spec.command_type {
+        // Inject secrets as environment variables with SECRET_ prefix
+        if let Some(secrets_json_str) = secrets_json {
+            match serde_json::from_str::<HashMap<String, String>>(&secrets_json_str) {
+                Ok(secrets) => {
+                    info!(
+                        "Injecting {} secrets as environment variables",
+                        secrets.len()
+                    );
+                    for (key, value) in secrets {
+                        let secret_key = format!("SECRET_{}", key.to_uppercase());
+                        env_vars.insert(secret_key, value);
+                    }
+                    info!("✓ Secrets injected successfully");
+                }
+                Err(e) => {
+                    warn!("Failed to parse secrets JSON: {}", e);
+                    return Err(format!("Invalid secrets JSON: {}", e));
+                }
+            }
+        }
+
+        match command_spec.and_then(|cs| cs.command_type) {
             Some(ProtoCommandType::Shell(shell)) => {
                 self.execute_shell_with_timeout(
                     job_id,
@@ -57,6 +90,7 @@ impl JobExecutor {
                     working_dir,
                     log_sender,
                     timeout_secs,
+                    stdin_content,
                 )
                 .await
             }
@@ -69,6 +103,7 @@ impl JobExecutor {
                     working_dir,
                     log_sender,
                     timeout_secs,
+                    stdin_content,
                 )
                 .await
             }
@@ -85,6 +120,7 @@ impl JobExecutor {
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: u64,
+        stdin_content: Option<String>,
     ) -> Result<(i32, String, String), String> {
         info!("Executing shell command: {} {:?}", cmd, args);
 
@@ -93,7 +129,8 @@ impl JobExecutor {
             .args(args)
             .envs(env_vars)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped());
 
         if let Some(dir) = working_dir {
             command.current_dir(dir);
@@ -103,11 +140,15 @@ impl JobExecutor {
             .spawn()
             .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
-        let execute_future = self.stream_command_output(child, job_id, &log_sender);
-
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), execute_future).await {
+        // 4. Stream output with timeout and stdin
+        match tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            self.stream_command_output(child, job_id, &log_sender, stdin_content),
+        )
+        .await
+        {
             Ok(result) => result,
-            Err(_) => Err(format!("Execution timed out after {} seconds", timeout_secs)),
+            Err(_) => Err(format!("Command timed out after {} seconds", timeout_secs)),
         }
     }
 
@@ -120,35 +161,75 @@ impl JobExecutor {
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: u64,
+        stdin_content: Option<String>,
     ) -> Result<(i32, String, String), String> {
         info!("Executing script with interpreter: {}", interpreter);
 
-        // TODO: Create temporary file better (infra concern)
-        let script_path = format!("/tmp/job_{}.script", job_id);
-        if let Err(e) = tokio::fs::write(&script_path, content).await {
+        // 1. Prepare Content with Safe Preamble (if it's a shell script)
+        let is_shell = interpreter.ends_with("sh") || interpreter.ends_with("bash");
+        let safe_preamble = "set -euo pipefail\n";
+
+        let full_content = if is_shell {
+            if content.starts_with("#!") {
+                let mut lines = content.lines();
+                let shebang = lines.next().unwrap_or("");
+                format!(
+                    "{}\n{}\n{}",
+                    shebang,
+                    safe_preamble,
+                    lines.collect::<Vec<_>>().join("\n")
+                )
+            } else {
+                format!("{}{}", safe_preamble, content)
+            }
+        } else {
+            content.to_string()
+        };
+
+        // 2. Create unique temporary directory for the job
+        let job_tmp_dir = std::env::temp_dir().join(format!("hodei-job-{}", job_id));
+        tokio::fs::create_dir_all(&job_tmp_dir)
+            .await
+            .map_err(|e| format!("Failed to create job temp dir: {}", e))?;
+
+        let script_path = job_tmp_dir.join("script_file");
+        if let Err(e) = tokio::fs::write(&script_path, full_content).await {
+            let _ = tokio::fs::remove_dir_all(&job_tmp_dir).await;
             return Err(format!("Failed to write script file: {}", e));
         }
 
-        // Ensure executable
+        // 3. Ensure executable permissions on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = tokio::fs::metadata(&script_path).await.map_err(|e| e.to_string())?.permissions();
-            perms.set_mode(0o755);
-            let _ = tokio::fs::set_permissions(&script_path, perms).await;
+            if let Ok(metadata) = tokio::fs::metadata(&script_path).await {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                let _ = tokio::fs::set_permissions(&script_path, perms).await;
+            }
         }
 
-        let result = self.execute_shell_with_timeout(
-            job_id,
-            interpreter,
-            &[script_path.clone()],
-            env_vars,
-            working_dir,
-            log_sender,
-            timeout_secs,
-        ).await;
+        // 4. Prepare environment with HODEI_JOB_ID
+        let mut final_env = env_vars.clone();
+        final_env.insert("HODEI_JOB_ID".to_string(), job_id.to_string());
 
-        let _ = tokio::fs::remove_file(script_path).await;
+        // 5. Execute
+        let result = self
+            .execute_shell_with_timeout(
+                job_id,
+                interpreter,
+                &[script_path.to_string_lossy().to_string()],
+                &final_env,
+                working_dir,
+                log_sender,
+                timeout_secs,
+                stdin_content,
+            )
+            .await;
+
+        // 6. Cleanup
+        let _ = tokio::fs::remove_dir_all(&job_tmp_dir).await;
+
         result
     }
 
@@ -157,9 +238,19 @@ impl JobExecutor {
         mut child: tokio::process::Child,
         job_id: &str,
         log_sender: &mpsc::Sender<WorkerMessage>,
+        stdin_content: Option<String>,
     ) -> Result<(i32, String, String), String> {
         let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
         let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+        // Handle stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Some(content) = stdin_content {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(content.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            }
+        }
 
         let stdout_stream = FramedRead::new(stdout, BytesCodec::new());
         let stderr_stream = FramedRead::new(stderr, BytesCodec::new());
@@ -169,13 +260,17 @@ impl JobExecutor {
 
         let log_batcher = Arc::new(tokio::sync::Mutex::new(LogBatcher::new(
             log_sender.clone(),
-            LOG_BATCHER_CAPACITY,
-            Duration::from_millis(LOG_FLUSH_INTERVAL_MS),
+            self.log_batch_size,
+            Duration::from_millis(self.log_flush_interval_ms),
+            self.metrics.clone(),
         )));
 
+        let file_logger = FileLogger::new("/tmp/hodei-logs");
+
         let log_batcher_for_flush = log_batcher.clone();
+        let flush_interval = Duration::from_millis(self.log_flush_interval_ms);
         let flush_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(LOG_FLUSH_INTERVAL_MS));
+            let mut interval = tokio::time::interval(flush_interval);
             loop {
                 interval.tick().await;
                 let mut batcher = log_batcher_for_flush.lock().await;
@@ -204,6 +299,10 @@ impl JobExecutor {
                                 is_stderr: false,
                                 timestamp: Some(current_timestamp()),
                             };
+
+                            // Persist locally
+                            let _ = file_logger.log(&log_entry).await;
+
                             let mut batcher = log_batcher.lock().await;
                             batcher.push(log_entry).await;
                         }
@@ -224,6 +323,10 @@ impl JobExecutor {
                                 is_stderr: true,
                                 timestamp: Some(current_timestamp()),
                             };
+
+                            // Persist locally
+                            let _ = file_logger.log(&log_entry).await;
+
                             let mut batcher = log_batcher.lock().await;
                             batcher.push(log_entry).await;
                         }

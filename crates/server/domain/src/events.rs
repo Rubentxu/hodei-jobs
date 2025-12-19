@@ -58,6 +58,30 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// La profundidad de la cola de trabajos ha cambiado significativamente
+    JobQueueDepthChanged {
+        queue_depth: u64,
+        threshold: u64,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Se ha disparado el auto-scaling para un provider
+    AutoScalingTriggered {
+        provider_id: ProviderId,
+        reason: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un provider ha sido marcado como no saludable
+    ProviderMarkedUnhealthy {
+        provider_id: ProviderId,
+        reason: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
     /// Un job ha sido cancelado explícitamente
     JobCancelled {
         job_id: JobId,
@@ -118,6 +142,30 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// Un worker se ha reconectado exitosamente y ha recuperado su sesión
+    WorkerReconnected {
+        worker_id: WorkerId,
+        session_id: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker intentó recuperar su sesión pero falló (sesión expirada o inválida)
+    WorkerRecoveryFailed {
+        worker_id: WorkerId,
+        invalid_session_id: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un provider ha recuperado su salud y está operativo nuevamente
+    ProviderRecovered {
+        provider_id: ProviderId,
+        previous_status: ProviderStatus,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
 }
 
 /// Razón de terminación de un worker
@@ -168,7 +216,13 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioned { correlation_id, .. }
             | DomainEvent::JobRetried { correlation_id, .. }
             | DomainEvent::JobAssigned { correlation_id, .. }
-            | DomainEvent::ProviderHealthChanged { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::ProviderHealthChanged { correlation_id, .. }
+            | DomainEvent::JobQueueDepthChanged { correlation_id, .. }
+            | DomainEvent::AutoScalingTriggered { correlation_id, .. }
+            | DomainEvent::WorkerReconnected { correlation_id, .. }
+            | DomainEvent::WorkerRecoveryFailed { correlation_id, .. }
+            | DomainEvent::ProviderMarkedUnhealthy { correlation_id, .. }
+            | DomainEvent::ProviderRecovered { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -187,7 +241,13 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioned { actor, .. }
             | DomainEvent::JobRetried { actor, .. }
             | DomainEvent::JobAssigned { actor, .. }
-            | DomainEvent::ProviderHealthChanged { actor, .. } => actor.clone(),
+            | DomainEvent::ProviderHealthChanged { actor, .. }
+            | DomainEvent::JobQueueDepthChanged { actor, .. }
+            | DomainEvent::AutoScalingTriggered { actor, .. }
+            | DomainEvent::WorkerReconnected { actor, .. }
+            | DomainEvent::WorkerRecoveryFailed { actor, .. }
+            | DomainEvent::ProviderMarkedUnhealthy { actor, .. }
+            | DomainEvent::ProviderRecovered { actor, .. } => actor.clone(),
         }
     }
 
@@ -206,7 +266,13 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioned { occurred_at, .. }
             | DomainEvent::JobRetried { occurred_at, .. }
             | DomainEvent::JobAssigned { occurred_at, .. }
-            | DomainEvent::ProviderHealthChanged { occurred_at, .. } => *occurred_at,
+            | DomainEvent::ProviderHealthChanged { occurred_at, .. }
+            | DomainEvent::JobQueueDepthChanged { occurred_at, .. }
+            | DomainEvent::AutoScalingTriggered { occurred_at, .. }
+            | DomainEvent::WorkerReconnected { occurred_at, .. }
+            | DomainEvent::WorkerRecoveryFailed { occurred_at, .. }
+            | DomainEvent::ProviderMarkedUnhealthy { occurred_at, .. }
+            | DomainEvent::ProviderRecovered { occurred_at, .. } => *occurred_at,
         }
     }
 
@@ -219,6 +285,7 @@ impl DomainEvent {
             DomainEvent::WorkerStatusChanged { .. } => "WorkerStatusChanged",
             DomainEvent::ProviderRegistered { .. } => "ProviderRegistered",
             DomainEvent::ProviderUpdated { .. } => "ProviderUpdated",
+
             DomainEvent::JobCancelled { .. } => "JobCancelled",
             DomainEvent::WorkerTerminated { .. } => "WorkerTerminated",
             DomainEvent::WorkerDisconnected { .. } => "WorkerDisconnected",
@@ -226,6 +293,12 @@ impl DomainEvent {
             DomainEvent::JobRetried { .. } => "JobRetried",
             DomainEvent::JobAssigned { .. } => "JobAssigned",
             DomainEvent::ProviderHealthChanged { .. } => "ProviderHealthChanged",
+            DomainEvent::JobQueueDepthChanged { .. } => "JobQueueDepthChanged",
+            DomainEvent::AutoScalingTriggered { .. } => "AutoScalingTriggered",
+            DomainEvent::WorkerReconnected { .. } => "WorkerReconnected",
+            DomainEvent::WorkerRecoveryFailed { .. } => "WorkerRecoveryFailed",
+            DomainEvent::ProviderMarkedUnhealthy { .. } => "ProviderMarkedUnhealthy",
+            DomainEvent::ProviderRecovered { .. } => "ProviderRecovered",
         }
     }
 }
@@ -473,5 +546,36 @@ mod tests {
 
         assert_eq!(event, deserialized);
         assert_eq!(event.event_type(), "ProviderHealthChanged");
+    }
+    #[test]
+    fn test_worker_reconnection_events_serialization() {
+        let worker_id = WorkerId::new();
+        let reconnected = DomainEvent::WorkerReconnected {
+            worker_id: worker_id.clone(),
+            session_id: "sess-123".to_string(),
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: None,
+        };
+
+        let serialized = serde_json::to_string(&reconnected).expect("Failed to serialize");
+        let deserialized: DomainEvent =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+        assert_eq!(reconnected, deserialized);
+        assert_eq!(reconnected.event_type(), "WorkerReconnected");
+
+        let failed = DomainEvent::WorkerRecoveryFailed {
+            worker_id: worker_id.clone(),
+            invalid_session_id: "bad-sess".to_string(),
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: None,
+        };
+
+        let serialized = serde_json::to_string(&failed).expect("Failed to serialize");
+        let deserialized: DomainEvent =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+        assert_eq!(failed, deserialized);
+        assert_eq!(failed.event_type(), "WorkerRecoveryFailed");
     }
 }

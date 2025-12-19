@@ -438,6 +438,106 @@ mod tests {
             assert_eq!(actor.as_deref(), Some("ACTOR-XYZ"));
         }
     }
+
+    #[tokio::test]
+    async fn test_unregister_worker_publishes_event() {
+        let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
+        let bus = Arc::new(MockEventBus::new());
+
+        let service = WorkerAgentServiceImpl::with_registry(worker_registry.clone(), bus.clone());
+
+        // 1. Setup Worker
+        let worker_uuid = uuid::Uuid::new_v4();
+        let worker_id = WorkerId(worker_uuid);
+        let handle = WorkerHandle::new(
+            worker_id.clone(),
+            "resource".to_string(),
+            ProviderType::Docker,
+            ProviderId::new(),
+        );
+        let mut spec = WorkerSpec::new(
+            "hodei-jobs-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+        spec.worker_id = worker_id.clone();
+
+        worker_registry
+            .register(handle, spec)
+            .await
+            .expect("Failed to register worker");
+
+        // Manually insert into service.workers map as register() does
+        {
+            let mut workers = service.workers.write().await;
+            workers.insert(
+                worker_uuid.to_string(),
+                RegisteredWorker {
+                    info: WorkerInfo::default(),
+                    session_id: "sess-1".to_string(),
+                    status: 0,
+                },
+            );
+        }
+
+        // 2. Unregister Not Found (should not publish event)
+        let req = Request::new(UnregisterWorkerRequest {
+            worker_id: Some(hodei_jobs::WorkerId {
+                value: uuid::Uuid::new_v4().to_string(),
+            }), // Random ID
+            reason: "test".to_string(),
+            force: false,
+        });
+        service
+            .unregister_worker(req)
+            .await
+            .expect("unregister should succeed");
+
+        {
+            let events = bus.published.lock().unwrap();
+            assert!(events.is_empty());
+        }
+
+        // 3. Unregister Existing Worker
+        let req = Request::new(UnregisterWorkerRequest {
+            worker_id: Some(hodei_jobs::WorkerId {
+                value: worker_uuid.to_string(),
+            }),
+            reason: "Graceful Shutdown".to_string(),
+            force: true,
+        });
+        let resp = service
+            .unregister_worker(req)
+            .await
+            .expect("unregister should succeed");
+
+        // Check Response
+        assert!(resp.get_ref().success);
+        assert_eq!(resp.get_ref().jobs_migrated, 0);
+
+        // Check Event
+        let events = bus.published.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        if let Some(DomainEvent::WorkerTerminated {
+            worker_id: wid,
+            reason,
+            ..
+        }) = events.first()
+        {
+            assert_eq!(wid, &worker_id);
+            assert!(matches!(
+                reason,
+                hodei_server_domain::events::TerminationReason::Unregistered
+            ));
+        } else {
+            panic!("Expected WorkerTerminated event");
+        }
+
+        // Check Registry/Map cleanup (Map should be empty, registry logic depends on implementation but map is local)
+        {
+            let workers = service.workers.read().await;
+            assert!(!workers.contains_key(&worker_uuid.to_string()));
+        }
+    }
 }
 
 impl WorkerAgentServiceImpl {
@@ -845,49 +945,120 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
 
         self.on_worker_registered(&worker_id).await?;
 
-        // Generar session_id para reconexiones
-        let session_id = if req.session_id.is_empty() {
-            Self::generate_session_id()
+        // Check for session recovery
+        let session_id_req = req.session_id.clone();
+        let (session_id, is_reconnection, recovery_failed) = if !session_id_req.is_empty() {
+            // Attempt to recover existing session
+            let workers = self.workers.read().await;
+            if let Some(existing) = workers.get(&worker_id) {
+                if existing.session_id == session_id_req {
+                    // Valid session found
+                    (session_id_req.clone(), true, false)
+                } else {
+                    // Session mismatch (shouldn't happen for same worker_id usually unless restarted)
+                    info!(
+                        "Worker {} recovery failed: session mismatch (req={}, current={})",
+                        worker_id, session_id_req, existing.session_id
+                    );
+                    (Self::generate_session_id(), false, true)
+                }
+            } else {
+                // Worker not found in memory (restart/crash?)
+                info!(
+                    "Worker {} recovery failed: session {} not found",
+                    worker_id, session_id_req
+                );
+                (Self::generate_session_id(), false, true)
+            }
         } else {
-            req.session_id.clone()
+            // New registration
+            (Self::generate_session_id(), false, false)
         };
 
-        info!(
-            "Worker {} registered with session {}",
-            worker_id, session_id
-        );
+        if is_reconnection {
+            info!(
+                "Worker {} reconnected with session {}",
+                worker_id, session_id
+            );
+            // Update status if needed (e.g. from Disconnected -> Ready)
+            // For now we just refresh the entry. The heartbeat will set it to Ready.
 
-        let registered = RegisteredWorker {
-            info: worker_info,
-            session_id: session_id.clone(),
-            status: 0,
-        };
+            // Publish WorkerReconnected event
+            if let Some(event_bus) = &self.event_bus {
+                let event = DomainEvent::WorkerReconnected {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(
+                        uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
+                    ),
+                    session_id: session_id.clone(),
+                    occurred_at: Utc::now(),
+                    correlation_id: ctx.correlation_id_owned(),
+                    actor: ctx.actor_owned(),
+                };
+                if let Err(e) = event_bus.publish(&event).await {
+                    warn!("Failed to publish WorkerReconnected event: {}", e);
+                }
+            }
+        } else {
+            // New Session or Recovery Failed
+            info!(
+                "Worker {} registered with new session {}",
+                worker_id, session_id
+            );
 
-        self.workers
-            .write()
-            .await
-            .insert(worker_id.clone(), registered);
-
-        // Publicar evento WorkerRegistered
-        if let Some(event_bus) = &self.event_bus {
-            let event = DomainEvent::WorkerRegistered {
-                worker_id: hodei_server_domain::shared_kernel::WorkerId(
-                    uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
-                ),
-                provider_id: hodei_server_domain::shared_kernel::ProviderId::new(),
-                occurred_at: Utc::now(),
-                correlation_id: ctx.correlation_id_owned(),
-                actor: ctx.actor_owned(),
+            let registered = RegisteredWorker {
+                info: worker_info,
+                session_id: session_id.clone(),
+                status: 0,
             };
-            if let Err(e) = event_bus.publish(&event).await {
-                warn!("Failed to publish WorkerRegistered event: {}", e);
+
+            self.workers
+                .write()
+                .await
+                .insert(worker_id.clone(), registered);
+
+            if let Some(event_bus) = &self.event_bus {
+                if recovery_failed {
+                    let event = DomainEvent::WorkerRecoveryFailed {
+                        worker_id: hodei_server_domain::shared_kernel::WorkerId(
+                            uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
+                        ),
+                        invalid_session_id: session_id_req, // The one requested that failed
+                        occurred_at: Utc::now(),
+                        correlation_id: ctx.correlation_id_owned(),
+                        actor: ctx.actor_owned(),
+                    };
+                    if let Err(e) = event_bus.publish(&event).await {
+                        warn!("Failed to publish WorkerRecoveryFailed event: {}", e);
+                    }
+                }
+
+                // Always publish Registered for new sessions (consistent with current design)
+                // Or should we only publish Registered for clean starts?
+                // The requirements imply we want to track "Recovery Failed" distinct from "Registered".
+                // Let's keep publishing Registered so systems relying on it to know a worker is UP still work.
+                let event = DomainEvent::WorkerRegistered {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(
+                        uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
+                    ),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId::new(),
+                    occurred_at: Utc::now(),
+                    correlation_id: ctx.correlation_id_owned(),
+                    actor: ctx.actor_owned(),
+                };
+                if let Err(e) = event_bus.publish(&event).await {
+                    warn!("Failed to publish WorkerRegistered event: {}", e);
+                }
             }
         }
 
         Ok(Response::new(RegisterWorkerResponse {
             worker_id: Some(hodei_jobs::WorkerId { value: worker_id }),
             success: true,
-            message: "Worker registered successfully".to_string(),
+            message: if is_reconnection {
+                "Worker reconnected successfully".to_string()
+            } else {
+                "Worker registered successfully".to_string()
+            },
             session_id: session_id.clone(),
             registration_time: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
         }))
@@ -1126,7 +1297,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             } else {
                 "Not found".to_string()
             },
-            timestamp: None,
+            jobs_migrated: 0,
         }))
     }
 }

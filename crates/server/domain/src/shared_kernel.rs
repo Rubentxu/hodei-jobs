@@ -1,8 +1,5 @@
 pub use hodei_shared::*;
 
-use serde::{Deserialize, Serialize}; // Keep for DomainError
-use std::fmt; // Keep for DomainError
-
 /// Errores del dominio
 #[derive(thiserror::Error, Debug)]
 pub enum DomainError {

@@ -320,6 +320,8 @@ pub struct WorkerHeartbeat {
     pub running_job_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "6")]
     pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(uint64, tag = "7")]
+    pub dropped_logs: u64,
 }
 /// Worker registration (PRD v6.0: con OTP token)
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -457,6 +459,11 @@ pub struct RunJobCommand {
     pub timeout_ms: i64,
     #[prost(string, tag = "7")]
     pub working_dir: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "8")]
+    pub stdin: ::core::option::Option<::prost::alloc::string::String>,
+    /// JSON-serialized secrets for secure injection
+    #[prost(string, optional, tag = "9")]
+    pub secrets_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommandSpec {
@@ -547,7 +554,9 @@ pub struct UpdateWorkerStatusResponse {
 pub struct UnregisterWorkerRequest {
     #[prost(message, optional, tag = "1")]
     pub worker_id: ::core::option::Option<WorkerId>,
-    #[prost(string, tag = "2")]
+    #[prost(bool, tag = "2")]
+    pub force: bool,
+    #[prost(string, tag = "3")]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -556,8 +565,8 @@ pub struct UnregisterWorkerResponse {
     pub success: bool,
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "3")]
-    pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(int32, tag = "3")]
+    pub jobs_migrated: i32,
 }
 /// Definición completa del job
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -789,6 +798,8 @@ pub struct QueueJobResponse {
     pub message: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "3")]
     pub queued_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "4")]
+    pub job_id: ::core::option::Option<JobId>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AssignJobRequest {

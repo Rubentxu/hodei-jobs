@@ -7,6 +7,7 @@ use sqlx::postgres::PgListener;
 use tracing::{debug, error, info, instrument};
 
 /// Implementación del EventBus usando PostgreSQL NOTIFY/LISTEN
+#[derive(Clone)]
 pub struct PostgresEventBus {
     pool: PgPool,
 }

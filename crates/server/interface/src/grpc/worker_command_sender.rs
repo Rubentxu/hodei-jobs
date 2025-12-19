@@ -79,6 +79,8 @@ impl GrpcWorkerCommandSender {
             outputs,
             timeout_ms: Self::clamp_timeout_ms(job.spec.timeout_ms),
             working_dir: job.spec.working_dir.clone().unwrap_or_default(),
+            stdin: job.spec.stdin.clone(),
+            secrets_json: None, // TODO: Implement secret injection from secure store
         }
     }
 

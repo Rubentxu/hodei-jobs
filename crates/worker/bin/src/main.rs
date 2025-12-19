@@ -1,26 +1,29 @@
-mod config;
-
-use std::env;
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
-use uuid::Uuid;
 
 use hodei_jobs::{
-    RegisterWorkerRequest, ResourceCapacity, ResourceUsage, UnregisterWorkerRequest,
-    WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage, WorkerStatus,
-    server_message::Payload as ServerPayload,
+    JobResultMessage, RegisterWorkerRequest, ResourceCapacity, ServerMessage, WorkerHeartbeat,
+    WorkerId, WorkerInfo, WorkerMessage, WorkerStatus, server_message::Payload as ServerPayload,
     worker_agent_service_client::WorkerAgentServiceClient,
     worker_message::Payload as WorkerPayload,
 };
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::signal;
+use tokio::sync::Mutex;
+use tokio_stream::wrappers::ReceiverStream;
+
 use hodei_worker_infrastructure::{
     CertificatePaths, JobExecutor,
-    metrics::{CachedResourceUsage, get_disk_space, get_system_memory},
+    metrics::{CachedResourceUsage, MetricsCollector, WorkerMetrics},
 };
 
 use crate::config::WorkerConfig;
+
+mod config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,20 +35,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting Hodei Jobs Worker Agent...");
 
+    // Setup Shutdown Signal
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let shutdown_tx = Arc::new(shutdown_tx);
+
+    // Spawn signal handler
+    let shutdown_sender = shutdown_tx.clone();
+    tokio::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                info!("🛑 Shutdown signal received, initiating graceful shutdown...");
+                let _ = shutdown_sender.send(());
+            }
+            Err(err) => {
+                error!("Unable to listen for shutdown signal: {}", err);
+            }
+        }
+    });
+
     // Load configuration
     let config = WorkerConfig::default();
 
     // T4.3: Configure TLS if enabled
     let tls_config = if config.is_mtls_enabled() {
         info!("🔐 mTLS verification enabled");
-        // Re-construct CertificatePaths from config
         let cert_paths = CertificatePaths {
             client_cert_path: config.client_cert_path.clone().unwrap(),
             client_key_path: config.client_key_path.clone().unwrap(),
             ca_cert_path: config.ca_cert_path.clone().unwrap(),
         };
 
-        // Load certificates
         match cert_paths.load_certificates().await {
             Ok((client_cert, client_key, ca_cert)) => {
                 let identity = Identity::from_pem(client_cert, client_key);
@@ -53,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 Some(
                     ClientTlsConfig::new()
-                        .domain_name("hodei-server") // Matches server Cert CN
+                        .domain_name("hodei-server")
                         .identity(identity)
                         .ca_certificate(ca),
                 )
@@ -70,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to server
     info!("Connecting to server at {}...", config.server_addr);
-    let channel: Channel = if let Some(tls) = tls_config {
+    let channel: Channel = if let Some(tls) = tls_config.clone() {
         Channel::from_shared(config.server_addr.clone())?
             .tls_config(tls)?
             .connect()
@@ -84,9 +103,287 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = WorkerAgentServiceClient::new(channel);
     info!("✓ Connected to server");
 
-    // Register worker with retries
-    let mut retry_count = 0;
-    while retry_count < 5 {
+    // Initialize components
+    let metrics = Arc::new(WorkerMetrics::new());
+    let executor = Arc::new(JobExecutor::new(
+        config.log_batch_size,
+        config.log_flush_interval_ms,
+        metrics.clone(),
+    ));
+    let running_jobs = Arc::new(Mutex::new(
+        HashMap::<String, tokio::task::JoinHandle<()>>::new(),
+    ));
+    let mut metrics_collector = MetricsCollector::new();
+
+    // 5. Main Reconnection Loop
+    info!("Starting main worker loop...");
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(60);
+    let mut current_session_id: Option<String> = None;
+
+    let mut shutdown_triggered = false;
+
+    loop {
+        if shutdown_triggered {
+            break;
+        }
+
+        // Register worker (or re-register on reconnect)
+        info!("Registering worker...");
+        match register_worker(&mut client, &config, &mut shutdown_rx, &current_session_id).await {
+            Ok(sid) => {
+                current_session_id = Some(sid);
+            }
+            Err(e) => {
+                if e.to_string().contains("Shutdown triggered") {
+                    break;
+                }
+                error!("Registration failed: {}. Retrying in {:?}...", e, backoff);
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {
+                         backoff = std::cmp::min(backoff * 2, max_backoff);
+                         continue;
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<WorkerMessage>(100);
+        let rx_stream = ReceiverStream::new(rx);
+
+        info!("Establishing bidirectional stream...");
+
+        let stream_result = client.worker_stream(rx_stream).await;
+
+        match stream_result {
+            Ok(response) => {
+                let mut server_stream = response.into_inner();
+                info!("✓ Bidirectional stream established");
+                backoff = Duration::from_secs(1); // Reset backoff on success
+
+                let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+                let mut cached_metrics: Option<CachedResourceUsage> = None;
+
+                // Inner communication loop
+                loop {
+                    tokio::select! {
+                        _ = shutdown_rx.recv() => {
+                            info!("Graceful shutdown triggered in inner loop");
+                            shutdown_triggered = true;
+                            break;
+                        }
+
+                        // Outgoing: Heartbeats
+                        _ = heartbeat_interval.tick() => {
+                            let resource_usage = if let Some(cache) = &cached_metrics {
+                                 if cache.is_fresh() {
+                                     cache.get_usage().clone()
+                                 } else {
+                                      let usage = metrics_collector.collect();
+                                      cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
+                                      usage
+                                  }
+                             } else {
+                                  let usage = metrics_collector.collect();
+                                  cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
+                                  usage
+                             };
+
+                            let active_jobs_count = running_jobs.lock().await.len() as i32;
+                            let running_ids = running_jobs.lock().await.keys().cloned().collect();
+
+                            let heartbeat_req = WorkerHeartbeat {
+                                 worker_id: Some(WorkerId { value: config.worker_id.clone() }),
+                                 usage: Some(resource_usage),
+                                 status: WorkerStatus::Available as i32,
+                                 active_jobs: active_jobs_count,
+                                 running_job_ids: running_ids,
+                                 timestamp: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+                                 dropped_logs: metrics.dropped_logs.load(std::sync::atomic::Ordering::Relaxed),
+                            };
+
+                            if let Err(e) = tx.send(WorkerMessage {
+                                payload: Some(WorkerPayload::Heartbeat(heartbeat_req))
+                            }).await {
+                                error!("Failed to send heartbeat: {}", e);
+                                break;
+                            }
+                        }
+
+                        // Incoming: Server Messages
+                        msg = server_stream.message() => {
+                            match msg {
+                                Ok(Some(ServerMessage { payload: Some(payload) })) => {
+                                    match payload {
+                                        ServerPayload::RunJob(run_job) => {
+                                            info!("🚀 Received job: {}", run_job.job_id);
+                                            let exec = executor.clone();
+                                            let out_tx = tx.clone();
+                                            let job_id = run_job.job_id.clone();
+                                            let timeout_ms = run_job.timeout_ms as u64;
+                                            let jobs_registry = running_jobs.clone();
+
+                                            let handle = tokio::spawn(async move {
+                                                let result = exec.execute_from_command(
+                                                    &job_id,
+                                                    run_job.command,
+                                                    run_job.env,
+                                                    Some(run_job.working_dir),
+                                                    out_tx.clone(),
+                                                    Some(timeout_ms / 1000),
+                                                    run_job.stdin,
+                                                    run_job.secrets_json,
+                                                ).await;
+
+                                                // Remove from registry when done
+                                                jobs_registry.lock().await.remove(&job_id);
+
+                                                let (exit_code, success, error_message) = match result {
+                                                    Ok((code, _, _)) => (code, code == 0, String::new()),
+                                                    Err(e) => (-1, false, e),
+                                                };
+
+                                                let _ = out_tx.send(WorkerMessage {
+                                                    payload: Some(WorkerPayload::Result(JobResultMessage {
+                                                        job_id,
+                                                        exit_code,
+                                                        success,
+                                                        error_message,
+                                                        completed_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+                                                    }))
+                                                }).await;
+                                            });
+
+                                            running_jobs.lock().await.insert(run_job.job_id, handle);
+                                        }
+                                        ServerPayload::Cancel(cancel) => {
+                                            info!("⏹ Received cancel for job: {}", cancel.job_id);
+                                            if let Some(handle) = running_jobs.lock().await.remove(&cancel.job_id) {
+                                                handle.abort();
+                                                info!("✓ Job {} aborted", cancel.job_id);
+                                            } else {
+                                                warn!("Job {} not found in registry", cancel.job_id);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                Ok(None) => {
+                                    warn!("Server closed the connection");
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!("Stream error: {}", e);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // Check if shutdown occurred during connection attempt
+                if let Ok(_) = shutdown_rx.try_recv() {
+                    break;
+                }
+
+                error!(
+                    "Failed to establish stream: {}. Retrying in {:?}...",
+                    e, backoff
+                );
+
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {
+                         backoff = std::cmp::min(backoff * 2, max_backoff);
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Graceful Shutdown Logic
+    info!("Performing graceful shutdown...");
+
+    let mut jobs = running_jobs.lock().await;
+    if !jobs.is_empty() {
+        info!(
+            "Waiting for {} running jobs to finish (timeout: 10s)...",
+            jobs.len()
+        );
+
+        let timeout = Duration::from_secs(10);
+        let start = std::time::Instant::now();
+
+        // Polling wait
+        loop {
+            // Remove finished jobs
+            jobs.retain(|_, handle| !handle.is_finished());
+
+            if jobs.is_empty() {
+                info!("All jobs finished successfully.");
+                break;
+            }
+
+            if start.elapsed() > timeout {
+                warn!("Timeout reached! Aborting {} remaining jobs...", jobs.len());
+                for (id, handle) in jobs.iter() {
+                    info!("Aborting job {}", id);
+                    handle.abort();
+                }
+                break;
+            }
+
+            // Release lock and sleep briefly
+            drop(jobs);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            jobs = running_jobs.lock().await;
+        }
+    } else {
+        info!("No running jobs. Exiting.");
+    }
+
+    // Unregister worker
+    info!("Unregistering worker...");
+    let unregister_req = hodei_jobs::UnregisterWorkerRequest {
+        worker_id: Some(hodei_jobs::WorkerId {
+            value: config.worker_id.clone(),
+        }),
+        reason: "Graceful Shutdown".to_string(),
+        force: false,
+    };
+
+    match client.unregister_worker(unregister_req).await {
+        Ok(_) => info!("✓ Worker unregistered successfully"),
+        Err(e) => error!("Failed to unregister worker: {}", e),
+    }
+
+    info!("👋 Worker Agent shutdown complete.");
+    Ok(())
+}
+
+async fn register_worker(
+    client: &mut WorkerAgentServiceClient<Channel>,
+    config: &WorkerConfig,
+    shutdown_rx: &mut tokio::sync::broadcast::Receiver<()>,
+    session_id: &Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(30);
+
+    loop {
+        // Check for shutdown before retry
+        if let Ok(_) = shutdown_rx.try_recv() {
+            info!("Shutdown signal received during registration. Exiting.");
+            return Err("Shutdown triggered".into());
+        }
+
         let request = RegisterWorkerRequest {
             auth_token: config.auth_token.clone(),
             worker_info: Some(WorkerInfo {
@@ -95,7 +392,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }),
                 name: config.worker_name.clone(),
                 version: "0.1.0".to_string(),
-                hostname: config.worker_name.clone(), // or real hostname
+                hostname: config.worker_name.clone(),
                 ip_address: "127.0.0.1".to_string(),
                 os_info: std::env::consts::OS.to_string(),
                 architecture: std::env::consts::ARCH.to_string(),
@@ -113,101 +410,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 affinity: None,
                 start_time: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
             }),
-            session_id: String::new(),
+            session_id: session_id.clone().unwrap_or_default(),
         };
 
         match client.register(request).await {
-            Ok(_) => break,
+            Ok(response) => {
+                let resp = response.into_inner();
+                info!(
+                    "✓ {} (ID: {}, Session: {})",
+                    resp.message, config.worker_id, resp.session_id
+                );
+                return Ok(resp.session_id);
+            }
             Err(e) => {
-                error!("Failed to register worker: {}", e);
-                retry_count += 1;
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                warn!(
+                    "Failed to register worker: {}. Retrying in {:?}...",
+                    e, backoff
+                );
+
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {
+                         backoff = std::cmp::min(backoff * 2, max_backoff);
+                    },
+                    _ = shutdown_rx.recv() => {
+                        info!("Shutdown signal received during retry wait. Exiting.");
+                        return Err("Shutdown triggered".into());
+                    }
+                }
             }
         }
     }
-    if retry_count >= 5 {
-        return Err("Max retries exceeded".into());
-    }
-    info!(
-        "✓ Worker registered successfully (ID: {})",
-        config.worker_id
-    );
-
-    // Initialize components
-    let _executor = JobExecutor::new();
-    let (_log_tx, mut log_rx) = tokio::sync::mpsc::channel::<hodei_jobs::LogEntry>(100);
-
-    // 4. Register with Server
-    let _worker_id = config.worker_id.clone();
-    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
-
-    // T3.6: Initialize metrics cache
-    let mut cached_metrics: Option<CachedResourceUsage> = None;
-
-    loop {
-        tokio::select! {
-            _ = heartbeat_interval.tick() => {
-                // T3.6: Use cached metrics if fresh, otherwise collect new ones
-                let resource_usage = if let Some(cache) = &cached_metrics {
-                     if cache.is_fresh() {
-                         cache.get_usage().clone()
-                     } else {
-                         // Cache expired, collect new metrics
-                          let usage = ResourceUsage {
-                              cpu_cores: 0.0,
-                              memory_bytes: get_system_memory() as i64,
-                              disk_bytes: get_disk_space() as i64,
-                              gpu_count: 0,
-                              custom_usage: std::collections::HashMap::new(),
-                          };
-                          cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
-                          usage
-                      }
-                 } else {
-                     // First run
-                      let usage = ResourceUsage {
-                          cpu_cores: 0.0,
-                          memory_bytes: get_system_memory() as i64,
-                          disk_bytes: get_disk_space() as i64,
-                          gpu_count: 0,
-                          custom_usage: std::collections::HashMap::new(),
-                      };
-                      cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
-                      usage
-                 };
-
-                let _heartbeat = WorkerHeartbeat {
-                     worker_id: Some(WorkerId { value: config.worker_id.clone() }),
-                     usage: Some(resource_usage),
-                     status: WorkerStatus::Available as i32,
-                     active_jobs: 0,
-                     running_job_ids: vec![],
-                     timestamp: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
-                };
-
-                // Using the full-duplex stream for heartbeat is tricky with tonic single-request methods
-                // But the proto definition uses `WorkerHeartbeat` in a stream?
-                // Actually `WorkerAgentService` has `Connect(stream WorkerMessage) returns (stream ServerMessage)`
-                // AND `Heartbeat(WorkerHeartbeat) returns (Empty)` separately?
-                // Let's check `worker_orig.rs` to see what it used.
-                // It accessed `client.worker_command_stream`.
-            }
-
-            // Handle log streaming
-            Some(_msg) = log_rx.recv() => {
-                // In a real implementation this would send to the bi-directional stream
-                // But here we need to establish that stream first.
-                // For this refactor, I am simplifying the loop to basic compilation.
-            }
-        }
-    }
-
-    // NOTE: The original `worker.rs` had a complex loop with `connect` stream.
-    // I need to copy THAT loop logic properly.
-    // Since I don't want to re-invent, I should copy the loop logic from `worker_orig.rs`.
-    // But `worker_orig.rs` is huge.
-    // I will put a simplified placeholder loop here and admit I truncated it for the sake of the exercise time,
-    // OR (better) I paste the real logic if I can fit it.
-
-    Ok(())
 }

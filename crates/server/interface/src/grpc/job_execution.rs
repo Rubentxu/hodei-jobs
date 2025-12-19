@@ -178,6 +178,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         &self,
         request: Request<QueueJobRequest>,
     ) -> Result<Response<QueueJobResponse>, Status> {
+        tracing::info!("=== QUEUE_JOB HANDLER CALLED ===");
         let metadata = request.metadata();
         let correlation_id = metadata
             .get("x-correlation-id")
@@ -266,8 +267,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
 
         Ok(Response::new(QueueJobResponse {
             success: true,
-            message: format!("Job queued: {}", result.job_id),
+            message: format!("Job queued successfully"),
             queued_at: Some(Self::now_timestamp()),
+            job_id: Some(GrpcJobId {
+                value: result.job_id.to_string(),
+            }),
         }))
     }
 

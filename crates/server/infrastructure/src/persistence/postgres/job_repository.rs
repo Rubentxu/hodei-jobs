@@ -158,6 +158,15 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
 
         let provider_id = job.selected_provider().map(|p| *p.as_uuid());
 
+        // Start transaction for atomic Save + Enqueue
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to begin transaction: {}", e),
+            })?;
+
         sqlx::query(
             r#"
             INSERT INTO jobs
@@ -192,11 +201,37 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
         .bind(result_json)
         .bind(job.error_message())
         .bind(metadata_json)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| DomainError::InfrastructureError {
             message: format!("Failed to save job: {}", e),
         })?;
+
+        // Atomic Enqueue if Pending
+        if matches!(
+            job.state(),
+            hodei_server_domain::shared_kernel::JobState::Pending
+        ) {
+            sqlx::query(
+                r#"
+                INSERT INTO job_queue (job_id)
+                VALUES ($1)
+                ON CONFLICT (job_id) DO NOTHING
+                "#,
+            )
+            .bind(job.id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to enqueue job atomically: {}", e),
+            })?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to commit transaction: {}", e),
+            })?;
 
         Ok(())
     }

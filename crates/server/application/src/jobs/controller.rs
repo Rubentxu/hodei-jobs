@@ -2,6 +2,7 @@ use crate::scheduling::smart_scheduler::{SchedulerConfig, SchedulingService};
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use chrono::Utc;
+use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::{ExecutionContext, JobQueue, JobRepository};
@@ -24,6 +25,60 @@ pub struct JobController {
 }
 
 impl JobController {
+    /// Launches the event listener loop to trigger scheduling on relevant events
+    pub async fn subscribe_to_events(self: Arc<Self>) -> Result<()> {
+        let mut stream = self
+            .event_bus
+            .subscribe("hodei_events")
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: e.to_string(),
+            })?;
+        let controller = self.clone();
+
+        tokio::spawn(async move {
+            info!("Starting event bus subscription loop for JobController");
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => match event {
+                        DomainEvent::JobCreated { job_id, .. } => {
+                            debug!("Received JobCreated event for job {}", job_id);
+                            if let Err(e) = controller.run_once().await {
+                                error!(
+                                    "Error processing schedule trigger for job {}: {}",
+                                    job_id, e
+                                );
+                            }
+                        }
+                        DomainEvent::WorkerRegistered { worker_id, .. } => {
+                            debug!("Received WorkerRegistered event for worker {}", worker_id);
+                            if let Err(e) = controller.run_once().await {
+                                error!(
+                                    "Error processing schedule trigger for worker {}: {}",
+                                    worker_id, e
+                                );
+                            }
+                        }
+                        DomainEvent::WorkerProvisioned { worker_id, .. } => {
+                            debug!("Received WorkerProvisioned event for worker {}", worker_id);
+                            if let Err(e) = controller.run_once().await {
+                                error!(
+                                    "Error processing schedule trigger for provisioned worker {}: {}",
+                                    worker_id, e
+                                );
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(e) => error!("Error receiving event from bus: {}", e),
+                }
+            }
+            warn!("Event stream ended unexpectedly");
+        });
+
+        Ok(())
+    }
+
     pub fn new(
         job_queue: Arc<dyn JobQueue>,
         job_repository: Arc<dyn JobRepository>,
@@ -103,7 +158,8 @@ impl JobController {
 
         match decision {
             hodei_server_domain::scheduling::SchedulingDecision::AssignToWorker {
-                worker_id, ..
+                worker_id,
+                ..
             } => {
                 debug!("Assigning job {} to worker {}", job.id, worker_id);
                 self.assign_and_dispatch(&mut job, &worker_id).await?;
@@ -229,7 +285,9 @@ mod tests {
     use async_trait::async_trait;
     use hodei_server_domain::jobs::{Job, JobSpec};
     use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerState};
-    use hodei_server_domain::workers::{ProviderType, WorkerHandle, WorkerSpec as DomainWorkerSpec};
+    use hodei_server_domain::workers::{
+        ProviderType, WorkerHandle, WorkerSpec as DomainWorkerSpec,
+    };
     use hodei_server_domain::workers::{WorkerFilter, WorkerRegistryStats};
     use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;

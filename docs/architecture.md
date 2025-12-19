@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
 
-**Versión**: 8.0  
+**Versión**: 8.0
 **Última Actualización**: 2025-12-18
 
 ## Domain-Driven Design (DDD)
@@ -32,18 +32,18 @@ graph TB
             QUEUE[JobQueue]
             TEMPLATE[JobTemplate]
         end
-        
+
         subgraph "Worker Management Context"
             WORKER_DOM[Worker Aggregate]
             WPROV[WorkerProvider Trait]
             WREG[WorkerRegistry]
         end
-        
+
         subgraph "Provider Context"
             PROV[ProviderConfig]
             CAP[ProviderCapabilities]
         end
-        
+
         subgraph "Shared Kernel"
             ID[WorkerId, JobId, ProviderId]
             STATE[WorkerState, JobState]
@@ -66,20 +66,20 @@ graph TB
     REST --> UC2
     GRPC --> UC2
     WORKER --> GRPC
-    
+
     UC1 --> JOB
     UC2 --> PROV
     UC3 --> WORKER_DOM
     UC4 --> WREG
     UC5 --> QUEUE
     UC6 --> WPROV
-    
+
     JOB --> ID
     WORKER_DOM --> STATE
     WPROV --> DOCKER
     WPROV --> K8S
     WPROV --> FC
-    
+
     WREG --> REPO
     UC1 --> LOGS
     REPO --> PG
@@ -103,7 +103,7 @@ graph TD
     H -->|Sí| D
     H -->|No| I[Aguardar]
     I --> G
-    
+
     J[ServerMessage] --> K[try_send()?]
     K -->|Full| L[Drop message<br/>Backpressure]
     K -->|OK| M[Continuar]
@@ -128,13 +128,13 @@ flowchart TD
     E --> F[Stream logs en tiempo real]
     F --> G[Enviar JobResult]
     G --> H[Limpiar archivo temporal<br/>async con tokio::spawn]
-    
+
     subgraph "Safety Headers"
         I[set -e<br/>exit on error]
         J[set -u<br/>undefined variables error]
         K[set -o pipefail<br/>pipe failure detection]
     end
-    
+
     C --> I
     C --> J
     C --> K
@@ -154,7 +154,7 @@ Inyección segura de secretos via stdin:
 sequenceDiagram
     participant W as Worker
     participant E as JobExecutor
-    
+
     W->>E: execute_script(script, env, secrets)
     E->>E: Serializar secrets a JSON
     E->>E: stdin.write_all(&json)
@@ -204,13 +204,13 @@ graph LR
     E --> F[Update cache + timestamp]
     F --> G[Return fresh metrics]
     G --> H[Background update]
-    
+
     subgraph "Cache TTL"
         I[35 segundos TTL]
         J[Instant timestamp]
         K[Atomic update]
     end
-    
+
     F --> I
 ```
 
@@ -229,30 +229,30 @@ graph TD
     A[CertificatePaths] --> B[Load certs]
     B --> C[ServerTlsSettings]
     C --> D[CertificateExpiration checker]
-    
+
     subgraph "PKI Infrastructure"
         E[CA Root Certificate]
         F[Server Certificate]
         G[Client Certificate]
         H[Certificate Revocation]
     end
-    
+
     subgraph "Certificate Management"
         I[Auto-rotation]
         J[Validity tracking]
         K[Expiration alerts]
     end
-    
+
     E --> F
     E --> G
     D --> I
     D --> J
     D --> K
-    
+
     script[scripts/generate-certificates.sh]
     doc1[docs/security/PKI-DESIGN.md]
     doc2[docs/security/CERTIFICATE-MANAGEMENT.md]
-    
+
     script --> E
     doc1 --> E
     doc2 --> E
@@ -272,15 +272,15 @@ sequenceDiagram
     S->>P: create_worker(WorkerSpec)
     P->>P: Start container with OTP token
     P-->>S: WorkerHandle + OTP
-    
+
     Note over S,W: 2. Registration (OTP Auth)
     W->>S: Register(auth_token=OTP, worker_info)
     S->>S: validate_otp(token)
     S-->>W: RegisterResponse(session_id)
-    
+
     Note over S,W: 3. Bidirectional Stream con Optimizaciones
     W->>S: WorkerStream (bidirectional)
-    
+
     loop Heartbeat + Commands
         W->>S: WorkerHeartbeat (cached metrics)
         S-->>W: ACK / KeepAlive
@@ -289,7 +289,7 @@ sequenceDiagram
         W->>S: LogBatch (batched logs)
         W->>S: JobResultMessage (with secrets audit)
     end
-    
+
     Note over S,W: 4. Shutdown
     W->>S: Unregister(reason)
     S->>P: destroy_worker(handle)
@@ -330,7 +330,7 @@ classDiagram
         +Vec~ArtifactSource~ inputs
         +Vec~ArtifactDest~ outputs
     }
-    
+
     class CommandType {
         <<enumeration>>
         Shell: cmd + args
@@ -488,7 +488,7 @@ classDiagram
 ```
 
 ## Estructura de Crates
-
+No actualizado a la estructura actual. Tenerlo como referencia pero no es real.
 ```
 hodei-job-platform/
 ├── crates/
@@ -570,18 +570,18 @@ graph LR
 
     PROTO --> GRPC
     PROTO --> CLI
-    
+
     DOM --> APP
     APP --> GRPC
     APP --> REST
-    
+
     INFRA --> APP
     INFRA --> GRPC
 ```
 
 ## Worker Agent - Componentes Internos (v8.0)
 
-El worker agent (`crates/grpc/src/bin/worker.rs`) es un sistema de alta performance con los siguientes componentes:
+El worker agent es un sistema de alta performance con los siguientes componentes:
 
 ### Core Components
 
@@ -593,7 +593,7 @@ classDiagram
         +register_worker() Result
         +start_worker_stream() Result
     }
-    
+
     class LogBatcher {
         +tx: mpsc::Sender~WorkerMessage~
         +buffer: Vec~LogEntry~
@@ -603,28 +603,28 @@ classDiagram
         +flush() Task
         +add_entry() Result
     }
-    
+
     class JobExecutor {
         +execute_shell() Result
         +execute_script_robust() Result
         +inject_secrets() Result
         +cleanup_temp_files() Task
     }
-    
+
     class MetricsCollector {
         +cache: CachedResourceUsage
         +cache_ttl: Duration
         +get_usage() Result
         +spawn_blocking_task() Task
     }
-    
+
     class CertificateManager {
         +paths: CertificatePaths
         +expiration: CertificateExpiration
         +load_certificates() Task
         +check_expiration() Task
     }
-    
+
     WorkerClient --> LogBatcher
     WorkerClient --> JobExecutor
     WorkerClient --> MetricsCollector
@@ -693,7 +693,7 @@ pub trait WorkerProvider: Send + Sync {
     fn provider_id(&self) -> &ProviderId;
     fn provider_type(&self) -> ProviderType;
     fn capabilities(&self) -> &ProviderCapabilities;
-    
+
     async fn create_worker(&self, spec: &WorkerSpec) -> Result<WorkerHandle, ProviderError>;
     async fn get_worker_status(&self, handle: &WorkerHandle) -> Result<WorkerState, ProviderError>;
     async fn destroy_worker(&self, handle: &WorkerHandle) -> Result<(), ProviderError>;
@@ -768,10 +768,10 @@ Tanto el servidor gRPC como el adaptador REST ejecutan migraciones al arrancar.
 service WorkerAgentService {
     // Registro con OTP token (PRD v6.0)
     rpc Register(RegisterWorkerRequest) returns (RegisterWorkerResponse);
-    
+
     // Stream bidireccional para comandos y respuestas
     rpc WorkerStream(stream WorkerMessage) returns (stream ServerMessage);
-    
+
     // Legacy RPCs
     rpc UpdateWorkerStatus(UpdateWorkerStatusRequest) returns (UpdateWorkerStatusResponse);
     rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);

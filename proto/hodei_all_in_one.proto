@@ -232,6 +232,7 @@ message WorkerHeartbeat {
     int32 active_jobs = 4;
     repeated string running_job_ids = 5;
     google.protobuf.Timestamp timestamp = 6;
+    uint64 dropped_logs = 7;
 }
 
 // Worker registration (PRD v6.0: con OTP token)
@@ -310,6 +311,9 @@ message RunJobCommand {
     repeated ArtifactOutput outputs = 5;
     int64 timeout_ms = 6;
     string working_dir = 7;
+    optional string stdin = 8;
+    // JSON-serialized secrets for secure injection
+    optional string secrets_json = 9;
 }
 
 message CommandSpec {
@@ -370,13 +374,14 @@ message UpdateWorkerStatusResponse {
 
 message UnregisterWorkerRequest {
     WorkerId worker_id = 1;
-    string reason = 2;
+    bool force = 2;
+    string reason = 3;
 }
 
 message UnregisterWorkerResponse {
     bool success = 1;
     string message = 2;
-    google.protobuf.Timestamp timestamp = 3;
+    int32 jobs_migrated = 3;
 }
 
 // =============================================================================
@@ -516,6 +521,7 @@ message QueueJobResponse {
     bool success = 1;
     string message = 2;
     google.protobuf.Timestamp queued_at = 3;
+    JobId job_id = 4;
 }
 
 message AssignJobRequest {

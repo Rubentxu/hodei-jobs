@@ -278,17 +278,17 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     }
 
     async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let row = sqlx::query!(
+        let row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) as count FROM provider_configs WHERE name = $1",
-            name
         )
+        .bind(name)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::InfrastructureError {
             message: format!("Failed to check provider config existence: {}", e),
         })?;
 
-        Ok(row.count.unwrap_or(0) > 0)
+        Ok(row.0 > 0)
     }
 
     async fn delete(&self, provider_id: &ProviderId) -> Result<()> {

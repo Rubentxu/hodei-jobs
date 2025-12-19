@@ -25,6 +25,7 @@ use hodei_server_infrastructure::persistence::postgres::{
     PostgresAuditRepository, PostgresJobQueue, PostgresJobRepository,
     PostgresProviderConfigRepository,
 };
+use prometheus::{Encoder, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use std::env;
@@ -125,6 +126,7 @@ pub struct AppState {
     pub list_providers_usecase: std::sync::Arc<dyn ListProvidersUseCaseTrait>,
     pub get_provider_usecase: std::sync::Arc<dyn GetProviderUseCaseTrait>,
     pub get_audit_logs_usecase: std::sync::Arc<dyn GetAuditLogsUseCaseTrait>,
+    pub metrics_registry: prometheus::Registry,
 }
 
 #[async_trait::async_trait]
@@ -251,6 +253,8 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/v1/providers/{provider_id}", get(get_provider))
         // Audit endpoints
         .route("/api/v1/audit-logs", get(get_audit_logs))
+        // Metrics endpoint
+        .route("/metrics", get(metrics_handler))
         // Health check
         .route("/health", get(health_check))
         // CORS
@@ -425,6 +429,29 @@ async fn get_audit_logs(
     }
 }
 
+/// Handler para metrics exposition (Prometheus format)
+async fn metrics_handler(State(state): State<AppState>) -> Result<String, (StatusCode, String)> {
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = state.metrics_registry.gather();
+
+    let mut buffer = Vec::new();
+    encoder
+        .encode(&metric_families, &mut buffer)
+        .map_err(|_e: prometheus::Error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to encode metrics".to_string(),
+            )
+        })?;
+
+    String::from_utf8(buffer).map_err(|_e: std::string::FromUtf8Error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid UTF-8 in metrics".to_string(),
+        )
+    })
+}
+
 /// Handler para health check
 async fn health_check() -> Result<AxumJson<ApiResponse<String>>, StatusCode> {
     Ok(AxumJson(ApiResponse::success("healthy".to_string())))
@@ -499,8 +526,7 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
     let job_queue =
         std::sync::Arc::new(job_queue) as std::sync::Arc<dyn hodei_server_domain::jobs::JobQueue>;
 
-    let create_job_usecase =
-        CreateJobUseCase::new(job_repository.clone(), job_queue, event_bus.clone());
+    let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), event_bus.clone());
     let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
     let cancel_job_usecase = CancelJobUseCase::new(job_repository, event_bus.clone());
 
@@ -521,6 +547,7 @@ async fn create_app_state_from_env() -> anyhow::Result<AppState> {
         list_providers_usecase: std::sync::Arc::new(list_providers_usecase),
         get_provider_usecase: std::sync::Arc::new(get_provider_usecase),
         get_audit_logs_usecase: std::sync::Arc::new(audit_service),
+        metrics_registry: Registry::new(),
     })
 }
 
@@ -642,8 +669,7 @@ mod tests {
         let shared_audit_logs = Arc::new(Mutex::new(Vec::new()));
         let event_bus = std::sync::Arc::new(MockEventBusWithAudit::new(shared_audit_logs.clone()));
 
-        let create_job_usecase =
-            CreateJobUseCase::new(job_repository.clone(), job_queue, event_bus.clone());
+        let create_job_usecase = CreateJobUseCase::new(job_repository.clone(), event_bus.clone());
         let get_job_status_usecase = GetJobStatusUseCase::new(job_repository.clone());
         let cancel_job_usecase = CancelJobUseCase::new(job_repository, event_bus.clone());
 
@@ -664,6 +690,7 @@ mod tests {
                     MockAuditRepository::new_with_logs(shared_audit_logs),
                 )),
             ),
+            metrics_registry: Registry::new(),
         }
     }
 

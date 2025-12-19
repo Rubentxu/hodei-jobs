@@ -62,21 +62,16 @@ pub struct RetryJobResponse {
 ///
 /// Reintenta un job que ha fallado o ha expirado, siempre que no haya
 /// excedido el número máximo de intentos.
+/// Note: JobQueue is not used directly because save() includes atomic enqueue.
 pub struct RetryJobUseCase {
     job_repository: Arc<dyn JobRepository>,
-    job_queue: Arc<dyn JobQueue>,
     event_bus: Arc<dyn EventBus>,
 }
 
 impl RetryJobUseCase {
-    pub fn new(
-        job_repository: Arc<dyn JobRepository>,
-        job_queue: Arc<dyn JobQueue>,
-        event_bus: Arc<dyn EventBus>,
-    ) -> Self {
+    pub fn new(job_repository: Arc<dyn JobRepository>, event_bus: Arc<dyn EventBus>) -> Self {
         Self {
             job_repository,
-            job_queue,
             event_bus,
         }
     }
@@ -103,11 +98,8 @@ impl RetryJobUseCase {
         // Validar y preparar retry (incrementa attempts internamente)
         job.prepare_retry()?;
 
-        // Guardar job actualizado
+        // Guardar job actualizado (que incluye enqueue atómico)
         self.job_repository.update(&job).await?;
-
-        // Encolar job para re-ejecución
-        self.job_queue.enqueue(job.clone()).await?;
 
         let correlation_id = ctx.map(|c| c.correlation_id().to_string());
         let actor = ctx.and_then(|c| c.actor_owned());
@@ -141,21 +133,18 @@ impl RetryJobUseCase {
 use hodei_server_domain::request_context::RequestContext;
 
 /// Use Case: Create Job (UC-001)
+/// Note: JobQueue is not used directly here because PostgresJobRepository::save()
+/// automatically enqueues jobs in an atomic transaction when state is PENDING.
 pub struct CreateJobUseCase {
     job_repository: Arc<dyn JobRepository>,
-    job_queue: Arc<dyn JobQueue>,
+    // job_queue: Arc<dyn JobQueue>, // Not needed - enqueue is atomic in save()
     event_bus: Arc<dyn EventBus>,
 }
 
 impl CreateJobUseCase {
-    pub fn new(
-        job_repository: Arc<dyn JobRepository>,
-        job_queue: Arc<dyn JobQueue>,
-        event_bus: Arc<dyn EventBus>,
-    ) -> Self {
+    pub fn new(job_repository: Arc<dyn JobRepository>, event_bus: Arc<dyn EventBus>) -> Self {
         Self {
             job_repository,
-            job_queue,
             event_bus,
         }
     }
@@ -191,15 +180,19 @@ impl CreateJobUseCase {
         // 4. Validar Job
         self.validate_job(&job)?;
 
-        // 5. Guardar en repositorio
+        // 5. GUARDAR EN REPOSITORIO (que incluye enqueue atómico)
+        // PostgresJobRepository::save() automáticamente encola si el estado es PENDING
+        tracing::info!(
+            "Saving job {} to repository (includes atomic enqueue)",
+            job_id
+        );
         self.job_repository.save(&job).await?;
+        tracing::info!(
+            "Job {} saved and enqueued successfully in atomic transaction",
+            job_id
+        );
 
-        // 6. Encolar Job
-        let mut queued_job = job;
-        queued_job.queue()?;
-        self.job_queue.enqueue(queued_job).await?;
-
-        // 7. Publicar evento
+        // 6. Publicar evento
         let event = DomainEvent::JobCreated {
             job_id: job_id.clone(),
             spec: job_spec,
@@ -474,10 +467,9 @@ mod tests {
     #[tokio::test]
     async fn test_create_job_publishes_event() {
         let repo = Arc::new(MockJobRepository);
-        let queue = Arc::new(MockJobQueue);
         let bus = Arc::new(MockEventBus::new());
 
-        let use_case = CreateJobUseCase::new(repo, queue, bus.clone());
+        let use_case = CreateJobUseCase::new(repo, bus.clone());
 
         let spec_request = JobSpecRequest {
             command: vec!["echo".to_string(), "hello".to_string()],
@@ -568,13 +560,12 @@ mod tests {
     #[tokio::test]
     async fn test_retry_job_publishes_job_retried_event() {
         let repo = Arc::new(MockJobRepositoryWithFailedJob::new_with_failed_job());
-        let queue = Arc::new(MockJobQueue);
         let bus = Arc::new(MockEventBus::new());
 
         // Get the job_id from the mock
         let job_id = repo.job.lock().unwrap().as_ref().unwrap().id.clone();
 
-        let use_case = RetryJobUseCase::new(repo, queue, bus.clone());
+        let use_case = RetryJobUseCase::new(repo, bus.clone());
 
         let result = use_case.execute(job_id).await;
         assert!(result.is_ok());
@@ -613,12 +604,11 @@ mod tests {
             }
         }
 
-        let queue = Arc::new(MockJobQueue);
         let bus = Arc::new(MockEventBus::new());
 
         let job_id = repo.job.lock().unwrap().as_ref().unwrap().id.clone();
 
-        let use_case = RetryJobUseCase::new(repo, queue, bus.clone());
+        let use_case = RetryJobUseCase::new(repo, bus.clone());
 
         let result = use_case.execute(job_id).await;
         assert!(result.is_err());

@@ -260,13 +260,124 @@ logs-db:
 watch-logs:
     @./scripts/Monitoring_and_Debugging/watch_logs.sh
 
-# Run Maven job with live log streaming
-maven-job:
-    @./scripts/Job_Execution/maven_job_with_logs.sh --simple
+# =============================================================================
+# JOB EXECUTION - Using hodei-jobs-cli
+# =============================================================================
 
-# Run Maven job (complex version with asdf)
-maven-job-complex:
-    @./scripts/Job_Execution/maven_job_with_logs.sh --complex
+# Run a quick test job with live logs
+test-job:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Test Job" --command "echo 'Hello from Hodei!'; sleep 1; echo 'Job completed successfully!'"
+
+# Demo: Simple job
+job-demo-simple:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Demo Job" --command "echo '=== HODEI DEMO JOB ==='; echo '[1/3] Processing data...'; sleep 1; echo '✓ Data processed'; echo '[2/3] Generating report...'; sleep 1; echo '✓ Report generated'; echo '[3/3] Complete!'; echo '=== JOB FINISHED ==='"
+
+# Demo: ETL Pipeline
+job-demo-etl:
+    @cargo run --bin hodei-jobs-cli -- job run --name "ETL Demo" --command "echo '=== ETL DEMO ==='; echo '[1/4] Generating 10K records...'; sleep 1; echo '✓ 10,000 records'; echo '[2/4] Transforming data...'; sleep 1; echo '✓ Transformed'; echo '[3/4] Validating...'; sleep 1; echo '✓ Validated'; echo '[4/4] Generating report...'; sleep 1; echo '✓ ETL Complete'"
+
+# Demo: ML Training
+job-demo-ml:
+    @cargo run --bin hodei-jobs-cli -- job run --name "ML Demo" --command "echo '=== ML TRAINING DEMO ==='; echo '[1/5] Loading dataset...'; sleep 1; echo '✓ 50K records loaded'; echo '[2/5] Training model...'; sleep 2; echo '✓ Model trained'; echo '[3/5] Evaluating...'; sleep 1; echo '✓ Accuracy: 86.8%'; echo '[4/5] Cross-validation...'; sleep 1; echo '✓ CV: 86.5%'; echo '[5/5] Saving model...'; sleep 1; echo '✓ Model saved'"
+
+# Demo: Security Scan
+job-demo-security:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Security Demo" --command "echo '=== SECURITY SCAN DEMO ==='; echo '[1/4] Scanning hosts...'; sleep 1; echo '✓ 50 hosts scanned'; echo '[2/4] Finding vulnerabilities...'; sleep 2; echo '✓ 105 vulnerabilities found'; echo '[3/4] Analyzing risks...'; sleep 1; echo '✓ Risk score: 6.2/10'; echo '[4/4] Generating report...'; sleep 1; echo '✓ Report ready'"
+
+# Demo: Infrastructure
+job-demo-infra:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Infra Demo" --command "echo '=== INFRASTRUCTURE DEMO ==='; echo '[1/5] Building Docker image...'; sleep 1; echo '✓ Image built (145MB)'; echo '[2/5] Running security scan...'; sleep 1; echo '✓ Scan passed'; echo '[3/5] Deploying to K8s...'; sleep 2; echo '✓ Deployed (3 pods)'; echo '[4/5] Configuring ingress...'; sleep 1; echo '✓ Ingress configured'; echo '[5/5] Health check...'; sleep 1; echo '✓ All healthy'"
+
+# Demo: CI/CD Build
+job-demo-cicd:
+    @cargo run --bin hodei-jobs-cli -- job run --name "CICD Build" --command "echo '=== CI/CD BUILD ==='; echo '[1/5] Initializing...'; sleep 1; echo '✓ Ready'; echo '[2/5] Installing deps...'; sleep 2; echo '✓ 45 packages'; echo '[3/5] Linting...'; sleep 1; echo '✓ 0 errors'; echo '[4/5] Testing...'; sleep 2; echo '✓ 42/42 passed'; echo '[5/5] Building...'; sleep 2; echo '✓ Bundle: 1.2MB'"
+
+# Run all demo jobs
+job-demo-all:
+    @echo "🎯 Running All Demo Jobs..."
+    @just job-demo-simple
+    @just job-demo-etl
+    @just job-demo-ml
+    @just job-demo-security
+    @just job-demo-infra
+    @just job-demo-cicd
+    @echo "✅ All demo jobs completed!"
+
+# =============================================================================
+# PROFESSIONAL SCRIPTS - Self-contained worker tests
+# =============================================================================
+
+# CPU stress test - intensive computation
+job-cpu-stress:
+    @cargo run --bin hodei-jobs-cli -- job run --name "CPU Stress Test" --script scripts/examples/cpu-stress.sh
+
+# File processing ETL pipeline
+job-file-processing:
+    @cargo run --bin hodei-jobs-cli -- job run --name "File Processing ETL" --script scripts/examples/file-processing.sh
+
+# High-volume log generator - test log streaming
+job-log-generator:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Log Generator" --script scripts/examples/log-generator.sh
+
+# System information collector
+job-system-info:
+    @cargo run --bin hodei-jobs-cli -- job run --name "System Info" --script scripts/examples/system-info.sh
+
+# Long running multi-phase job (~60s)
+job-long-running:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Long Running Job" --script scripts/examples/long-running.sh
+
+# Error scenarios - test error handling
+job-error-scenarios:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Error Scenarios" --script scripts/examples/error-scenarios.sh
+
+# Parallel tasks simulation
+job-parallel-tasks:
+    @cargo run --bin hodei-jobs-cli -- job run --name "Parallel Tasks" --script scripts/examples/parallel-tasks.sh
+
+# Run all professional scripts
+job-all-scripts:
+    @echo "🎯 Running All Professional Scripts..."
+    @just job-system-info
+    @just job-log-generator
+    @just job-file-processing
+    @just job-error-scenarios
+    @just job-parallel-tasks
+    @just job-long-running
+    @echo "✅ All scripts completed!"
+
+# Run a script file as a job
+# Usage: just job-script scripts/my-script.sh "My Job Name"
+job-script script name="Script Job":
+    @cargo run --bin hodei-jobs-cli -- job run --name "{{name}}" --script "{{script}}"
+
+# Queue a job without streaming logs
+job-queue name command:
+    @cargo run --bin hodei-jobs-cli -- job queue --name "{{name}}" --command "{{command}}"
+
+# List jobs
+job-list:
+    @cargo run --bin hodei-jobs-cli -- job list
+
+# Get job details
+job-get id:
+    @cargo run --bin hodei-jobs-cli -- job get --id "{{id}}"
+
+# Cancel a job
+job-cancel id:
+    @cargo run --bin hodei-jobs-cli -- job cancel --job-id "{{id}}"
+
+# Follow logs for a job
+job-logs id:
+    @cargo run --bin hodei-jobs-cli -- logs follow --job-id "{{id}}"
+
+# Get scheduler queue status
+scheduler-status:
+    @cargo run --bin hodei-jobs-cli -- scheduler queue-status
+
+# List available workers
+scheduler-workers:
+    @cargo run --bin hodei-jobs-cli -- scheduler workers
 
 # Generate mTLS certificates for Zero Trust security
 cert-generate:
@@ -279,6 +390,19 @@ rebuild-worker:
     @echo "🔨 Rebuilding worker Docker image..."
     @./scripts/Worker_Management/rebuild_worker.sh --restart
     @echo "✅ Worker rebuilt and restarted"
+
+# Rebuild server Docker image and restart containers
+rebuild-server:
+    @echo "🔨 Rebuilding server Docker image..."
+    @./scripts/Server_Management/rebuild_server.sh --restart
+    @echo "✅ Server rebuilt and restarted"
+
+# Rebuild both server and worker
+rebuild-all:
+    @echo "🔨 Rebuilding all Docker images..."
+    @just rebuild-server
+    @just rebuild-worker
+    @echo "✅ All images rebuilt and restarted"
 
 # Start server with Docker-in-Docker for worker provisioning
 dev-server:

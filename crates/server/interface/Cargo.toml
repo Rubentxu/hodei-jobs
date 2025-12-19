@@ -41,6 +41,7 @@ prost-types = { workspace = true }
 uuid = { workspace = true }
 async-stream = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
+prometheus = { workspace = true }
 
 [dev-dependencies]
 testcontainers = { workspace = true }

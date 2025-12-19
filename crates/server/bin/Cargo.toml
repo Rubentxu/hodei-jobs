@@ -17,7 +17,7 @@ hodei-jobs = { workspace = true }
 # Async & Runtime
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 serde = { workspace = true, features = ["derive"] }
 
 # Config & CLI
@@ -29,5 +29,8 @@ anyhow = { workspace = true }
 
 # HTTP/gRPC
 tonic = { workspace = true }
+tonic-reflection = { workspace = true }
+tonic-web = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
 axum = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
