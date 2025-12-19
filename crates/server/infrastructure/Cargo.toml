@@ -52,6 +52,12 @@ nix = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Encryption
+aes-gcm = { workspace = true }
+zeroize = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+
 # Streams
 futures-util = "0.3"
 async-stream.workspace = true

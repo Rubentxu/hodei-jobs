@@ -21,7 +21,7 @@ mod provider;
 mod secret;
 
 pub use error::CredentialError;
-pub use provider::{AuditAction, CredentialProvider};
+pub use provider::{AuditAction, AuditContext, CredentialProvider};
 pub use secret::{Secret, SecretRef, SecretValue};
 
 #[cfg(test)]

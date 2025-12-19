@@ -8,6 +8,9 @@ pub mod persistence;
 // Por dominio (implementaciones de providers)
 pub mod providers;
 
+// Security
+pub mod credentials;
+
 // Legacy
 pub mod provisioning;
 
