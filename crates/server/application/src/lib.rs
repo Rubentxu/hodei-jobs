@@ -4,6 +4,7 @@
 
 // Bounded Contexts
 pub mod audit;
+pub mod credentials;
 pub mod jobs;
 pub mod providers;
 pub mod scheduling;
