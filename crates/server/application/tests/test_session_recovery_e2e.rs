@@ -1,11 +1,6 @@
 //! Test E2E para verificar el fix de Session Recovery
 //! Simula el escenario completo sin Docker
 
-use hodei_jobs::{RegisterWorkerRequest, ResourceCapacity, WorkerId, WorkerInfo};
-use hodei_server_domain::workers::registry::WorkerRegistry;
-use hodei_server_interface::grpc::worker::WorkerAgentServiceImpl;
-use tonic::Request;
-
 #[tokio::test]
 async fn test_worker_session_recovery_flow() {
     println!("\n========================================");

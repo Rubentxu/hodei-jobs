@@ -4,11 +4,6 @@
 
 #[cfg(test)]
 mod tests {
-    use hodei_jobs::{
-        RegisterWorkerRequest, RegisterWorkerResponse, ResourceCapacity, WorkerId, WorkerInfo,
-    };
-    use hodei_server_interface::grpc::worker::WorkerAgentServiceImpl;
-    use tonic::Request;
 
     /// Test que simula el escenario del bug:
     /// 1. Worker se registra con OTP token
