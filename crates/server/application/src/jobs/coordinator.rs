@@ -8,10 +8,8 @@
 //! This is a thin orchestration layer that delegates to specialized components.
 
 use crate::jobs::dispatcher::JobDispatcher;
-use crate::jobs::event_subscriber::{EventHandler, EventSubscriber};
 use crate::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use std::time::Duration;

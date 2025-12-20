@@ -238,13 +238,14 @@ impl JobExecutor {
             .env_vars
             .insert("HODEI_JOB_ID".to_string(), job_id.to_string());
 
-        // 5. Execute DIRECTLY (Jenkins-style) - use the script path as the command
-        // NOT "interpreter script_path" but "./script_path" to respect shebang
+        // 5. Execute with explicit interpreter (generic Linux compatibility)
+        // Works on any Linux image without relying on shebang resolution
+        // This is the universal approach that works everywhere
         let result = self
             .execute_shell_with_timeout(
                 job_id,
-                &script_path.to_string_lossy().to_string(),
-                &[],
+                interpreter,
+                &[script_path.to_string_lossy().to_string()],
                 prepared_execution,
                 working_dir,
                 log_sender,

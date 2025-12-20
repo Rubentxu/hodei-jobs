@@ -19,7 +19,6 @@ use hodei_server_domain::jobs::{JobQueue, JobRepository};
 use hodei_server_domain::shared_kernel::Result;
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tracing::info;
 
 /// Job Controller (Refactored - Facade Pattern)

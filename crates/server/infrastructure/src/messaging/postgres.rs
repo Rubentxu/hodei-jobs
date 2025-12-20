@@ -4,7 +4,7 @@ use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 /// Implementación del EventBus usando PostgreSQL NOTIFY/LISTEN
 #[derive(Clone)]

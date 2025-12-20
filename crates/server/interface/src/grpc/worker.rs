@@ -814,7 +814,7 @@ impl WorkerAgentServiceImpl {
             return Ok(());
         };
 
-        let worker_id = Self::parse_worker_uuid(worker_id)?;
+        let _worker_id = Self::parse_worker_uuid(worker_id)?;
         let job_id = Self::parse_job_uuid(job_id)?;
 
         let mut job = job_repository

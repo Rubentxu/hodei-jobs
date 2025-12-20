@@ -14,9 +14,7 @@ use hodei_server_domain::jobs::{ExecutionContext, Job, JobQueue, JobRepository};
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };
-use hodei_server_domain::shared_kernel::{
-    DomainError, JobId, JobState, ProviderId, Result, WorkerId,
-};
+use hodei_server_domain::shared_kernel::{DomainError, Result, WorkerId};
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -83,7 +81,7 @@ impl JobDispatcher {
             info!("⚠️ JobDispatcher: No available workers");
 
             // Try to provision a worker if provisioning service is available
-            if let Some(ref provisioning) = self.provisioning_service {
+            if self.provisioning_service.is_some() {
                 info!("🔧 JobDispatcher: No workers available, attempting to provision...");
                 if let Err(e) = self.trigger_provisioning().await {
                     error!("❌ JobDispatcher: Failed to provision worker: {}", e);

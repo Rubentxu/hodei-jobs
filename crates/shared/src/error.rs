@@ -1,5 +1,4 @@
 use crate::ids::{JobId, ProviderId, WorkerId};
-use crate::states::JobState;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SharedError {

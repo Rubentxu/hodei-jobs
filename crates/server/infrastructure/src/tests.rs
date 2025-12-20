@@ -39,7 +39,15 @@ mod job_repository_tests {
 
         let job1 = create_test_job();
         let mut job2 = create_test_job();
-        job2.set_state(JobState::Running);
+        // Use proper state transition
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let context = hodei_server_domain::jobs::ExecutionContext::new(
+            job2.id.clone(),
+            provider_id.clone(),
+            "exec-1".to_string(),
+        );
+        job2.submit_to_provider(provider_id, context).unwrap();
+        job2.mark_running().unwrap();
 
         repo.save(&job1).await.unwrap();
         repo.save(&job2).await.unwrap();
@@ -57,7 +65,15 @@ mod job_repository_tests {
 
         let job1 = create_test_job();
         let mut job2 = create_test_job();
-        job2.set_state(JobState::Running);
+        // Use proper state transition
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let context = hodei_server_domain::jobs::ExecutionContext::new(
+            job2.id.clone(),
+            provider_id.clone(),
+            "exec-1".to_string(),
+        );
+        job2.submit_to_provider(provider_id, context).unwrap();
+        job2.mark_running().unwrap();
 
         repo.save(&job1).await.unwrap();
         repo.save(&job2).await.unwrap();
@@ -74,7 +90,16 @@ mod job_repository_tests {
 
         repo.save(&job).await.unwrap();
 
-        job.set_state(JobState::Running);
+        // Use proper state transition
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let context = hodei_server_domain::jobs::ExecutionContext::new(
+            job.id.clone(),
+            provider_id.clone(),
+            "exec-1".to_string(),
+        );
+        job.submit_to_provider(provider_id, context).unwrap();
+        job.mark_running().unwrap();
+
         repo.update(&job).await.unwrap();
 
         let found = repo.find_by_id(&job_id).await.unwrap().unwrap();

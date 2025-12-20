@@ -108,8 +108,9 @@ mod shared_kernel_tests {
     #[test]
     fn test_domain_error_invalid_state_transition() {
         let error = DomainError::InvalidStateTransition {
-            from: JobState::Pending,
-            to: JobState::Succeeded,
+            job_id: JobId::new(),
+            from_state: JobState::Pending,
+            to_state: JobState::Succeeded,
         };
         let msg = format!("{}", error);
         assert!(msg.contains("Invalid job state transition"));

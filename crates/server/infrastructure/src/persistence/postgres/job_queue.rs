@@ -68,6 +68,7 @@ impl PostgresJobQueue {
     }
 }
 
+#[allow(dead_code)]
 fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
     let id: uuid::Uuid = row.get("id");
     let spec_json: serde_json::Value = row.get("spec");

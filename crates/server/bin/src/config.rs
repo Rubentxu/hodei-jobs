@@ -10,15 +10,18 @@ pub struct ServerConfig {
     pub log_level: String,
 }
 
+#[allow(dead_code)]
 fn default_server_port() -> u16 {
     50051
 }
 
+#[allow(dead_code)]
 fn default_log_level() -> String {
     "info".to_string()
 }
 
 impl ServerConfig {
+    #[allow(dead_code)]
     pub fn new() -> Result<Self, config::ConfigError> {
         let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
 

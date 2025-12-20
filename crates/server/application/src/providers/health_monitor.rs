@@ -3,8 +3,7 @@
 //! Monitors provider health proactively and publishes events for status changes.
 
 use chrono::Utc;
-use futures::StreamExt;
-use hodei_server_domain::event_bus::{EventBus, EventBusError};
+use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::shared_kernel::{ProviderId, ProviderStatus, Result};
 use hodei_server_domain::workers::{ProviderError, WorkerProvider};
@@ -68,7 +67,7 @@ impl HealthMetricsRecorder for NoopMetricsRecorder {
 
 /// Health metrics for a provider
 #[derive(Debug, Clone)]
-struct ProviderHealthMetrics {
+pub struct ProviderHealthMetrics {
     /// Total health checks performed
     total_checks: u64,
     /// Successful health checks
@@ -402,9 +401,11 @@ where
 pub mod tests {
     use super::*;
     use async_trait::async_trait;
+    use futures::StreamExt;
     use hodei_server_domain::workers::{
         HealthStatus, ProviderCapabilities, ProviderError, ProviderType, WorkerHandle, WorkerSpec,
     };
+    use hodei_server_domain::{DomainEvent, EventBusError};
 
     pub struct MockEventBus {
         published_events: Arc<tokio::sync::Mutex<Vec<DomainEvent>>>,

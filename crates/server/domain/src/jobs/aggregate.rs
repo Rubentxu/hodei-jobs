@@ -1246,31 +1246,65 @@ mod tests {
     fn test_job_is_terminal_state() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string()]);
+        let provider_id = ProviderId::new();
 
-        // Test terminal states
+        // Test terminal states - need valid transitions
         let mut job_succeeded = Job::new(job_id.clone(), spec.clone());
-        job_succeeded.set_state(JobState::Succeeded);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-1".to_string());
+        job_succeeded
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
+        job_succeeded.mark_running().unwrap();
+        job_succeeded
+            .complete(JobResult::Success {
+                exit_code: 0,
+                output: "".to_string(),
+                error_output: "".to_string(),
+            })
+            .unwrap();
         assert!(job_succeeded.is_terminal_state());
 
         let mut job_failed = Job::new(job_id.clone(), spec.clone());
-        job_failed.set_state(JobState::Failed);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-2".to_string());
+        job_failed
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
+        job_failed.mark_running().unwrap();
+        job_failed
+            .complete(JobResult::Failed {
+                exit_code: 1,
+                error_message: "Job failed".to_string(),
+                error_output: "Error".to_string(),
+            })
+            .unwrap();
         assert!(job_failed.is_terminal_state());
 
         let mut job_cancelled = Job::new(job_id.clone(), spec.clone());
-        job_cancelled.set_state(JobState::Cancelled);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-3".to_string());
+        job_cancelled
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
+        job_cancelled.cancel().unwrap();
         assert!(job_cancelled.is_terminal_state());
 
         let mut job_timeout = Job::new(job_id.clone(), spec.clone());
-        job_timeout.set_state(JobState::Timeout);
+        job_timeout.set_state(JobState::Timeout).unwrap();
         assert!(job_timeout.is_terminal_state());
 
         // Test non-terminal states
         let mut job_pending = Job::new(job_id.clone(), spec.clone());
-        job_pending.set_state(JobState::Pending);
         assert!(!job_pending.is_terminal_state());
 
         let mut job_running = Job::new(job_id.clone(), spec.clone());
-        job_running.set_state(JobState::Running);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-4".to_string());
+        job_running
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
+        job_running.mark_running().unwrap();
         assert!(!job_running.is_terminal_state());
     }
 
@@ -1279,27 +1313,59 @@ mod tests {
     fn test_job_can_be_cancelled() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string()]);
+        let provider_id = ProviderId::new();
 
         // Test cancellable states
         let mut job_pending = Job::new(job_id.clone(), spec.clone());
-        job_pending.set_state(JobState::Pending);
+        // Initial state is Pending, which is cancellable
         assert!(job_pending.can_be_cancelled());
 
         let mut job_scheduled = Job::new(job_id.clone(), spec.clone());
-        job_scheduled.set_state(JobState::Scheduled);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-1".to_string());
+        job_scheduled
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
         assert!(job_scheduled.can_be_cancelled());
 
         let mut job_running = Job::new(job_id.clone(), spec.clone());
-        job_running.set_state(JobState::Running);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-2".to_string());
+        job_running
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
+        job_running.mark_running().unwrap();
         assert!(job_running.can_be_cancelled());
 
-        // Test non-cancellable states
+        // Test non-cancellable states (terminal states)
         let mut job_succeeded = Job::new(job_id.clone(), spec.clone());
-        job_succeeded.set_state(JobState::Succeeded);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-3".to_string());
+        job_succeeded
+            .submit_to_provider(provider_id.clone(), context)
+            .unwrap();
+        job_succeeded.mark_running().unwrap();
+        job_succeeded
+            .complete(JobResult::Success {
+                exit_code: 0,
+                output: "".to_string(),
+                error_output: "".to_string(),
+            })
+            .unwrap();
         assert!(!job_succeeded.can_be_cancelled());
 
         let mut job_failed = Job::new(job_id.clone(), spec.clone());
-        job_failed.set_state(JobState::Failed);
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-4".to_string());
+        job_failed.submit_to_provider(provider_id, context).unwrap();
+        job_failed.mark_running().unwrap();
+        job_failed
+            .complete(JobResult::Failed {
+                exit_code: 1,
+                error_message: "Job failed".to_string(),
+                error_output: "Error".to_string(),
+            })
+            .unwrap();
         assert!(!job_failed.can_be_cancelled());
     }
 

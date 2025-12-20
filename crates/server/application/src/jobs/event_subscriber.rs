@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use hodei_server_domain::event_bus::{EventBus, EventBusError};
+use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use std::sync::Arc;
 use tokio::sync::mpsc;
