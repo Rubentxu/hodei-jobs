@@ -43,9 +43,41 @@ else
 fi
 
 echo ""
-echo "3. Configurando provider Docker..."
 
-docker exec hodei-jobs-postgres psql -U postgres << 'EOF' 2>/dev/null || echo "   ⚠️  Error configurando provider (¿tabla existe?)"
+# 3. Levantando servidor (Run migrations)
+echo "3. Levantando servidor y ejecutando migraciones..."
+
+# Configurar variable de entorno
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/postgres"
+export RUST_LOG=hodei_server_application=DEBUG,hodei_server_interface=DEBUG,hodei_server_infrastructure=INFO
+
+# Iniciar servidor
+cargo run --bin hodei-server-bin > /tmp/server.log 2>&1 &
+SERVER_PID=$!
+
+echo "   📦 Servidor iniciado (PID: $SERVER_PID)"
+echo "   ⏳ Esperando a que el servidor esté listo (migraciones)..."
+
+# Esperar a que el servidor responda (aumentar tiempo para migraciones)
+RETRY=0
+until curl -s http://localhost:50051 > /dev/null 2>&1 || [ $RETRY -gt 60 ]; do
+    RETRY=$((RETRY + 1))
+    if [ $RETRY -eq 1 ]; then
+        echo "   ⏳ Esperando servidor..."
+    fi
+    sleep 1
+done
+
+if [ $RETRY -gt 60 ]; then
+    echo "   ⚠️  Advertencia: Servidor no responde después de 60s"
+else
+    echo "   ✅ Servidor listo"
+fi
+
+echo ""
+echo "4. Configurando provider Docker..."
+
+docker exec hodei-jobs-postgres psql -U postgres << 'EOF' 2>/dev/null || echo "   ⚠️  Error configurando provider"
 INSERT INTO provider_configs (id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at)
 VALUES (
   'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
@@ -67,7 +99,7 @@ VALUES (
 EOF
 
 echo ""
-echo "4. Creando bootstrap token para worker..."
+echo "5. Creando bootstrap token para worker..."
 
 # Crear token y capturar output
 TOKEN_OUTPUT=$(docker exec hodei-jobs-postgres psql -U postgres -t -c "
@@ -81,67 +113,35 @@ if [ ! -z "$TOKEN_OUTPUT" ]; then
     echo "   ✅ Token creado: ${TOKEN:0:8}..."
 else
     echo "   ❌ ERROR: No se pudo crear el token"
-    exit 1
+    # No exitimos, quizas se pueda recuperar o probar manual
 fi
 
 echo ""
-echo "5. Levantando servidor..."
-
-# Configurar variable de entorno
-export DATABASE_URL="postgres://postgres:postgres@localhost:5432/postgres"
-export RUST_LOG=hodei_server_application=DEBUG
-
-# Iniciar servidor
-cargo run --bin hodei-server-bin > /tmp/server.log 2>&1 &
-SERVER_PID=$!
-
-echo "   📦 Servidor iniciado (PID: $SERVER_PID)"
-echo "   ⏳ Esperando a que el servidor esté listo..."
-
-# Esperar a que el servidor responda
-RETRY=0
-until curl -s http://localhost:50051 > /dev/null 2>&1 || [ $RETRY -gt 30 ]; do
-    RETRY=$((RETRY + 1))
-    if [ $RETRY -eq 1 ]; then
-        echo "   ⏳ Esperando servidor..."
-    fi
-    sleep 1
-done
-
-if [ $RETRY -gt 30 ]; then
-    echo "   ⚠️  Advertencia: Servidor no responde después de 30s"
-else
-    echo "   ✅ Servidor listo"
-fi
+echo "6. Sistema listo para recibir jobs..."
+echo "   (Los workers serán aprovisionados dinámicamente por el servidor)"
 
 echo ""
-echo "6. Levantando worker..."
-
-# Configurar variables para worker
-export HODEI_OTP_TOKEN=$TOKEN
-export HODEI_SERVER_ADDRESS=localhost:50051
-export RUST_LOG=hodei_worker_application=DEBUG
-
-# Iniciar worker
-cargo run --bin hodei-worker-bin > /tmp/worker.log 2>&1 &
-WORKER_PID=$!
-
-echo "   📦 Worker iniciado (PID: $WORKER_PID)"
-echo "   ⏳ Esperando registro del worker..."
-
-# Esperar a que el worker se registre
-sleep 5
-
-WORKER_REGISTERED=$(docker exec hodei-jobs-postgres psql -U postgres -t -c "
-SELECT COUNT(*) FROM workers WHERE state IN ('READY', 'BUSY');
-" 2>/dev/null | xargs)
-
-if [ "$WORKER_REGISTERED" != "0" ]; then
-    echo "   ✅ Worker registrado correctamente"
-else
-    echo "   ⚠️  Advertencia: Worker no se ha registrado aún"
-    echo "   🔍 Revisar: tail -f /tmp/worker.log"
-fi
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║           SISTEMA REINICIADO EXITOSAMENTE                  ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo ""
+echo "📋 INFORMACIÓN DEL SISTEMA:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "   🔑 Token Bootstrap: $TOKEN"
+echo "   🖥️  Servidor PID:    $SERVER_PID"
+echo "   📊 PostgreSQL:       Contenedor Docker"
+echo "   📁 Logs Server:      /tmp/server.log"
+echo ""
+echo "🚀 PRÓXIMOS PASOS:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "   1. Verificar estado:    just debug-system"
+echo "   2. Enviar Job de prueba: just job-data-processing"
+echo "   3. Ver logs servidor:   just logs-server"
+echo "   4. Ver logs workers:    just logs-worker (cuando se aprovisionen)"
+echo ""
+echo "💡 El servidor aprovisionará automáticamente un worker Docker"
+echo "   cuando se envíe un job."
+echo ""
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"

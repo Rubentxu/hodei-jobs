@@ -3,9 +3,12 @@
 //! Main entry point for the gRPC server with full provisioning support.
 
 mod config;
+#[cfg(test)]
+mod tests_integration;
 
 use std::collections::HashMap;
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +20,7 @@ use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use uuid::Uuid;
 
 use hodei_jobs::{
     FILE_DESCRIPTOR_SET, job_execution_service_server::JobExecutionServiceServer,
@@ -37,8 +41,8 @@ use hodei_server_domain::workers::WorkerProvider;
 
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
 use hodei_server_infrastructure::persistence::postgres::{
-    PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
-    PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
+    LogStorageRepository, PostgresJobQueue, PostgresJobRepository,
+    PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
 };
 use hodei_server_infrastructure::providers::docker::DockerProviderBuilder;
 
@@ -46,6 +50,10 @@ use hodei_server_interface::grpc::{
     GrpcWorkerCommandSender, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc,
     MetricsServiceImpl, ProviderManagementServiceImpl, SchedulerServiceImpl,
     WorkerAgentServiceImpl, context_interceptor,
+};
+use hodei_server_interface::log_persistence::{
+    LocalStorageConfig, LogPersistenceConfig, LogStorage, LogStorageFactory, LogStorageRef,
+    StorageBackend,
 };
 
 #[tokio::main]
@@ -99,8 +107,130 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Connected to database");
 
-    // Create shared log stream service
-    let log_stream_service = LogStreamService::new();
+    // Initialize log persistence configuration
+    let server_config =
+        config::ServerConfig::new().map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
+    let persistence_config = server_config.to_log_persistence_config();
+
+    // Create storage backend (agnostic - local, S3, etc.)
+    let storage_backend: Box<dyn LogStorage> = LogStorageFactory::create(&persistence_config);
+
+    // Create log storage repository
+    let log_storage_repo = Arc::new(LogStorageRepository::new(pool.clone()));
+
+    // Create callback to save log references to database
+    let log_repo_for_callback = log_storage_repo.clone();
+    let log_ttl_hours = persistence_config.ttl_hours;
+    let on_log_finalized = Arc::new(move |log_ref: LogStorageRef| {
+        let repo = log_repo_for_callback.clone();
+        let ttl_hours = log_ttl_hours;
+
+        tokio::spawn(async move {
+            use hodei_server_domain::shared_kernel::JobId;
+            let job_id = JobId(Uuid::parse_str(&log_ref.job_id).unwrap_or_default());
+
+            let log_storage_ref =
+                hodei_server_infrastructure::persistence::LogStorageReference::new(
+                    job_id,
+                    log_ref.storage_uri,
+                    log_ref.size_bytes,
+                    log_ref.entry_count,
+                    ttl_hours,
+                );
+
+            if let Err(e) = repo.save(&log_storage_ref).await {
+                tracing::error!("Failed to save log storage reference to database: {}", e);
+            } else {
+                tracing::info!(
+                    "✅ Log storage reference saved to database: {} ({} bytes, {} entries)",
+                    log_ref.job_id,
+                    log_ref.size_bytes,
+                    log_ref.entry_count
+                );
+            }
+        });
+    });
+
+    // Create shared log stream service with persistence
+    let log_stream_service: Arc<LogStreamService> = if persistence_config.enabled {
+        info!(
+            "📝 Log persistence enabled with storage backend: {}",
+            match &persistence_config.storage_backend {
+                StorageBackend::Local(_) => "local",
+                // StorageBackend::S3(_) => "s3",
+                _ => "unknown",
+            }
+        );
+
+        Arc::new(LogStreamService::with_storage(
+            storage_backend,
+            Some(on_log_finalized),
+        ))
+    } else {
+        info!("⚠️ Log persistence disabled");
+        Arc::new(LogStreamService::new())
+    };
+
+    // Create background log cleanup service
+    if persistence_config.enabled {
+        let cleanup_interval_hours = env::var("LOG_CLEANUP_INTERVAL_HOURS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(24); // Default: run cleanup every 24 hours
+
+        let storage_for_cleanup = LogStorageFactory::create(&persistence_config);
+        let repo_for_cleanup = log_storage_repo.clone();
+        let cleanup_ttl_hours = persistence_config.ttl_hours;
+
+        // Spawn background cleanup task
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                cleanup_interval_hours * 3600,
+            ));
+
+            // Run cleanup immediately on startup
+            info!(
+                "🧹 Running initial log cleanup (TTL: {} hours)",
+                cleanup_ttl_hours
+            );
+            if let Err(e) = repo_for_cleanup.cleanup_expired_with_uris().await {
+                tracing::error!("Failed to cleanup expired logs from database: {}", e);
+            }
+            if let Err(e) = storage_for_cleanup
+                .cleanup_old_logs(cleanup_ttl_hours)
+                .await
+            {
+                tracing::error!("Failed to cleanup old logs from storage: {}", e);
+            }
+
+            // Then run periodically
+            loop {
+                interval.tick().await;
+                info!(
+                    "🧹 Running scheduled log cleanup (TTL: {} hours)",
+                    cleanup_ttl_hours
+                );
+
+                // Cleanup database references
+                if let Err(e) = repo_for_cleanup.cleanup_expired_with_uris().await {
+                    tracing::error!("Failed to cleanup expired logs from database: {}", e);
+                }
+
+                // Cleanup storage
+                if let Err(e) = storage_for_cleanup
+                    .cleanup_old_logs(cleanup_ttl_hours)
+                    .await
+                {
+                    tracing::error!("Failed to cleanup old logs from storage: {}", e);
+                }
+            }
+        });
+
+        info!(
+            "🧹 Log cleanup service scheduled (interval: {} hours, TTL: {} hours)",
+            cleanup_interval_hours, persistence_config.ttl_hours
+        );
+    }
 
     // Create repositories and run migrations
     let job_repository_impl = PostgresJobRepository::new(pool.clone());
@@ -143,12 +273,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // Create gRPC services
-    let worker_service = WorkerAgentServiceImpl::with_registry_and_log_service(
-        worker_registry.clone(),
-        log_stream_service.clone(),
-        event_bus.clone(),
-    )
-    .with_token_store(token_store.clone());
+    let worker_service =
+        WorkerAgentServiceImpl::with_registry_job_repository_token_store_and_log_service(
+            worker_registry.clone(),
+            job_repository.clone(),
+            token_store.clone(),
+            log_stream_service.clone(),
+            event_bus.clone(),
+        );
     let worker_service_for_controller = worker_service.clone();
 
     let job_service = JobExecutionServiceImpl::new(
@@ -243,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let provisioning_config = ProvisioningConfig::new(server_address)
                     .with_default_image(
                         env::var("HODEI_WORKER_IMAGE")
-                            .unwrap_or_else(|_| "hodei-jobs-worker:dev".to_string()),
+                            .unwrap_or_else(|_| "hodei-jobs-worker:latest".to_string()),
                     );
 
                 let service = Arc::new(DefaultWorkerProvisioningService::new(

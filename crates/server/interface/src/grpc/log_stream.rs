@@ -1,11 +1,13 @@
-//! Log Streaming Service (PRD v6.0)
+//! Log Streaming Service with Persistent Storage
 //!
-//! Provides real-time log streaming for job execution monitoring.
+//! Provides real-time log streaming for job execution monitoring with optional
+//! persistent storage to files (local, S3, etc.)
 //!
 //! Features:
 //! - Buffered log storage (circular buffer per job)
 //! - Real-time streaming to subscribed clients
-//! - Historical log retrieval
+//! - Persistent log storage with pluggable backends
+//! - Historical log retrieval from persistent storage
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -13,8 +15,9 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
+use super::super::log_persistence::{LogStorage, LogStorageRef};
 use hodei_jobs::{
     GetLogsRequest, GetLogsResponse, JobLogEntry, LogEntry, SubscribeLogsRequest,
     log_stream_service_server::LogStreamService as LogStreamServiceTrait,
@@ -34,8 +37,7 @@ pub struct BufferedLogEntry {
     pub sequence: u64,
 }
 
-/// Manages log buffers and subscribers for jobs
-#[derive(Debug, Clone)]
+/// Manages log buffers and subscribers for jobs with persistent storage
 pub struct LogStreamService {
     /// Buffered logs per job (circular buffer)
     logs: Arc<RwLock<HashMap<String, Vec<BufferedLogEntry>>>>,
@@ -43,6 +45,25 @@ pub struct LogStreamService {
     subscribers: Arc<RwLock<HashMap<String, Vec<mpsc::Sender<LogEntry>>>>>,
     /// Sequence counter per job
     sequences: Arc<RwLock<HashMap<String, u64>>>,
+    /// Persistent log storage backend (optional)
+    storage: Option<Box<dyn LogStorage>>,
+    /// Callback for when a job log is finalized (to store in DB)
+    on_log_finalized: Option<Arc<dyn Fn(LogStorageRef) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for LogStreamService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogStreamService")
+            .field("logs", &"<RwLock>")
+            .field("subscribers", &"<RwLock>")
+            .field("sequences", &"<RwLock>")
+            .field("storage", &self.storage.as_ref().map(|_| "<LogStorage>"))
+            .field(
+                "on_log_finalized",
+                &self.on_log_finalized.as_ref().map(|_| "<Callback>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for LogStreamService {
@@ -52,11 +73,29 @@ impl Default for LogStreamService {
 }
 
 impl LogStreamService {
+    /// Create new service without persistence
     pub fn new() -> Self {
         Self {
             logs: Arc::new(RwLock::new(HashMap::new())),
             subscribers: Arc::new(RwLock::new(HashMap::new())),
             sequences: Arc::new(RwLock::new(HashMap::new())),
+            storage: None,
+            on_log_finalized: None,
+        }
+    }
+
+    /// Create new service with persistent storage
+    pub fn with_storage(
+        storage: Box<dyn LogStorage>,
+        on_log_finalized: Option<Arc<dyn Fn(LogStorageRef) + Send + Sync>>,
+    ) -> Self {
+        info!("LogStreamService initialized with persistent storage");
+        Self {
+            logs: Arc::new(RwLock::new(HashMap::new())),
+            subscribers: Arc::new(RwLock::new(HashMap::new())),
+            sequences: Arc::new(RwLock::new(HashMap::new())),
+            storage: Some(storage),
+            on_log_finalized,
         }
     }
 
@@ -98,6 +137,21 @@ impl LogStreamService {
                 for tx in job_subs {
                     let _ = tx.send(entry.clone()).await;
                 }
+            }
+        }
+
+        // Persist to storage backend (if configured)
+        if let Some(storage) = &self.storage {
+            if let Err(e) = storage
+                .append_log(
+                    &job_id,
+                    &entry.line,
+                    entry.is_stderr,
+                    entry.timestamp.as_ref(),
+                )
+                .await
+            {
+                warn!("Failed to persist log for job {}: {}", job_id, e);
             }
         }
 
@@ -167,6 +221,46 @@ impl LogStreamService {
         debug!("Logs cleared for job {}", job_id);
     }
 
+    /// Finalize and persist log file for a completed job
+    pub async fn finalize_job_log(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<LogStorageRef>, Box<dyn std::error::Error + Send + Sync>> {
+        // Finalize persistent log storage
+        let log_ref = if let Some(storage) = &self.storage {
+            match storage.finalize_job_log(job_id).await {
+                Ok(log_ref) => {
+                    info!(
+                        "Finalized persistent log for job {}: {} bytes",
+                        job_id, log_ref.size_bytes
+                    );
+                    Some(log_ref)
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to finalize persistent log for job {}: {}",
+                        job_id, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Clear in-memory buffers
+        self.clear_logs(job_id).await;
+
+        // Notify via callback (e.g., to store in database)
+        if let Some(log_ref) = &log_ref {
+            if let Some(callback) = &self.on_log_finalized {
+                callback(log_ref.clone());
+            }
+        }
+
+        Ok(log_ref)
+    }
+
     /// Unsubscribe all subscribers for a job (usually when job completes)
     pub async fn close_subscribers(&self, job_id: &str) {
         self.subscribers.write().await.remove(job_id);
@@ -201,13 +295,19 @@ impl LogStreamService {
 // =============================================================================
 
 /// Wrapper for gRPC service
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LogStreamServiceGrpc {
-    inner: LogStreamService,
+    inner: Arc<LogStreamService>,
+}
+
+impl std::fmt::Debug for LogStreamServiceGrpc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogStreamServiceGrpc").finish()
+    }
 }
 
 impl LogStreamServiceGrpc {
-    pub fn new(service: LogStreamService) -> Self {
+    pub fn new(service: Arc<LogStreamService>) -> Self {
         Self { inner: service }
     }
 
@@ -397,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscriber_receives_new_logs() {
-        let service = LogStreamService::new();
+        let service = Arc::new(LogStreamService::new());
         let service_clone = service.clone();
 
         // Subscribe first

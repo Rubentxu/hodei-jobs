@@ -171,7 +171,7 @@ impl Default for DockerConfig {
     fn default() -> Self {
         Self {
             socket_path: "/var/run/docker.sock".to_string(),
-            default_image: "hodei-jobs-worker:latest".to_string(),
+            default_image: "hodei-jobs-worker:v3".to_string(),
             network: None,
             registry_auth: None,
             tls: None,
@@ -500,7 +500,7 @@ mod tests {
     fn test_docker_config_default() {
         let config = DockerConfig::default();
         assert_eq!(config.socket_path, "/var/run/docker.sock");
-        assert_eq!(config.default_image, "hodei-jobs-worker:latest");
+        assert_eq!(config.default_image, "hodei-jobs-worker:v3");
     }
 
     #[test]

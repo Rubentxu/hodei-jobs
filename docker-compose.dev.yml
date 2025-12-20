@@ -178,6 +178,7 @@ services:
       HODEI_SERVER_HOST: "host.docker.internal"
       GRPC_PORT: "50051"
       RUST_LOG: ${RUST_LOG:-debug}
+      HODEI_WORKER_IMAGE: "hodei-jobs-worker:v3"
     ports:
       - "50051:50051"
     volumes:

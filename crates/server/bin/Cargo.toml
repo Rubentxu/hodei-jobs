@@ -27,6 +27,9 @@ clap = { workspace = true }
 # Error handling
 anyhow = { workspace = true }
 
+# UUIDs
+uuid = { workspace = true }
+
 # HTTP/gRPC
 tonic = { workspace = true }
 tonic-reflection = { workspace = true }

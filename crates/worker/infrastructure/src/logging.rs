@@ -111,7 +111,7 @@ impl LogBatcher {
         let job_id = batch[0].job_id.clone();
         let msg = WorkerMessage {
             payload: Some(WorkerPayload::LogBatch(hodei_jobs::LogBatch {
-                job_id,
+                job_id: job_id.clone(),
                 entries: batch,
             })),
         };
@@ -123,13 +123,21 @@ impl LogBatcher {
                     self.last_flush = Instant::now();
                     true
                 }
-                Err(_) => {
-                    warn!("Failed to send log batch to server");
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        job_id = %job_id,
+                        "Failed to send log batch to server"
+                    );
                     false
                 }
             },
             Err(_) => {
-                warn!("Log batch send timed out after 5 seconds");
+                warn!(
+                    job_id = %job_id,
+                    timeout_sec = 5,
+                    "Log batch send timed out"
+                );
                 false
             }
         }

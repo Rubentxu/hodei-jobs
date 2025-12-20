@@ -94,6 +94,36 @@ impl PostgresJobRepository {
                 message: format!("Failed to create jobs created_at index: {}", e),
             })?;
 
+        // Create log storage references table for persistent log storage (storage-agnostic)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS job_log_files (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                storage_uri TEXT NOT NULL,
+                size_bytes BIGINT NOT NULL,
+                entry_count INTEGER NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL,
+                UNIQUE(job_id)
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create job_log_files table: {}", e),
+        })?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_job_log_files_expires_at ON job_log_files(expires_at);",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to create job_log_files expires_at index: {}", e),
+        })?;
+
         Ok(())
     }
 

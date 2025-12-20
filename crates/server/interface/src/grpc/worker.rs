@@ -65,7 +65,7 @@ pub struct WorkerAgentServiceImpl {
     job_repository: Option<Arc<dyn hodei_server_domain::jobs::JobRepository>>,
     token_store: Option<Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>>,
     /// Channel para log streaming
-    log_service: Option<LogStreamService>,
+    log_service: Option<Arc<LogStreamService>>,
     /// Event Bus para publicar eventos de dominio
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
 }
@@ -250,7 +250,7 @@ mod tests {
     async fn hu_6_5_job_result_updates_job_repository() {
         let job_repository: Arc<dyn JobRepository> = Arc::new(InMemoryJobRepository::new());
         let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
-        let log_service = LogStreamService::new();
+        let log_service = Arc::new(LogStreamService::new());
 
         let bus = Arc::new(MockEventBus::new());
         let service = WorkerAgentServiceImpl::with_registry_job_repository_and_log_service(
@@ -340,7 +340,7 @@ mod tests {
     async fn test_job_result_publishes_event_with_correlation_id() {
         let job_repository: Arc<dyn JobRepository> = Arc::new(InMemoryJobRepository::new());
         let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
-        let log_service = LogStreamService::new();
+        let log_service = Arc::new(LogStreamService::new());
         let bus = Arc::new(MockEventBus::new());
 
         let service = WorkerAgentServiceImpl::with_registry_job_repository_and_log_service(
@@ -572,7 +572,7 @@ impl WorkerAgentServiceImpl {
 
     pub fn with_registry_and_log_service(
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
-        log_service: LogStreamService,
+        log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
@@ -598,7 +598,7 @@ impl WorkerAgentServiceImpl {
     pub fn with_registry_job_repository_and_log_service(
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
-        log_service: LogStreamService,
+        log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
@@ -617,7 +617,7 @@ impl WorkerAgentServiceImpl {
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
         token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
-        log_service: LogStreamService,
+        log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
@@ -1255,9 +1255,14 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         let registry_service = self.clone();
         tokio::spawn(async move {
             while let Some(message_result) = inbound.next().await {
+                info!("🔍 Received message from worker stream");
                 match message_result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload {
+                            info!(
+                                "📦 Worker payload type: {:?}",
+                                std::mem::discriminant(&payload)
+                            );
                             match payload {
                                 WorkerPayload::Heartbeat(hb) => {
                                     if let Some(ref wid) = hb.worker_id {
@@ -1287,14 +1292,9 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                     }
                                 }
                                 WorkerPayload::Log(log) => {
-                                    // Log to console
-                                    if log.is_stderr {
-                                        info!("[{}] stderr: {}", log.job_id, log.line);
-                                    } else {
-                                        info!("[{}] stdout: {}", log.job_id, log.line);
-                                    }
-
-                                    // Forward to LogStreamService for client subscribers
+                                    // Forward to LogStreamService for client subscribers and persistent storage
+                                    // NOTE: Logs are NOT logged to server console to avoid scalability issues
+                                    // with 100+ workers. Logs are streamed to clients and persisted to storage.
                                     if let Some(ref svc) = log_service {
                                         let entry = LogEntry {
                                             job_id: log.job_id,
@@ -1340,9 +1340,29 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         }
                                     }
 
-                                    // Close log subscribers when job completes
+                                    // Finalize and persist log file for completed job
                                     if let Some(ref svc) = log_service {
-                                        svc.close_subscribers(&result.job_id).await;
+                                        match svc.finalize_job_log(&result.job_id).await {
+                                            Ok(Some(log_ref)) => {
+                                                info!(
+                                                    "✅ Job {} log finalized and persisted: {} bytes",
+                                                    result.job_id, log_ref.size_bytes
+                                                );
+                                                // TODO: Store log_ref in database via callback
+                                            }
+                                            Ok(None) => {
+                                                info!(
+                                                    "✅ Job {} completed (no persistent log)",
+                                                    result.job_id
+                                                );
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "⚠️ Failed to finalize log for job {}: {}",
+                                                    result.job_id, e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 WorkerPayload::Stats(stats) => {
@@ -1378,9 +1398,11 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                                 .await
                                             {
                                                 error!(
-                                                    "Failed to update job state on acknowledgment: {}",
+                                                    "❌ Failed to update job state on acknowledgment: {}",
                                                     e
                                                 );
+                                            } else {
+                                                info!("✅ Job {} marked as RUNNING", job_id);
                                             }
                                         } else {
                                             warn!("Acknowledgment received without worker_id");

@@ -130,23 +130,36 @@ impl JobDispatcher {
 
                 // Assign and dispatch the job
                 if let Err(e) = self.assign_and_dispatch(&mut job, &worker_id).await {
-                    error!("❌ JobDispatcher: assign_and_dispatch failed: {}", e);
+                    error!(
+                        error = %e,
+                        job_id = %job.id,
+                        worker_id = %worker_id,
+                        phase = "dispatch",
+                        "❌ JobDispatcher: assign_and_dispatch failed"
+                    );
                     // Job is already removed from queue and in ASSIGNED state
                     // It will timeout and be recovered by the coordinator
                     info!(
-                        "🔄 JobDispatcher: Job {} remains in ASSIGNED state, will timeout for recovery",
-                        job.id
+                        job_id = %job.id,
+                        state = "ASSIGNED",
+                        action = "recovery_wait",
+                        "🔄 JobDispatcher: Job remains in ASSIGNED state, will timeout for recovery"
                     );
                     return Err(e);
                 }
 
-                info!("✅ JobDispatcher: Job {} dispatched successfully", job.id);
+                info!(
+                    job_id = %job.id,
+                    worker_id = %worker_id,
+                    "✅ JobDispatcher: Job dispatched successfully"
+                );
                 Ok(1)
             }
             decision => {
                 debug!(
-                    "JobDispatcher: Scheduling decision: {:?}, re-enqueueing job",
-                    decision
+                    decision = ?decision,
+                    job_id = %job.id,
+                    "JobDispatcher: Scheduling decision made, re-enqueueing job"
                 );
                 // Re-enqueue job for later processing
                 self.job_queue.enqueue(job).await?;
@@ -158,18 +171,18 @@ impl JobDispatcher {
     /// Get available workers (filtered by heartbeat)
     async fn get_available_workers(&self) -> Result<Vec<Worker>> {
         // Query all workers from registry
-        info!("🔍 JobDispatcher::get_available_workers: Querying all workers from registry...");
+        debug!("🔍 JobDispatcher::get_available_workers: Querying all workers from registry...");
         let all_workers = self.worker_registry.find_available().await.map_err(|e| {
             error!(
-                "JobDispatcher::get_available_workers: Failed to query workers: {}",
-                e
+                error = %e,
+                "JobDispatcher::get_available_workers: Failed to query workers"
             );
             e
         })?;
 
-        info!(
-            "📊 JobDispatcher::get_available_workers: Found {} total workers in registry",
-            all_workers.len()
+        debug!(
+            workers_count = all_workers.len(),
+            "📊 JobDispatcher::get_available_workers: Found total workers in registry"
         );
 
         // Log each worker for debugging
@@ -179,12 +192,14 @@ impl JobDispatcher {
                 .signed_duration_since(worker.last_heartbeat())
                 .to_std()
                 .unwrap_or(std::time::Duration::MAX);
-            info!(
-                "🔍 Worker[{}] {}: state={}, last_heartbeat={:?} ago",
-                i,
-                worker.id(),
-                worker.state(),
-                heartbeat_age
+
+            // Structured log for worker status
+            debug!(
+                index = i,
+                worker_id = %worker.id(),
+                state = ?worker.state(),
+                heartbeat_age_sec = heartbeat_age.as_secs(),
+                "🔍 Worker status check"
             );
         }
 
@@ -203,15 +218,16 @@ impl JobDispatcher {
 
                 if !is_connected {
                     info!(
-                        "❌ JobDispatcher::get_available_workers: Worker {} EXCLUDED: heartbeat too old ({:?})",
-                        worker.id(),
-                        heartbeat_age
+                        worker_id = %worker.id(),
+                        heartbeat_age_sec = heartbeat_age.as_secs(),
+                        threshold = 30,
+                        "❌ JobDispatcher::get_available_workers: Worker EXCLUDED"
                     );
                 } else {
-                    info!(
-                        "✅ JobDispatcher::get_available_workers: Worker {} INCLUDED: heartbeat OK ({:?})",
-                        worker.id(),
-                        heartbeat_age
+                    debug!(
+                        worker_id = %worker.id(),
+                        heartbeat_age_sec = heartbeat_age.as_secs(),
+                        "✅ JobDispatcher::get_available_workers: Worker INCLUDED"
                     );
                 }
 
@@ -220,9 +236,9 @@ impl JobDispatcher {
             .collect();
 
         info!(
-            "✅ JobDispatcher::get_available_workers: Final count: {} connected workers (from {} total)",
-            connected_workers.len(),
-            all_workers.len()
+            connected_count = connected_workers.len(),
+            total_count = all_workers.len(),
+            "✅ JobDispatcher::get_available_workers: Final count"
         );
         Ok(connected_workers)
     }
@@ -236,8 +252,8 @@ impl JobDispatcher {
             .unwrap_or_default();
 
         debug!(
-            "JobDispatcher: Found {} providers with capacity",
-            available_providers.len()
+            providers_count = available_providers.len(),
+            "JobDispatcher: Found providers with capacity"
         );
 
         // Convert ProviderConfig to ProviderInfo for scheduler
@@ -261,8 +277,9 @@ impl JobDispatcher {
     /// Implements safe operation order: gRPC → Events → DB
     async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> Result<()> {
         info!(
-            "🔄 JobDispatcher: Starting assign_and_dispatch for job {} to worker {}",
-            job.id, worker_id
+            job_id = %job.id,
+            worker_id = %worker_id,
+            "🔄 JobDispatcher: Starting assign_and_dispatch"
         );
 
         // Step 1: Get worker details
@@ -272,7 +289,7 @@ impl JobDispatcher {
             }
         })?;
 
-        debug!("JobDispatcher: Found worker {:?}", worker_id);
+        debug!(worker_id = %worker_id, "JobDispatcher: Found worker");
 
         // Step 2: Create execution context and store provider assignment
         let provider_id = worker.handle().provider_id.clone();
@@ -287,15 +304,17 @@ impl JobDispatcher {
         if job.selected_provider().is_none() {
             job.assign_to_provider(provider_id.clone(), context)?;
             info!(
-                "📌 JobDispatcher: Assigned provider {} to job {}",
-                provider_id, job.id
+                provider_id = %provider_id,
+                job_id = %job.id,
+                "📌 JobDispatcher: Assigned provider to job"
             );
         }
 
         // Step 3: Send RUN_JOB command to worker via gRPC (MOST IMPORTANT - do this first!)
         info!(
-            "📡 JobDispatcher: Sending RUN_JOB command to worker {}",
-            worker_id
+            worker_id = %worker_id,
+            job_id = %job.id,
+            "📡 JobDispatcher: Sending RUN_JOB command to worker"
         );
         if let Err(e) = self
             .worker_command_sender
@@ -303,8 +322,10 @@ impl JobDispatcher {
             .await
         {
             error!(
-                "❌ JobDispatcher: Failed to send RUN_JOB to worker {}: {}",
-                worker_id, e
+                error = %e,
+                worker_id = %worker_id,
+                job_id = %job.id,
+                "❌ JobDispatcher: Failed to send RUN_JOB"
             );
             // Rollback: Do NOT update DB or publish events if gRPC fails
             return Err(DomainError::InfrastructureError {
@@ -313,8 +334,9 @@ impl JobDispatcher {
         }
 
         info!(
-            "✅ JobDispatcher: RUN_JOB command sent successfully to worker {}",
-            worker_id
+            worker_id = %worker_id,
+            job_id = %job.id,
+            "✅ JobDispatcher: RUN_JOB command sent successfully"
         );
 
         // Step 4: Publish JobAssigned event (only after successful gRPC)
@@ -322,25 +344,38 @@ impl JobDispatcher {
             job_id: job.id.clone(),
             worker_id: worker_id.clone(),
             occurred_at: Utc::now(),
-            correlation_id: None,
+            correlation_id: None, // TODO: Propagate from job metadata
             actor: None,
         };
 
         if let Err(e) = self.event_bus.publish(&assigned_event).await {
             error!(
-                "❌ JobDispatcher: Failed to publish JobAssigned event: {}",
-                e
+                error = %e,
+                job_id = %job.id,
+                event = "JobAssigned",
+                "❌ JobDispatcher: Failed to publish JobAssigned event"
             );
             // Continue anyway, job is already dispatched
         } else {
-            debug!("📢 JobDispatcher: JobAssigned event published");
+            debug!(
+                job_id = %job.id,
+                event = "JobAssigned",
+                "📢 JobDispatcher: JobAssigned event published"
+            );
         }
 
         // Step 5: Update job in repository (only after successful gRPC)
         // Keep state as PENDING until worker acknowledges
-        info!("💾 JobDispatcher: Updating job {} in repository", job.id);
+        info!(
+            job_id = %job.id,
+            "💾 JobDispatcher: Updating job in repository"
+        );
         if let Err(e) = self.job_repository.update(job).await {
-            error!("❌ JobDispatcher: Failed to update job: {}", e);
+            error!(
+                error = %e,
+                job_id = %job.id,
+                "❌ JobDispatcher: Failed to update job"
+            );
             // This is a critical error - job is dispatched but not persisted
             return Err(DomainError::InfrastructureError {
                 message: format!("Failed to persist job after dispatch: {}", e),

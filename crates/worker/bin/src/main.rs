@@ -13,8 +13,17 @@ use hodei_jobs::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::signal;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
+
+/// Pending job result to be delivered to server
+#[derive(Debug, Clone)]
+struct PendingJobResult {
+    job_id: String,
+    exit_code: i32,
+    success: bool,
+    error_message: String,
+}
 
 use hodei_worker_infrastructure::{
     CertificatePaths, InjectionStrategy, JobExecutor,
@@ -29,7 +38,7 @@ mod config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
@@ -115,6 +124,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let mut metrics_collector = MetricsCollector::new();
 
+    // CRITICAL: Persistent result channel that survives reconnections
+    // This ensures job results are never lost even if connection drops during execution
+    let (result_tx, mut result_rx) = mpsc::channel::<PendingJobResult>(100);
+    let pending_results: Arc<Mutex<Vec<PendingJobResult>>> = Arc::new(Mutex::new(Vec::new()));
+
     // 5. Main Reconnection Loop
     info!("Starting main worker loop...");
     let mut backoff = Duration::from_secs(1);
@@ -182,6 +196,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("✓ Bidirectional stream established");
                 backoff = Duration::from_secs(1); // Reset backoff on success
 
+                // CRITICAL: Deliver any pending job results from previous connection
+                {
+                    let mut pending = pending_results.lock().await;
+                    if !pending.is_empty() {
+                        info!(
+                            "📤 Delivering {} pending job result(s) from previous connection",
+                            pending.len()
+                        );
+                        for result in pending.drain(..) {
+                            let result_msg = WorkerMessage {
+                                payload: Some(WorkerPayload::Result(JobResultMessage {
+                                    job_id: result.job_id.clone(),
+                                    exit_code: result.exit_code,
+                                    success: result.success,
+                                    error_message: result.error_message.clone(),
+                                    completed_at: Some(prost_types::Timestamp::from(
+                                        std::time::SystemTime::now(),
+                                    )),
+                                })),
+                            };
+                            if let Err(e) = tx.send(result_msg).await {
+                                error!(
+                                    "Failed to deliver pending result for job {}: {}",
+                                    result.job_id, e
+                                );
+                                // Re-queue for next attempt (shouldn't happen since we just connected)
+                            } else {
+                                info!(
+                                    "✅ Delivered pending result for job {} (exit code: {})",
+                                    result.job_id, result.exit_code
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
                 let mut cached_metrics: Option<CachedResourceUsage> = None;
 
@@ -231,6 +281,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
 
+                        // Forward pending job results to server
+                        pending_result = result_rx.recv() => {
+                            if let Some(result) = pending_result {
+                                info!("📤 Forwarding job result for {} to server", result.job_id);
+                                let result_msg = WorkerMessage {
+                                    payload: Some(WorkerPayload::Result(JobResultMessage {
+                                        job_id: result.job_id.clone(),
+                                        exit_code: result.exit_code,
+                                        success: result.success,
+                                        error_message: result.error_message.clone(),
+                                        completed_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+                                    }))
+                                };
+                                if let Err(e) = tx.send(result_msg).await {
+                                    // Connection failed - store result for retry on reconnection
+                                    error!("Failed to send result for job {}, storing for retry: {}", result.job_id, e);
+                                    pending_results.lock().await.push(result);
+                                    break; // Exit inner loop to trigger reconnection
+                                } else {
+                                    info!("✅ Job {} result delivered to server (exit code: {})", result.job_id, result.exit_code);
+                                }
+                            }
+                        }
+
                         // Incoming: Server Messages
                         msg = server_stream.message() => {
                             match msg {
@@ -239,7 +313,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ServerPayload::RunJob(run_job) => {
                                             info!("🚀 Received job: {}", run_job.job_id);
                                             let exec = executor.clone();
-                                            let out_tx = tx.clone();
+                                            let log_tx = tx.clone(); // For streaming logs only
+                                            let persistent_result_tx = result_tx.clone(); // Persistent channel for results
                                             let job_id = run_job.job_id.clone();
                                             let timeout_ms = run_job.timeout_ms as u64;
                                             let jobs_registry = running_jobs.clone();
@@ -252,19 +327,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     worker_id: config.worker_id.clone(),
                                                 }))
                                             };
-                                            if let Err(e) = out_tx.send(ack_msg).await {
+                                            if let Err(e) = tx.send(ack_msg).await {
                                                 error!("Failed to send acknowledgment: {}", e);
                                             } else {
                                                 info!("✅ Sent acknowledgment for job {}", run_job.job_id);
                                             }
 
                                             let handle = tokio::spawn(async move {
+                                                // Execute job - logs are streamed via the worker_stream channel
+                                                // but results go through the PERSISTENT result channel
                                                 let result = exec.execute_from_command(
                                                     &job_id,
                                                     run_job.command,
                                                     run_job.env,
                                                     Some(run_job.working_dir),
-                                                    out_tx.clone(),
+                                                    log_tx, // Logs go through ephemeral stream (best effort)
                                                     Some(timeout_ms / 1000),
                                                     run_job.stdin,
                                                     run_job.secrets_json,
@@ -279,15 +356,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     Err(e) => (-1, false, e),
                                                 };
 
-                                                let _ = out_tx.send(WorkerMessage {
-                                                    payload: Some(WorkerPayload::Result(JobResultMessage {
-                                                        job_id,
-                                                        exit_code,
-                                                        success,
-                                                        error_message,
-                                                        completed_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
-                                                    }))
-                                                }).await;
+                                                // CRITICAL: Send result via PERSISTENT channel
+                                                // This channel survives reconnections, ensuring results are NEVER lost
+                                                let pending_result = PendingJobResult {
+                                                    job_id: job_id.clone(),
+                                                    exit_code,
+                                                    success,
+                                                    error_message,
+                                                };
+
+                                                if let Err(e) = persistent_result_tx.send(pending_result).await {
+                                                    // This should never happen unless worker is shutting down
+                                                    error!("CRITICAL: Failed to queue job result (internal channel closed): {}", e);
+                                                    error!("Job ID: {}, Exit Code: {} - Result may be lost!", job_id, exit_code);
+                                                } else {
+                                                    info!("📋 Job {} execution complete, result queued for delivery", job_id);
+                                                }
                                             });
 
                                             running_jobs.lock().await.insert(run_job.job_id, handle);

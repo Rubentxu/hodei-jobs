@@ -465,23 +465,7 @@ logs:
     fi
     docker compose -f docker-compose.dev.yml logs -f
 
-# Show server logs only
-logs-server:
-    @echo "📜 Server logs..."
-    @if ! docker info >/dev/null 2>&1; then \
-        echo "❌ Docker daemon is not running"; \
-        exit 1; \
-    fi
-    docker compose -f docker-compose.dev.yml logs -f api
 
-# Show worker logs only
-logs-worker:
-    @echo "📜 Worker logs..."
-    @if ! docker info >/dev/null 2>&1; then \
-        echo "❌ Docker daemon is not running"; \
-        exit 1; \
-    fi
-    docker compose -f docker-compose.dev.yml logs -f worker
 
 # Show database logs only
 logs-db:
@@ -668,18 +652,11 @@ debug-workers:
     docker exec hodei-jobs-postgres psql -U postgres -c "SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_since_heartbeat, current_job_id FROM workers ORDER BY last_heartbeat DESC;"
 
 # Detailed job diagnosis
-debug-job:
-    @#!/usr/bin/env bash
-    @if [ -z "{{ just_executable() }}" ]; then \
-        echo "❌ Usage: just debug-job <JOB_ID>"; \
-        echo "   Example: just debug-job 584a465b-d208-4a05-beef-8671b9bc2805"; \
-        exit 1; \
-    fi
-    @read -p "Job ID: " JOB_ID; \
-    ./scripts/debug-job.sh $$JOB_ID
+debug-job job_id:
+    @./scripts/debug-job.sh {{job_id}}
 
 # Live server logs (tail)
-logs-server-tail:
+logs-server:
     @if [ -f /tmp/server.log ]; then \
         tail -f /tmp/server.log | grep -E "JobDispatcher|JobController|JobCreated|JobAssigned|RUN_JOB|JobStatusChanged"; \
     else \
@@ -687,14 +664,9 @@ logs-server-tail:
         echo "💡 Start server with: cargo run --bin hodei-server-bin"; \
     fi
 
-# Live worker logs (tail)
-logs-worker-tail:
-    @if [ -f /tmp/worker.log ]; then \
-        tail -f /tmp/worker.log | grep -E "Received job|Executing|RUN_JOB|Acknowledgment|LogBatch"; \
-    else \
-        echo "❌ Worker log not found at /tmp/worker.log"; \
-        echo "💡 Start worker with: HODEI_OTP_TOKEN=<token> cargo run --bin hodei-worker-bin"; \
-    fi
+# Live worker logs (tail latest container)
+logs-worker:
+    @./scripts/logs-worker.sh
 
 # Watch jobs table (live updates)
 watch-jobs:

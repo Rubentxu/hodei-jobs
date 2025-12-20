@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use tokio_util::codec::{BytesCodec, FramedRead};
+use tokio_util::codec::FramedRead;
 use tracing::{error, info, warn};
 
 use crate::logging::{FileLogger, LogBatcher};
@@ -16,6 +16,35 @@ use crate::metrics::WorkerMetrics;
 use crate::secret_injector::{
     InjectionConfig, InjectionStrategy, PreparedExecution, SecretInjector,
 };
+
+/// Find the absolute path for a command name
+/// Returns the absolute path if found, otherwise returns None
+fn find_command_path(cmd: &str) -> Option<String> {
+    // If it's already an absolute path, return as-is
+    if cmd.starts_with('/') {
+        return Some(cmd.to_string());
+    }
+
+    // Common command locations
+    let common_paths = [
+        "/bin",
+        "/usr/bin",
+        "/usr/local/bin",
+        "/sbin",
+        "/usr/sbin",
+        "/usr/local/sbin",
+    ];
+
+    // Check common locations
+    for path in &common_paths {
+        let full_path = format!("{}/{}", path, cmd);
+        if std::path::Path::new(&full_path).exists() {
+            return Some(full_path);
+        }
+    }
+
+    None
+}
 
 fn current_timestamp() -> prost_types::Timestamp {
     let now = std::time::SystemTime::now();
@@ -68,9 +97,9 @@ impl JobExecutor {
             match serde_json::from_str::<HashMap<String, String>>(&secrets_json_str) {
                 Ok(secrets) => {
                     info!(
-                        "Parsed {} secrets for injection strategy: {:?}",
-                        secrets.len(),
-                        injection_strategy
+                        secrets_count = secrets.len(),
+                        strategy = ?injection_strategy,
+                        "Parsed secrets for injection strategy"
                     );
                     Some(secrets)
                 }
@@ -163,9 +192,18 @@ impl JobExecutor {
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: u64,
     ) -> Result<(i32, String, String), String> {
-        info!("Executing shell command: {} {:?}", cmd, args);
+        info!(
+            job_id = %job_id,
+            cmd = %cmd,
+            args = ?args,
+            "Executing shell command"
+        );
 
-        let mut command = TokioCommand::new(cmd);
+        // Find absolute path for command to avoid PATH resolution issues
+        let cmd_display = cmd.to_string(); // Keep original for error messages
+        let cmd_path = find_command_path(cmd).unwrap_or_else(|| cmd.to_string());
+
+        let mut command = TokioCommand::new(&cmd_path);
         command
             .args(args)
             .envs(prepared_execution.env_vars)
@@ -173,24 +211,32 @@ impl JobExecutor {
             .stderr(Stdio::piped())
             .stdin(Stdio::piped());
 
-        if let Some(dir) = working_dir {
-            command.current_dir(dir);
+        if let Some(ref dir) = working_dir {
+            if !dir.trim().is_empty() {
+                command.current_dir(dir);
+            }
         }
 
-        let child = command
+        let mut child = command
             .spawn()
-            .map_err(|e| format!("Failed to spawn command: {}", e))?;
+            .map_err(|e| format!("Failed to spawn command '{}': {}", cmd_display, e))?;
 
-        // 4. Stream output with timeout and stdin
         let stdin_content = prepared_execution.stdin_content;
-        match tokio::time::timeout(
+
+        let stream_result = tokio::time::timeout(
             Duration::from_secs(timeout_secs),
-            self.stream_command_output(child, job_id, &log_sender, stdin_content),
+            self.stream_command_output(&mut child, job_id, &log_sender, stdin_content),
         )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(format!("Command timed out after {} seconds", timeout_secs)),
+        .await;
+
+        match stream_result {
+            Ok(res) => res, // Success or error from streaming
+            Err(_) => {
+                // Timeout
+                warn!("Job {} timed out after {} seconds", job_id, timeout_secs);
+                let _ = child.kill().await;
+                Err(format!("Job timed out after {} seconds", timeout_secs))
+            }
         }
     }
 
@@ -199,53 +245,44 @@ impl JobExecutor {
         job_id: &str,
         interpreter: &str,
         content: &str,
-        mut prepared_execution: PreparedExecution,
+        prepared_execution: PreparedExecution,
         working_dir: Option<String>,
         log_sender: mpsc::Sender<WorkerMessage>,
         timeout_secs: u64,
     ) -> Result<(i32, String, String), String> {
-        info!("Executing script with interpreter: {}", interpreter);
-
-        // Jenkins-compatible approach: Write script to file and execute directly
-        // This respects the shebang and is 100% compatible with Jenkins-style execution
-        let full_content = content.to_string();
-
-        // 2. Create unique temporary directory for the job
-        let job_tmp_dir = std::env::temp_dir().join(format!("hodei-job-{}", job_id));
-        tokio::fs::create_dir_all(&job_tmp_dir)
+        // Create temp script file
+        let script_dir = std::env::temp_dir().join(format!("hodei-job-{}", job_id));
+        tokio::fs::create_dir_all(&script_dir)
             .await
-            .map_err(|e| format!("Failed to create job temp dir: {}", e))?;
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
-        let script_path = job_tmp_dir.join("script_file");
-        if let Err(e) = tokio::fs::write(&script_path, full_content).await {
-            let _ = tokio::fs::remove_dir_all(&job_tmp_dir).await;
-            return Err(format!("Failed to write script file: {}", e));
-        }
+        let script_path = script_dir.join("script_file");
+        tokio::fs::write(&script_path, content)
+            .await
+            .map_err(|e| format!("Failed to write script file: {}", e))?;
 
-        // 3. Ensure executable permissions on Unix
+        // Make executable (unix only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = tokio::fs::metadata(&script_path).await {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
-                let _ = tokio::fs::set_permissions(&script_path, perms).await;
-            }
+            let mut perms = tokio::fs::metadata(&script_path)
+                .await
+                .map_err(|e| format!("Failed to get metadata: {}", e))?
+                .permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(&script_path, perms)
+                .await
+                .map_err(|e| format!("Failed to set permissions: {}", e))?;
         }
 
-        // 4. Prepare environment with HODEI_JOB_ID
-        prepared_execution
-            .env_vars
-            .insert("HODEI_JOB_ID".to_string(), job_id.to_string());
+        let script_path_str = script_path.to_string_lossy().to_string();
 
-        // 5. Execute with explicit interpreter (generic Linux compatibility)
-        // Works on any Linux image without relying on shebang resolution
-        // This is the universal approach that works everywhere
+        // Execute using interpreter
         let result = self
             .execute_shell_with_timeout(
                 job_id,
                 interpreter,
-                &[script_path.to_string_lossy().to_string()],
+                &[script_path_str],
                 prepared_execution,
                 working_dir,
                 log_sender,
@@ -253,37 +290,41 @@ impl JobExecutor {
             )
             .await;
 
-        // 6. Cleanup
-        let _ = tokio::fs::remove_dir_all(&job_tmp_dir).await;
+        // Cleanup
+        let _ = tokio::fs::remove_dir_all(script_dir).await;
 
         result
     }
 
-    pub async fn stream_command_output(
+    async fn stream_command_output(
         &self,
-        mut child: tokio::process::Child,
+        child: &mut tokio::process::Child,
         job_id: &str,
         log_sender: &mpsc::Sender<WorkerMessage>,
         stdin_content: Option<String>,
     ) -> Result<(i32, String, String), String> {
-        let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-        let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-
-        // Handle stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Some(content) = stdin_content {
+        // Handle STDIN if provided
+        if let Some(input) = stdin_content {
+            if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(content.as_bytes()).await;
-                let _ = stdin.shutdown().await;
+                tokio::spawn(async move {
+                    if let Err(e) = stdin.write_all(input.as_bytes()).await {
+                        warn!("Failed to write to stdin: {}", e);
+                    }
+                });
             }
         }
 
-        let stdout_stream = FramedRead::new(stdout, BytesCodec::new());
-        let stderr_stream = FramedRead::new(stderr, BytesCodec::new());
+        let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
-        let mut stdout_buffer = String::new();
-        let mut stderr_buffer = String::new();
+        let mut stdout_reader = FramedRead::new(stdout, tokio_util::codec::LinesCodec::new());
+        let mut stderr_reader = FramedRead::new(stderr, tokio_util::codec::LinesCodec::new());
 
+        let logger_instance = FileLogger::new(job_id); // Sync, no Result
+        let logger = Arc::new(tokio::sync::Mutex::new(logger_instance));
+
+        // Use updated LogBatcher::new signature
         let log_batcher = Arc::new(tokio::sync::Mutex::new(LogBatcher::new(
             log_sender.clone(),
             self.log_batch_size,
@@ -291,73 +332,106 @@ impl JobExecutor {
             self.metrics.clone(),
         )));
 
-        let file_logger = FileLogger::new("/tmp/hodei-logs");
+        let mut stdout_buffer = String::new();
+        let mut stderr_buffer = String::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
 
-        let log_batcher_for_flush = log_batcher.clone();
-        let flush_interval = Duration::from_millis(self.log_flush_interval_ms);
+        // Auto-flush task
+        let batcher_clone = log_batcher.clone();
+        let flush_interval = self.log_flush_interval_ms;
         let flush_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(flush_interval);
+            let mut interval = tokio::time::interval(Duration::from_millis(flush_interval));
             loop {
                 interval.tick().await;
-                let mut batcher = log_batcher_for_flush.lock().await;
-                if !batcher.flush_if_needed().await {
-                    warn!("Periodic log flush failed");
+                let mut batcher = batcher_clone.lock().await;
+                // Updated flush method returns bool, correct waiting logic
+                if !batcher.flush().await {
+                    warn!("Auto-flush returned false (failed or empty)");
                 }
             }
         });
 
-        let mut stdout_stream = Box::pin(stdout_stream);
-        let mut stderr_stream = Box::pin(stderr_stream);
-
         loop {
+            if stdout_done && stderr_done {
+                break;
+            }
+
             tokio::select! {
-                biased;
-                chunk = stdout_stream.next() => {
-                    match chunk {
-                        Some(Ok(bytes)) => {
-                            let line = String::from_utf8_lossy(&bytes);
-                            stdout_buffer.push_str(&line);
+                line = stdout_reader.next(), if !stdout_done => {
+                    match line {
+                        Some(Ok(text)) => {
+                            // Append to full buffer
+                            stdout_buffer.push_str(&text);
                             stdout_buffer.push('\n');
 
-                            let log_entry = LogEntry {
+                            // LogEntry construction
+                            let entry = LogEntry {
                                 job_id: job_id.to_string(),
-                                line: line.to_string(),
-                                is_stderr: false,
                                 timestamp: Some(current_timestamp()),
+                                line: text,
+                                is_stderr: false,
                             };
 
-                            // Persist locally
-                            let _ = file_logger.log(&log_entry).await;
+                            // Log to file
+                            {
+                                let file_logger = logger.lock().await;
+                                if let Err(e) = file_logger.log(&entry).await {
+                                    warn!("Failed to write stdout to file: {}", e);
+                                }
+                            }
 
-                            let mut batcher = log_batcher.lock().await;
-                            batcher.push(log_entry).await;
+                            // Log to server batcher
+                            {
+                                let mut batcher = log_batcher.lock().await;
+                                batcher.push(entry).await;
+                            }
                         }
-                        Some(Err(e)) => warn!("Stdout read error: {}", e),
-                        None => break,
+                        Some(Err(e)) => {
+                            error!("Error reading stdout: {}", e);
+                            stdout_done = true;
+                        }
+                        None => {
+                            stdout_done = true;
+                        }
                     }
                 }
-                chunk = stderr_stream.next() => {
-                    match chunk {
-                        Some(Ok(bytes)) => {
-                            let line = String::from_utf8_lossy(&bytes);
-                            stderr_buffer.push_str(&line);
+                line = stderr_reader.next(), if !stderr_done => {
+                    match line {
+                        Some(Ok(text)) => {
+                            // Append to full buffer
+                            stderr_buffer.push_str(&text);
                             stderr_buffer.push('\n');
 
-                            let log_entry = LogEntry {
+                            // LogEntry construction
+                            let entry = LogEntry {
                                 job_id: job_id.to_string(),
-                                line: line.to_string(),
-                                is_stderr: true,
                                 timestamp: Some(current_timestamp()),
+                                line: text,
+                                is_stderr: true,
                             };
 
-                            // Persist locally
-                            let _ = file_logger.log(&log_entry).await;
+                            // Log to file
+                            {
+                                let file_logger = logger.lock().await;
+                                if let Err(e) = file_logger.log(&entry).await {
+                                    warn!("Failed to write stderr to file: {}", e);
+                                }
+                            }
 
-                            let mut batcher = log_batcher.lock().await;
-                            batcher.push(log_entry).await;
+                            // Log to server batcher
+                            {
+                                let mut batcher = log_batcher.lock().await;
+                                batcher.push(entry).await;
+                            }
                         }
-                        Some(Err(e)) => warn!("Stderr read error: {}", e),
-                        None => break,
+                        Some(Err(e)) => {
+                            error!("Error reading stderr: {}", e);
+                            stderr_done = true;
+                        }
+                        None => {
+                            stderr_done = true;
+                        }
                     }
                 }
             }
@@ -365,8 +439,11 @@ impl JobExecutor {
 
         flush_handle.abort();
 
+        // Flush remaining logs
         let mut batcher = log_batcher.lock().await;
-        let _ = batcher.flush().await;
+        if !batcher.flush().await {
+            warn!("Failed to flush remaining logs for job {}", job_id);
+        }
 
         let status = child
             .wait()
@@ -376,10 +453,11 @@ impl JobExecutor {
         let exit_code = status.code().unwrap_or(-1);
 
         info!(
-            "Command completed - stdout: {} bytes, stderr: {} bytes, exit_code: {}",
-            stdout_buffer.len(),
-            stderr_buffer.len(),
-            exit_code
+            job_id = %job_id,
+            exit_code = exit_code,
+            stdout_bytes = stdout_buffer.len(),
+            stderr_bytes = stderr_buffer.len(),
+            "Command completed"
         );
 
         Ok((exit_code, stdout_buffer, stderr_buffer))

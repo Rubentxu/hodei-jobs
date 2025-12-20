@@ -68,6 +68,9 @@ ENV ASDF_DIR=/usr/local/lib/asdf
 # Copy worker binary
 COPY --from=builder /app/target/release/hodei-worker-bin /usr/local/bin/hodei-jobs-worker
 
+# Tag the image with the correct name
+ARG IMAGE_TAG=hodei-jobs-worker
+
 # Create non-root user with writable home (T2.5)
 # Using /home/hodei for better isolation and consistency (T2.6)
 RUN mkdir -p /home/hodei \
