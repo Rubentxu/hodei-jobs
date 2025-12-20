@@ -62,10 +62,38 @@ impl SmartScheduler {
     /// Select a worker using the configured strategy
     pub(crate) fn select_worker(&self, job: &Job, workers: &[Worker]) -> Option<WorkerId> {
         if workers.is_empty() {
+            tracing::debug!(
+                job_id = %job.id,
+                "No workers available for job scheduling"
+            );
             return None;
         }
 
-        match self.config.worker_strategy {
+        let available_count = workers
+            .iter()
+            .filter(|w| w.state().can_accept_jobs())
+            .count();
+        tracing::debug!(
+            job_id = %job.id,
+            total_workers = workers.len(),
+            available_workers = available_count,
+            strategy = ?self.config.worker_strategy,
+            "Evaluating workers for job scheduling"
+        );
+
+        // Log worker details
+        for (idx, worker) in workers.iter().enumerate() {
+            tracing::debug!(
+                job_id = %job.id,
+                worker_id = %worker.id(),
+                worker_state = ?worker.state(),
+                can_accept = worker.state().can_accept_jobs(),
+                "Checking worker {} for job",
+                idx + 1
+            );
+        }
+
+        let result = match self.config.worker_strategy {
             WorkerSelectionStrategy::FirstAvailable => {
                 FirstAvailableWorkerSelector.select_worker(job, workers)
             }
@@ -79,6 +107,7 @@ impl SmartScheduler {
                     .collect();
 
                 if available.is_empty() {
+                    tracing::debug!(job_id = %job.id, "No available workers for RoundRobin strategy");
                     return None;
                 }
 
@@ -93,23 +122,61 @@ impl SmartScheduler {
             WorkerSelectionStrategy::Affinity => {
                 // Check for job type affinity in worker labels
                 // Falls back to first available if no affinity match
+                let job_image = job.spec.image.as_deref();
+                tracing::debug!(
+                    job_id = %job.id,
+                    job_image = ?job_image,
+                    "Using Affinity strategy - checking for image affinity"
+                );
+
                 let result = workers
                     .iter()
                     .filter(|w| w.state().can_accept_jobs())
                     .find(|w| {
                         // Check if worker has matching capabilities for job image
-                        w.spec()
-                            .labels
-                            .get("image_type")
-                            .map(|t| Some(t.as_str()) == job.spec.image.as_deref())
-                            .unwrap_or(false)
+                        let worker_image_type = w.spec().labels.get("image_type");
+                        let matches = worker_image_type
+                            .map(|t| Some(t.as_str()) == job_image)
+                            .unwrap_or(false);
+
+                        tracing::debug!(
+                            job_id = %job.id,
+                            worker_id = %w.id(),
+                            worker_image_type = ?worker_image_type,
+                            job_image = ?job_image,
+                            affinity_match = matches,
+                            "Checking affinity match"
+                        );
+
+                        matches
                     })
-                    .or_else(|| workers.iter().find(|w| w.state().can_accept_jobs()))
+                    .or_else(|| {
+                        tracing::debug!(
+                            job_id = %job.id,
+                            "No affinity match found, falling back to first available worker"
+                        );
+                        workers.iter().find(|w| w.state().can_accept_jobs())
+                    })
                     .map(|w| w.id().clone());
 
                 result
             }
+        };
+
+        if let Some(ref worker_id) = result {
+            tracing::debug!(
+                job_id = %job.id,
+                selected_worker_id = %worker_id,
+                "Worker selected successfully"
+            );
+        } else {
+            tracing::debug!(
+                job_id = %job.id,
+                "No worker could be selected"
+            );
         }
+
+        result
     }
 
     /// Select a provider using the configured strategy

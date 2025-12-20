@@ -133,6 +133,12 @@ impl JobDispatcher {
                 // Assign and dispatch the job
                 if let Err(e) = self.assign_and_dispatch(&mut job, &worker_id).await {
                     error!("❌ JobDispatcher: assign_and_dispatch failed: {}", e);
+                    // Job is already removed from queue and in ASSIGNED state
+                    // It will timeout and be recovered by the coordinator
+                    info!(
+                        "🔄 JobDispatcher: Job {} remains in ASSIGNED state, will timeout for recovery",
+                        job.id
+                    );
                     return Err(e);
                 }
 
@@ -270,18 +276,25 @@ impl JobDispatcher {
 
         debug!("JobDispatcher: Found worker {:?}", worker_id);
 
-        // Step 2: Create execution context
+        // Step 2: Create execution context and store provider assignment
         let provider_id = worker.handle().provider_id.clone();
         let context = ExecutionContext::new(
             job.id.clone(),
-            provider_id,
+            provider_id.clone(),
             format!("exec-{}", Uuid::new_v4()),
         );
 
-        // Step 3: Mark job as scheduled (for consistency)
-        job.submit_to_provider(worker.handle().provider_id.clone(), context.clone())?;
+        // Assign provider to job (for both PENDING and ASSIGNED states)
+        // ASSIGNED state comes from atomic dequeue, but provider still needs to be assigned
+        if job.selected_provider().is_none() {
+            job.assign_to_provider(provider_id.clone(), context)?;
+            info!(
+                "📌 JobDispatcher: Assigned provider {} to job {}",
+                provider_id, job.id
+            );
+        }
 
-        // Step 4: Send RUN_JOB command to worker via gRPC (MOST IMPORTANT - do this first!)
+        // Step 3: Send RUN_JOB command to worker via gRPC (MOST IMPORTANT - do this first!)
         info!(
             "📡 JobDispatcher: Sending RUN_JOB command to worker {}",
             worker_id
@@ -306,7 +319,7 @@ impl JobDispatcher {
             worker_id
         );
 
-        // Step 5: Publish JobAssigned event (only after successful gRPC)
+        // Step 4: Publish JobAssigned event (only after successful gRPC)
         let assigned_event = DomainEvent::JobAssigned {
             job_id: job.id.clone(),
             worker_id: worker_id.clone(),
@@ -325,27 +338,8 @@ impl JobDispatcher {
             debug!("📢 JobDispatcher: JobAssigned event published");
         }
 
-        // Step 6: Publish JobStatusChanged event (only after successful gRPC)
-        let status_event = DomainEvent::JobStatusChanged {
-            job_id: job.id.clone(),
-            old_state: JobState::Pending,
-            new_state: JobState::Scheduled,
-            occurred_at: Utc::now(),
-            correlation_id: None,
-            actor: None,
-        };
-
-        if let Err(e) = self.event_bus.publish(&status_event).await {
-            error!(
-                "❌ JobDispatcher: Failed to publish JobStatusChanged event: {}",
-                e
-            );
-            // Continue anyway, job is already dispatched
-        } else {
-            debug!("📢 JobDispatcher: JobStatusChanged event published");
-        }
-
-        // Step 7: Update job in repository (only after successful gRPC)
+        // Step 5: Update job in repository (only after successful gRPC)
+        // Keep state as PENDING until worker acknowledges
         info!("💾 JobDispatcher: Updating job {} in repository", job.id);
         if let Err(e) = self.job_repository.update(job).await {
             error!("❌ JobDispatcher: Failed to update job: {}", e);

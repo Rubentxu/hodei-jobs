@@ -628,4 +628,86 @@ help:
     @echo "  just dev-no-docker     Run without Docker if daemon is down"
     @echo "  sudo systemctl start docker   Start Docker daemon"
     @echo ""
+    @echo "Debug Commands (v8.1+):"
+    @echo "  just debug-system         Show system dashboard"
+    @echo "  just debug-jobs           Show PENDING jobs"
+    @echo "  just debug-queue          Show jobs in queue"
+    @echo "  just debug-workers        Show registered workers"
+    @echo "  just debug-job <ID>       Detailed job diagnosis"
+    @echo "  just logs-server          Live server logs"
+    @echo "  just logs-worker          Live worker logs"
+    @echo "  just watch-jobs           Watch jobs table (live)"
+    @echo "  just watch-workers        Watch workers table (live)"
+    @echo "  just watch-queue          Watch queue length (live)"
+    @echo "  just restart-all          Restart entire system"
+    @echo "  just clean-all            Clean everything"
+    @echo ""
     @echo "For more information, see README.md"
+
+# =============================================================================
+# DEBUG COMMANDS (v8.1+)
+# =============================================================================
+
+# Show system status dashboard
+debug-system:
+    @./scripts/system-status.sh
+
+# Show jobs in PENDING state
+debug-jobs:
+    @echo "=== JOBS EN ESTADO PENDING ==="
+    docker exec hodei-jobs-postgres psql -U postgres -c "SELECT id, state, attempts, created_at, EXTRACT(EPOCH FROM (now() - created_at)) as seconds_in_pending FROM jobs WHERE state = 'PENDING' ORDER BY created_at DESC;"
+
+# Show jobs in queue
+debug-queue:
+    @echo "=== JOBS EN COLA ==="
+    docker exec hodei-jobs-postgres psql -U postgres -c "SELECT jq.job_id, jq.enqueued_at, j.state, EXTRACT(EPOCH FROM (now() - jq.enqueued_at)) as seconds_in_queue FROM job_queue jq JOIN jobs j ON jq.job_id = j.id ORDER BY jq.enqueued_at DESC;"
+
+# Show registered workers
+debug-workers:
+    @echo "=== WORKERS REGISTRADOS ==="
+    docker exec hodei-jobs-postgres psql -U postgres -c "SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_since_heartbeat, current_job_id FROM workers ORDER BY last_heartbeat DESC;"
+
+# Detailed job diagnosis
+debug-job:
+    @#!/usr/bin/env bash
+    @if [ -z "{{ just_executable() }}" ]; then \
+        echo "❌ Usage: just debug-job <JOB_ID>"; \
+        echo "   Example: just debug-job 584a465b-d208-4a05-beef-8671b9bc2805"; \
+        exit 1; \
+    fi
+    @read -p "Job ID: " JOB_ID; \
+    ./scripts/debug-job.sh $$JOB_ID
+
+# Live server logs (tail)
+logs-server-tail:
+    @if [ -f /tmp/server.log ]; then \
+        tail -f /tmp/server.log | grep -E "JobDispatcher|JobController|JobCreated|JobAssigned|RUN_JOB|JobStatusChanged"; \
+    else \
+        echo "❌ Server log not found at /tmp/server.log"; \
+        echo "💡 Start server with: cargo run --bin hodei-server-bin"; \
+    fi
+
+# Live worker logs (tail)
+logs-worker-tail:
+    @if [ -f /tmp/worker.log ]; then \
+        tail -f /tmp/worker.log | grep -E "Received job|Executing|RUN_JOB|Acknowledgment|LogBatch"; \
+    else \
+        echo "❌ Worker log not found at /tmp/worker.log"; \
+        echo "💡 Start worker with: HODEI_OTP_TOKEN=<token> cargo run --bin hodei-worker-bin"; \
+    fi
+
+# Watch jobs table (live updates)
+watch-jobs:
+    @watch -n 1 "docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT id, state, attempts, created_at FROM jobs ORDER BY created_at DESC LIMIT 5;'"
+
+# Watch workers table (live updates)
+watch-workers:
+    @watch -n 1 "docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_ago FROM workers ORDER BY last_heartbeat DESC LIMIT 5;'"
+
+# Watch queue length (live updates)
+watch-queue:
+    @watch -n 1 "docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT COUNT(*) as queued_jobs FROM job_queue;'"
+
+# Restart entire system (clean + start)
+restart-all:
+    @./scripts/restart-system.sh

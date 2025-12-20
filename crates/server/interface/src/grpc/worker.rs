@@ -27,7 +27,7 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::iam::OtpToken;
 use hodei_server_domain::shared_kernel::{
-    JobId, JobResult, JobState, ProviderId, WorkerId, WorkerState,
+    DomainError, JobId, JobResult, JobState, ProviderId, WorkerId, WorkerState,
 };
 use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_domain::workers::{ProviderType, WorkerHandle, WorkerSpec};
@@ -809,6 +809,54 @@ impl WorkerAgentServiceImpl {
         Ok(())
     }
 
+    async fn on_job_acknowledged(&self, worker_id: &str, job_id: &str) -> Result<(), Status> {
+        let Some(job_repository) = self.job_repository() else {
+            return Ok(());
+        };
+
+        let worker_id = Self::parse_worker_uuid(worker_id)?;
+        let job_id = Self::parse_job_uuid(job_id)?;
+
+        let mut job = job_repository
+            .find_by_id(&job_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("Job not found"))?;
+
+        // Update job state to RUNNING when worker acknowledges
+        let old_state = job.state().clone();
+        job.mark_running()
+            .map_err(|e: DomainError| Status::failed_precondition(e.to_string()))?;
+
+        job_repository
+            .update(&job)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Publish JobStatusChanged event
+        if let Some(event_bus) = &self.event_bus {
+            let correlation_id = job.metadata().get("correlation_id").cloned();
+            let actor = job.metadata().get("actor").cloned();
+
+            let event = DomainEvent::JobStatusChanged {
+                job_id: job.id.clone(),
+                old_state,
+                new_state: JobState::Running,
+                occurred_at: Utc::now(),
+                correlation_id,
+                actor,
+            };
+            if let Err(e) = event_bus.publish(&event).await {
+                warn!(
+                    "Failed to publish JobStatusChanged event in on_job_acknowledged: {}",
+                    e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn on_worker_heartbeat(&self, worker_id: &str) -> Result<(), Status> {
         let Some(registry) = self.worker_registry() else {
             return Ok(());
@@ -1229,6 +1277,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                             payload: Some(ServerPayload::Ack(AckMessage {
                                                 message_id: uuid::Uuid::new_v4().to_string(),
                                                 success: true,
+                                                worker_id: wid.value.clone(),
                                             })),
                                         };
                                         let _ = tx_clone.send(Ok(ack)).await;
@@ -1307,6 +1356,36 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         "Worker status: {:?}, reason: {}",
                                         status.status, status.reason
                                     );
+                                }
+                                WorkerPayload::Ack(ack) => {
+                                    info!(
+                                        "📬 Received acknowledgment: message_id={}, success={}, worker_id={}",
+                                        ack.message_id, ack.success, ack.worker_id
+                                    );
+
+                                    // If this is a job acknowledgment, update job state to RUNNING
+                                    if ack.message_id.starts_with("job-") {
+                                        let job_id = ack.message_id.trim_start_matches("job-");
+                                        let worker_id = ack.worker_id;
+                                        info!(
+                                            "🔄 Updating job {} state to RUNNING (from worker {})",
+                                            job_id, worker_id
+                                        );
+
+                                        if !worker_id.is_empty() {
+                                            if let Err(e) = registry_service
+                                                .on_job_acknowledged(&worker_id, job_id)
+                                                .await
+                                            {
+                                                error!(
+                                                    "Failed to update job state on acknowledgment: {}",
+                                                    e
+                                                );
+                                            }
+                                        } else {
+                                            warn!("Acknowledgment received without worker_id");
+                                        }
+                                    }
                                 }
                             }
                         }

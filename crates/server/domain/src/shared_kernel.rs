@@ -9,8 +9,12 @@ pub enum DomainError {
     #[error("Provider not found: {provider_id}")]
     ProviderNotFound { provider_id: ProviderId },
 
-    #[error("Invalid job state transition from {from} to {to}")]
-    InvalidStateTransition { from: JobState, to: JobState },
+    #[error("Invalid job state transition from {from_state} to {to_state} for job {job_id}")]
+    InvalidStateTransition {
+        job_id: JobId,
+        from_state: JobState,
+        to_state: JobState,
+    },
 
     #[error("Invalid job spec field {field}: {reason}")]
     InvalidJobSpec { field: String, reason: String },

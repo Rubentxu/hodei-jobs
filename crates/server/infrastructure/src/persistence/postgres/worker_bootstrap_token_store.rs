@@ -38,7 +38,16 @@ impl PostgresWorkerBootstrapTokenStore {
 
     /// Run database migrations for the token store
     pub async fn run_migrations(&self) -> Result<()> {
-        sqlx::query("CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token TEXT PRIMARY KEY, worker_id TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())")
+        // Enable pgcrypto extension for UUID generation
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to enable pgcrypto extension: {}", e),
+            })?;
+
+        // Create table with UUID type for worker_id
+        sqlx::query("CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token UUID PRIMARY KEY DEFAULT gen_random_uuid(), worker_id UUID NOT NULL, expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())")
             .execute(&self.pool)
             .await
             .map_err(|e| DomainError::InfrastructureError {
@@ -57,7 +66,7 @@ impl WorkerBootstrapTokenStore for PostgresWorkerBootstrapTokenStore {
         let expires_at = chrono::Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default();
 
         sqlx::query("INSERT INTO worker_bootstrap_tokens (token, worker_id, expires_at) VALUES ($1, $2, $3)")
-            .bind(token.to_string())
+            .bind(token.0)  // Bind the UUID directly
             .bind(worker_uuid)
             .bind(expires_at)
             .execute(&self.pool)
@@ -75,9 +84,9 @@ impl WorkerBootstrapTokenStore for PostgresWorkerBootstrapTokenStore {
     }
 
     async fn consume(&self, token: &OtpToken, worker_id: &WorkerId) -> Result<()> {
-        let token_uuid = token.to_string();
+        let token_uuid = token.0; // Use UUID directly
         let worker_uuid = worker_id.0;
-        let token_uuid_log = token_uuid.clone();
+        let token_uuid_log = token.to_string();
 
         info!(
             "🔐 PostgresWorkerBootstrapTokenStore::consume: Attempting to consume token {} for worker {}",
@@ -85,7 +94,7 @@ impl WorkerBootstrapTokenStore for PostgresWorkerBootstrapTokenStore {
         );
 
         let rows_affected = sqlx::query("UPDATE worker_bootstrap_tokens SET consumed_at = NOW() WHERE token = $1 AND worker_id = $2 AND expires_at > NOW() AND consumed_at IS NULL")
-            .bind(token_uuid)
+            .bind(token_uuid)  // Bind UUID directly
             .bind(worker_uuid)
             .execute(&self.pool)
             .await

@@ -162,11 +162,38 @@ pub struct JobSpec {
 }
 
 impl JobSpec {
+    /// Detecta si una cadena parece ser contenido de script (contiene nuevas líneas o shebang)
+    fn looks_like_script(content: &str) -> bool {
+        // Es script si:
+        // 1. Contiene nuevas líneas (es multilinea)
+        // 2. O comienza con shebang (#!)
+        content.contains('\n') || content.starts_with("#!")
+    }
+
     /// Builder Pattern: Crea un JobSpec con comando shell simple (retrocompatibilidad)
     pub fn new(command: Vec<String>) -> Self {
+        // Detectar si el comando es contenido de script (múltiples líneas o contiene shebang)
         let cmd_type = if command.is_empty() {
             CommandType::shell("echo")
+        } else if command.len() == 1 && Self::looks_like_script(&command[0]) {
+            // Si hay un solo elemento y parece ser contenido de script, crear CommandType::Script
+            let content = command[0].clone();
+            // Detectar el interprete del shebang o usar bash por defecto
+            let interpreter = if content.starts_with("#!") {
+                let shebang_line = content.lines().next().unwrap_or("");
+                if let Some(path) = shebang_line.strip_prefix("#!") {
+                    let path = path.trim();
+                    // Extraer el interprete del path (ej: /bin/bash -> bash)
+                    path.split('/').last().unwrap_or("bash").to_string()
+                } else {
+                    "bash".to_string()
+                }
+            } else {
+                "bash".to_string()
+            };
+            CommandType::script(interpreter, content)
         } else {
+            // Comportamiento original: comando shell con argumentos
             CommandType::shell_with_args(command[0].clone(), command[1..].to_vec())
         };
         Self {
@@ -631,8 +658,9 @@ impl Job {
         match self.state {
             JobState::Pending => Ok(()),
             _ => Err(DomainError::InvalidStateTransition {
-                from: self.state.clone(),
-                to: JobState::Pending,
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: JobState::Pending,
             }),
         }
     }
@@ -643,61 +671,103 @@ impl Job {
         provider_id: ProviderId,
         context: ExecutionContext,
     ) -> Result<()> {
+        let new_state = JobState::Scheduled;
+
+        // Validar transición usando el State Machine
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
+        }
+
+        self.state = new_state;
+        self.selected_provider = Some(provider_id);
+        self.execution_context = Some(context);
+        self.started_at = Some(Utc::now());
+        Ok(())
+    }
+
+    /// Asigna el job a un provider pero mantiene estado PENDING
+    /// El worker debe confirmar con acknowledgment para cambiar a RUNNING
+    pub fn assign_to_provider(
+        &mut self,
+        provider_id: ProviderId,
+        context: ExecutionContext,
+    ) -> Result<()> {
         match self.state {
-            JobState::Pending | JobState::Scheduled => {
-                self.state = JobState::Scheduled;
+            JobState::Pending | JobState::Assigned => {
+                // Asignar provider y contexto
+                // Para ASSIGNED (desde atomic dequeue), esto completa la asignación
                 self.selected_provider = Some(provider_id);
                 self.execution_context = Some(context);
-                self.started_at = Some(Utc::now());
+                // No cambiar started_at hasta que worker confirme
                 Ok(())
             }
             _ => Err(DomainError::InvalidStateTransition {
-                from: self.state.clone(),
-                to: JobState::Scheduled,
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: JobState::Assigned,
             }),
         }
     }
 
     /// Marca el job como ejecutándose
     pub fn mark_running(&mut self) -> Result<()> {
-        match self.state {
-            JobState::Scheduled => {
-                self.state = JobState::Running;
-                Ok(())
-            }
-            // Allow idempotent Running -> Running transition
-            JobState::Running => Ok(()),
-            _ => Err(DomainError::InvalidStateTransition {
-                from: self.state.clone(),
-                to: JobState::Running,
-            }),
+        // Validar transición usando el State Machine
+        let new_state = JobState::Running;
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
         }
+
+        self.state = new_state;
+        self.started_at = Some(Utc::now());
+        Ok(())
     }
 
     /// Completa el job exitosamente
     pub fn complete(&mut self, result: JobResult) -> Result<()> {
-        match self.state {
-            JobState::Running | JobState::Scheduled => {
-                self.state = match &result {
-                    JobResult::Success { .. } => JobState::Succeeded,
-                    JobResult::Failed { .. } => JobState::Failed,
-                    JobResult::Cancelled => JobState::Cancelled,
-                    JobResult::Timeout => JobState::Timeout,
-                };
-                self.completed_at = Some(Utc::now());
-                self.result = Some(result);
-                Ok(())
-            }
-            _ => Err(DomainError::InvalidStateTransition {
-                from: self.state.clone(),
-                to: JobState::Succeeded,
-            }),
+        let new_state = match &result {
+            JobResult::Success { .. } => JobState::Succeeded,
+            JobResult::Failed { .. } => JobState::Failed,
+            JobResult::Cancelled => JobState::Cancelled,
+            JobResult::Timeout => JobState::Timeout,
+        };
+
+        // Validar transición usando el State Machine
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
         }
+
+        self.state = new_state;
+        self.completed_at = Some(Utc::now());
+        self.result = Some(result);
+        Ok(())
     }
 
     /// Marca el job como fallido
     pub fn fail(&mut self, error_message: String) -> Result<()> {
-        self.state = JobState::Failed;
+        let new_state = JobState::Failed;
+
+        // Validar transición usando el State Machine
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
+        }
+
+        self.state = new_state;
         self.completed_at = Some(Utc::now());
         self.error_message = Some(error_message);
         self.attempts += 1;
@@ -706,17 +776,20 @@ impl Job {
 
     /// Cancela el job
     pub fn cancel(&mut self) -> Result<()> {
-        match self.state {
-            JobState::Pending | JobState::Scheduled | JobState::Running => {
-                self.state = JobState::Cancelled;
-                self.completed_at = Some(Utc::now());
-                Ok(())
-            }
-            _ => Err(DomainError::InvalidStateTransition {
-                from: self.state.clone(),
-                to: JobState::Cancelled,
-            }),
+        let new_state = JobState::Cancelled;
+
+        // Validar transición usando el State Machine
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
         }
+
+        self.state = new_state;
+        self.completed_at = Some(Utc::now());
+        Ok(())
     }
 
     /// Verifica si el job puede ser reintentado
@@ -775,8 +848,18 @@ impl Job {
         self.attempts = attempts;
     }
 
-    pub fn set_state(&mut self, state: JobState) {
-        self.state = state;
+    pub fn set_state(&mut self, new_state: JobState) -> Result<()> {
+        // Validar que la transición de estado es válida
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
+        }
+
+        self.state = new_state;
+        Ok(())
     }
 
     /// Determina si el job necesita escalamiento basado en su especificación

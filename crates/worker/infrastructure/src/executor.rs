@@ -206,26 +206,9 @@ impl JobExecutor {
     ) -> Result<(i32, String, String), String> {
         info!("Executing script with interpreter: {}", interpreter);
 
-        // 1. Prepare Content with Safe Preamble (if it's a shell script)
-        let is_shell = interpreter.ends_with("sh") || interpreter.ends_with("bash");
-        let safe_preamble = "set -euo pipefail\n";
-
-        let full_content = if is_shell {
-            if content.starts_with("#!") {
-                let mut lines = content.lines();
-                let shebang = lines.next().unwrap_or("");
-                format!(
-                    "{}\n{}\n{}",
-                    shebang,
-                    safe_preamble,
-                    lines.collect::<Vec<_>>().join("\n")
-                )
-            } else {
-                format!("{}{}", safe_preamble, content)
-            }
-        } else {
-            content.to_string()
-        };
+        // Jenkins-compatible approach: Write script to file and execute directly
+        // This respects the shebang and is 100% compatible with Jenkins-style execution
+        let full_content = content.to_string();
 
         // 2. Create unique temporary directory for the job
         let job_tmp_dir = std::env::temp_dir().join(format!("hodei-job-{}", job_id));
@@ -255,12 +238,13 @@ impl JobExecutor {
             .env_vars
             .insert("HODEI_JOB_ID".to_string(), job_id.to_string());
 
-        // 5. Execute
+        // 5. Execute DIRECTLY (Jenkins-style) - use the script path as the command
+        // NOT "interpreter script_path" but "./script_path" to respect shebang
         let result = self
             .execute_shell_with_timeout(
                 job_id,
-                interpreter,
-                &[script_path.to_string_lossy().to_string()],
+                &script_path.to_string_lossy().to_string(),
+                &[],
                 prepared_execution,
                 working_dir,
                 log_sender,

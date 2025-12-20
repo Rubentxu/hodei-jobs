@@ -100,6 +100,7 @@ impl PostgresJobRepository {
     fn state_to_string(state: &hodei_server_domain::shared_kernel::JobState) -> String {
         match state {
             hodei_server_domain::shared_kernel::JobState::Pending => "PENDING".to_string(),
+            hodei_server_domain::shared_kernel::JobState::Assigned => "ASSIGNED".to_string(),
             hodei_server_domain::shared_kernel::JobState::Scheduled => "SCHEDULED".to_string(),
             hodei_server_domain::shared_kernel::JobState::Running => "RUNNING".to_string(),
             hodei_server_domain::shared_kernel::JobState::Succeeded => "SUCCEEDED".to_string(),
@@ -112,6 +113,7 @@ impl PostgresJobRepository {
     fn string_to_state(s: &str) -> hodei_server_domain::shared_kernel::JobState {
         match s {
             "PENDING" => hodei_server_domain::shared_kernel::JobState::Pending,
+            "ASSIGNED" => hodei_server_domain::shared_kernel::JobState::Assigned,
             "SCHEDULED" => hodei_server_domain::shared_kernel::JobState::Scheduled,
             "RUNNING" => hodei_server_domain::shared_kernel::JobState::Running,
             "SUCCEEDED" => hodei_server_domain::shared_kernel::JobState::Succeeded,
@@ -207,7 +209,8 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
             message: format!("Failed to save job: {}", e),
         })?;
 
-        // Atomic Enqueue if Pending
+        // Atomic Enqueue if Pending (only PENDING jobs go to the queue)
+        // ASSIGNED jobs are already removed from queue and should not be re-enqueued
         if matches!(
             job.state(),
             hodei_server_domain::shared_kernel::JobState::Pending

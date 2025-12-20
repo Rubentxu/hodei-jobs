@@ -185,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .ok()
                         .flatten();
 
+                // Get existing provider ID or create new one
                 let provider_id = docker_config
                     .as_ref()
                     .map(|c| c.id.clone())
@@ -197,8 +198,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use hodei_server_domain::ProviderType;
                     use hodei_server_domain::providers::{DockerConfig, ProviderTypeConfig};
 
+                    // IMPORTANT: Use the same provider_id for the config
                     let docker_provider_config =
-                        hodei_server_domain::providers::ProviderConfig::new(
+                        hodei_server_domain::providers::ProviderConfig::with_id(
+                            provider_id.clone(),
                             "Docker".to_string(),
                             ProviderType::Docker,
                             ProviderTypeConfig::Docker(DockerConfig::default()),

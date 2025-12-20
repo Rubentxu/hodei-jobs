@@ -123,7 +123,7 @@ pub struct RegisterWorkerResponse {
 /// PRD v6.0: Mensajes del Worker al Servidor (Connect stream)
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerMessage {
-    #[prost(oneof = "worker_message::Payload", tags = "1, 2, 6, 3, 4, 5")]
+    #[prost(oneof = "worker_message::Payload", tags = "1, 2, 6, 3, 4, 5, 7")]
     pub payload: ::core::option::Option<worker_message::Payload>,
 }
 /// Nested message and enum types in `WorkerMessage`.
@@ -142,6 +142,8 @@ pub mod worker_message {
         Stats(super::ResourceUsageMessage),
         #[prost(message, tag = "5")]
         Status(super::WorkerStatusMessage),
+        #[prost(message, tag = "7")]
+        Ack(super::AckMessage),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -292,6 +294,8 @@ pub struct AckMessage {
     pub message_id: ::prost::alloc::string::String,
     #[prost(bool, tag = "2")]
     pub success: bool,
+    #[prost(string, tag = "3")]
+    pub worker_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KeepAliveMessage {

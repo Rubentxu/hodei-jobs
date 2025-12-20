@@ -482,7 +482,7 @@ fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
     };
 
     let current_job_id: Option<uuid::Uuid> = row.get("current_job_id");
-    let last_heartbeat: chrono::DateTime<chrono::Utc> = row.get("last_heartbeat");
+    let last_heartbeat: Option<chrono::DateTime<chrono::Utc>> = row.get("last_heartbeat");
     let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
     let updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
 

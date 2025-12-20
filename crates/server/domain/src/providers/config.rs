@@ -57,6 +57,31 @@ impl ProviderConfig {
         }
     }
 
+    /// Creates a new ProviderConfig with a specific ID
+    pub fn with_id(
+        id: ProviderId,
+        name: String,
+        provider_type: ProviderType,
+        type_config: ProviderTypeConfig,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id,
+            name,
+            provider_type,
+            status: ProviderStatus::Active,
+            capabilities: ProviderCapabilities::default(),
+            type_config,
+            priority: 0,
+            max_workers: 10,
+            active_workers: 0,
+            created_at: now,
+            updated_at: now,
+            tags: vec![],
+            metadata: HashMap::new(),
+        }
+    }
+
     pub fn with_priority(mut self, priority: i32) -> Self {
         self.priority = priority;
         self

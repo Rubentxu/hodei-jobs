@@ -6,6 +6,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum JobState {
     Pending,
+    Assigned,
     Scheduled,
     Running,
     Succeeded,
@@ -14,10 +15,77 @@ pub enum JobState {
     Timeout,
 }
 
+impl JobState {
+    /// Valida si una transición de estado es válida según el State Machine del dominio
+    ///
+    /// Transiciones válidas:
+    /// - Pending → Assigned, Scheduled, Failed, Cancelled, Timeout
+    /// - Assigned → Running, Failed, Timeout, Cancelled
+    /// - Scheduled → Running, Failed, Timeout, Cancelled
+    /// - Running → Succeeded, Failed, Cancelled, Timeout
+    /// - Succeeded, Failed, Cancelled, Timeout → (terminal, no transiciones salientes)
+    pub fn can_transition_to(&self, new_state: &JobState) -> bool {
+        match (self, new_state) {
+            // Mismo estado - no es una transición válida
+            (s, n) if s == n => false,
+
+            // Transiciones válidas desde Pending
+            (JobState::Pending, JobState::Assigned) => true,
+            (JobState::Pending, JobState::Scheduled) => true,
+            (JobState::Pending, JobState::Failed) => true,
+            (JobState::Pending, JobState::Cancelled) => true,
+            (JobState::Pending, JobState::Timeout) => true,
+
+            // Transiciones válidas desde Assigned
+            (JobState::Assigned, JobState::Running) => true,
+            (JobState::Assigned, JobState::Failed) => true,
+            (JobState::Assigned, JobState::Timeout) => true,
+            (JobState::Assigned, JobState::Cancelled) => true,
+
+            // Transiciones válidas desde Scheduled
+            (JobState::Scheduled, JobState::Running) => true,
+            (JobState::Scheduled, JobState::Failed) => true,
+            (JobState::Scheduled, JobState::Timeout) => true,
+            (JobState::Scheduled, JobState::Cancelled) => true,
+
+            // Transiciones válidas desde Running
+            (JobState::Running, JobState::Succeeded) => true,
+            (JobState::Running, JobState::Failed) => true,
+            (JobState::Running, JobState::Cancelled) => true,
+            (JobState::Running, JobState::Timeout) => true,
+
+            // Todas las demás transiciones son inválidas
+            // Esto incluye:
+            // - Estados terminales que intentan transicionar
+            // - Transiciones hacia Pending (no se puede volver atrás)
+            // - Transiciones hacia Assigned desde cualquier estado excepto Pending
+            // - Transiciones hacia Scheduled desde cualquier estado excepto Pending
+            _ => false,
+        }
+    }
+
+    /// Retorna true si el estado es terminal (no se puede continuar)
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::Timeout
+        )
+    }
+
+    /// Retorna true si el estado está en progreso
+    pub fn is_in_progress(&self) -> bool {
+        matches!(
+            self,
+            JobState::Pending | JobState::Assigned | JobState::Scheduled | JobState::Running
+        )
+    }
+}
+
 impl fmt::Display for JobState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             JobState::Pending => write!(f, "PENDING"),
+            JobState::Assigned => write!(f, "ASSIGNED"),
             JobState::Scheduled => write!(f, "SCHEDULED"),
             JobState::Running => write!(f, "RUNNING"),
             JobState::Succeeded => write!(f, "SUCCEEDED"),
@@ -34,6 +102,7 @@ impl FromStr for JobState {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "PENDING" => Ok(JobState::Pending),
+            "ASSIGNED" => Ok(JobState::Assigned),
             "SCHEDULED" => Ok(JobState::Scheduled),
             "RUNNING" => Ok(JobState::Running),
             "SUCCEEDED" => Ok(JobState::Succeeded),
@@ -51,12 +120,13 @@ impl TryFrom<i32> for JobState {
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(JobState::Pending),
-            1 => Ok(JobState::Scheduled),
-            2 => Ok(JobState::Running),
-            3 => Ok(JobState::Succeeded),
-            4 => Ok(JobState::Failed),
-            5 => Ok(JobState::Cancelled),
-            6 => Ok(JobState::Timeout),
+            1 => Ok(JobState::Assigned),
+            2 => Ok(JobState::Scheduled),
+            3 => Ok(JobState::Running),
+            4 => Ok(JobState::Succeeded),
+            5 => Ok(JobState::Failed),
+            6 => Ok(JobState::Cancelled),
+            7 => Ok(JobState::Timeout),
             _ => Err(format!("Invalid JobState value: {}", value)),
         }
     }
@@ -66,12 +136,13 @@ impl From<&JobState> for i32 {
     fn from(state: &JobState) -> Self {
         match state {
             JobState::Pending => 0,
-            JobState::Scheduled => 1,
-            JobState::Running => 2,
-            JobState::Succeeded => 3,
-            JobState::Failed => 4,
-            JobState::Cancelled => 5,
-            JobState::Timeout => 6,
+            JobState::Assigned => 1,
+            JobState::Scheduled => 2,
+            JobState::Running => 3,
+            JobState::Succeeded => 4,
+            JobState::Failed => 5,
+            JobState::Cancelled => 6,
+            JobState::Timeout => 7,
         }
     }
 }
@@ -362,6 +433,7 @@ mod tests {
     #[test]
     fn test_job_state_from_str() {
         assert_eq!("PENDING".parse::<JobState>().unwrap(), JobState::Pending);
+        assert_eq!("ASSIGNED".parse::<JobState>().unwrap(), JobState::Assigned);
         assert_eq!(
             "SCHEDULED".parse::<JobState>().unwrap(),
             JobState::Scheduled
@@ -384,12 +456,13 @@ mod tests {
     #[test]
     fn test_job_state_try_from_i32() {
         assert_eq!(JobState::try_from(0).unwrap(), JobState::Pending);
-        assert_eq!(JobState::try_from(1).unwrap(), JobState::Scheduled);
-        assert_eq!(JobState::try_from(2).unwrap(), JobState::Running);
-        assert_eq!(JobState::try_from(3).unwrap(), JobState::Succeeded);
-        assert_eq!(JobState::try_from(4).unwrap(), JobState::Failed);
-        assert_eq!(JobState::try_from(5).unwrap(), JobState::Cancelled);
-        assert_eq!(JobState::try_from(6).unwrap(), JobState::Timeout);
+        assert_eq!(JobState::try_from(1).unwrap(), JobState::Assigned);
+        assert_eq!(JobState::try_from(2).unwrap(), JobState::Scheduled);
+        assert_eq!(JobState::try_from(3).unwrap(), JobState::Running);
+        assert_eq!(JobState::try_from(4).unwrap(), JobState::Succeeded);
+        assert_eq!(JobState::try_from(5).unwrap(), JobState::Failed);
+        assert_eq!(JobState::try_from(6).unwrap(), JobState::Cancelled);
+        assert_eq!(JobState::try_from(7).unwrap(), JobState::Timeout);
 
         assert!(JobState::try_from(99).is_err());
     }
@@ -397,12 +470,13 @@ mod tests {
     #[test]
     fn test_job_state_into_i32() {
         assert_eq!(i32::from(&JobState::Pending), 0);
-        assert_eq!(i32::from(&JobState::Scheduled), 1);
-        assert_eq!(i32::from(&JobState::Running), 2);
-        assert_eq!(i32::from(&JobState::Succeeded), 3);
-        assert_eq!(i32::from(&JobState::Failed), 4);
-        assert_eq!(i32::from(&JobState::Cancelled), 5);
-        assert_eq!(i32::from(&JobState::Timeout), 6);
+        assert_eq!(i32::from(&JobState::Assigned), 1);
+        assert_eq!(i32::from(&JobState::Scheduled), 2);
+        assert_eq!(i32::from(&JobState::Running), 3);
+        assert_eq!(i32::from(&JobState::Succeeded), 4);
+        assert_eq!(i32::from(&JobState::Failed), 5);
+        assert_eq!(i32::from(&JobState::Cancelled), 6);
+        assert_eq!(i32::from(&JobState::Timeout), 7);
     }
 
     // WorkerState tests

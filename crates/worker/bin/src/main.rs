@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Load configuration
-    let config = WorkerConfig::default();
+    let mut config = WorkerConfig::default();
 
     // T4.3: Configure TLS if enabled
     let tls_config = if config.is_mtls_enabled() {
@@ -131,8 +131,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Register worker (or re-register on reconnect)
         info!("Registering worker...");
         match register_worker(&mut client, &config, &mut shutdown_rx, &current_session_id).await {
-            Ok(sid) => {
+            Ok((sid, assigned_id)) => {
                 current_session_id = Some(sid.clone());
+
+                // Update config with assigned worker_id from server
+                if let Some(worker_id) = assigned_id {
+                    config.worker_id = worker_id.value;
+                    info!("🔑 Received assigned worker_id: {}", config.worker_id);
+                }
+
                 info!("✅ Worker registered successfully with session: {}", sid);
             }
             Err(e) => {
@@ -236,6 +243,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let job_id = run_job.job_id.clone();
                                             let timeout_ms = run_job.timeout_ms as u64;
                                             let jobs_registry = running_jobs.clone();
+
+                                            // Send acknowledgment to server immediately
+                                            let ack_msg = WorkerMessage {
+                                                payload: Some(WorkerPayload::Ack(hodei_jobs::AckMessage {
+                                                    message_id: format!("job-{}", run_job.job_id),
+                                                    success: true,
+                                                    worker_id: config.worker_id.clone(),
+                                                }))
+                                            };
+                                            if let Err(e) = out_tx.send(ack_msg).await {
+                                                error!("Failed to send acknowledgment: {}", e);
+                                            } else {
+                                                info!("✅ Sent acknowledgment for job {}", run_job.job_id);
+                                            }
 
                                             let handle = tokio::spawn(async move {
                                                 let result = exec.execute_from_command(
@@ -385,7 +406,7 @@ async fn register_worker(
     config: &WorkerConfig,
     shutdown_rx: &mut tokio::sync::broadcast::Receiver<()>,
     session_id: &Option<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<(String, Option<WorkerId>), Box<dyn std::error::Error>> {
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(30);
 
@@ -428,11 +449,17 @@ async fn register_worker(
         match client.register(request).await {
             Ok(response) => {
                 let resp = response.into_inner();
+                let assigned_worker_id = resp.worker_id;
                 info!(
                     "✓ {} (ID: {}, Session: {})",
-                    resp.message, config.worker_id, resp.session_id
+                    resp.message,
+                    assigned_worker_id
+                        .as_ref()
+                        .map(|id| &id.value)
+                        .unwrap_or(&config.worker_id),
+                    resp.session_id
                 );
-                return Ok(resp.session_id);
+                return Ok((resp.session_id, assigned_worker_id));
             }
             Err(e) => {
                 warn!(

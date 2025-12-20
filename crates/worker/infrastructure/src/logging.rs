@@ -10,6 +10,7 @@ use tracing::{error, warn};
 use crate::metrics::WorkerMetrics;
 
 /// FileLogger for local job log persistence
+#[derive(Clone)]
 pub struct FileLogger {
     log_dir: PathBuf,
 }
@@ -96,8 +97,8 @@ impl LogBatcher {
         }
     }
 
-    /// Flush the buffer to the channel (non-blocking)
-    /// Returns true if flush succeeded, false if dropped due to backpressure
+    /// Flush the buffer to the channel (blocking)
+    /// Returns true if flush succeeded, false if failed
     pub async fn flush(&mut self) -> bool {
         if self.buffer.is_empty() {
             return true;
@@ -115,21 +116,20 @@ impl LogBatcher {
             })),
         };
 
-        // Try to send (non-blocking for backpressure)
-        let result = self.tx.try_send(msg);
-
-        match result {
-            Ok(_) => {
-                self.last_flush = Instant::now();
-                true
-            }
+        // Send (blocking with timeout to avoid hanging)
+        match tokio::time::timeout(Duration::from_secs(5), self.tx.send(msg)).await {
+            Ok(result) => match result {
+                Ok(_) => {
+                    self.last_flush = Instant::now();
+                    true
+                }
+                Err(_) => {
+                    warn!("Failed to send log batch to server");
+                    false
+                }
+            },
             Err(_) => {
-                // On backpressure, logs are dropped to prioritize job execution
-                // This is acceptable in high-performance scenarios
-                warn!("Log batch dropped due to backpressure");
-                self.metrics
-                    .dropped_logs
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                warn!("Log batch send timed out after 5 seconds");
                 false
             }
         }

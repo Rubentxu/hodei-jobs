@@ -87,7 +87,8 @@ impl JobExecutionServiceImpl {
     fn map_job_state(state: &hodei_server_domain::shared_kernel::JobState) -> JobStatus {
         match state {
             hodei_server_domain::shared_kernel::JobState::Pending => JobStatus::Pending,
-            hodei_server_domain::shared_kernel::JobState::Scheduled => JobStatus::Assigned,
+            hodei_server_domain::shared_kernel::JobState::Assigned => JobStatus::Assigned,
+            hodei_server_domain::shared_kernel::JobState::Scheduled => JobStatus::Queued,
             hodei_server_domain::shared_kernel::JobState::Running => JobStatus::Running,
             hodei_server_domain::shared_kernel::JobState::Succeeded => JobStatus::Completed,
             hodei_server_domain::shared_kernel::JobState::Failed => JobStatus::Failed,

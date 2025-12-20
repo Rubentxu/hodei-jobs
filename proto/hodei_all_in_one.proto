@@ -259,6 +259,7 @@ message WorkerMessage {
         JobResultMessage result = 3;
         ResourceUsageMessage stats = 4;
         WorkerStatusNotification status = 5;
+        AckMessage ack = 7;
     }
 }
 
@@ -351,6 +352,7 @@ message CancelJobCommand {
 message AckMessage {
     string message_id = 1;
     bool success = 2;
+    string worker_id = 3;
 }
 
 message KeepAliveMessage {

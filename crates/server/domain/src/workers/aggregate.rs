@@ -271,10 +271,13 @@ impl Worker {
         spec: WorkerSpec,
         state: WorkerState,
         current_job_id: Option<JobId>,
-        last_heartbeat: DateTime<Utc>,
+        last_heartbeat: Option<DateTime<Utc>>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
     ) -> Self {
+        // Use current time if last_heartbeat is None (worker hasn't sent heartbeat yet)
+        let heartbeat = last_heartbeat.unwrap_or_else(chrono::Utc::now);
+
         Self {
             id: handle.worker_id.clone(),
             handle,
@@ -282,7 +285,7 @@ impl Worker {
             spec,
             current_job_id,
             jobs_executed: 0, // Could be stored in DB if needed
-            last_heartbeat,
+            last_heartbeat: heartbeat,
             created_at,
             updated_at,
         }

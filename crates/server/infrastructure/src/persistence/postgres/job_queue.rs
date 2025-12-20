@@ -157,41 +157,156 @@ impl JobQueue for PostgresJobQueue {
             message: format!("Failed to enqueue job: {}", e),
         })?;
 
-        tracing::info!("PostgresJobQueue::enqueue result - rows_affected: {}", result.rows_affected());
+        tracing::info!(
+            "PostgresJobQueue::enqueue result - rows_affected: {}",
+            result.rows_affected()
+        );
         Ok(())
     }
 
     async fn dequeue(&self) -> Result<Option<Job>> {
-        let row: Option<sqlx::postgres::PgRow> = sqlx::query(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to start transaction for dequeue: {}", e),
+            })?;
+
+        // Atomically claim the job by updating its state and removing from queue
+        let claim_result: Option<(
+            uuid::Uuid,
+            serde_json::Value,
+            String,
+            Option<uuid::Uuid>,
+            Option<serde_json::Value>,
+            i32,
+            i32,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<serde_json::Value>,
+            Option<String>,
+            serde_json::Value,
+        )> = sqlx::query_as(
             r#"
-            SELECT j.id, j.spec, j.state, j.selected_provider_id, j.execution_context, j.attempts, j.max_attempts,
-                   j.created_at, j.started_at, j.completed_at, j.result, j.error_message, j.metadata
-            FROM job_queue jq
-            JOIN jobs j ON jq.job_id = j.id
-            WHERE j.state = 'PENDING'
-            ORDER BY jq.enqueued_at ASC
-            LIMIT 1
+            WITH claimed_job AS (
+                SELECT jq.job_id
+                FROM job_queue jq
+                WHERE jq.job_id IN (
+                    SELECT id FROM jobs WHERE state = 'PENDING'
+                )
+                ORDER BY jq.enqueued_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE jobs j
+            SET state = 'ASSIGNED'
+            WHERE j.id = (SELECT job_id FROM claimed_job)
+            RETURNING j.id, j.spec, j.state, j.selected_provider_id, j.execution_context,
+                      j.attempts, j.max_attempts, j.created_at, j.started_at,
+                      j.completed_at, j.result, j.error_message, j.metadata
             "#,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to dequeue job: {}", e),
+            message: format!("Failed to claim job: {}", e),
         })?;
 
-        if let Some(row) = row {
-            let job_id: uuid::Uuid = row.get("id");
-            let _ = sqlx::query("DELETE FROM job_queue WHERE job_id = $1")
+        if let Some(job_data) = claim_result {
+            // Remove from queue
+            let job_id = job_data.0;
+            sqlx::query("DELETE FROM job_queue WHERE job_id = $1")
                 .bind(job_id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| DomainError::InfrastructureError {
                     message: format!("Failed to remove dequeued job from queue: {}", e),
                 })?;
 
-            let job = map_row_to_job(row)?;
+            tx.commit()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to commit dequeue transaction: {}", e),
+                })?;
+
+            // Reconstruct job from data
+            let (
+                id,
+                spec_json,
+                state_str,
+                selected_provider_id,
+                execution_context_json,
+                attempts,
+                max_attempts,
+                created_at,
+                started_at,
+                completed_at,
+                result_json,
+                error_message,
+                metadata_json,
+            ) = job_data;
+
+            let spec: hodei_server_domain::jobs::JobSpec = serde_json::from_value(spec_json)
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to deserialize job spec: {}", e),
+                })?;
+
+            let execution_context = if let Some(ctx_json) = execution_context_json {
+                Some(serde_json::from_value(ctx_json).map_err(|e| {
+                    DomainError::InfrastructureError {
+                        message: format!("Failed to deserialize execution context: {}", e),
+                    }
+                })?)
+            } else {
+                None
+            };
+
+            let result = if let Some(res_json) = result_json {
+                Some(serde_json::from_value(res_json).map_err(|e| {
+                    DomainError::InfrastructureError {
+                        message: format!("Failed to deserialize result: {}", e),
+                    }
+                })?)
+            } else {
+                None
+            };
+
+            let metadata: std::collections::HashMap<String, String> =
+                serde_json::from_value(metadata_json).unwrap_or_default();
+
+            let state = match state_str.as_str() {
+                "ASSIGNED" => JobState::Assigned,
+                "PENDING" => JobState::Pending,
+                "SCHEDULED" => JobState::Scheduled,
+                "RUNNING" => JobState::Running,
+                "SUCCEEDED" => JobState::Succeeded,
+                "FAILED" => JobState::Failed,
+                "CANCELLED" => JobState::Cancelled,
+                "TIMEOUT" => JobState::Timeout,
+                _ => JobState::Failed,
+            };
+
+            let job = Job::hydrate(
+                JobId(id),
+                spec,
+                state,
+                selected_provider_id.map(ProviderId),
+                execution_context,
+                attempts as u32,
+                max_attempts as u32,
+                created_at,
+                started_at,
+                completed_at,
+                result,
+                error_message,
+                metadata,
+            );
+
             Ok(Some(job))
         } else {
+            tx.rollback().await.ok();
             Ok(None)
         }
     }
