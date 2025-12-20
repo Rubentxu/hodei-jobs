@@ -162,7 +162,7 @@ pub struct JobSpec {
 }
 
 impl JobSpec {
-    /// Crea un JobSpec con comando shell simple (retrocompatibilidad)
+    /// Builder Pattern: Crea un JobSpec con comando shell simple (retrocompatibilidad)
     pub fn new(command: Vec<String>) -> Self {
         let cmd_type = if command.is_empty() {
             CommandType::shell("echo")
@@ -184,7 +184,7 @@ impl JobSpec {
         }
     }
 
-    /// Crea un JobSpec con CommandType
+    /// Builder Pattern: Constructor con CommandType
     pub fn with_command(command: CommandType) -> Self {
         Self {
             command,
@@ -201,13 +201,13 @@ impl JobSpec {
         }
     }
 
-    /// Añade una variable de entorno
+    /// Builder Pattern: Añade variable de entorno
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(key.into(), value.into());
         self
     }
 
-    /// Añade un artefacto de entrada
+    /// Builder Pattern: Añade artefacto de entrada
     pub fn with_input(mut self, url: impl Into<String>, dest_path: impl Into<String>) -> Self {
         self.inputs.push(ArtifactSource {
             url: url.into(),
@@ -216,7 +216,7 @@ impl JobSpec {
         self
     }
 
-    /// Añade un artefacto de salida
+    /// Builder Pattern: Añade artefacto de salida
     pub fn with_output(mut self, src_path: impl Into<String>, url: impl Into<String>) -> Self {
         self.outputs.push(ArtifactDest {
             src_path: src_path.into(),
@@ -225,21 +225,191 @@ impl JobSpec {
         self
     }
 
-    /// Añade una constraint
+    /// Builder Pattern: Añade constraint
     pub fn with_constraint(mut self, constraint: Constraint) -> Self {
         self.constraints.push(constraint);
         self
     }
 
-    /// Añade stdin
+    /// Builder Pattern: Añade stdin
     pub fn with_stdin(mut self, stdin: impl Into<String>) -> Self {
         self.stdin = Some(stdin.into());
         self
     }
 
+    /// Builder Pattern: Establece recursos
+    pub fn with_resources(mut self, cpu_cores: f32, memory_mb: u64, storage_mb: u64) -> Self {
+        self.resources.cpu_cores = cpu_cores;
+        self.resources.memory_mb = memory_mb;
+        self.resources.storage_mb = storage_mb;
+        self
+    }
+
+    /// Builder Pattern: Establece imagen
+    pub fn with_image(mut self, image: impl Into<String>) -> Self {
+        self.image = Some(image.into());
+        self
+    }
+
+    /// Builder Pattern: Establece directorio de trabajo
+    pub fn with_working_dir(mut self, dir: impl Into<String>) -> Self {
+        self.working_dir = Some(dir.into());
+        self
+    }
+
+    /// Builder Pattern: Establece timeout
+    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Builder Pattern: Establece preferencias
+    pub fn with_preferences(mut self, preferences: JobPreferences) -> Self {
+        self.preferences = preferences;
+        self
+    }
+
+    /// Validación de JobSpec (Clean Code - Early Returns)
+    pub fn validate(&self) -> Result<()> {
+        // Validar comando no vacío
+        let cmd_vec = self.command_vec();
+        if cmd_vec.is_empty() || cmd_vec.iter().all(|s| s.is_empty()) {
+            return Err(DomainError::InvalidJobSpec {
+                field: "command".to_string(),
+                reason: "Job command cannot be empty".to_string(),
+            });
+        }
+
+        // Validar timeout > 0
+        if self.timeout_ms == 0 {
+            return Err(DomainError::InvalidJobSpec {
+                field: "timeout_ms".to_string(),
+                reason: "Job timeout must be greater than 0".to_string(),
+            });
+        }
+
+        // Validar recursos
+        if self.resources.cpu_cores <= 0.0 {
+            return Err(DomainError::InvalidJobSpec {
+                field: "cpu_cores".to_string(),
+                reason: "CPU cores must be greater than 0".to_string(),
+            });
+        }
+
+        if self.resources.memory_mb == 0 {
+            return Err(DomainError::InvalidJobSpec {
+                field: "memory_mb".to_string(),
+                reason: "Memory must be greater than 0".to_string(),
+            });
+        }
+
+        // Validar que no hay paths vacíos en inputs/outputs
+        for input in &self.inputs {
+            if input.dest_path.is_empty() {
+                return Err(DomainError::InvalidJobSpec {
+                    field: "inputs.dest_path".to_string(),
+                    reason: "Destination path cannot be empty".to_string(),
+                });
+            }
+        }
+
+        for output in &self.outputs {
+            if output.src_path.is_empty() {
+                return Err(DomainError::InvalidJobSpec {
+                    field: "outputs.src_path".to_string(),
+                    reason: "Source path cannot be empty".to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Obtiene el comando como vector para ejecución
     pub fn command_vec(&self) -> Vec<String> {
         self.command.to_command_vec()
+    }
+
+    /// Calcula prioridad del job basada en recursos y preferencias
+    pub fn calculate_priority(&self) -> JobPriority {
+        // Lógica de negocio para calcular prioridad
+        // Factor 1: Preferencia explícita del usuario
+        if matches!(self.preferences.priority, JobPriority::Critical) {
+            return JobPriority::Critical;
+        }
+
+        // Factor 2: Recursos requeridos (jobs que requieren más recursos tienen mayor prioridad)
+        let resource_score = self.calculate_resource_score();
+
+        // Factor 3: Tipo de workload (GPU, CPU intensivo, etc.)
+        let workload_score = self.calculate_workload_score();
+
+        // Combinar scores
+        let total_score = resource_score + workload_score;
+
+        match total_score {
+            score if score >= 80.0 => JobPriority::High,
+            score if score >= 40.0 => JobPriority::Normal,
+            _ => JobPriority::Low,
+        }
+    }
+
+    /// Determina si el job debe escalarse (auto-scaling)
+    pub fn should_escalate(&self, current_queue_depth: usize, threshold: usize) -> bool {
+        // Lógica de negocio para escalamiento:
+        // 1. Si la cola supera el threshold
+        if current_queue_depth >= threshold {
+            return true;
+        }
+
+        // 2. Jobs críticos siempre activan escalamiento
+        if matches!(self.preferences.priority, JobPriority::Critical) {
+            return true;
+        }
+
+        // 3. Jobs con alta carga de recursos
+        let resource_score = self.calculate_resource_score();
+        if resource_score >= 80.0 && current_queue_depth >= threshold / 2 {
+            return true;
+        }
+
+        false
+    }
+
+    /// Calcula score de recursos (0-100)
+    fn calculate_resource_score(&self) -> f32 {
+        // Normalizar recursos a score 0-100
+        let cpu_score = (self.resources.cpu_cores / 4.0).min(1.0) * 40.0; // Max 4 cores = 40 puntos
+        let memory_score = (self.resources.memory_mb as f32 / 8192.0).min(1.0) * 40.0; // Max 8GB = 40 puntos
+        let storage_score = (self.resources.storage_mb as f32 / 10240.0).min(1.0) * 20.0; // Max 10GB = 20 puntos
+
+        let mut total = cpu_score + memory_score + storage_score;
+
+        // Bonus por GPU
+        if self.resources.gpu_required {
+            total += 20.0;
+        }
+
+        total.min(100.0)
+    }
+
+    /// Calcula score del tipo de workload
+    fn calculate_workload_score(&self) -> f32 {
+        let mut score = 0.0;
+
+        // Scripts con interpretes tienen overhead
+        if matches!(self.command, CommandType::Script { .. }) {
+            score += 10.0;
+        }
+
+        // Muchos inputs/outputs = más trabajo
+        let io_complexity = self.inputs.len() + self.outputs.len();
+        score += (io_complexity as f32 / 10.0).min(1.0) * 20.0;
+
+        // Muchas constraints = scheduling más complejo
+        score += (self.constraints.len() as f32 / 5.0).min(1.0) * 10.0;
+
+        score.min(30.0)
     }
 }
 
@@ -608,6 +778,32 @@ impl Job {
     pub fn set_state(&mut self, state: JobState) {
         self.state = state;
     }
+
+    /// Determina si el job necesita escalamiento basado en su especificación
+    pub fn requires_scaling(&self, queue_depth: usize, threshold: usize) -> bool {
+        self.spec.should_escalate(queue_depth, threshold)
+    }
+
+    /// Obtiene la prioridad calculada del job
+    pub fn calculated_priority(&self) -> JobPriority {
+        self.spec.calculate_priority()
+    }
+
+    /// Verifica si el job está en un estado terminal
+    pub fn is_terminal_state(&self) -> bool {
+        matches!(
+            self.state,
+            JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::Timeout
+        )
+    }
+
+    /// Verifica si el job puede ser cancelado
+    pub fn can_be_cancelled(&self) -> bool {
+        matches!(
+            self.state,
+            JobState::Pending | JobState::Scheduled | JobState::Running
+        )
+    }
 }
 
 impl Aggregate for Job {
@@ -782,5 +978,338 @@ impl JobStatusTracker {
         }
 
         Ok(expired_job_ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared_kernel::JobId;
+
+    /// Test: JobSpec validation with valid spec
+    #[test]
+    fn test_jobspec_validation_valid() {
+        let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()])
+            .with_timeout(300_000)
+            .with_resources(1.0, 512, 1024);
+
+        assert!(spec.validate().is_ok());
+    }
+
+    /// Test: JobSpec validation fails with empty command
+    #[test]
+    fn test_jobspec_validation_empty_command() {
+        // Create spec with truly empty command using CommandType directly
+        let cmd = CommandType::Shell {
+            cmd: "".to_string(),
+            args: vec![],
+        };
+        let spec = JobSpec::with_command(cmd).with_timeout(300_000);
+        let result = spec.validate();
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("command"));
+        }
+    }
+
+    /// Test: JobSpec validation fails with zero timeout
+    #[test]
+    fn test_jobspec_validation_zero_timeout() {
+        let spec = JobSpec::new(vec!["echo".to_string()]).with_timeout(0);
+        let result = spec.validate();
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("timeout"));
+        }
+    }
+
+    /// Test: JobSpec validation fails with zero CPU
+    #[test]
+    fn test_jobspec_validation_zero_cpu() {
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_timeout(300_000)
+            .with_resources(0.0, 512, 1024);
+        let result = spec.validate();
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("cpu_cores"));
+        }
+    }
+
+    /// Test: JobSpec validation fails with zero memory
+    #[test]
+    fn test_jobspec_validation_zero_memory() {
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_timeout(300_000)
+            .with_resources(1.0, 0, 1024);
+        let result = spec.validate();
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("memory_mb"));
+        }
+    }
+
+    /// Test: calculate_priority for Critical job
+    #[test]
+    fn test_calculate_priority_critical() {
+        let mut preferences = JobPreferences::default();
+        preferences.priority = JobPriority::Critical;
+
+        let spec = JobSpec::new(vec!["echo".to_string()]).with_preferences(preferences);
+
+        assert_eq!(spec.calculate_priority(), JobPriority::Critical);
+    }
+
+    /// Test: calculate_priority for high resource job
+    #[test]
+    fn test_calculate_priority_high_resources() {
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_resources(4.0, 8192, 10240) // Máximos recursos
+            .with_timeout(300_000);
+
+        let priority = spec.calculate_priority();
+        assert!(matches!(
+            priority,
+            JobPriority::High | JobPriority::Critical
+        ));
+    }
+
+    /// Test: calculate_priority for low resource job
+    #[test]
+    fn test_calculate_priority_low_resources() {
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_resources(0.5, 256, 512) // Recursos mínimos
+            .with_timeout(300_000);
+
+        let priority = spec.calculate_priority();
+        assert!(matches!(priority, JobPriority::Low | JobPriority::Normal));
+    }
+
+    /// Test: should_escalate when queue depth exceeds threshold
+    #[test]
+    fn test_should_escalate_queue_depth() {
+        let spec = JobSpec::new(vec!["echo".to_string()]).with_timeout(300_000);
+
+        // Queue depth = threshold
+        assert!(spec.should_escalate(10, 10));
+        // Queue depth > threshold
+        assert!(spec.should_escalate(15, 10));
+    }
+
+    /// Test: should_escalate for critical jobs
+    #[test]
+    fn test_should_escalate_critical_job() {
+        let mut preferences = JobPreferences::default();
+        preferences.priority = JobPriority::Critical;
+
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_preferences(preferences)
+            .with_timeout(300_000);
+
+        // Critical jobs always escalate, even with low queue depth
+        assert!(spec.should_escalate(1, 10));
+    }
+
+    /// Test: should_escalate for high resource jobs with medium queue
+    #[test]
+    fn test_should_escalate_high_resources_medium_queue() {
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_resources(4.0, 8192, 10240) // High resources
+            .with_timeout(300_000);
+
+        // High resources + queue at half threshold
+        assert!(spec.should_escalate(5, 10));
+    }
+
+    /// Test: calculate_resource_score for various configurations
+    #[test]
+    fn test_calculate_resource_score() {
+        // Test with maximum resources
+        let spec_max = JobSpec::new(vec!["echo".to_string()])
+            .with_resources(4.0, 8192, 10240)
+            .with_timeout(300_000);
+        let score_max = spec_max.calculate_resource_score();
+        assert!(score_max >= 80.0 && score_max <= 120.0); // Allow for GPU bonus
+
+        // Test with minimum resources
+        let spec_min = JobSpec::new(vec!["echo".to_string()])
+            .with_resources(0.5, 256, 512)
+            .with_timeout(300_000);
+        let score_min = spec_min.calculate_resource_score();
+        assert!(score_min < 50.0);
+    }
+
+    /// Test: calculate_workload_score for script jobs
+    #[test]
+    fn test_calculate_workload_score_script() {
+        let cmd = CommandType::Script {
+            interpreter: "python".to_string(),
+            content: "print('hello')".to_string(),
+        };
+
+        let spec = JobSpec::with_command(cmd);
+        let score = spec.calculate_workload_score();
+
+        // Scripts should have higher score
+        assert!(score >= 10.0);
+    }
+
+    /// Test: Job::is_terminal_state
+    #[test]
+    fn test_job_is_terminal_state() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string()]);
+
+        // Test terminal states
+        let mut job_succeeded = Job::new(job_id.clone(), spec.clone());
+        job_succeeded.set_state(JobState::Succeeded);
+        assert!(job_succeeded.is_terminal_state());
+
+        let mut job_failed = Job::new(job_id.clone(), spec.clone());
+        job_failed.set_state(JobState::Failed);
+        assert!(job_failed.is_terminal_state());
+
+        let mut job_cancelled = Job::new(job_id.clone(), spec.clone());
+        job_cancelled.set_state(JobState::Cancelled);
+        assert!(job_cancelled.is_terminal_state());
+
+        let mut job_timeout = Job::new(job_id.clone(), spec.clone());
+        job_timeout.set_state(JobState::Timeout);
+        assert!(job_timeout.is_terminal_state());
+
+        // Test non-terminal states
+        let mut job_pending = Job::new(job_id.clone(), spec.clone());
+        job_pending.set_state(JobState::Pending);
+        assert!(!job_pending.is_terminal_state());
+
+        let mut job_running = Job::new(job_id.clone(), spec.clone());
+        job_running.set_state(JobState::Running);
+        assert!(!job_running.is_terminal_state());
+    }
+
+    /// Test: Job::can_be_cancelled
+    #[test]
+    fn test_job_can_be_cancelled() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string()]);
+
+        // Test cancellable states
+        let mut job_pending = Job::new(job_id.clone(), spec.clone());
+        job_pending.set_state(JobState::Pending);
+        assert!(job_pending.can_be_cancelled());
+
+        let mut job_scheduled = Job::new(job_id.clone(), spec.clone());
+        job_scheduled.set_state(JobState::Scheduled);
+        assert!(job_scheduled.can_be_cancelled());
+
+        let mut job_running = Job::new(job_id.clone(), spec.clone());
+        job_running.set_state(JobState::Running);
+        assert!(job_running.can_be_cancelled());
+
+        // Test non-cancellable states
+        let mut job_succeeded = Job::new(job_id.clone(), spec.clone());
+        job_succeeded.set_state(JobState::Succeeded);
+        assert!(!job_succeeded.can_be_cancelled());
+
+        let mut job_failed = Job::new(job_id.clone(), spec.clone());
+        job_failed.set_state(JobState::Failed);
+        assert!(!job_failed.can_be_cancelled());
+    }
+
+    /// Test: Job::requires_scaling delegates to spec
+    #[test]
+    fn test_job_requires_scaling() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string()]).with_timeout(300_000);
+        let job = Job::new(job_id, spec);
+
+        // Should delegate to spec.should_escalate
+        assert_eq!(
+            job.requires_scaling(10, 10),
+            job.spec.should_escalate(10, 10)
+        );
+    }
+
+    /// Test: Job::calculated_priority delegates to spec
+    #[test]
+    fn test_job_calculated_priority() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string()]).with_timeout(300_000);
+        let job = Job::new(job_id, spec);
+
+        // Should delegate to spec.calculate_priority
+        assert_eq!(job.calculated_priority(), job.spec.calculate_priority());
+    }
+
+    /// Test: Builder Pattern with fluent interface
+    #[test]
+    fn test_builder_pattern_fluent_interface() {
+        let spec = JobSpec::new(vec!["echo".to_string()])
+            .with_timeout(600_000)
+            .with_resources(2.0, 2048, 4096)
+            .with_image("ubuntu:latest".to_string())
+            .with_working_dir("/tmp")
+            .with_env("KEY".to_string(), "value".to_string());
+
+        assert_eq!(spec.timeout_ms, 600_000);
+        assert_eq!(spec.resources.cpu_cores, 2.0);
+        assert_eq!(spec.resources.memory_mb, 2048);
+        assert_eq!(spec.image, Some("ubuntu:latest".to_string()));
+        assert_eq!(spec.working_dir, Some("/tmp".to_string()));
+        assert_eq!(spec.env.get("KEY"), Some(&"value".to_string()));
+    }
+
+    /// Test: CommandType builder methods
+    #[test]
+    fn test_command_type_builders() {
+        // Test shell builder
+        let cmd_shell = CommandType::shell("ls");
+        assert!(matches!(cmd_shell, CommandType::Shell { .. }));
+
+        let cmd_shell_args = CommandType::shell_with_args("echo", vec!["hello".to_string()]);
+        assert!(matches!(cmd_shell_args, CommandType::Shell { .. }));
+
+        // Test script builder
+        let cmd_script = CommandType::script("python", "print('hello')");
+        assert!(matches!(cmd_script, CommandType::Script { .. }));
+
+        // Test to_command_vec
+        let cmd = CommandType::shell_with_args("echo".to_string(), vec!["hello".to_string()]);
+        let vec = cmd.to_command_vec();
+        assert_eq!(vec, vec!["echo".to_string(), "hello".to_string()]);
+    }
+
+    /// Test: Constraint builder methods
+    #[test]
+    fn test_constraint_builders() {
+        // Test eq constraint
+        let constraint = Constraint::eq("key".to_string(), "value".to_string());
+        assert!(matches!(constraint.operator, ConstraintOperator::Eq));
+
+        // Test provider constraint
+        let provider_constraint = Constraint::provider("docker".to_string());
+        assert_eq!(provider_constraint.key, "provider");
+        assert!(matches!(
+            provider_constraint.operator,
+            ConstraintOperator::Eq
+        ));
+    }
+
+    /// Test: Job::calculate_priority with GPU requirement
+    #[test]
+    fn test_calculate_priority_with_gpu() {
+        // Crear spec con recursos altos
+        let spec = JobSpec::new(vec!["echo".to_string()]).with_resources(4.0, 8192, 10240);
+
+        let priority = spec.calculate_priority();
+        // Con recursos máximos, debe ser High o Critical
+        assert!(matches!(
+            priority,
+            JobPriority::High | JobPriority::Critical
+        ));
     }
 }

@@ -265,6 +265,29 @@ impl Worker {
         }
     }
 
+    /// Restaura un worker desde los campos de la base de datos
+    pub fn from_database(
+        handle: WorkerHandle,
+        spec: WorkerSpec,
+        state: WorkerState,
+        current_job_id: Option<JobId>,
+        last_heartbeat: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id: handle.worker_id.clone(),
+            handle,
+            state,
+            spec,
+            current_job_id,
+            jobs_executed: 0, // Could be stored in DB if needed
+            last_heartbeat,
+            created_at,
+            updated_at,
+        }
+    }
+
     // === Getters ===
 
     pub fn id(&self) -> &WorkerId {

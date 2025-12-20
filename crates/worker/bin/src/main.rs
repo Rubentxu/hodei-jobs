@@ -132,12 +132,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Registering worker...");
         match register_worker(&mut client, &config, &mut shutdown_rx, &current_session_id).await {
             Ok(sid) => {
-                current_session_id = Some(sid);
+                current_session_id = Some(sid.clone());
+                info!("✅ Worker registered successfully with session: {}", sid);
             }
             Err(e) => {
                 if e.to_string().contains("Shutdown triggered") {
                     break;
                 }
+
+                // If registration fails and we had a session, it might be invalid
+                // Clear the session so we can re-register with a new OTP token
+                if current_session_id.is_some() {
+                    warn!(
+                        "Registration failed with existing session. Clearing session to re-register with new OTP token"
+                    );
+                    current_session_id = None;
+                }
+
                 error!("Registration failed: {}. Retrying in {:?}...", e, backoff);
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {

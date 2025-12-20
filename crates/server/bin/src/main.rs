@@ -192,6 +192,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 info!("Using Docker provider with ID: {}", provider_id);
 
+                // Save provider to database if it doesn't exist
+                if docker_config.is_none() {
+                    use hodei_server_domain::ProviderType;
+                    use hodei_server_domain::providers::{DockerConfig, ProviderTypeConfig};
+
+                    let docker_provider_config =
+                        hodei_server_domain::providers::ProviderConfig::new(
+                            "Docker".to_string(),
+                            ProviderType::Docker,
+                            ProviderTypeConfig::Docker(DockerConfig::default()),
+                        );
+
+                    if let Err(e) = provider_config_repo.save(&docker_provider_config).await {
+                        tracing::warn!("Failed to save Docker provider to database: {}", e);
+                    } else {
+                        info!("  ✓ Docker provider saved to database");
+                    }
+                }
+
                 // Build DockerProvider with the DB provider_id
                 match DockerProviderBuilder::new()
                     .with_provider_id(provider_id.clone())
@@ -284,41 +303,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if controller_enabled {
         info!("Starting JobController");
 
-        let sender = Arc::new(GrpcWorkerCommandSender::new(worker_service_for_controller));
+        let sender = Arc::new(GrpcWorkerCommandSender::new(
+            worker_service_for_controller.clone(),
+        ));
 
         // Pass provisioning_service to JobController for auto-provisioning workers
         let controller_provisioning = provisioning_service
             .clone()
             .map(|p| p as Arc<dyn hodei_server_application::workers::WorkerProvisioningService>);
 
-        let controller = Arc::new(JobController::new(
+        let controller = Arc::new(tokio::sync::Mutex::new(JobController::new(
             job_queue.clone(),
             job_repository.clone(),
             worker_registry.clone(),
+            provider_registry.clone(),
             SchedulerConfig::default(),
             sender,
             event_bus.clone(),
             controller_provisioning,
-        ));
+        )));
 
-        if let Err(e) = controller.clone().subscribe_to_events().await {
-            tracing::error!("Failed to subscribe JobController to events: {}", e);
-        }
+        // Keep the controller alive for the entire server lifetime
+        let controller_guard = Arc::clone(&controller);
 
-        // Run initial sweep to process any pending jobs
-        let sweep_controller = controller.clone();
+        // Start the JobController (starts continuous processing loop)
         tokio::spawn(async move {
-            info!("Running initial JobController sweep");
-            loop {
-                match sweep_controller.run_once().await {
-                    Ok(0) => break, // Queue empty
-                    Ok(count) => info!("Initial sweep processed {} jobs", count),
-                    Err(e) => {
-                        tracing::error!("Initial sweep failed: {}", e);
-                        break;
-                    }
+            info!("Starting JobController processing loop");
+            {
+                let mut controller = controller_guard.lock().await;
+                if let Err(e) = controller.start().await {
+                    tracing::error!("Failed to start JobController: {}", e);
                 }
             }
+            info!("JobController processing loop ended");
         });
     } else {
         info!("JobController loop disabled (HODEI_JOB_CONTROLLER_ENABLED != 1)");

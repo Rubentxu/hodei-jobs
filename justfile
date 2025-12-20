@@ -15,6 +15,16 @@ export DATABASE_URL := "postgres://postgres:postgres@localhost:5432/hodei_dev"
 
 # Default target
 _default:
+    @echo "🚀 Hodei Job Platform v8.0"
+    @echo "=========================="
+    @echo ""
+    @echo "💡 Quick commands:"
+    @echo "  just dev              Start full dev environment (requires Docker)"
+    @echo "  just dev-no-docker    Start dev environment WITHOUT Docker"
+    @echo "  just build            Build the project"
+    @echo "  just test             Run all tests"
+    @echo "  just help             Show all commands"
+    @echo ""
     @just --list
 
 # =============================================================================
@@ -64,6 +74,16 @@ generate:
 # Start development database
 dev-db:
     @echo "🗄️  Starting PostgreSQL database..."
+    @if ! command -v docker >/dev/null 2>&1; then \
+        echo "❌ Docker is not installed or not in PATH"; \
+        exit 1; \
+    fi
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        echo "💡 Try: sudo systemctl start docker"; \
+        echo "💡 Or use: just dev-no-docker"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.dev.yml up -d postgres
     @sleep 2
     @echo "✅ Database ready"
@@ -74,7 +94,7 @@ db-migrate:
     @just stop-server || true
     @echo "Waiting for port to be free..."
     @sleep 2
-    @cd crates/server/bin && timeout 5 cargo run --bin hodei-server-bin || true
+    @cd crates/server/bin && timeout 5 cargo run --bin hodei-server-bin 2>&1 || true
     @echo "✅ Migrations complete (server exited after startup)"
 
 # Start server in development mode (auto-compiles + idempotent)
@@ -87,6 +107,13 @@ dev:
     @just dev-db
     @just db-migrate
     @bash scripts/dev-server.sh
+
+# Start development environment without Docker
+dev-no-docker:
+    @echo "🚀 Starting development environment (NO DOCKER)..."
+    @echo "⚠️  Running without database - limited functionality"
+    @echo "💡 For full functionality, start Docker: sudo systemctl start docker"
+    @bash /home/rubentxu/Proyectos/rust/package/hodei-job-platform/dev_no_docker.sh
 
 # Stop any running server
 stop-server:
@@ -181,6 +208,11 @@ typecheck:
 # Full end-to-end test
 e2e:
     @echo "🎯 Running full end-to-end test..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        echo "💡 Start Docker: sudo systemctl start docker"; \
+        exit 1; \
+    fi
     @just dev-db
     @sleep 2
     @just db-migrate
@@ -200,6 +232,11 @@ e2e:
 # Test complete job flow
 e2e-job-flow:
     @echo "🎯 Testing complete job flow..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        echo "💡 Start Docker: sudo systemctl start docker"; \
+        exit 1; \
+    fi
     @just e2e &
     sleep 10
     @echo "Creating job..."
@@ -246,17 +283,41 @@ cert-check:
 # Open database shell
 db-shell:
     @echo "🗄️  Opening database shell..."
-    docker exec -it $$(docker ps -q -f name=postgres) psql -U postgres -d hodei_dev
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
+    @CONTAINER_ID=$$(docker ps -q -f name=postgres 2>/dev/null); \
+    if [ -z "$$CONTAINER_ID" ]; then \
+        echo "❌ PostgreSQL container is not running"; \
+        echo "💡 Start it with: just dev-db"; \
+        exit 1; \
+    fi
+    docker exec -it $$CONTAINER_ID psql -U postgres -d hodei_dev
 
 # Show database status
 db-status:
     @echo "📊 Database status:"
-    @docker exec -t $$(docker ps -q -f name=postgres) psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as total_jobs FROM jobs;" 2>/dev/null || echo "Database not ready"
-    @docker exec -t $$(docker ps -q -f name=postgres) psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as total_workers FROM workers;" 2>/dev/null || echo "Database not ready"
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
+    @CONTAINER_ID=$$(docker ps -q -f name=postgres 2>/dev/null); \
+    if [ -z "$$CONTAINER_ID" ]; then \
+        echo "⚠️  PostgreSQL container is not running"; \
+        echo "💡 Start it with: just dev-db"; \
+        exit 1; \
+    fi
+    docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as total_jobs FROM jobs;" 2>/dev/null || echo "Database not ready"
+    docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as total_workers FROM workers;" 2>/dev/null || echo "Database not ready"
 
 # Reset database
 db-reset:
     @echo "⚠️  Resetting database..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.dev.yml down -v
     docker compose -f docker-compose.dev.yml up -d postgres
     sleep 2
@@ -365,32 +426,70 @@ status:
     @echo "📊 System Status:"
     @echo "=================="
     @echo "Docker containers:"
-    @docker ps --filter "name=hodei" 2>/dev/null || echo "No containers running"
+    @if docker info >/dev/null 2>&1; then \
+        docker ps --filter "name=hodei" 2>/dev/null || echo "No containers running"; \
+    else \
+        echo "❌ Docker daemon is not running"; \
+    fi
     @echo ""
     @echo "Workers in database:"
-    @docker exec -t $$(docker ps -q -f name=postgres) psql -U postgres -d hodei_dev -c "SELECT id, state, last_heartbeat FROM workers ORDER BY last_heartbeat DESC LIMIT 5;" 2>/dev/null || echo "Database not accessible"
+    @if docker info >/dev/null 2>&1; then \
+        CONTAINER_ID=$$(docker ps -q -f name=postgres 2>/dev/null); \
+        if [ -n "$$CONTAINER_ID" ]; then \
+            docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT id, state, last_heartbeat FROM workers ORDER BY last_heartbeat DESC LIMIT 5;" 2>/dev/null || echo "Database not accessible"; \
+        else \
+            echo "⚠️  PostgreSQL container is not running"; \
+        fi; \
+    else \
+        echo "❌ Docker daemon is not running"; \
+    fi
     @echo ""
     @echo "Jobs in queue:"
-    @docker exec -t $$(docker ps -q -f name=postgres) psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as pending_jobs FROM job_queue;" 2>/dev/null || echo "Database not accessible"
+    @if docker info >/dev/null 2>&1; then \
+        CONTAINER_ID=$$(docker ps -q -f name=postgres 2>/dev/null); \
+        if [ -n "$$CONTAINER_ID" ]; then \
+            docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as pending_jobs FROM job_queue;" 2>/dev/null || echo "Database not accessible"; \
+        else \
+            echo "⚠️  PostgreSQL container is not running"; \
+        fi; \
+    else \
+        echo "❌ Docker daemon is not running"; \
+    fi
 
 # Show logs
 logs:
     @echo "📜 Showing logs..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.dev.yml logs -f
 
 # Show server logs only
 logs-server:
     @echo "📜 Server logs..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.dev.yml logs -f api
 
 # Show worker logs only
 logs-worker:
     @echo "📜 Worker logs..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.dev.yml logs -f worker
 
 # Show database logs only
 logs-db:
     @echo "📜 Database logs..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.dev.yml logs -f postgres
 
 # =============================================================================
@@ -406,7 +505,9 @@ clean:
 # Clean everything
 clean-all: clean
     @echo "🗑️  Cleaning all data..."
-    docker compose -f docker-compose.dev.yml down -v
+    @if docker info >/dev/null 2>&1; then \
+        docker compose -f docker-compose.dev.yml down -v 2>/dev/null || true; \
+    fi
     rm -rf certs/
     @echo "⚠️  All data removed"
 
@@ -417,6 +518,10 @@ clean-all: clean
 # Build production images
 prod-build:
     @echo "🏗️  Building production images..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker build -t hodei-server:latest -f Dockerfile .
     docker build -t hodei-worker:latest -f Dockerfile.worker .
     @echo "✅ Production images built"
@@ -424,13 +529,19 @@ prod-build:
 # Start production
 prod-up:
     @echo "🚀 Starting production..."
+    @if ! docker info >/dev/null 2>&1; then \
+        echo "❌ Docker daemon is not running"; \
+        exit 1; \
+    fi
     docker compose -f docker-compose.prod.yml up -d
     @echo "✅ Production started"
 
 # Stop production
 prod-down:
     @echo "⏹️  Stopping production..."
-    docker compose -f docker-compose.prod.yml down
+    @if docker info >/dev/null 2>&1; then \
+        docker compose -f docker-compose.prod.yml down 2>/dev/null || true; \
+    fi
     @echo "✅ Production stopped"
 
 # =============================================================================
@@ -450,11 +561,13 @@ help:
     @echo ""
     @echo "Quick Start:"
     @echo "  just dev              Start full development environment"
+    @echo "  just dev-no-docker    Start env WITHOUT Docker (limited)"
     @echo "  just build            Build workspace"
     @echo ""
     @echo "Development:"
     @echo "  just dev-db           Start database"
     @echo "  just dev              Start full env (DB + Server, auto-restart)"
+    @echo "  just dev-no-docker    Start env without Docker"
     @echo "  just dev-server       Start server (auto-kill + recompile + run)"
     @echo "  just stop-server      Manually stop server"
     @echo "  just watch            Watch for changes"
@@ -510,5 +623,9 @@ help:
     @echo "Cleanup:"
     @echo "  just clean             Clean build artifacts"
     @echo "  just clean-all         Clean everything"
+    @echo ""
+    @echo "Docker Troubleshooting:"
+    @echo "  just dev-no-docker     Run without Docker if daemon is down"
+    @echo "  sudo systemctl start docker   Start Docker daemon"
     @echo ""
     @echo "For more information, see README.md"

@@ -111,14 +111,8 @@ impl SchedulerServiceImpl {
     }
 
     fn map_worker_status(state: &WorkerState) -> i32 {
-        match state {
-            WorkerState::Creating | WorkerState::Connecting => 1, // REGISTERING
-            WorkerState::Ready => 2,                              // AVAILABLE
-            WorkerState::Busy => 3,                               // BUSY
-            WorkerState::Draining => 4,                           // DRAINING
-            WorkerState::Terminating => 5,                        // TERMINATING
-            WorkerState::Terminated => 0,                         // OFFLINE
-        }
+        // Use strongly-typed conversion instead of manual mapping
+        i32::from(state)
     }
 
     fn persist_decision_metadata(

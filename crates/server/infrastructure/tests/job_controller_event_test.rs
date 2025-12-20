@@ -3,6 +3,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use hodei_server_application::SchedulerConfig;
 use hodei_server_application::jobs::JobController;
+use hodei_server_application::providers::ProviderRegistry;
 use hodei_server_application::workers::commands::WorkerCommandSender;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
@@ -170,31 +171,27 @@ async fn test_job_controller_subscribes_to_job_created() {
         .expect("Failed to connect DB");
 
     // 2. Setup Components
-    let bus = Arc::new(PostgresEventBus::new(pool));
+    let bus = Arc::new(PostgresEventBus::new(pool.clone()));
     let job_repo = Arc::new(MockJobRepository::default());
     let queue = Arc::new(MockJobQueue::default());
     let registry = Arc::new(MockWorkerRegistry::default());
+    let provider_registry = Arc::new(ProviderRegistry::new(Arc::new(
+        hodei_server_infrastructure::persistence::postgres::PostgresProviderConfigRepository::new(
+            pool.clone(),
+        ),
+    )));
     let sender = Arc::new(MockWorkerCommandSender::default());
 
     let controller = Arc::new(JobController::new(
         queue.clone(),
         job_repo.clone(),
         registry.clone(),
+        provider_registry.clone(),
         SchedulerConfig::default(),
         sender.clone(),
         bus.clone(),
         None,
     ));
-
-    // 3. Start Subscription (New Method - Expect Compilation Error initially)
-    // We spawn it because it might be a loop, but wait, subscribe_to_events might typically return Result<()> and spawn background task or return a Future to run.
-    // Ideally `subscribe_to_events` spawns the listener or returns a handle.
-    // For TDD, let's assume it starts listening.
-    controller
-        .clone()
-        .subscribe_to_events()
-        .await
-        .expect("Failed to subscribe");
 
     // 4. Publish Event
     let job_id = JobId::new();

@@ -12,6 +12,9 @@ pub enum DomainError {
     #[error("Invalid job state transition from {from} to {to}")]
     InvalidStateTransition { from: JobState, to: JobState },
 
+    #[error("Invalid job spec field {field}: {reason}")]
+    InvalidJobSpec { field: String, reason: String },
+
     #[error("Provider {provider_id} is not healthy")]
     ProviderUnhealthy { provider_id: ProviderId },
 

@@ -67,7 +67,7 @@ pub struct WorkerAgentServiceImpl {
     /// Channel para log streaming
     log_service: Option<LogStreamService>,
     /// Event Bus para publicar eventos de dominio
-    event_bus: Option<Arc<dyn EventBus>>,
+    event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
 }
 
 impl Default for WorkerAgentServiceImpl {
@@ -980,44 +980,118 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             .map(|id| id.value)
             .unwrap_or_else(|| format!("worker-{}", uuid::Uuid::new_v4()));
 
-        // Validar OTP token
-        let validated_worker_id = self
-            .validate_otp(&req.auth_token, &worker_id_from_request)
-            .await?;
+        info!(
+            "🔐 WorkerAgentService::register: Worker {} attempting to register",
+            worker_id_from_request
+        );
+        info!(
+            "🔐 WorkerAgentService::register: Auth token provided: {}, Session ID: {}",
+            if req.auth_token.is_empty() {
+                "NONE"
+            } else {
+                "YES"
+            },
+            if req.session_id.is_empty() {
+                "NONE"
+            } else {
+                &req.session_id
+            }
+        );
 
-        let worker_id = validated_worker_id;
-
-        self.on_worker_registered(&worker_id).await?;
-
-        // Check for session recovery
+        // Check for session recovery FIRST (before OTP validation)
         let session_id_req = req.session_id.clone();
-        let (session_id, is_reconnection, recovery_failed) = if !session_id_req.is_empty() {
-            // Attempt to recover existing session
-            let workers = self.workers.read().await;
-            if let Some(existing) = workers.get(&worker_id) {
-                if existing.session_id == session_id_req {
-                    // Valid session found
-                    (session_id_req.clone(), true, false)
+        let (worker_id, session_id, needs_otp_validation, is_reconnection, recovery_failed) =
+            if !session_id_req.is_empty() {
+                // Attempt to recover existing session
+                let workers = self.workers.read().await;
+                if let Some(existing) = workers.get(&worker_id_from_request) {
+                    if existing.session_id == session_id_req {
+                        // Valid session found - skip OTP validation
+                        info!(
+                            "✅ WorkerAgentService::register: Session recovery SUCCESSFUL for worker {}",
+                            worker_id_from_request
+                        );
+                        (
+                            worker_id_from_request.clone(),
+                            session_id_req.clone(),
+                            false,
+                            true,
+                            false,
+                        )
+                    } else {
+                        // Session mismatch - need OTP validation
+                        info!(
+                            "⚠️ WorkerAgentService::register: Session mismatch for worker {} (req={}, current={})",
+                            worker_id_from_request, session_id_req, existing.session_id
+                        );
+                        (
+                            worker_id_from_request.clone(),
+                            Self::generate_session_id(),
+                            true,
+                            false,
+                            true,
+                        )
+                    }
                 } else {
-                    // Session mismatch (shouldn't happen for same worker_id usually unless restarted)
+                    // Worker not found in memory - need OTP validation
                     info!(
-                        "Worker {} recovery failed: session mismatch (req={}, current={})",
-                        worker_id, session_id_req, existing.session_id
+                        "⚠️ WorkerAgentService::register: Worker {} not found in memory, requiring OTP validation",
+                        worker_id_from_request
                     );
-                    (Self::generate_session_id(), false, true)
+                    (
+                        worker_id_from_request.clone(),
+                        Self::generate_session_id(),
+                        true,
+                        false,
+                        true,
+                    )
                 }
             } else {
-                // Worker not found in memory (restart/crash?)
-                info!(
-                    "Worker {} recovery failed: session {} not found",
-                    worker_id, session_id_req
-                );
-                (Self::generate_session_id(), false, true)
-            }
+                // New registration - need OTP validation
+                (
+                    worker_id_from_request.clone(),
+                    Self::generate_session_id(),
+                    true,
+                    false,
+                    false,
+                )
+            };
+
+        // Only validate OTP if needed (no valid session found)
+        if needs_otp_validation {
+            info!(
+                "🔐 WorkerAgentService::register: Validating OTP token for worker {}...",
+                worker_id
+            );
+            let validated_worker_id = match self.validate_otp(&req.auth_token, &worker_id).await {
+                Ok(id) => {
+                    info!(
+                        "✅ WorkerAgentService::register: OTP validation SUCCESSFUL for worker {}",
+                        id
+                    );
+                    id
+                }
+                Err(e) => {
+                    error!(
+                        "❌ WorkerAgentService::register: OTP validation FAILED for worker {}: {}",
+                        worker_id, e
+                    );
+                    return Err(e);
+                }
+            };
+
+            info!(
+                "✅ WorkerAgentService::register: Worker {} validated, proceeding with registration",
+                validated_worker_id
+            );
+
+            self.on_worker_registered(&validated_worker_id).await?;
         } else {
-            // New registration
-            (Self::generate_session_id(), false, false)
-        };
+            info!(
+                "✅ WorkerAgentService::register: Skipping OTP validation for worker {} (valid session)",
+                worker_id
+            );
+        }
 
         if is_reconnection {
             info!(

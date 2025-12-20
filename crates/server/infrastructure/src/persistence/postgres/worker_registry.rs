@@ -217,11 +217,6 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             qb.push_bind(provider_type.to_string());
         }
 
-        // Logic for can_accept_jobs, idle_for, etc. can be complex.
-        // For now, let's minimally support what's commonly used or requested.
-        // If specific logic is needed for other filters, we can add it.
-        // Based on implementation plan, the main goal is just using QueryBuilder.
-
         qb.push(" ORDER BY created_at DESC");
 
         let rows = qb.build().fetch_all(&self.pool).await.map_err(|e| {
@@ -468,5 +463,36 @@ fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
         }
     })?;
 
-    Ok(Worker::new(handle, spec))
+    let state_str: String = row.get("state");
+    let state = match state_str.as_str() {
+        "CREATING" => hodei_server_domain::shared_kernel::WorkerState::Creating,
+        "CONNECTING" => hodei_server_domain::shared_kernel::WorkerState::Connecting,
+        "READY" => hodei_server_domain::shared_kernel::WorkerState::Ready,
+        "BUSY" => hodei_server_domain::shared_kernel::WorkerState::Busy,
+        "DRAINING" => hodei_server_domain::shared_kernel::WorkerState::Draining,
+        "TERMINATING" => hodei_server_domain::shared_kernel::WorkerState::Terminating,
+        "TERMINATED" => hodei_server_domain::shared_kernel::WorkerState::Terminated,
+        _ => {
+            return Err(
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Invalid worker state: {}", state_str),
+                },
+            );
+        }
+    };
+
+    let current_job_id: Option<uuid::Uuid> = row.get("current_job_id");
+    let last_heartbeat: chrono::DateTime<chrono::Utc> = row.get("last_heartbeat");
+    let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+    let updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
+
+    Ok(Worker::from_database(
+        handle,
+        spec,
+        state,
+        current_job_id.map(|id| hodei_server_domain::shared_kernel::JobId(id)),
+        last_heartbeat,
+        created_at,
+        updated_at,
+    ))
 }

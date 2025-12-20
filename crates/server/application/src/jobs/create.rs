@@ -164,10 +164,16 @@ impl CreateJobUseCase {
     }
 
     pub async fn execute(&self, request: CreateJobRequest) -> Result<CreateJobResponse> {
-        // 1. Convertir request a JobSpec
+        // 1. Convertir request a JobSpec usando Builder Pattern
         let job_spec = self.convert_to_job_spec(request.spec)?;
 
-        // 2. Use provided JobId or generate new one
+        // 2. Validar JobSpec en el dominio (DDD: la validación es lógica de negocio)
+        job_spec.validate().map_err(|e| {
+            tracing::error!("JobSpec validation failed: {}", e);
+            e
+        })?;
+
+        // 3. Use provided JobId or generate new one
         let job_id = if let Some(id_str) = &request.job_id {
             let uuid =
                 uuid::Uuid::parse_str(id_str).map_err(|_| DomainError::InvalidProviderConfig {
@@ -178,7 +184,7 @@ impl CreateJobUseCase {
             JobId::new()
         };
 
-        // 3. Crear Job
+        // 4. Crear Job (DDD: el aggregate encapsula la lógica)
         let mut job = Job::new(job_id.clone(), job_spec.clone());
 
         // Store correlation details in metadata
@@ -190,9 +196,6 @@ impl CreateJobUseCase {
             job.metadata_mut()
                 .insert("actor".to_string(), actor.clone());
         }
-
-        // 4. Validar Job
-        self.validate_job(&job)?;
 
         // 5. GUARDAR EN REPOSITORIO (que incluye enqueue atómico)
         // PostgresJobRepository::save() automáticamente encola si el estado es PENDING
@@ -255,57 +258,52 @@ impl CreateJobUseCase {
         })
     }
 
+    /// Builder Pattern: Convierte JobSpecRequest a JobSpec
+    /// La lógica de construcción está en el dominio (JobSpec), no en el use case
     fn convert_to_job_spec(&self, request: JobSpecRequest) -> Result<JobSpec> {
+        // Usar Builder Pattern para construir JobSpec de forma fluida
         let mut spec = JobSpec::new(request.command);
 
+        // Configurar imagen
         if let Some(image) = request.image {
             spec.image = Some(image);
         }
 
+        // Configurar variables de entorno
         if let Some(env) = request.env {
             spec.env = env;
         }
 
+        // Configurar timeout
         if let Some(timeout) = request.timeout_ms {
             spec.timeout_ms = timeout;
         }
 
+        // Configurar directorio de trabajo
         if let Some(working_dir) = request.working_dir {
             spec.working_dir = Some(working_dir);
         }
 
-        // Map resource requirements
+        // Mapear recursos (Type State Pattern - asegurar valores válidos)
         if let Some(cpu_cores) = request.cpu_cores {
-            spec.resources.cpu_cores = cpu_cores as f32;
+            if cpu_cores > 0.0 {
+                spec.resources.cpu_cores = cpu_cores as f32;
+            }
         }
 
         if let Some(memory_bytes) = request.memory_bytes {
-            spec.resources.memory_mb = (memory_bytes / (1024 * 1024)) as u64;
+            if memory_bytes > 0 {
+                spec.resources.memory_mb = (memory_bytes / (1024 * 1024)) as u64;
+            }
         }
 
         if let Some(disk_bytes) = request.disk_bytes {
-            spec.resources.storage_mb = (disk_bytes / (1024 * 1024)) as u64;
+            if disk_bytes > 0 {
+                spec.resources.storage_mb = (disk_bytes / (1024 * 1024)) as u64;
+            }
         }
 
         Ok(spec)
-    }
-
-    fn validate_job(&self, job: &Job) -> Result<()> {
-        // Validar que el comando tenga contenido
-        let cmd_vec = job.spec.command_vec();
-        if cmd_vec.is_empty() || cmd_vec.iter().all(|s| s.is_empty()) {
-            return Err(DomainError::InfrastructureError {
-                message: "Job command cannot be empty".to_string(),
-            });
-        }
-
-        if job.spec.timeout_ms == 0 {
-            return Err(DomainError::InfrastructureError {
-                message: "Job timeout must be greater than 0".to_string(),
-            });
-        }
-
-        Ok(())
     }
 }
 

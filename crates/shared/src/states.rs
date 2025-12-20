@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 /// Estados posibles de un job
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,6 +28,54 @@ impl fmt::Display for JobState {
     }
 }
 
+impl FromStr for JobState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PENDING" => Ok(JobState::Pending),
+            "SCHEDULED" => Ok(JobState::Scheduled),
+            "RUNNING" => Ok(JobState::Running),
+            "SUCCEEDED" => Ok(JobState::Succeeded),
+            "FAILED" => Ok(JobState::Failed),
+            "CANCELLED" => Ok(JobState::Cancelled),
+            "TIMEOUT" => Ok(JobState::Timeout),
+            _ => Err(format!("Invalid JobState: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<i32> for JobState {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(JobState::Pending),
+            1 => Ok(JobState::Scheduled),
+            2 => Ok(JobState::Running),
+            3 => Ok(JobState::Succeeded),
+            4 => Ok(JobState::Failed),
+            5 => Ok(JobState::Cancelled),
+            6 => Ok(JobState::Timeout),
+            _ => Err(format!("Invalid JobState value: {}", value)),
+        }
+    }
+}
+
+impl From<&JobState> for i32 {
+    fn from(state: &JobState) -> Self {
+        match state {
+            JobState::Pending => 0,
+            JobState::Scheduled => 1,
+            JobState::Running => 2,
+            JobState::Succeeded => 3,
+            JobState::Failed => 4,
+            JobState::Cancelled => 5,
+            JobState::Timeout => 6,
+        }
+    }
+}
+
 /// Estados del ciclo de vida de un worker
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorkerState {
@@ -49,6 +98,54 @@ impl fmt::Display for WorkerState {
             WorkerState::Draining => write!(f, "DRAINING"),
             WorkerState::Terminating => write!(f, "TERMINATING"),
             WorkerState::Terminated => write!(f, "TERMINATED"),
+        }
+    }
+}
+
+impl FromStr for WorkerState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "CREATING" => Ok(WorkerState::Creating),
+            "CONNECTING" => Ok(WorkerState::Connecting),
+            "READY" => Ok(WorkerState::Ready),
+            "BUSY" => Ok(WorkerState::Busy),
+            "DRAINING" => Ok(WorkerState::Draining),
+            "TERMINATING" => Ok(WorkerState::Terminating),
+            "TERMINATED" => Ok(WorkerState::Terminated),
+            _ => Err(format!("Invalid WorkerState: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<i32> for WorkerState {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(WorkerState::Creating),
+            1 => Ok(WorkerState::Connecting),
+            2 => Ok(WorkerState::Ready),
+            3 => Ok(WorkerState::Busy),
+            4 => Ok(WorkerState::Draining),
+            5 => Ok(WorkerState::Terminating),
+            6 => Ok(WorkerState::Terminated),
+            _ => Err(format!("Invalid WorkerState value: {}", value)),
+        }
+    }
+}
+
+impl From<&WorkerState> for i32 {
+    fn from(state: &WorkerState) -> Self {
+        match state {
+            WorkerState::Creating => 0,
+            WorkerState::Connecting => 1,
+            WorkerState::Ready => 2,
+            WorkerState::Busy => 3,
+            WorkerState::Draining => 4,
+            WorkerState::Terminating => 5,
+            WorkerState::Terminated => 6,
         }
     }
 }
@@ -102,6 +199,51 @@ impl fmt::Display for ProviderStatus {
     }
 }
 
+impl FromStr for ProviderStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ACTIVE" => Ok(ProviderStatus::Active),
+            "MAINTENANCE" => Ok(ProviderStatus::Maintenance),
+            "DISABLED" => Ok(ProviderStatus::Disabled),
+            "OVERLOADED" => Ok(ProviderStatus::Overloaded),
+            "UNHEALTHY" => Ok(ProviderStatus::Unhealthy),
+            "DEGRADED" => Ok(ProviderStatus::Degraded),
+            _ => Err(format!("Invalid ProviderStatus: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<i32> for ProviderStatus {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(ProviderStatus::Active),
+            1 => Ok(ProviderStatus::Maintenance),
+            2 => Ok(ProviderStatus::Disabled),
+            3 => Ok(ProviderStatus::Overloaded),
+            4 => Ok(ProviderStatus::Unhealthy),
+            5 => Ok(ProviderStatus::Degraded),
+            _ => Err(format!("Invalid ProviderStatus value: {}", value)),
+        }
+    }
+}
+
+impl From<&ProviderStatus> for i32 {
+    fn from(status: &ProviderStatus) -> Self {
+        match status {
+            ProviderStatus::Active => 0,
+            ProviderStatus::Maintenance => 1,
+            ProviderStatus::Disabled => 2,
+            ProviderStatus::Overloaded => 3,
+            ProviderStatus::Unhealthy => 4,
+            ProviderStatus::Degraded => 5,
+        }
+    }
+}
+
 /// Estados de ejecución específicos del provider
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExecutionStatus {
@@ -124,6 +266,54 @@ impl fmt::Display for ExecutionStatus {
             ExecutionStatus::Failed => write!(f, "FAILED"),
             ExecutionStatus::Cancelled => write!(f, "CANCELLED"),
             ExecutionStatus::TimedOut => write!(f, "TIMED_OUT"),
+        }
+    }
+}
+
+impl FromStr for ExecutionStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "SUBMITTED" => Ok(ExecutionStatus::Submitted),
+            "QUEUED" => Ok(ExecutionStatus::Queued),
+            "RUNNING" => Ok(ExecutionStatus::Running),
+            "SUCCEEDED" => Ok(ExecutionStatus::Succeeded),
+            "FAILED" => Ok(ExecutionStatus::Failed),
+            "CANCELLED" => Ok(ExecutionStatus::Cancelled),
+            "TIMED_OUT" => Ok(ExecutionStatus::TimedOut),
+            _ => Err(format!("Invalid ExecutionStatus: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<i32> for ExecutionStatus {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(ExecutionStatus::Submitted),
+            1 => Ok(ExecutionStatus::Queued),
+            2 => Ok(ExecutionStatus::Running),
+            3 => Ok(ExecutionStatus::Succeeded),
+            4 => Ok(ExecutionStatus::Failed),
+            5 => Ok(ExecutionStatus::Cancelled),
+            6 => Ok(ExecutionStatus::TimedOut),
+            _ => Err(format!("Invalid ExecutionStatus value: {}", value)),
+        }
+    }
+}
+
+impl From<&ExecutionStatus> for i32 {
+    fn from(status: &ExecutionStatus) -> Self {
+        match status {
+            ExecutionStatus::Submitted => 0,
+            ExecutionStatus::Queued => 1,
+            ExecutionStatus::Running => 2,
+            ExecutionStatus::Succeeded => 3,
+            ExecutionStatus::Failed => 4,
+            ExecutionStatus::Cancelled => 5,
+            ExecutionStatus::TimedOut => 6,
         }
     }
 }
@@ -161,5 +351,258 @@ impl fmt::Display for JobResult {
             JobResult::Cancelled => write!(f, "CANCELLED"),
             JobResult::Timeout => write!(f, "TIMEOUT"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // JobState tests
+    #[test]
+    fn test_job_state_from_str() {
+        assert_eq!("PENDING".parse::<JobState>().unwrap(), JobState::Pending);
+        assert_eq!(
+            "SCHEDULED".parse::<JobState>().unwrap(),
+            JobState::Scheduled
+        );
+        assert_eq!("RUNNING".parse::<JobState>().unwrap(), JobState::Running);
+        assert_eq!(
+            "SUCCEEDED".parse::<JobState>().unwrap(),
+            JobState::Succeeded
+        );
+        assert_eq!("FAILED".parse::<JobState>().unwrap(), JobState::Failed);
+        assert_eq!(
+            "CANCELLED".parse::<JobState>().unwrap(),
+            JobState::Cancelled
+        );
+        assert_eq!("TIMEOUT".parse::<JobState>().unwrap(), JobState::Timeout);
+
+        assert!("INVALID".parse::<JobState>().is_err());
+    }
+
+    #[test]
+    fn test_job_state_try_from_i32() {
+        assert_eq!(JobState::try_from(0).unwrap(), JobState::Pending);
+        assert_eq!(JobState::try_from(1).unwrap(), JobState::Scheduled);
+        assert_eq!(JobState::try_from(2).unwrap(), JobState::Running);
+        assert_eq!(JobState::try_from(3).unwrap(), JobState::Succeeded);
+        assert_eq!(JobState::try_from(4).unwrap(), JobState::Failed);
+        assert_eq!(JobState::try_from(5).unwrap(), JobState::Cancelled);
+        assert_eq!(JobState::try_from(6).unwrap(), JobState::Timeout);
+
+        assert!(JobState::try_from(99).is_err());
+    }
+
+    #[test]
+    fn test_job_state_into_i32() {
+        assert_eq!(i32::from(&JobState::Pending), 0);
+        assert_eq!(i32::from(&JobState::Scheduled), 1);
+        assert_eq!(i32::from(&JobState::Running), 2);
+        assert_eq!(i32::from(&JobState::Succeeded), 3);
+        assert_eq!(i32::from(&JobState::Failed), 4);
+        assert_eq!(i32::from(&JobState::Cancelled), 5);
+        assert_eq!(i32::from(&JobState::Timeout), 6);
+    }
+
+    // WorkerState tests
+    #[test]
+    fn test_worker_state_from_str() {
+        assert_eq!(
+            "CREATING".parse::<WorkerState>().unwrap(),
+            WorkerState::Creating
+        );
+        assert_eq!(
+            "CONNECTING".parse::<WorkerState>().unwrap(),
+            WorkerState::Connecting
+        );
+        assert_eq!("READY".parse::<WorkerState>().unwrap(), WorkerState::Ready);
+        assert_eq!("BUSY".parse::<WorkerState>().unwrap(), WorkerState::Busy);
+        assert_eq!(
+            "DRAINING".parse::<WorkerState>().unwrap(),
+            WorkerState::Draining
+        );
+        assert_eq!(
+            "TERMINATING".parse::<WorkerState>().unwrap(),
+            WorkerState::Terminating
+        );
+        assert_eq!(
+            "TERMINATED".parse::<WorkerState>().unwrap(),
+            WorkerState::Terminated
+        );
+
+        assert!("INVALID".parse::<WorkerState>().is_err());
+    }
+
+    #[test]
+    fn test_worker_state_try_from_i32() {
+        assert_eq!(WorkerState::try_from(0).unwrap(), WorkerState::Creating);
+        assert_eq!(WorkerState::try_from(1).unwrap(), WorkerState::Connecting);
+        assert_eq!(WorkerState::try_from(2).unwrap(), WorkerState::Ready);
+        assert_eq!(WorkerState::try_from(3).unwrap(), WorkerState::Busy);
+        assert_eq!(WorkerState::try_from(4).unwrap(), WorkerState::Draining);
+        assert_eq!(WorkerState::try_from(5).unwrap(), WorkerState::Terminating);
+        assert_eq!(WorkerState::try_from(6).unwrap(), WorkerState::Terminated);
+
+        assert!(WorkerState::try_from(99).is_err());
+    }
+
+    #[test]
+    fn test_worker_state_into_i32() {
+        assert_eq!(i32::from(&WorkerState::Creating), 0);
+        assert_eq!(i32::from(&WorkerState::Connecting), 1);
+        assert_eq!(i32::from(&WorkerState::Ready), 2);
+        assert_eq!(i32::from(&WorkerState::Busy), 3);
+        assert_eq!(i32::from(&WorkerState::Draining), 4);
+        assert_eq!(i32::from(&WorkerState::Terminating), 5);
+        assert_eq!(i32::from(&WorkerState::Terminated), 6);
+    }
+
+    // ProviderStatus tests
+    #[test]
+    fn test_provider_status_from_str() {
+        assert_eq!(
+            "ACTIVE".parse::<ProviderStatus>().unwrap(),
+            ProviderStatus::Active
+        );
+        assert_eq!(
+            "MAINTENANCE".parse::<ProviderStatus>().unwrap(),
+            ProviderStatus::Maintenance
+        );
+        assert_eq!(
+            "DISABLED".parse::<ProviderStatus>().unwrap(),
+            ProviderStatus::Disabled
+        );
+        assert_eq!(
+            "OVERLOADED".parse::<ProviderStatus>().unwrap(),
+            ProviderStatus::Overloaded
+        );
+        assert_eq!(
+            "UNHEALTHY".parse::<ProviderStatus>().unwrap(),
+            ProviderStatus::Unhealthy
+        );
+        assert_eq!(
+            "DEGRADED".parse::<ProviderStatus>().unwrap(),
+            ProviderStatus::Degraded
+        );
+
+        assert!("INVALID".parse::<ProviderStatus>().is_err());
+    }
+
+    #[test]
+    fn test_provider_status_try_from_i32() {
+        assert_eq!(ProviderStatus::try_from(0).unwrap(), ProviderStatus::Active);
+        assert_eq!(
+            ProviderStatus::try_from(1).unwrap(),
+            ProviderStatus::Maintenance
+        );
+        assert_eq!(
+            ProviderStatus::try_from(2).unwrap(),
+            ProviderStatus::Disabled
+        );
+        assert_eq!(
+            ProviderStatus::try_from(3).unwrap(),
+            ProviderStatus::Overloaded
+        );
+        assert_eq!(
+            ProviderStatus::try_from(4).unwrap(),
+            ProviderStatus::Unhealthy
+        );
+        assert_eq!(
+            ProviderStatus::try_from(5).unwrap(),
+            ProviderStatus::Degraded
+        );
+
+        assert!(ProviderStatus::try_from(99).is_err());
+    }
+
+    #[test]
+    fn test_provider_status_into_i32() {
+        assert_eq!(i32::from(&ProviderStatus::Active), 0);
+        assert_eq!(i32::from(&ProviderStatus::Maintenance), 1);
+        assert_eq!(i32::from(&ProviderStatus::Disabled), 2);
+        assert_eq!(i32::from(&ProviderStatus::Overloaded), 3);
+        assert_eq!(i32::from(&ProviderStatus::Unhealthy), 4);
+        assert_eq!(i32::from(&ProviderStatus::Degraded), 5);
+    }
+
+    // ExecutionStatus tests
+    #[test]
+    fn test_execution_status_from_str() {
+        assert_eq!(
+            "SUBMITTED".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::Submitted
+        );
+        assert_eq!(
+            "QUEUED".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::Queued
+        );
+        assert_eq!(
+            "RUNNING".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::Running
+        );
+        assert_eq!(
+            "SUCCEEDED".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::Succeeded
+        );
+        assert_eq!(
+            "FAILED".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::Failed
+        );
+        assert_eq!(
+            "CANCELLED".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::Cancelled
+        );
+        assert_eq!(
+            "TIMED_OUT".parse::<ExecutionStatus>().unwrap(),
+            ExecutionStatus::TimedOut
+        );
+
+        assert!("INVALID".parse::<ExecutionStatus>().is_err());
+    }
+
+    #[test]
+    fn test_execution_status_try_from_i32() {
+        assert_eq!(
+            ExecutionStatus::try_from(0).unwrap(),
+            ExecutionStatus::Submitted
+        );
+        assert_eq!(
+            ExecutionStatus::try_from(1).unwrap(),
+            ExecutionStatus::Queued
+        );
+        assert_eq!(
+            ExecutionStatus::try_from(2).unwrap(),
+            ExecutionStatus::Running
+        );
+        assert_eq!(
+            ExecutionStatus::try_from(3).unwrap(),
+            ExecutionStatus::Succeeded
+        );
+        assert_eq!(
+            ExecutionStatus::try_from(4).unwrap(),
+            ExecutionStatus::Failed
+        );
+        assert_eq!(
+            ExecutionStatus::try_from(5).unwrap(),
+            ExecutionStatus::Cancelled
+        );
+        assert_eq!(
+            ExecutionStatus::try_from(6).unwrap(),
+            ExecutionStatus::TimedOut
+        );
+
+        assert!(ExecutionStatus::try_from(99).is_err());
+    }
+
+    #[test]
+    fn test_execution_status_into_i32() {
+        assert_eq!(i32::from(&ExecutionStatus::Submitted), 0);
+        assert_eq!(i32::from(&ExecutionStatus::Queued), 1);
+        assert_eq!(i32::from(&ExecutionStatus::Running), 2);
+        assert_eq!(i32::from(&ExecutionStatus::Succeeded), 3);
+        assert_eq!(i32::from(&ExecutionStatus::Failed), 4);
+        assert_eq!(i32::from(&ExecutionStatus::Cancelled), 5);
+        assert_eq!(i32::from(&ExecutionStatus::TimedOut), 6);
     }
 }
