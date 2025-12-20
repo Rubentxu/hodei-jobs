@@ -7,7 +7,8 @@ use tracing::warn;
 pub struct ServerConfig {
     #[serde(default = "default_server_port")]
     pub port: u16,
-    pub database_url: String,
+    #[serde(default = "default_database_url")]
+    pub database_url: Option<String>,
     #[serde(default = "default_log_level")]
     pub log_level: String,
     #[serde(default = "default_log_persistence_enabled")]
@@ -23,6 +24,11 @@ pub struct ServerConfig {
 #[allow(dead_code)]
 fn default_server_port() -> u16 {
     50051
+}
+
+#[allow(dead_code)]
+fn default_database_url() -> Option<String> {
+    None
 }
 
 #[allow(dead_code)]
@@ -58,6 +64,7 @@ impl ServerConfig {
         let s = config::Config::builder()
             // Start with default values
             .set_default("port", 50051)?
+            .set_default("database_url", None::<String>)?
             .set_default("log_level", "info")?
             .set_default("log_persistence_enabled", true)?
             .set_default("log_storage_backend", "local")?
