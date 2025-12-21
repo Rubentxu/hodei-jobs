@@ -48,7 +48,7 @@ fn default_log_storage_backend() -> String {
 
 #[allow(dead_code)]
 fn default_log_persistence_path() -> String {
-    "/var/log/hodei/jobs".to_string()
+    "/tmp/hodei-logs".to_string()
 }
 
 #[allow(dead_code)]
@@ -68,7 +68,7 @@ impl ServerConfig {
             .set_default("log_level", "info")?
             .set_default("log_persistence_enabled", true)?
             .set_default("log_storage_backend", "local")?
-            .set_default("log_persistence_path", "/var/log/hodei/jobs")?
+            .set_default("log_persistence_path", "/tmp/hodei-logs")?
             .set_default("log_ttl_hours", 168)?
             // Merge with config file (if exists)
             .add_source(config::File::with_name("config/default").required(false))
