@@ -22,3 +22,4 @@ hostname = "0.4.2"
 num_cpus = "1.16"
 anyhow = { workspace = true }
 prost-types = { workspace = true }
+tempfile = { workspace = true }

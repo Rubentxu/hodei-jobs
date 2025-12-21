@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -199,13 +200,51 @@ impl JobExecutor {
             "Executing shell command"
         );
 
-        // Find absolute path for command to avoid PATH resolution issues
-        let cmd_display = cmd.to_string(); // Keep original for error messages
-        let cmd_path = find_command_path(cmd).unwrap_or_else(|| cmd.to_string());
+        // Build full command string for shell execution
+        let cmd_display = cmd.to_string();
+        let full_command = if args.is_empty() {
+            cmd.to_string()
+        } else {
+            format!("{} {}", cmd, args.join(" "))
+        };
 
-        let mut command = TokioCommand::new(&cmd_path);
+        // Create job-specific directory (Jenkins-style)
+        // Use /tmp/hodei-jobs for local testing or /home/hodei/jobs in containers
+        let jobs_base_dir = if std::path::Path::new("/home/hodei/jobs").exists() {
+            "/home/hodei/jobs"
+        } else {
+            "/tmp/hodei-jobs"
+        };
+
+        let job_dir = std::path::Path::new(jobs_base_dir).join(format!("job-{}", job_id));
+        tokio::fs::create_dir_all(&job_dir)
+            .await
+            .map_err(|e| format!("Failed to create job directory: {}", e))?;
+
+        let script_path = job_dir.join("script.sh");
+        let script_path_str = script_path.to_string_lossy().to_string();
+
+        // Write the shell script content with shebang
+        let script_with_shebang = format!("#!/bin/sh\n{}", full_command);
+        tokio::fs::write(&script_path, &script_with_shebang)
+            .await
+            .map_err(|e| format!("Failed to write to script file: {}", e))?;
+
+        info!(job_id = %job_id, script_path = %script_path_str, "Created job script");
+
+        // Make the script executable
+        TokioCommand::new("chmod")
+            .arg("+x")
+            .arg(&script_path_str)
+            .status()
+            .await
+            .map_err(|e| format!("Failed to make script executable: {}", e))?;
+
+        info!(job_id = %job_id, script_path = %script_path_str, "Script made executable");
+
+        // Execute the script directly
+        let mut command = TokioCommand::new(&script_path_str);
         command
-            .args(args)
             .envs(prepared_execution.env_vars)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -219,7 +258,7 @@ impl JobExecutor {
 
         let mut child = command
             .spawn()
-            .map_err(|e| format!("Failed to spawn command '{}': {}", cmd_display, e))?;
+            .map_err(|e| format!("Failed to spawn script '{}': {}", cmd_display, e))?;
 
         let stdin_content = prepared_execution.stdin_content;
 
@@ -229,7 +268,7 @@ impl JobExecutor {
         )
         .await;
 
-        match stream_result {
+        let result = match stream_result {
             Ok(res) => res, // Success or error from streaming
             Err(_) => {
                 // Timeout
@@ -237,7 +276,12 @@ impl JobExecutor {
                 let _ = child.kill().await;
                 Err(format!("Job timed out after {} seconds", timeout_secs))
             }
-        }
+        };
+
+        // Cleanup job directory
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+
+        result
     }
 
     async fn execute_script_with_timeout(

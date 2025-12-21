@@ -28,3 +28,4 @@ uuid = { workspace = true }
 x509-parser = { workspace = true }
 rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
+tempfile = { workspace = true }
