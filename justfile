@@ -58,7 +58,7 @@ build-worker:
 # Build CLI only
 build-cli:
     @echo "🔨 Building CLI..."
-    cargo build --package hodei-cli
+    cargo build --package hodei-jobs-cli
     @echo "✅ CLI build complete"
 
 # Generate protobuf code
@@ -240,10 +240,10 @@ e2e-job-flow:
     @just e2e &
     sleep 10
     @echo "Creating job..."
-    cargo run --bin hodei-cli -- job create --name "Test Job" --command "echo 'Hello from Hodei!'"
+    cargo run --bin hodei-jobs-cli -- job create --name "Test Job" --command "echo 'Hello from Hodei!'"
     sleep 5
     @echo "Checking job status..."
-    cargo run --bin hodei-cli -- job list
+    cargo run --bin hodei-jobs-cli -- job list
     @echo "✅ Job flow test complete"
 
 # =============================================================================
@@ -381,19 +381,19 @@ job-examples-all:
 # Create a simple test job
 job-test:
     @echo "📤 Creating test job..."
-    cargo run --bin hodei-cli -- job create --name "Quick Test" --command "echo 'Test job executed successfully!'"
+    cargo run --bin hodei-jobs-cli -- job create --name "Quick Test" --command "echo 'Test job executed successfully!'"
     @echo "✅ Job created"
 
 # Create a long-running job
 job-long:
     @echo "📤 Creating long-running job..."
-    cargo run --bin hodei-cli -- job create --name "Long Job" --command "for i in {1..10}; do echo 'Step $$i/10'; sleep 1; done; echo 'Job complete!'"
+    cargo run --bin hodei-jobs-cli -- job create --name "Long Job" --command "for i in {1..10}; do echo 'Step $$i/10'; sleep 1; done; echo 'Job complete!'"
     @echo "✅ Job created"
 
 # Create a job with error
 job-error:
     @echo "📤 Creating job that will fail..."
-    cargo run --bin hodei-cli -- job create --name "Error Job" --command "echo 'This will fail'; exit 1"
+    cargo run --bin hodei-jobs-cli -- job create --name "Error Job" --command "echo 'This will fail'; exit 1"
     @echo "✅ Job created"
 
 # List all jobs
@@ -464,8 +464,6 @@ logs:
         exit 1; \
     fi
     docker compose -f docker-compose.dev.yml logs -f
-
-
 
 # Show database logs only
 logs-db:
@@ -653,7 +651,7 @@ debug-workers:
 
 # Detailed job diagnosis
 debug-job job_id:
-    @./scripts/debug-job.sh {{job_id}}
+    @./scripts/debug-job.sh {{ job_id }}
 
 # Live server logs (tail)
 logs-server:
