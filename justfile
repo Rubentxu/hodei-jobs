@@ -387,6 +387,195 @@ job-examples-all:
     @echo "✅ All example jobs completed!"
 
 # =============================================================================
+# MULTI-PROVIDER JOB EXAMPLES (Docker + Kubernetes)
+# =============================================================================
+
+# Run Hello World on Docker provider
+job-docker-hello:
+    @echo "🐳 Running Hello World on Docker provider..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker Hello World" --command "echo 'Hello from Docker provider!' && echo 'Provider: Docker' && echo 'Timestamp: '$(date)"
+
+# Run Hello World on Kubernetes provider
+job-k8s-hello:
+    @echo "☸️  Running Hello World on Kubernetes provider..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Hello World" --command "echo 'Hello from Kubernetes provider!' && echo 'Provider: Kubernetes' && echo 'Timestamp: '$(date)"
+
+# Run CPU-intensive job on Docker (fast startup)
+job-docker-cpu:
+    @echo "🔥 Running CPU stress test on Docker..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker CPU Test" --cpu 2 --memory 2147483648 --command "echo 'Starting CPU stress test on Docker...'; for i in {1..5}; do echo 'Iteration $$i/5 - CPU: '$$(uptime); sleep 1; done; echo 'Docker CPU test completed!'"
+
+# Run CPU-intensive job on Kubernetes (scalable)
+job-k8s-cpu:
+    @echo "⚡ Running CPU-intensive job on Kubernetes..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s CPU Test" --cpu 4 --memory 4294967296 --command "echo 'Starting CPU-intensive job on Kubernetes...'; for i in {1..10}; do echo 'Iteration $$i/10 - CPU: '$$(uptime); sleep 1; done; echo 'Kubernetes CPU test completed!'"
+
+# Run memory-intensive job on Docker
+job-docker-memory:
+    @echo "🧠 Running memory test on Docker..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker Memory Test" --cpu 1 --memory 3221225472 --command "echo 'Starting memory test on Docker...'; python3 -c 'import sys; data = [i for i in range(100000)]; print(f\"Allocated {len(data)} items\")'; echo 'Docker memory test completed!'"
+
+# Run memory-intensive job on Kubernetes
+job-k8s-memory:
+    @echo "💾 Running memory-intensive job on Kubernetes..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Memory Test" --cpu 2 --memory 6442450944 --command "echo 'Starting memory-intensive job on Kubernetes...'; python3 -c 'import sys; data = [i for i in range(200000)]; print(f\"Allocated {len(data)} items\")'; echo 'Kubernetes memory test completed!'"
+
+# Run data processing job on Docker (fast, ephemeral)
+job-docker-data:
+    @echo "📊 Running data processing on Docker..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker Data Processing" --command "echo 'Processing data on Docker...'; echo 'Sample data: [1,2,3,4,5]'; python3 -c 'import json; data = {\"results\": [x*2 for x in range(1,6)]}; print(json.dumps(data, indent=2))'; echo 'Docker data processing completed!'"
+
+# Run data processing job on Kubernetes (scalable)
+job-k8s-data:
+    @echo "📈 Running scalable data processing on Kubernetes..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Data Processing" --command "echo 'Processing large dataset on Kubernetes...'; echo 'Processing 10000 records...'; python3 -c 'import json; data = {\"results\": [x*2 for x in range(1,10001)], \"count\": 10000}; print(f\"Processed {data[\"count\"]} records\")'; echo 'Kubernetes data processing completed!'"
+
+# Run ML training job on Docker (small model)
+job-docker-ml:
+    @echo "🤖 Running ML training on Docker (small model)..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker ML Training" --cpu 2 --memory 4294967296 --command "echo 'Training ML model on Docker...'; python3 -c 'import time; print(\"Simulating ML training...\"); [time.sleep(0.5) for _ in range(10)]; print(\"Model trained: accuracy=0.95\")'; echo 'Docker ML training completed!'"
+
+# Run ML training job on Kubernetes (large model)
+job-k8s-ml:
+    @echo "🧠 Running ML training on Kubernetes (large model)..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s ML Training" --cpu 8 --memory 17179869184 --command "echo 'Training large ML model on Kubernetes...'; python3 -c 'import time; print(\"Simulating large ML training...\"); [time.sleep(1) for _ in range(20)]; print(\"Large model trained: accuracy=0.98\")'; echo 'Kubernetes ML training completed!'"
+
+# Run CI/CD build on Docker (fast builds)
+job-docker-build:
+    @echo "🚀 Running CI/CD build on Docker..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker Build" --cpu 2 --memory 4294967296 --command "echo 'Starting Docker build...'; echo 'Cloning repository...'; echo 'Running tests...'; echo 'Building artifacts...'; echo 'Docker build completed successfully!'"
+
+# Run CI/CD build on Kubernetes (full pipeline)
+job-k8s-build:
+    @echo "🏗️  Running full CI/CD pipeline on Kubernetes..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Build Pipeline" --cpu 4 --memory 8589934592 --command "echo 'Starting Kubernetes build pipeline...'; echo 'Cloning repository...'; echo 'Installing dependencies...'; echo 'Running tests...'; echo 'Building artifacts...'; echo 'Running security scans...'; echo 'Kubernetes build pipeline completed!'"
+
+# Compare provider performance (Docker vs K8s)
+job-provider-comparison:
+    @echo "⚖️  Comparing Docker vs Kubernetes providers..."
+    @echo ""
+    @echo "=== Running job on Docker (fast startup) ==="
+    @time (just job-docker-hello)
+    @echo ""
+    @echo "=== Running job on Kubernetes (scalable) ==="
+    @time (just job-k8s-hello)
+    @echo ""
+    @echo "✅ Provider comparison completed!"
+
+# Run concurrent jobs on both providers
+job-concurrent-test:
+    @echo "🔀 Running concurrent jobs on both providers..."
+    @echo ""
+    @echo "Starting Docker job in background..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Concurrent Docker Job" --command "for i in {1..5}; do echo \"Docker: Iteration \$$i\"; sleep 1; done" &
+    DOCKER_PID=$$!
+    @echo "Starting Kubernetes job in background..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Concurrent K8s Job" --command "for i in {1..5}; do echo \"Kubernetes: Iteration \$$i\"; sleep 1; done" &
+    K8S_PID=$$!
+    @echo "Waiting for jobs to complete..."
+    @wait $$DOCKER_PID
+    @wait $$K8S_PID
+    @echo "✅ Concurrent jobs completed!"
+
+# Run stress test on both providers
+job-stress-test:
+    @echo "💪 Running stress test on both providers..."
+    @echo ""
+    @echo "=== Docker Stress Test ==="
+    @just job-docker-cpu
+    @echo ""
+    @echo "=== Kubernetes Stress Test ==="
+    @just job-k8s-cpu
+    @echo ""
+    @echo "✅ Stress tests completed!"
+
+# Run GPU job on Kubernetes (requires GPU-enabled cluster)
+job-k8s-gpu:
+    @echo "🎮 Running GPU job on Kubernetes..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s GPU Job" --cpu 4 --memory 8589934592 --command "echo 'Starting GPU job on Kubernetes...'; nvidia-smi || echo 'GPU not available, simulating...'; python3 -c 'import time; print(\"GPU training in progress...\"); [time.sleep(1) for _ in range(10)]; print(\"GPU job completed!\")'; echo 'Kubernetes GPU job completed!'"
+
+# Run all Docker provider jobs
+job-docker-all:
+    @echo "🐳 Running all Docker provider jobs..."
+    @just job-docker-hello
+    @echo ""
+    @just job-docker-cpu
+    @echo ""
+    @just job-docker-memory
+    @echo ""
+    @just job-docker-data
+    @echo ""
+    @just job-docker-ml
+    @echo ""
+    @just job-docker-build
+    @echo "✅ All Docker jobs completed!"
+
+# Run all Kubernetes provider jobs
+job-k8s-all:
+    @echo "☸️  Running all Kubernetes provider jobs..."
+    @just job-k8s-hello
+    @echo ""
+    @just job-k8s-cpu
+    @echo ""
+    @just job-k8s-memory
+    @echo ""
+    @just job-k8s-data
+    @echo ""
+    @just job-k8s-ml
+    @echo ""
+    @just job-k8s-build
+    @echo ""
+    @just job-k8s-gpu
+    @echo "✅ All Kubernetes jobs completed!"
+
+# Run full multi-provider test suite
+job-multi-provider-all:
+    @echo "🌟 Running full multi-provider test suite..."
+    @just job-provider-comparison
+    @echo ""
+    @just job-concurrent-test
+    @echo ""
+    @just job-stress-test
+    @echo ""
+    @echo "✅ Full multi-provider test suite completed!"
+
+# =============================================================================
+# MANUAL JOB EXECUTION WITH PROVIDER SELECTION
+# =============================================================================
+
+# Run job on Docker provider (manual selection)
+job-run-docker:
+    @echo "🐳 Running job on Docker provider..."
+    @./scripts/job-run-docker.sh "{{ name }}" "{{ command }}" "{{ cpu }}" "{{ memory }}" "{{ timeout }}"
+
+# Run job on Kubernetes provider (manual selection)
+job-run-k8s:
+    @echo "☸️  Running job on Kubernetes provider..."
+    @./scripts/job-run-provider.sh k8s "{{ name }}" "{{ command }}" "{{ cpu }}" "{{ memory }}" "{{ timeout }}"
+
+# Run job with provider auto-selection
+job-run-auto:
+    @echo "🤖 Running job with auto provider selection..."
+    @./scripts/job-run-provider.sh auto "{{ name }}" "{{ command }}" "{{ cpu }}" "{{ memory }}" "{{ timeout }}"
+
+# Test provider selection strategies
+job-test-providers:
+    @echo "🎯 Testing provider selection strategies..."
+    @./scripts/test-provider-selection.sh
+
+# Quick test: Docker vs K8s comparison
+job-quick-test:
+    @echo "⚡ Quick provider comparison test..."
+    @echo ""
+    @echo "=== Docker Provider ==="
+    @time (cargo run --bin hodei-jobs-cli -- job run --name "Quick Docker Test" --command "echo 'Docker test' && sleep 2")
+    @echo ""
+    @echo "=== Kubernetes Provider ==="
+    @time (cargo run --bin hodei-jobs-cli -- job run --name "Quick K8s Test" --command "echo 'Kubernetes test' && sleep 2")
+    @echo ""
+    @echo "✅ Quick comparison completed!"
+
+# =============================================================================
 # JOB OPERATIONS (Basic)
 # =============================================================================
 
