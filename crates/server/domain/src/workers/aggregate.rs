@@ -123,6 +123,28 @@ impl Default for ResourceRequirements {
     }
 }
 
+/// Tipos de volumen soportados
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VolumeSpec {
+    /// Persistent Volume Claim
+    Persistent {
+        name: String,
+        claim_name: String,
+        read_only: bool,
+    },
+    /// Ephemeral volume (emptyDir)
+    Ephemeral {
+        name: String,
+        size_limit: Option<i64>,
+    },
+    /// Host path volume
+    HostPath {
+        name: String,
+        path: String,
+        read_only: bool,
+    },
+}
+
 /// Especificación para crear un worker on-demand
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerSpec {
@@ -136,6 +158,8 @@ pub struct WorkerSpec {
     pub labels: HashMap<String, String>,
     /// Variables de entorno
     pub environment: HashMap<String, String>,
+    /// Volúmenes a montar
+    pub volumes: Vec<VolumeSpec>,
     /// Dirección del servidor Hodei para que el agent se conecte
     pub server_address: String,
     /// Timeout máximo de vida del worker
@@ -156,6 +180,7 @@ impl WorkerSpec {
             resources: ResourceRequirements::default(),
             labels: HashMap::new(),
             environment: HashMap::new(),
+            volumes: Vec::new(),
             server_address,
             max_lifetime: Duration::from_secs(3600), // 1 hora default
             idle_timeout: Duration::from_secs(300),  // 5 minutos default
@@ -176,6 +201,11 @@ impl WorkerSpec {
 
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.environment.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_volume(mut self, volume: VolumeSpec) -> Self {
+        self.volumes.push(volume);
         self
     }
 

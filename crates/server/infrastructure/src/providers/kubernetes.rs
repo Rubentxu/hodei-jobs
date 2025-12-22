@@ -19,7 +19,7 @@ use tracing::{debug, info};
 
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
-    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
+    workers::{Architecture, ProviderType, VolumeSpec, WorkerHandle, WorkerSpec},
     workers::{
         HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
         WorkerProvider,
@@ -66,6 +66,64 @@ impl KubernetesToleration {
     }
 }
 
+/// Pod affinity rule for scheduling
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PodAffinityRule {
+    pub label_selector: BTreeMap<String, String>,
+    pub topology_key: String,
+    pub weight: i32,
+}
+
+impl PodAffinityRule {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.label_selector.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_topology_key(mut self, key: impl Into<String>) -> Self {
+        self.topology_key = key.into();
+        self
+    }
+
+    pub fn with_weight(mut self, weight: i32) -> Self {
+        self.weight = weight;
+        self
+    }
+}
+
+/// Pod anti-affinity rule for scheduling
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PodAntiAffinityRule {
+    pub label_selector: BTreeMap<String, String>,
+    pub topology_key: String,
+    pub weight: i32,
+}
+
+impl PodAntiAffinityRule {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.label_selector.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_topology_key(mut self, key: impl Into<String>) -> Self {
+        self.topology_key = key.into();
+        self
+    }
+
+    pub fn with_weight(mut self, weight: i32) -> Self {
+        self.weight = weight;
+        self
+    }
+}
+
 /// Configuration for the Kubernetes Provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubernetesConfig {
@@ -85,6 +143,10 @@ pub struct KubernetesConfig {
     pub node_selector: HashMap<String, String>,
     /// Tolerations for Pod scheduling
     pub tolerations: Vec<KubernetesToleration>,
+    /// Pod affinity rules for co-location
+    pub pod_affinity: Option<Vec<PodAffinityRule>>,
+    /// Pod anti-affinity rules for spread
+    pub pod_anti_affinity: Option<Vec<PodAntiAffinityRule>>,
     /// Image pull secrets for private registries
     pub image_pull_secrets: Vec<String>,
     /// Default CPU request (e.g., "100m")
@@ -116,6 +178,8 @@ impl Default for KubernetesConfig {
             base_annotations: HashMap::new(),
             node_selector: HashMap::new(),
             tolerations: Vec::new(),
+            pod_affinity: None,
+            pod_anti_affinity: None,
             image_pull_secrets: Vec::new(),
             default_cpu_request: "100m".to_string(),
             default_memory_request: "128Mi".to_string(),
@@ -178,6 +242,24 @@ impl KubernetesConfigBuilder {
 
     pub fn add_toleration(mut self, toleration: KubernetesToleration) -> Self {
         self.config.tolerations.push(toleration);
+        self
+    }
+
+    pub fn add_pod_affinity(mut self, affinity: PodAffinityRule) -> Self {
+        if let Some(ref mut affinities) = self.config.pod_affinity {
+            affinities.push(affinity);
+        } else {
+            self.config.pod_affinity = Some(vec![affinity]);
+        }
+        self
+    }
+
+    pub fn add_pod_anti_affinity(mut self, anti_affinity: PodAntiAffinityRule) -> Self {
+        if let Some(ref mut anti_affinities) = self.config.pod_anti_affinity {
+            anti_affinities.push(anti_affinity);
+        } else {
+            self.config.pod_anti_affinity = Some(vec![anti_affinity]);
+        }
         self
     }
 
@@ -507,6 +589,15 @@ impl KubernetesProvider {
         requests.insert("memory".to_string(), Quantity(memory_request));
         limits.insert("memory".to_string(), Quantity(memory_limit));
 
+        // GPU Resources
+        if spec.resources.gpu_count > 0 {
+            let gpu_resource_name = self.get_gpu_resource_name(&spec.resources.gpu_type);
+            let gpu_count = spec.resources.gpu_count.to_string();
+
+            requests.insert(gpu_resource_name.clone(), Quantity(gpu_count.clone()));
+            limits.insert(gpu_resource_name, Quantity(gpu_count));
+        }
+
         let resources = K8sResourceRequirements {
             claims: None,
             requests: Some(requests),
@@ -514,38 +605,19 @@ impl KubernetesProvider {
         };
 
         // Build node selector
-        let node_selector: Option<BTreeMap<String, String>> =
-            if self.config.node_selector.is_empty() {
-                None
-            } else {
-                Some(
-                    self.config
-                        .node_selector
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                )
-            };
+        let node_selector = self.build_node_selector(spec);
 
         // Build tolerations
-        let tolerations: Option<Vec<k8s_openapi::api::core::v1::Toleration>> =
-            if self.config.tolerations.is_empty() {
-                None
-            } else {
-                Some(
-                    self.config
-                        .tolerations
-                        .iter()
-                        .map(|t| k8s_openapi::api::core::v1::Toleration {
-                            key: t.key.clone(),
-                            operator: t.operator.clone(),
-                            value: t.value.clone(),
-                            effect: t.effect.clone(),
-                            toleration_seconds: t.toleration_seconds,
-                        })
-                        .collect(),
-                )
-            };
+        let tolerations = self.build_tolerations(spec);
+
+        // Build volumes
+        let volumes = self.build_volumes(spec);
+
+        // Build volume mounts
+        let volume_mounts = self.build_volume_mounts(spec);
+
+        // Build affinity rules
+        let affinity = self.build_affinity(spec);
 
         // Build image pull secrets
         let image_pull_secrets: Option<Vec<k8s_openapi::api::core::v1::LocalObjectReference>> =
@@ -569,6 +641,7 @@ impl KubernetesProvider {
             image: Some(spec.image.clone()),
             env: Some(env_vars),
             resources: Some(resources),
+            volume_mounts: volume_mounts,
             ..Default::default()
         };
 
@@ -587,6 +660,8 @@ impl KubernetesProvider {
                 service_account_name: self.config.service_account.clone(),
                 node_selector,
                 tolerations,
+                affinity: affinity,
+                volumes,
                 image_pull_secrets,
                 ..Default::default()
             }),
@@ -619,6 +694,288 @@ impl KubernetesProvider {
             .and_then(|s| s.container_statuses.as_ref())
             .map(|statuses| statuses.iter().any(|cs| cs.ready))
             .unwrap_or(false)
+    }
+
+    /// Get GPU resource name based on GPU type
+    fn get_gpu_resource_name(&self, gpu_type: &Option<String>) -> String {
+        match gpu_type.as_deref() {
+            Some("nvidia-tesla-v100") | Some("nvidia-tesla-t4") | Some("nvidia-tesla-a100") => {
+                "nvidia.com/gpu".to_string()
+            }
+            Some("amd-mi100") | Some("amd-mi200") => "amd.com/gpu".to_string(),
+            Some("intel-xe") => "intel.com/xe".to_string(),
+            // Default to nvidia.com/gpu for unknown types
+            _ => "nvidia.com/gpu".to_string(),
+        }
+    }
+
+    /// Build node selector with GPU requirements
+    fn build_node_selector(&self, spec: &WorkerSpec) -> Option<BTreeMap<String, String>> {
+        let mut selector = BTreeMap::new();
+
+        // Add base node selector from config
+        for (k, v) in &self.config.node_selector {
+            selector.insert(k.clone(), v.clone());
+        }
+
+        // Add GPU-specific node selector
+        if spec.resources.gpu_count > 0 {
+            match spec.resources.gpu_type.as_deref() {
+                Some("nvidia-tesla-v100") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-v100".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("nvidia-tesla-t4") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("nvidia-tesla-a100") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-a100".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("amd-mi100") => {
+                    selector.insert("accelerator".to_string(), "amd-mi100".to_string());
+                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
+                }
+                Some("amd-mi200") => {
+                    selector.insert("accelerator".to_string(), "amd-mi200".to_string());
+                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
+                }
+                // Fallback for unknown GPU types
+                _ => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
+                }
+            }
+        }
+
+        if selector.is_empty() {
+            None
+        } else {
+            Some(selector)
+        }
+    }
+
+    /// Build tolerations with GPU requirements
+    fn build_tolerations(
+        &self,
+        spec: &WorkerSpec,
+    ) -> Option<Vec<k8s_openapi::api::core::v1::Toleration>> {
+        let mut tolerations = Vec::new();
+
+        // Add base tolerations from config
+        for t in &self.config.tolerations {
+            tolerations.push(k8s_openapi::api::core::v1::Toleration {
+                key: t.key.clone(),
+                operator: t.operator.clone(),
+                value: t.value.clone(),
+                effect: t.effect.clone(),
+                toleration_seconds: t.toleration_seconds,
+            });
+        }
+
+        // Add GPU-specific tolerations
+        if spec.resources.gpu_count > 0 {
+            tolerations.push(k8s_openapi::api::core::v1::Toleration {
+                key: Some("nvidia.com/gpu".to_string()),
+                operator: Some("Equal".to_string()),
+                value: Some("true".to_string()),
+                effect: Some("NoSchedule".to_string()),
+                toleration_seconds: None,
+            });
+        }
+
+        if tolerations.is_empty() {
+            None
+        } else {
+            Some(tolerations)
+        }
+    }
+
+    /// Build Kubernetes volumes from VolumeSpec
+    fn build_volumes(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Volume>> {
+        if spec.volumes.is_empty() {
+            return None;
+        }
+
+        let volumes: Vec<k8s_openapi::api::core::v1::Volume> = spec
+            .volumes
+            .iter()
+            .map(|vol_spec| match vol_spec {
+                VolumeSpec::Persistent {
+                    name,
+                    claim_name,
+                    read_only: _,
+                } => k8s_openapi::api::core::v1::Volume {
+                    name: name.clone(),
+                    persistent_volume_claim: Some(
+                        k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
+                            claim_name: claim_name.clone(),
+                            read_only: None,
+                        },
+                    ),
+                    ..Default::default()
+                },
+                VolumeSpec::Ephemeral { name, size_limit } => k8s_openapi::api::core::v1::Volume {
+                    name: name.clone(),
+                    empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
+                        medium: None,
+                        size_limit: size_limit.map(|s| {
+                            k8s_openapi::apimachinery::pkg::api::resource::Quantity(format!(
+                                "{}Mi",
+                                s / (1024 * 1024)
+                            ))
+                        }),
+                    }),
+                    ..Default::default()
+                },
+                VolumeSpec::HostPath {
+                    name,
+                    path,
+                    read_only: _,
+                } => k8s_openapi::api::core::v1::Volume {
+                    name: name.clone(),
+                    host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
+                        path: path.clone(),
+                        type_: None,
+                    }),
+                    ..Default::default()
+                },
+            })
+            .collect();
+
+        Some(volumes)
+    }
+
+    /// Build Kubernetes volume mounts from VolumeSpec
+    fn build_volume_mounts(
+        &self,
+        spec: &WorkerSpec,
+    ) -> Option<Vec<k8s_openapi::api::core::v1::VolumeMount>> {
+        if spec.volumes.is_empty() {
+            return None;
+        }
+
+        let mounts: Vec<k8s_openapi::api::core::v1::VolumeMount> = spec
+            .volumes
+            .iter()
+            .map(|vol_spec| {
+                let (name, read_only) = match vol_spec {
+                    VolumeSpec::Persistent {
+                        name,
+                        claim_name: _,
+                        read_only,
+                    } => (name.clone(), *read_only),
+                    VolumeSpec::Ephemeral {
+                        name,
+                        size_limit: _,
+                    } => (name.clone(), false),
+                    VolumeSpec::HostPath {
+                        name,
+                        path: _,
+                        read_only,
+                    } => (name.clone(), *read_only),
+                };
+
+                k8s_openapi::api::core::v1::VolumeMount {
+                    name: name.clone(),
+                    mount_path: format!("/volumes/{}", name),
+                    read_only: Some(read_only),
+                    sub_path: None,
+                    sub_path_expr: None,
+                    mount_propagation: None,
+                    recursive_read_only: None,
+                }
+            })
+            .collect();
+
+        Some(mounts)
+    }
+
+    /// Build Kubernetes affinity from config
+    fn build_affinity(&self, _spec: &WorkerSpec) -> Option<k8s_openapi::api::core::v1::Affinity> {
+        let mut pod_affinity_terms = Vec::new();
+        let mut pod_anti_affinity_terms = Vec::new();
+
+        // Build pod affinity terms
+        if let Some(ref affinities) = self.config.pod_affinity {
+            for affinity in affinities {
+                let label_selector = Some(
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                        match_labels: Some(affinity.label_selector.clone()),
+                        match_expressions: None,
+                    },
+                );
+
+                let term = k8s_openapi::api::core::v1::PodAffinityTerm {
+                    label_selector,
+                    namespace_selector: None,
+                    namespaces: None,
+                    topology_key: affinity.topology_key.clone(),
+                    match_label_keys: None,
+                    mismatch_label_keys: None,
+                };
+
+                pod_affinity_terms.push(k8s_openapi::api::core::v1::WeightedPodAffinityTerm {
+                    weight: affinity.weight,
+                    pod_affinity_term: term,
+                });
+            }
+        }
+
+        // Build pod anti-affinity terms
+        if let Some(ref anti_affinities) = self.config.pod_anti_affinity {
+            for anti_affinity in anti_affinities {
+                let label_selector = Some(
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                        match_labels: Some(anti_affinity.label_selector.clone()),
+                        match_expressions: None,
+                    },
+                );
+
+                let term = k8s_openapi::api::core::v1::PodAffinityTerm {
+                    label_selector,
+                    namespace_selector: None,
+                    namespaces: None,
+                    topology_key: anti_affinity.topology_key.clone(),
+                    match_label_keys: None,
+                    mismatch_label_keys: None,
+                };
+
+                pod_anti_affinity_terms.push(k8s_openapi::api::core::v1::WeightedPodAffinityTerm {
+                    weight: anti_affinity.weight,
+                    pod_affinity_term: term,
+                });
+            }
+        }
+
+        // Only return affinity if we have rules
+        if pod_affinity_terms.is_empty() && pod_anti_affinity_terms.is_empty() {
+            return None;
+        }
+
+        let affinity = k8s_openapi::api::core::v1::Affinity {
+            node_affinity: None, // Node affinity can be added later
+            pod_affinity: if !pod_affinity_terms.is_empty() {
+                Some(k8s_openapi::api::core::v1::PodAffinity {
+                    required_during_scheduling_ignored_during_execution: None,
+                    preferred_during_scheduling_ignored_during_execution: Some(pod_affinity_terms),
+                })
+            } else {
+                None
+            },
+            pod_anti_affinity: if !pod_anti_affinity_terms.is_empty() {
+                Some(k8s_openapi::api::core::v1::PodAntiAffinity {
+                    required_during_scheduling_ignored_during_execution: None,
+                    preferred_during_scheduling_ignored_during_execution: Some(
+                        pod_anti_affinity_terms,
+                    ),
+                })
+            } else {
+                None
+            },
+        };
+
+        Some(affinity)
     }
 }
 
@@ -956,5 +1313,315 @@ mod tests {
         assert!(caps.architectures.contains(&Architecture::Amd64));
         assert!(caps.architectures.contains(&Architecture::Arm64));
         assert!(caps.max_resources.max_cpu_cores > 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_v100() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&Some("nvidia-tesla-v100".to_string()));
+        assert_eq!(resource_name, "nvidia.com/gpu");
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_t4() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&Some("nvidia-tesla-t4".to_string()));
+        assert_eq!(resource_name, "nvidia.com/gpu");
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_a100() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&Some("nvidia-tesla-a100".to_string()));
+        assert_eq!(resource_name, "nvidia.com/gpu");
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_amd() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&Some("amd-mi100".to_string()));
+        assert_eq!(resource_name, "amd.com/gpu");
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_intel() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&Some("intel-xe".to_string()));
+        assert_eq!(resource_name, "intel.com/xe");
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_unknown() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&Some("unknown-gpu".to_string()));
+        assert_eq!(resource_name, "nvidia.com/gpu");
+    }
+
+    #[tokio::test]
+    async fn test_gpu_resource_name_none() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let resource_name = provider.get_gpu_resource_name(&None);
+        assert_eq!(resource_name, "nvidia.com/gpu");
+    }
+
+    #[tokio::test]
+    async fn test_build_volumes_persistent() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        )
+        .with_volume(VolumeSpec::Persistent {
+            name: "dataset".to_string(),
+            claim_name: "data-pvc".to_string(),
+            read_only: true,
+        });
+
+        let volumes = provider.build_volumes(&spec);
+        assert!(volumes.is_some());
+        let volumes = volumes.unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "dataset");
+        assert!(volumes[0].persistent_volume_claim.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_build_volumes_ephemeral() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        )
+        .with_volume(VolumeSpec::Ephemeral {
+            name: "tmp".to_string(),
+            size_limit: Some(1024 * 1024 * 1024), // 1GB
+        });
+
+        let volumes = provider.build_volumes(&spec);
+        assert!(volumes.is_some());
+        let volumes = volumes.unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "tmp");
+        assert!(volumes[0].empty_dir.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_build_volumes_hostpath() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        )
+        .with_volume(VolumeSpec::HostPath {
+            name: "data".to_string(),
+            path: "/mnt/data".to_string(),
+            read_only: false,
+        });
+
+        let volumes = provider.build_volumes(&spec);
+        assert!(volumes.is_some());
+        let volumes = volumes.unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "data");
+        assert!(volumes[0].host_path.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_build_volume_mounts_persistent() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        )
+        .with_volume(VolumeSpec::Persistent {
+            name: "dataset".to_string(),
+            claim_name: "data-pvc".to_string(),
+            read_only: true,
+        });
+
+        let mounts = provider.build_volume_mounts(&spec);
+        assert!(mounts.is_some());
+        let mounts = mounts.unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "dataset");
+        assert_eq!(mounts[0].mount_path, "/volumes/dataset");
+        assert_eq!(mounts[0].read_only, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_build_volume_mounts_ephemeral() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        )
+        .with_volume(VolumeSpec::Ephemeral {
+            name: "tmp".to_string(),
+            size_limit: Some(1024 * 1024 * 1024),
+        });
+
+        let mounts = provider.build_volume_mounts(&spec);
+        assert!(mounts.is_some());
+        let mounts = mounts.unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "tmp");
+        assert_eq!(mounts[0].mount_path, "/volumes/tmp");
+        assert_eq!(mounts[0].read_only, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_build_volume_mounts_multiple() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        )
+        .with_volume(VolumeSpec::Persistent {
+            name: "dataset".to_string(),
+            claim_name: "data-pvc".to_string(),
+            read_only: true,
+        })
+        .with_volume(VolumeSpec::Ephemeral {
+            name: "tmp".to_string(),
+            size_limit: Some(1024 * 1024 * 1024),
+        });
+
+        let mounts = provider.build_volume_mounts(&spec);
+        assert!(mounts.is_some());
+        let mounts = mounts.unwrap();
+        assert_eq!(mounts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_build_volumes_empty() {
+        let provider = KubernetesProvider::new().await.unwrap();
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        let volumes = provider.build_volumes(&spec);
+        assert!(volumes.is_none());
+
+        let mounts = provider.build_volume_mounts(&spec);
+        assert!(mounts.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_affinity_with_pod_affinity() {
+        let mut config = KubernetesConfig::default();
+        config.pod_affinity = Some(vec![PodAffinityRule {
+            label_selector: BTreeMap::from([
+                ("app".to_string(), "hodei-worker".to_string()),
+                ("role".to_string(), "gpu".to_string()),
+            ]),
+            topology_key: "kubernetes.io/hostname".to_string(),
+            weight: 100,
+        }]);
+
+        let provider = KubernetesProvider::with_config(config).await.unwrap();
+
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        let affinity = provider.build_affinity(&spec);
+        assert!(affinity.is_some());
+
+        let affinity = affinity.unwrap();
+        assert!(affinity.pod_affinity.is_some());
+        assert!(affinity.pod_anti_affinity.is_none());
+
+        let pod_affinity = affinity.pod_affinity.unwrap();
+        assert!(
+            pod_affinity
+                .preferred_during_scheduling_ignored_during_execution
+                .is_some()
+        );
+        let terms = pod_affinity
+            .preferred_during_scheduling_ignored_during_execution
+            .unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].weight, 100);
+    }
+
+    #[tokio::test]
+    async fn test_build_affinity_with_pod_anti_affinity() {
+        let mut config = KubernetesConfig::default();
+        config.pod_anti_affinity = Some(vec![PodAntiAffinityRule {
+            label_selector: BTreeMap::from([("app".to_string(), "hodei-worker".to_string())]),
+            topology_key: "kubernetes.io/hostname".to_string(),
+            weight: 50,
+        }]);
+
+        let provider = KubernetesProvider::with_config(config).await.unwrap();
+
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        let affinity = provider.build_affinity(&spec);
+        assert!(affinity.is_some());
+
+        let affinity = affinity.unwrap();
+        assert!(affinity.pod_affinity.is_none());
+        assert!(affinity.pod_anti_affinity.is_some());
+
+        let pod_anti_affinity = affinity.pod_anti_affinity.unwrap();
+        assert!(
+            pod_anti_affinity
+                .preferred_during_scheduling_ignored_during_execution
+                .is_some()
+        );
+        let terms = pod_anti_affinity
+            .preferred_during_scheduling_ignored_during_execution
+            .unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].weight, 50);
+    }
+
+    #[tokio::test]
+    async fn test_build_affinity_with_both() {
+        let mut config = KubernetesConfig::default();
+        config.pod_affinity = Some(vec![PodAffinityRule {
+            label_selector: BTreeMap::from([("app".to_string(), "hodei-worker".to_string())]),
+            topology_key: "kubernetes.io/hostname".to_string(),
+            weight: 100,
+        }]);
+        config.pod_anti_affinity = Some(vec![PodAntiAffinityRule {
+            label_selector: BTreeMap::from([("app".to_string(), "incompatible".to_string())]),
+            topology_key: "zone".to_string(),
+            weight: 50,
+        }]);
+
+        let provider = KubernetesProvider::with_config(config).await.unwrap();
+
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        let affinity = provider.build_affinity(&spec);
+        assert!(affinity.is_some());
+
+        let affinity = affinity.unwrap();
+        assert!(affinity.pod_affinity.is_some());
+        assert!(affinity.pod_anti_affinity.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_build_affinity_without_rules() {
+        let config = KubernetesConfig::default();
+        let provider = KubernetesProvider::with_config(config).await.unwrap();
+
+        let spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        let affinity = provider.build_affinity(&spec);
+        assert!(affinity.is_none());
     }
 }

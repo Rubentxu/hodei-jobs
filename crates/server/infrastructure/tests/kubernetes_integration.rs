@@ -11,7 +11,7 @@
 
 use hodei_server_domain::{
     shared_kernel::{WorkerId, WorkerState},
-    workers::{HealthStatus, WorkerHandle, WorkerProvider},
+    workers::{HealthStatus, ResourceRequirements, WorkerHandle, WorkerProvider},
     workers::{ProviderType, WorkerSpec},
 };
 use hodei_server_infrastructure::providers::{KubernetesConfig, KubernetesProvider};
@@ -259,4 +259,158 @@ async fn test_kubernetes_provider_duplicate_worker_fails() {
         .await
         .expect("Failed to cleanup worker");
     println!("✓ Cleanup complete");
+}
+
+#[tokio::test]
+#[ignore = "Requires Kubernetes cluster. Run with HODEI_K8S_TEST=1"]
+async fn test_kubernetes_provider_gpu_support() {
+    if !should_run_k8s_tests() {
+        return;
+    }
+
+    let config = get_test_config();
+    let provider = KubernetesProvider::with_config(config)
+        .await
+        .expect("Failed to create provider");
+
+    // Verify provider has GPU support
+    let capabilities = provider.capabilities();
+    assert!(capabilities.gpu_support, "Provider must support GPU");
+    assert!(
+        !capabilities.gpu_types.is_empty(),
+        "Provider must have GPU types configured"
+    );
+
+    println!("✓ Provider supports GPU");
+    println!("  - Supported GPU types: {:?}", capabilities.gpu_types);
+
+    // Create worker spec with GPU requirements
+    let worker_id = WorkerId::new();
+    let mut spec = WorkerSpec::new(
+        "nvidia/cuda:11.8-runtime-ubuntu20.04".to_string(),
+        "http://localhost:50051".to_string(),
+    );
+
+    // Set GPU requirements
+    spec.worker_id = worker_id.clone();
+    spec.resources = ResourceRequirements {
+        cpu_cores: 4.0,
+        memory_bytes: 8 * 1024 * 1024 * 1024, // 8GB
+        disk_bytes: 20 * 1024 * 1024 * 1024,  // 20GB
+        gpu_count: 1,
+        gpu_type: Some("nvidia-tesla-v100".to_string()),
+    };
+
+    println!("Creating GPU worker pod with:");
+    println!("  - CPU: {} cores", spec.resources.cpu_cores);
+    println!(
+        "  - Memory: {} GB",
+        spec.resources.memory_bytes / (1024 * 1024 * 1024)
+    );
+    println!("  - GPU Count: {}", spec.resources.gpu_count);
+    println!("  - GPU Type: {:?}", spec.resources.gpu_type);
+
+    // Create worker with GPU
+    let handle = provider
+        .create_worker(&spec)
+        .await
+        .expect("Failed to create GPU worker");
+
+    assert_eq!(handle.worker_id, worker_id);
+    println!("✓ GPU worker pod created: {}", handle.provider_resource_id);
+
+    // Wait for pod to start
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Check status
+    let status = provider
+        .get_worker_status(&handle)
+        .await
+        .expect("Failed to get GPU worker status");
+
+    println!("GPU Worker status: {:?}", status);
+    assert!(
+        matches!(
+            status,
+            WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+        ),
+        "GPU Worker should be in Creating, Connecting, or Ready state"
+    );
+
+    // Cleanup
+    provider
+        .destroy_worker(&handle)
+        .await
+        .expect("Failed to cleanup GPU worker");
+
+    println!("✓ GPU worker cleanup complete");
+}
+
+#[tokio::test]
+#[ignore = "Requires Kubernetes cluster. Run with HODEI_K8S_TEST=1"]
+async fn test_kubernetes_provider_multiple_gpus() {
+    if !should_run_k8s_tests() {
+        return;
+    }
+
+    let config = get_test_config();
+    let provider = KubernetesProvider::with_config(config)
+        .await
+        .expect("Failed to create provider");
+
+    // Create worker spec with multiple GPUs
+    let worker_id = WorkerId::new();
+    let mut spec = WorkerSpec::new(
+        "nvidia/cuda:11.8-runtime-ubuntu20.04".to_string(),
+        "http://localhost:50051".to_string(),
+    );
+
+    spec.worker_id = worker_id.clone();
+    spec.resources = ResourceRequirements {
+        cpu_cores: 8.0,
+        memory_bytes: 16 * 1024 * 1024 * 1024, // 16GB
+        disk_bytes: 50 * 1024 * 1024 * 1024,   // 50GB
+        gpu_count: 2,
+        gpu_type: Some("nvidia-tesla-t4".to_string()),
+    };
+
+    println!("Creating multi-GPU worker pod with 2x Tesla T4");
+
+    // Create worker
+    let handle = provider
+        .create_worker(&spec)
+        .await
+        .expect("Failed to create multi-GPU worker");
+
+    assert_eq!(handle.worker_id, worker_id);
+    println!(
+        "✓ Multi-GPU worker pod created: {}",
+        handle.provider_resource_id
+    );
+
+    // Wait for pod to start
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Check status
+    let status = provider
+        .get_worker_status(&handle)
+        .await
+        .expect("Failed to get multi-GPU worker status");
+
+    println!("Multi-GPU Worker status: {:?}", status);
+    assert!(
+        matches!(
+            status,
+            WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+        ),
+        "Multi-GPU Worker should be in Creating, Connecting, or Ready state"
+    );
+
+    // Cleanup
+    provider
+        .destroy_worker(&handle)
+        .await
+        .expect("Failed to cleanup multi-GPU worker");
+
+    println!("✓ Multi-GPU worker cleanup complete");
 }

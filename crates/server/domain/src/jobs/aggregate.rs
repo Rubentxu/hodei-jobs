@@ -1315,7 +1315,7 @@ mod tests {
         assert!(job_timeout.is_terminal_state());
 
         // Test non-terminal states
-        let mut job_pending = Job::new(job_id.clone(), spec.clone());
+        let job_pending = Job::new(job_id.clone(), spec.clone());
         assert!(!job_pending.is_terminal_state());
 
         let mut job_running = Job::new(job_id.clone(), spec.clone());
@@ -1336,7 +1336,7 @@ mod tests {
         let provider_id = ProviderId::new();
 
         // Test cancellable states
-        let mut job_pending = Job::new(job_id.clone(), spec.clone());
+        let job_pending = Job::new(job_id.clone(), spec.clone());
         // Initial state is Pending, which is cancellable
         assert!(job_pending.can_be_cancelled());
 
