@@ -331,6 +331,70 @@ pub trait WorkerProvider: Send + Sync {
     fn estimated_startup_time(&self) -> Duration {
         Duration::from_secs(30)
     }
+
+    // ========================================
+    // MÉTRICAS REALES (nuevo)
+    // ========================================
+
+    /// Obtener métricas reales de performance del provider
+    fn get_performance_metrics(&self) -> ProviderPerformanceMetrics {
+        ProviderPerformanceMetrics::default()
+    }
+
+    /// Actualizar métricas después de crear un worker
+    fn record_worker_creation(&self, startup_time: Duration, success: bool) {
+        // TODO: Implementar recolección real de métricas
+    }
+
+    /// Obtener historial de startup times (para percentiles)
+    fn get_startup_time_history(&self) -> Vec<Duration> {
+        vec![]
+    }
+
+    /// Calcular costo promedio por worker (basado en recursos reales)
+    fn calculate_average_cost_per_hour(&self) -> f64 {
+        // Docker: ~$0.05/vCPU/h + $0.05/GB RAM/h
+        // Kubernetes: ~$0.10/vCPU/h + $0.10/GB RAM/h (overhead de orquestación)
+        // TODO: Calcular basado en recursos promedio utilizados
+        0.0
+    }
+
+    /// Health score basado en métricas reales (0.0 - 1.0)
+    fn calculate_health_score(&self) -> f64 {
+        // TODO: Calcular basado en:
+        // - Tasa de éxito de creación de workers
+        // - Tiempo promedio de startup
+        // - Errores en health checks
+        // - Uso de recursos
+        0.95
+    }
+}
+
+/// Métricas de performance reales del provider
+#[derive(Debug, Clone, Default)]
+pub struct ProviderPerformanceMetrics {
+    /// Historial de tiempos de startup (para calcular P50, P95, P99)
+    pub startup_times: Vec<Duration>,
+    /// Tasa de éxito en creación de workers (0.0 - 1.0)
+    pub success_rate: f64,
+    /// Costo promedio por hora (calculado dinámicamente)
+    pub avg_cost_per_hour: f64,
+    /// Workers creados por minuto (throughput)
+    pub workers_per_minute: f64,
+    /// Errores por minuto
+    pub errors_per_minute: f64,
+    /// Uso promedio de recursos (CPU, memoria)
+    pub avg_resource_usage: ResourceUsageStats,
+}
+
+/// Estadísticas de uso de recursos
+#[derive(Debug, Clone, Default)]
+pub struct ResourceUsageStats {
+    pub avg_cpu_millicores: f64,
+    pub avg_memory_bytes: u64,
+    pub avg_disk_bytes: u64,
+    pub peak_cpu_millicores: f64,
+    pub peak_memory_bytes: u64,
 }
 
 #[cfg(test)]

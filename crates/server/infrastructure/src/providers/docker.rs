@@ -16,18 +16,23 @@ use bollard::{
 };
 use chrono::Utc;
 use futures_util::StreamExt;
-use hodei_server_domain::{
-    providers::DockerConfig,
-    shared_kernel::{DomainError, ProviderId, Result, WorkerState},
-    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
-    workers::{
-        HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
-        WorkerProvider,
-    },
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
 };
-use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+
+use crate::providers::metrics_collector::ProviderMetricsCollector;
+use hodei_server_domain::providers::DockerConfig;
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, WorkerState};
+use hodei_server_domain::workers::{
+    Architecture, ProviderType, WorkerHandle, WorkerProvider, WorkerSpec,
+};
+use hodei_server_domain::workers::{
+    HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
+};
 
 /// Docker Provider for creating ephemeral worker containers
 ///
@@ -45,6 +50,8 @@ pub struct DockerProvider {
     active_workers: Arc<RwLock<HashMap<String, WorkerHandle>>>,
     /// Provider capabilities
     capabilities: ProviderCapabilities,
+    /// Metrics collector for performance tracking
+    metrics_collector: ProviderMetricsCollector,
 }
 
 /// Builder for DockerProvider
@@ -89,6 +96,7 @@ impl DockerProviderBuilder {
     pub async fn build(self) -> Result<DockerProvider> {
         let config = self.config.unwrap_or_default();
         let provider_id = self.provider_id.unwrap_or_else(ProviderId::new);
+        let provider_id_clone = provider_id.clone();
 
         let client = match self.client {
             Some(c) => c,
@@ -103,6 +111,7 @@ impl DockerProviderBuilder {
             config,
             active_workers: Arc::new(RwLock::new(HashMap::new())),
             capabilities,
+            metrics_collector: ProviderMetricsCollector::new(provider_id_clone),
         })
     }
 
@@ -347,6 +356,8 @@ impl WorkerProvider for DockerProvider {
         let worker_id = spec.worker_id.clone();
         info!("Creating Docker worker: {}", worker_id);
 
+        let startup_timer = Instant::now();
+
         self.ensure_image(&spec.image)
             .await
             .map_err(|e| ProviderError::ProvisioningFailed(e.to_string()))?;
@@ -377,7 +388,11 @@ impl WorkerProvider for DockerProvider {
                 ProviderError::ProvisioningFailed(format!("Failed to start container: {}", e))
             })?;
 
-        info!("Worker {} started in container {}", worker_id, container_id);
+        let startup_time = startup_timer.elapsed();
+        info!(
+            "Worker {} started in container {} (startup time: {:?})",
+            worker_id, container_id, startup_time
+        );
 
         let handle = WorkerHandle::new(
             worker_id,
@@ -391,6 +406,11 @@ impl WorkerProvider for DockerProvider {
             .write()
             .await
             .insert(container_id, handle.clone());
+
+        // Record metrics for successful worker creation
+        self.metrics_collector
+            .record_worker_creation(startup_time, true)
+            .await;
 
         Ok(handle)
     }
@@ -508,6 +528,42 @@ impl WorkerProvider for DockerProvider {
                 reason: format!("Docker daemon unreachable: {}", e),
             }),
         }
+    }
+
+    // ========================================
+    // MÉTRICAS REALES (nuevo)
+    // ========================================
+
+    fn get_performance_metrics(&self) -> hodei_server_domain::workers::ProviderPerformanceMetrics {
+        self.metrics_collector.get_metrics()
+    }
+
+    fn record_worker_creation(&self, startup_time: Duration, success: bool) {
+        // Spawn a task to record metrics without blocking
+        let collector = self.metrics_collector.clone();
+        tokio::spawn(async move {
+            collector
+                .record_worker_creation(startup_time, success)
+                .await;
+        });
+    }
+
+    fn get_startup_time_history(&self) -> Vec<Duration> {
+        self.metrics_collector.get_startup_times()
+    }
+
+    fn calculate_average_cost_per_hour(&self) -> f64 {
+        // Docker: ~$0.05/vCPU/h + $0.05/GB RAM/h
+        // Calculate based on average resource usage
+        let avg_resources = self.metrics_collector.get_average_resource_usage();
+        let cpu_cost = avg_resources.avg_cpu_millicores / 1000.0 * 0.05; // vCPU per hour
+        let memory_cost =
+            (avg_resources.avg_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0)) * 0.05; // GB per hour
+        cpu_cost + memory_cost
+    }
+
+    fn calculate_health_score(&self) -> f64 {
+        self.metrics_collector.calculate_health_score()
     }
 }
 

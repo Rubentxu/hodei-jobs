@@ -10,6 +10,8 @@ pub mod kubernetes_health;
 pub mod kubernetes_hpa;
 pub mod kubernetes_metrics;
 
+pub mod metrics_collector;
+
 pub use docker::{DockerProvider, DockerProviderBuilder};
 pub use firecracker::{
     FirecrackerConfig, FirecrackerConfigBuilder, FirecrackerNetworkConfig, FirecrackerProvider,

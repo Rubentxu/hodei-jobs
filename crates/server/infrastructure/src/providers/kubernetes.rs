@@ -14,9 +14,10 @@ use kube::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+use crate::providers::metrics_collector::ProviderMetricsCollector;
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
     workers::{Architecture, ProviderType, VolumeSpec, WorkerHandle, WorkerSpec},
@@ -506,6 +507,8 @@ pub struct KubernetesProvider {
     config: KubernetesConfig,
     capabilities: ProviderCapabilities,
     hpa_manager: Option<super::kubernetes_hpa::KubernetesHPAManager>,
+    /// Metrics collector for performance tracking
+    metrics_collector: ProviderMetricsCollector,
 }
 
 impl KubernetesProvider {
@@ -520,12 +523,14 @@ impl KubernetesProvider {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
         let provider_id = ProviderId::new();
+        let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
         let temp_provider = Self {
             provider_id: provider_id.clone(),
             client: client.clone(),
             config: config.clone(),
             capabilities: capabilities.clone(),
             hpa_manager: None,
+            metrics_collector: metrics_collector.clone(),
         };
         let hpa_manager = temp_provider.create_hpa_manager();
 
@@ -535,6 +540,7 @@ impl KubernetesProvider {
             config,
             capabilities,
             hpa_manager,
+            metrics_collector,
         })
     }
 
@@ -545,12 +551,14 @@ impl KubernetesProvider {
     ) -> Result<Self> {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
+        let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
         let temp_provider = Self {
             provider_id: provider_id.clone(),
             client: client.clone(),
             config: config.clone(),
             capabilities: capabilities.clone(),
             hpa_manager: None,
+            metrics_collector: metrics_collector.clone(),
         };
         let hpa_manager = temp_provider.create_hpa_manager();
 
@@ -560,6 +568,7 @@ impl KubernetesProvider {
             config,
             capabilities,
             hpa_manager,
+            metrics_collector,
         })
     }
 
@@ -1559,6 +1568,8 @@ impl WorkerProvider for KubernetesProvider {
         let worker_id = spec.worker_id.clone();
         info!("Creating Kubernetes worker Pod: {}", worker_id);
 
+        let startup_timer = Instant::now();
+
         // Determine namespace for this worker
         let namespace = self.get_namespace_for_worker(spec);
 
@@ -1606,9 +1617,10 @@ impl WorkerProvider for KubernetesProvider {
             .clone()
             .unwrap_or_else(|| pod_name.clone());
 
+        let startup_time = startup_timer.elapsed();
         info!(
-            "Worker Pod {} created successfully (uid: {})",
-            pod_name, pod_uid
+            "Worker Pod {} created successfully (uid: {}) (startup time: {:?})",
+            pod_name, pod_uid, startup_time
         );
 
         let handle = WorkerHandle::new(
@@ -1622,6 +1634,11 @@ impl WorkerProvider for KubernetesProvider {
             serde_json::json!(self.config.namespace.clone()),
         )
         .with_metadata("pod_uid", serde_json::json!(pod_uid));
+
+        // Record metrics for successful worker creation
+        self.metrics_collector
+            .record_worker_creation(startup_time, true)
+            .await;
 
         Ok(handle)
     }
@@ -1732,6 +1749,42 @@ impl WorkerProvider for KubernetesProvider {
 
     fn estimated_startup_time(&self) -> Duration {
         Duration::from_secs(15)
+    }
+
+    // ========================================
+    // MÉTRICAS REALES (nuevo)
+    // ========================================
+
+    fn get_performance_metrics(&self) -> hodei_server_domain::workers::ProviderPerformanceMetrics {
+        self.metrics_collector.get_metrics()
+    }
+
+    fn record_worker_creation(&self, startup_time: Duration, success: bool) {
+        // Spawn a task to record metrics without blocking
+        let collector = self.metrics_collector.clone();
+        tokio::spawn(async move {
+            collector
+                .record_worker_creation(startup_time, success)
+                .await;
+        });
+    }
+
+    fn get_startup_time_history(&self) -> Vec<Duration> {
+        self.metrics_collector.get_startup_times()
+    }
+
+    fn calculate_average_cost_per_hour(&self) -> f64 {
+        // Kubernetes: ~$0.10/vCPU/h + $0.10/GB RAM/h (overhead de orquestación)
+        // Calculate based on average resource usage
+        let avg_resources = self.metrics_collector.get_average_resource_usage();
+        let cpu_cost = avg_resources.avg_cpu_millicores / 1000.0 * 0.10; // vCPU per hour
+        let memory_cost =
+            (avg_resources.avg_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0)) * 0.10; // GB per hour
+        cpu_cost + memory_cost
+    }
+
+    fn calculate_health_score(&self) -> f64 {
+        self.metrics_collector.calculate_health_score()
     }
 }
 

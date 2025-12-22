@@ -168,8 +168,27 @@ impl ProviderSelector for LowestCostProviderSelector {
         providers
             .iter()
             .filter(|p| p.can_accept_workers())
-            .min_by(|a, b| a.cost_per_hour.partial_cmp(&b.cost_per_hour).unwrap())
-            .map(|p| p.provider_id.clone())
+            .map(|p| {
+                // Calculate effective cost considering health and capacity
+                // Healthy providers get full weight, degraded providers get 1.5x cost penalty,
+                // unhealthy providers get 2x cost penalty
+                let health_multiplier = match p.health_score {
+                    score if score >= 0.9 => 1.0, // Excellent health - no penalty
+                    score if score >= 0.7 => 1.2, // Good health - 20% penalty
+                    score if score >= 0.5 => 1.5, // Degraded - 50% penalty
+                    _ => 2.0,                     // Unhealthy - 100% penalty
+                };
+
+                // Factor in capacity - providers with more available capacity get slight discount
+                // This encourages using providers that can handle more load
+                let capacity_bonus = 1.0 - (p.available_capacity() * 0.1); // Up to 10% discount
+
+                let effective_cost = p.cost_per_hour * health_multiplier * capacity_bonus;
+
+                (p.provider_id.clone(), effective_cost)
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(provider_id, _)| provider_id)
     }
 
     fn strategy_name(&self) -> &str {
@@ -185,8 +204,27 @@ impl ProviderSelector for FastestStartupProviderSelector {
         providers
             .iter()
             .filter(|p| p.can_accept_workers())
-            .min_by_key(|p| p.estimated_startup_time)
-            .map(|p| p.provider_id.clone())
+            .map(|p| {
+                // Calculate effective startup time considering health
+                // Unhealthy providers have longer effective retries/f startup times due toailures
+                let health_penalty = match p.health_score {
+                    score if score >= 0.9 => 1.0, // Excellent health - no penalty
+                    score if score >= 0.7 => 1.3, // Good health - 30% penalty
+                    score if score >= 0.5 => 1.8, // Degraded - 80% penalty
+                    _ => 2.5,                     // Unhealthy - 150% penalty
+                };
+
+                // Factor in capacity - providers with more capacity might have slightly longer startup
+                // due to resource allocation overhead
+                let capacity_penalty = 1.0 + (p.available_capacity() * 0.1);
+
+                let effective_startup_ms =
+                    p.estimated_startup_time.as_millis() as f64 * health_penalty * capacity_penalty;
+
+                (p.provider_id.clone(), effective_startup_ms)
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(provider_id, _)| provider_id)
     }
 
     fn strategy_name(&self) -> &str {
@@ -223,8 +261,43 @@ impl ProviderSelector for HealthiestProviderSelector {
         providers
             .iter()
             .filter(|p| p.can_accept_workers() && p.health_score > 0.5)
-            .max_by(|a, b| a.health_score.partial_cmp(&b.health_score).unwrap())
-            .map(|p| p.provider_id.clone())
+            .map(|p| {
+                // Calculate a composite health score that considers:
+                // 1. Health score (40% weight)
+                // 2. Available capacity (25% weight) - prefer providers with more capacity
+                // 3. Cost efficiency (20% weight) - normalized inverse cost
+                // 4. Startup time efficiency (15% weight) - normalized inverse startup time
+
+                let health_score = p.health_score;
+                let capacity_score = p.available_capacity();
+
+                // Normalize cost (lower is better, so we use 1/cost)
+                let max_cost = providers
+                    .iter()
+                    .map(|pr| pr.cost_per_hour)
+                    .fold(0.0, f64::max)
+                    .max(0.01); // Avoid division by zero
+                let cost_efficiency = 1.0 - (p.cost_per_hour / max_cost);
+
+                // Normalize startup time (lower is better, so we use 1/time)
+                let max_startup = providers
+                    .iter()
+                    .map(|pr| pr.estimated_startup_time.as_millis() as f64)
+                    .fold(0.0, f64::max)
+                    .max(1.0); // Avoid division by zero
+                let startup_efficiency =
+                    1.0 - ((p.estimated_startup_time.as_millis() as f64) / max_startup);
+
+                // Calculate composite score with weights
+                let composite_score = (health_score * 0.40)
+                    + (capacity_score * 0.25)
+                    + (cost_efficiency * 0.20)
+                    + (startup_efficiency * 0.15);
+
+                (p.provider_id.clone(), composite_score)
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(provider_id, _)| provider_id)
     }
 
     fn strategy_name(&self) -> &str {

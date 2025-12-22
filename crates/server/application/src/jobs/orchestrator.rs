@@ -127,14 +127,18 @@ impl JobOrchestrator {
             let workers_for_provider = self.registry.find_by_provider(provider_id).await?;
             let caps = provider.capabilities();
 
+            // Calculate real metrics from provider
+            let real_health_score = provider.calculate_health_score();
+            let real_cost_per_hour = provider.calculate_average_cost_per_hour();
+
             available_providers.push(ProviderInfo {
                 provider_id: provider_id.clone(),
                 provider_type: provider.provider_type(),
                 active_workers: workers_for_provider.len(),
                 max_workers: 10, // Could be from config
                 estimated_startup_time: caps.max_execution_time.unwrap_or(Duration::from_secs(30)),
-                health_score,
-                cost_per_hour: 0.0, // Could be from provider
+                health_score: real_health_score,
+                cost_per_hour: real_cost_per_hour,
             });
         }
 

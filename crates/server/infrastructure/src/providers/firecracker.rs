@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -28,6 +28,9 @@ use hodei_server_domain::{
         WorkerProvider,
     },
 };
+
+use super::metrics_collector::ProviderMetricsCollector;
+use hodei_server_domain::workers::ProviderPerformanceMetrics;
 
 // ============================================================================
 // Configuration Types (HU-8.1)
@@ -489,6 +492,8 @@ pub struct FirecrackerProvider {
     active_vms: Arc<RwLock<HashMap<WorkerId, MicroVMInstance>>>,
     /// IP address pool
     ip_pool: Arc<RwLock<IpPool>>,
+    /// Performance metrics collector
+    metrics_collector: ProviderMetricsCollector,
 }
 
 impl FirecrackerProvider {
@@ -517,12 +522,15 @@ impl FirecrackerProvider {
 
         let capabilities = Self::default_capabilities();
 
+        let metrics_collector = ProviderMetricsCollector::new(ProviderId::new());
+
         Ok(Self {
             provider_id: ProviderId::new(),
             config,
             capabilities,
             active_vms: Arc::new(RwLock::new(HashMap::new())),
             ip_pool: Arc::new(RwLock::new(ip_pool)),
+            metrics_collector,
         })
     }
 
@@ -531,9 +539,18 @@ impl FirecrackerProvider {
         provider_id: ProviderId,
         config: FirecrackerConfig,
     ) -> Result<Self> {
-        let mut provider = Self::with_config(config).await?;
-        provider.provider_id = provider_id;
-        Ok(provider)
+        let config_clone = config.clone();
+        let ip_pool = IpPool::from_cidr(&config.network.subnet)?;
+        let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
+
+        Ok(Self {
+            provider_id,
+            config,
+            capabilities: Self::default_capabilities(),
+            active_vms: Arc::new(RwLock::new(HashMap::new())),
+            ip_pool: Arc::new(RwLock::new(ip_pool)),
+            metrics_collector,
+        })
     }
 
     /// Verify system requirements for Firecracker (HU-8.2)
@@ -1011,6 +1028,7 @@ impl WorkerProvider for FirecrackerProvider {
     ) -> std::result::Result<WorkerHandle, ProviderError> {
         let worker_id = spec.worker_id.clone();
         let vm_id = Self::vm_id(&worker_id);
+        let startup_start = Instant::now();
 
         info!("Creating Firecracker microVM: {}", vm_id);
 
@@ -1071,6 +1089,15 @@ impl WorkerProvider for FirecrackerProvider {
             "MicroVM {} created successfully (IP: {}, PID: {})",
             vm_id, vm_ip, pid
         );
+
+        let startup_time = startup_start.elapsed();
+
+        // Record metrics for successful worker creation
+        // Spawn a task to record metrics without blocking
+        let collector = self.metrics_collector.clone();
+        tokio::spawn(async move {
+            collector.record_worker_creation(startup_time, true).await;
+        });
 
         let handle = WorkerHandle::new(
             worker_id,
@@ -1227,6 +1254,59 @@ impl WorkerProvider for FirecrackerProvider {
 
     fn estimated_startup_time(&self) -> Duration {
         Duration::from_millis(125)
+    }
+
+    fn get_performance_metrics(&self) -> ProviderPerformanceMetrics {
+        self.metrics_collector.get_metrics()
+    }
+
+    fn record_worker_creation(&self, _startup_time: Duration, _success: bool) {
+        // Spawn a task to record metrics without blocking
+        let collector = self.metrics_collector.clone();
+        tokio::spawn(async move {
+            // Note: We can't use the startup_time parameter here since it's already been recorded
+            // This is a no-op for the default implementation
+            let _ = collector;
+        });
+    }
+
+    fn get_startup_time_history(&self) -> Vec<Duration> {
+        self.metrics_collector.get_startup_times()
+    }
+
+    fn calculate_average_cost_per_hour(&self) -> f64 {
+        let metrics = self.get_performance_metrics();
+
+        // Firecracker cost model: $0.25/vCPU/h + $0.05/GB RAM/h + $0.10/h overhead
+        let avg_cpu_cores = metrics.avg_resource_usage.avg_cpu_millicores / 1000.0;
+        let avg_memory_gb =
+            metrics.avg_resource_usage.avg_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+
+        (avg_cpu_cores * 0.25) + (avg_memory_gb * 0.05) + 0.10
+    }
+
+    fn calculate_health_score(&self) -> f64 {
+        let metrics = self.get_performance_metrics();
+        let success_rate = metrics.success_rate;
+
+        // Calculate average startup time from startup_times
+        let avg_startup_ms = if !metrics.startup_times.is_empty() {
+            let total_ms: u64 = metrics
+                .startup_times
+                .iter()
+                .map(|d| d.as_millis() as u64)
+                .sum();
+            (total_ms / metrics.startup_times.len() as u64) as f64
+        } else {
+            200.0
+        };
+
+        // Health score based on success rate and startup time
+        // Target: >95% success rate, <200ms startup time
+        let success_score = (success_rate / 100.0).min(1.0);
+        let startup_score = (200.0 / avg_startup_ms).min(1.0);
+
+        (success_score * 0.7) + (startup_score * 0.3)
     }
 }
 
