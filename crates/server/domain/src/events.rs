@@ -197,19 +197,6 @@ impl std::fmt::Display for TerminationReason {
 ///
 /// Reduce Connascence of Position transformando los campos de auditoría
 /// de una tupla repetitiva a un tipo cohesivo.
-///
-/// ## Ejemplo de uso
-///
-/// ```
-/// let metadata = EventMetadata::from_job_metadata(&job.metadata(), &job.id);
-/// let event = DomainEvent::JobCreated {
-///     job_id: job.id.clone(),
-///     spec: job.spec().clone(),
-///     occurred_at: Utc::now(),
-///     correlation_id: metadata.correlation_id,
-///     actor: metadata.actor,
-/// };
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventMetadata {
     pub correlation_id: Option<String>,
@@ -267,20 +254,6 @@ impl EventMetadata {
 ///
 /// Centraliza la lógica de auditoría y reduce Connascence of Algorithm
 /// al eliminar duplicación de código en múltiples use cases.
-///
-/// ## Ejemplo de uso
-///
-/// ```rust
-/// impl EventPublisher for MyEventBus {
-///     async fn publish_enriched(
-///         &self,
-///         event: DomainEvent,
-///         metadata: EventMetadata,
-///     ) -> Result<(), EventBusError> {
-///         // Lógica centralizada para publicar evento con metadatos
-///     }
-/// }
-/// ```
 pub trait EventPublisher {
     type Error;
 
@@ -302,15 +275,6 @@ pub trait EventPublisher {
 /// Proporciona una API fluida para crear eventos con metadatos de auditoría.
 /// Reduce Connascence of Position transformando la construcción de eventos
 /// de argumentos posicionales a un builder chain.
-///
-/// ## Ejemplo de uso
-///
-/// ```rust
-/// let event = DomainEventBuilder::job_created(job_id, spec)
-///     .with_correlation_id("workflow-123")
-///     .with_actor("system:scheduler")
-///     .build();
-/// ```
 pub trait EventBuilder {
     type Event;
 
