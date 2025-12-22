@@ -242,6 +242,10 @@ pub struct KubernetesConfig {
     pub pod_security_standard: PodSecurityStandard,
     /// Security Context configuration
     pub security_context: SecurityContextConfig,
+    /// Enable Horizontal Pod Autoscaler for workers
+    pub enable_hpa: bool,
+    /// HPA configuration for auto-scaling
+    pub hpa_config: super::kubernetes_hpa::HPAConfig,
 }
 
 impl Default for KubernetesConfig {
@@ -283,6 +287,8 @@ impl Default for KubernetesConfig {
             creation_timeout_secs: 60,
             pod_security_standard: PodSecurityStandard::Restricted,
             security_context,
+            enable_hpa: false,
+            hpa_config: super::kubernetes_hpa::HPAConfig::default(),
         }
     }
 }
@@ -414,6 +420,16 @@ impl KubernetesConfigBuilder {
         self
     }
 
+    pub fn enable_hpa(mut self, enabled: bool) -> Self {
+        self.config.enable_hpa = enabled;
+        self
+    }
+
+    pub fn hpa_config(mut self, config: super::kubernetes_hpa::HPAConfig) -> Self {
+        self.config.hpa_config = config;
+        self
+    }
+
     /// Build the configuration, validating required fields
     pub fn build(self) -> Result<KubernetesConfig> {
         self.validate()?;
@@ -489,6 +505,7 @@ pub struct KubernetesProvider {
     client: Client,
     config: KubernetesConfig,
     capabilities: ProviderCapabilities,
+    hpa_manager: Option<super::kubernetes_hpa::KubernetesHPAManager>,
 }
 
 impl KubernetesProvider {
@@ -502,12 +519,22 @@ impl KubernetesProvider {
     pub async fn with_config(config: KubernetesConfig) -> Result<Self> {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
+        let provider_id = ProviderId::new();
+        let temp_provider = Self {
+            provider_id: provider_id.clone(),
+            client: client.clone(),
+            config: config.clone(),
+            capabilities: capabilities.clone(),
+            hpa_manager: None,
+        };
+        let hpa_manager = temp_provider.create_hpa_manager();
 
         Ok(Self {
-            provider_id: ProviderId::new(),
+            provider_id,
             client,
             config,
             capabilities,
+            hpa_manager,
         })
     }
 
@@ -518,12 +545,21 @@ impl KubernetesProvider {
     ) -> Result<Self> {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
+        let temp_provider = Self {
+            provider_id: provider_id.clone(),
+            client: client.clone(),
+            config: config.clone(),
+            capabilities: capabilities.clone(),
+            hpa_manager: None,
+        };
+        let hpa_manager = temp_provider.create_hpa_manager();
 
         Ok(Self {
             provider_id,
             client,
             config,
             capabilities,
+            hpa_manager,
         })
     }
 
@@ -571,6 +607,17 @@ impl KubernetesProvider {
         Client::try_from(kube_config).map_err(|e| DomainError::InfrastructureError {
             message: format!("Failed to create Kubernetes client: {}", e),
         })
+    }
+
+    fn create_hpa_manager(&self) -> Option<super::kubernetes_hpa::KubernetesHPAManager> {
+        if self.config.enable_hpa {
+            Some(super::kubernetes_hpa::KubernetesHPAManager::new(
+                self.provider_id.clone(),
+                self.config.hpa_config.clone(),
+            ))
+        } else {
+            None
+        }
     }
 
     fn default_capabilities() -> ProviderCapabilities {
@@ -636,13 +683,23 @@ impl KubernetesProvider {
             labels.insert(k.clone(), v.clone());
         }
 
+        // Add custom labels from Kubernetes config
+        for (k, v) in &spec.kubernetes.custom_labels {
+            labels.insert(k.clone(), v.clone());
+        }
+
         // Build annotations
-        let annotations: BTreeMap<String, String> = self
+        let mut annotations: BTreeMap<String, String> = self
             .config
             .base_annotations
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+
+        // Add custom annotations from Kubernetes config
+        for (k, v) in &spec.kubernetes.annotations {
+            annotations.insert(k.clone(), v.clone());
+        }
 
         // Build environment variables
         let mut env_vars = vec![
@@ -729,8 +786,8 @@ impl KubernetesProvider {
             limits: Some(limits),
         };
 
-        // Build node selector
-        let node_selector = self.build_node_selector(spec);
+        // Build node selector (merge base with Kubernetes config)
+        let node_selector = self.build_node_selector_with_k8s_config(spec);
 
         // Build tolerations
         let tolerations = self.build_tolerations(spec);
@@ -771,6 +828,12 @@ impl KubernetesProvider {
             ..Default::default()
         };
 
+        // Build init containers
+        let init_containers = self.build_init_containers(spec);
+
+        // Build sidecar containers
+        let sidecar_containers = self.build_sidecar_containers(spec);
+
         // Build Pod
         Pod {
             metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
@@ -781,9 +844,20 @@ impl KubernetesProvider {
                 ..Default::default()
             },
             spec: Some(PodSpec {
-                containers: vec![container],
+                containers: {
+                    let mut containers = Vec::new();
+                    containers.extend(sidecar_containers);
+                    containers.push(container);
+                    containers
+                },
+                init_containers: Some(init_containers),
                 restart_policy: Some("Never".to_string()),
-                service_account_name: self.config.service_account.clone(),
+                service_account_name: spec
+                    .kubernetes
+                    .service_account
+                    .as_ref()
+                    .cloned()
+                    .or_else(|| self.config.service_account.clone()),
                 node_selector,
                 tolerations,
                 affinity: affinity,
@@ -841,6 +915,60 @@ impl KubernetesProvider {
 
         // Add base node selector from config
         for (k, v) in &self.config.node_selector {
+            selector.insert(k.clone(), v.clone());
+        }
+
+        // Add GPU-specific node selector
+        if spec.resources.gpu_count > 0 {
+            match spec.resources.gpu_type.as_deref() {
+                Some("nvidia-tesla-v100") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-v100".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("nvidia-tesla-t4") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("nvidia-tesla-a100") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-a100".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("amd-mi100") => {
+                    selector.insert("accelerator".to_string(), "amd-mi100".to_string());
+                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
+                }
+                Some("amd-mi200") => {
+                    selector.insert("accelerator".to_string(), "amd-mi200".to_string());
+                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
+                }
+                // Fallback for unknown GPU types
+                _ => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
+                }
+            }
+        }
+
+        if selector.is_empty() {
+            None
+        } else {
+            Some(selector)
+        }
+    }
+
+    /// Build node selector with Kubernetes worker config
+    fn build_node_selector_with_k8s_config(
+        &self,
+        spec: &WorkerSpec,
+    ) -> Option<BTreeMap<String, String>> {
+        let mut selector = BTreeMap::new();
+
+        // Add base node selector from config
+        for (k, v) in &self.config.node_selector {
+            selector.insert(k.clone(), v.clone());
+        }
+
+        // Add Kubernetes-specific node selector
+        for (k, v) in &spec.kubernetes.node_selector {
             selector.insert(k.clone(), v.clone());
         }
 
@@ -1229,6 +1357,184 @@ impl KubernetesProvider {
                 message: format!("Failed to check namespace {}: {}", namespace, e),
             }),
         }
+    }
+
+    /// Build init containers from Kubernetes config
+    fn build_init_containers(&self, spec: &WorkerSpec) -> Vec<Container> {
+        let mut containers = Vec::new();
+
+        for k8s_container in &spec.kubernetes.init_containers {
+            let env_vars: Vec<EnvVar> = k8s_container
+                .env
+                .iter()
+                .map(|(k, v)| EnvVar {
+                    name: k.clone(),
+                    value: Some(v.clone()),
+                    ..Default::default()
+                })
+                .collect();
+
+            let volume_mounts: Vec<k8s_openapi::api::core::v1::VolumeMount> = k8s_container
+                .volume_mounts
+                .iter()
+                .map(|vm| k8s_openapi::api::core::v1::VolumeMount {
+                    name: vm.name.clone(),
+                    mount_path: vm.mount_path.clone(),
+                    sub_path: vm.sub_path.clone(),
+                    read_only: vm.read_only,
+                    sub_path_expr: None,
+                    mount_propagation: None,
+                    recursive_read_only: None,
+                })
+                .collect();
+
+            let resources = if let Some(ref req) = k8s_container.resources {
+                let mut requests = BTreeMap::new();
+                let mut limits = BTreeMap::new();
+
+                if req.cpu_cores > 0.0 {
+                    let cpu = format!("{}m", (req.cpu_cores * 1000.0) as i64);
+                    requests.insert("cpu".to_string(), Quantity(cpu.clone()));
+                    limits.insert("cpu".to_string(), Quantity(cpu));
+                }
+
+                if req.memory_bytes > 0 {
+                    let memory = format!("{}Mi", req.memory_bytes / (1024 * 1024));
+                    requests.insert("memory".to_string(), Quantity(memory.clone()));
+                    limits.insert("memory".to_string(), Quantity(memory));
+                }
+
+                Some(K8sResourceRequirements {
+                    claims: None,
+                    requests: Some(requests),
+                    limits: Some(limits),
+                })
+            } else {
+                None
+            };
+
+            containers.push(Container {
+                name: k8s_container.name.clone(),
+                image: Some(k8s_container.image.clone()),
+                command: if k8s_container.command.is_empty() {
+                    None
+                } else {
+                    Some(k8s_container.command.clone())
+                },
+                args: if k8s_container.args.is_empty() {
+                    None
+                } else {
+                    Some(k8s_container.args.clone())
+                },
+                env: if env_vars.is_empty() {
+                    None
+                } else {
+                    Some(env_vars)
+                },
+                env_from: None, // TODO: Implement env_from support
+                ports: None,    // TODO: Implement ports support
+                resources,
+                volume_mounts: if volume_mounts.is_empty() {
+                    None
+                } else {
+                    Some(volume_mounts)
+                },
+                security_context: None, // TODO: Implement security context
+                image_pull_policy: k8s_container.image_pull_policy.clone(),
+                ..Default::default()
+            });
+        }
+
+        containers
+    }
+
+    /// Build sidecar containers from Kubernetes config
+    fn build_sidecar_containers(&self, spec: &WorkerSpec) -> Vec<Container> {
+        let mut containers = Vec::new();
+
+        for k8s_container in &spec.kubernetes.sidecar_containers {
+            let env_vars: Vec<EnvVar> = k8s_container
+                .env
+                .iter()
+                .map(|(k, v)| EnvVar {
+                    name: k.clone(),
+                    value: Some(v.clone()),
+                    ..Default::default()
+                })
+                .collect();
+
+            let volume_mounts: Vec<k8s_openapi::api::core::v1::VolumeMount> = k8s_container
+                .volume_mounts
+                .iter()
+                .map(|vm| k8s_openapi::api::core::v1::VolumeMount {
+                    name: vm.name.clone(),
+                    mount_path: vm.mount_path.clone(),
+                    sub_path: vm.sub_path.clone(),
+                    read_only: vm.read_only,
+                    sub_path_expr: None,
+                    mount_propagation: None,
+                    recursive_read_only: None,
+                })
+                .collect();
+
+            let resources = if let Some(ref req) = k8s_container.resources {
+                let mut requests = BTreeMap::new();
+                let mut limits = BTreeMap::new();
+
+                if req.cpu_cores > 0.0 {
+                    let cpu = format!("{}m", (req.cpu_cores * 1000.0) as i64);
+                    requests.insert("cpu".to_string(), Quantity(cpu.clone()));
+                    limits.insert("cpu".to_string(), Quantity(cpu));
+                }
+
+                if req.memory_bytes > 0 {
+                    let memory = format!("{}Mi", req.memory_bytes / (1024 * 1024));
+                    requests.insert("memory".to_string(), Quantity(memory.clone()));
+                    limits.insert("memory".to_string(), Quantity(memory));
+                }
+
+                Some(K8sResourceRequirements {
+                    claims: None,
+                    requests: Some(requests),
+                    limits: Some(limits),
+                })
+            } else {
+                None
+            };
+
+            containers.push(Container {
+                name: k8s_container.name.clone(),
+                image: Some(k8s_container.image.clone()),
+                command: if k8s_container.command.is_empty() {
+                    None
+                } else {
+                    Some(k8s_container.command.clone())
+                },
+                args: if k8s_container.args.is_empty() {
+                    None
+                } else {
+                    Some(k8s_container.args.clone())
+                },
+                env: if env_vars.is_empty() {
+                    None
+                } else {
+                    Some(env_vars)
+                },
+                env_from: None, // TODO: Implement env_from support
+                ports: None,    // TODO: Implement ports support
+                resources,
+                volume_mounts: if volume_mounts.is_empty() {
+                    None
+                } else {
+                    Some(volume_mounts)
+                },
+                security_context: None, // TODO: Implement security context
+                image_pull_policy: k8s_container.image_pull_policy.clone(),
+                ..Default::default()
+            });
+        }
+
+        containers
     }
 }
 
@@ -1885,5 +2191,108 @@ mod tests {
 
         let affinity = provider.build_affinity(&spec);
         assert!(affinity.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kubernetes_job_specific_config() {
+        use hodei_server_domain::workers::KubernetesContainer;
+
+        let config = KubernetesConfig::default();
+        let provider = KubernetesProvider::with_config(config).await.unwrap();
+
+        let mut spec = WorkerSpec::new(
+            "alpine:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        // Add custom Kubernetes annotations
+        spec = spec.with_kubernetes_annotation("custom-annotation", "custom-value");
+
+        // Add custom Kubernetes labels
+        spec = spec.with_kubernetes_label("custom-label", "custom-label-value");
+
+        // Add Kubernetes node selector
+        spec = spec.with_kubernetes_node_selector("node-type", "high-memory");
+
+        // Add init container
+        let init_container = KubernetesContainer {
+            name: "init-db".to_string(),
+            image: "alpine:latest".to_string(),
+            image_pull_policy: Some("Always".to_string()),
+            command: vec!["sh".to_string(), "-c".to_string()],
+            args: vec!["echo init".to_string()],
+            env: HashMap::new(),
+            env_from: vec![],
+            ports: vec![],
+            volume_mounts: vec![],
+            resources: None,
+            security_context: None,
+        };
+        spec = spec.with_kubernetes_init_container(init_container);
+
+        // Add sidecar container
+        let sidecar_container = KubernetesContainer {
+            name: "sidecar-logger".to_string(),
+            image: "alpine:latest".to_string(),
+            image_pull_policy: Some("IfNotPresent".to_string()),
+            command: vec!["sh".to_string(), "-c".to_string()],
+            args: vec!["tail -f /dev/null".to_string()],
+            env: HashMap::new(),
+            env_from: vec![],
+            ports: vec![],
+            volume_mounts: vec![],
+            resources: None,
+            security_context: None,
+        };
+        spec = spec.with_kubernetes_sidecar_container(sidecar_container);
+
+        // Set service account
+        spec = spec.with_kubernetes_service_account("custom-service-account");
+
+        // Create Pod spec
+        let pod = provider.create_pod_spec_with_namespace(&spec, None, "default");
+
+        // Verify custom annotations
+        assert!(pod.metadata.annotations.is_some());
+        let annotations = pod.metadata.annotations.unwrap();
+        assert_eq!(
+            annotations.get("custom-annotation"),
+            Some(&"custom-value".to_string())
+        );
+
+        // Verify custom labels
+        assert!(pod.metadata.labels.is_some());
+        let labels = pod.metadata.labels.unwrap();
+        assert_eq!(
+            labels.get("custom-label"),
+            Some(&"custom-label-value".to_string())
+        );
+
+        // Verify node selector
+        assert!(pod.spec.is_some());
+        let pod_spec = pod.spec.unwrap();
+        assert!(pod_spec.node_selector.is_some());
+        let node_selector = pod_spec.node_selector.unwrap();
+        assert_eq!(
+            node_selector.get("node-type"),
+            Some(&"high-memory".to_string())
+        );
+
+        // Verify service account
+        assert_eq!(
+            pod_spec.service_account_name,
+            Some("custom-service-account".to_string())
+        );
+
+        // Verify init containers
+        assert!(pod_spec.init_containers.is_some());
+        let init_containers = pod_spec.init_containers.unwrap();
+        assert_eq!(init_containers.len(), 1);
+        assert_eq!(init_containers[0].name, "init-db");
+
+        // Verify sidecar containers
+        assert_eq!(pod_spec.containers.len(), 2); // sidecar + main container
+        assert_eq!(pod_spec.containers[0].name, "sidecar-logger");
+        assert_eq!(pod_spec.containers[1].name, "worker");
     }
 }

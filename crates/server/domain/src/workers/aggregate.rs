@@ -170,6 +170,252 @@ pub struct WorkerSpec {
     pub architecture: Architecture,
     /// Capabilities requeridas
     pub required_capabilities: Vec<String>,
+    /// Kubernetes-specific configuration
+    pub kubernetes: KubernetesWorkerConfig,
+}
+
+/// Kubernetes-specific worker configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KubernetesWorkerConfig {
+    /// Custom annotations for the Pod
+    pub annotations: HashMap<String, String>,
+    /// Custom labels for the Pod (extends base labels)
+    pub custom_labels: HashMap<String, String>,
+    /// Node selector for Pod scheduling
+    pub node_selector: HashMap<String, String>,
+    /// Service account to use for the Pod
+    pub service_account: Option<String>,
+    /// Init containers to run before the main container
+    pub init_containers: Vec<KubernetesContainer>,
+    /// Sidecar containers to run alongside the main container
+    pub sidecar_containers: Vec<KubernetesContainer>,
+    /// Affinity rules for pod scheduling
+    pub affinity: Option<KubernetesAffinity>,
+    /// Tolerations for pod scheduling
+    pub tolerations: Vec<KubernetesToleration>,
+    /// DNS policy for the Pod
+    pub dns_policy: Option<String>,
+    /// DNS config for the Pod
+    pub dns_config: Option<KubernetesDNSConfig>,
+    /// Host aliases to add to the Pod's hosts file
+    pub host_aliases: Vec<KubernetesHostAlias>,
+    /// Security context for the Pod
+    pub security_context: Option<KubernetesSecurityContext>,
+}
+
+/// Container specification for Kubernetes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesContainer {
+    /// Container name
+    pub name: String,
+    /// Container image
+    pub image: String,
+    /// Container image pull policy
+    pub image_pull_policy: Option<String>,
+    /// Commands to run
+    pub command: Vec<String>,
+    /// Arguments to pass
+    pub args: Vec<String>,
+    /// Environment variables
+    pub env: HashMap<String, String>,
+    /// Environment variables from sources
+    pub env_from: Vec<KubernetesEnvFrom>,
+    /// Ports to expose
+    pub ports: Vec<KubernetesContainerPort>,
+    /// Volume mounts
+    pub volume_mounts: Vec<KubernetesVolumeMount>,
+    /// Resource requirements
+    pub resources: Option<ResourceRequirements>,
+    /// Security context for the container
+    pub security_context: Option<KubernetesContainerSecurityContext>,
+}
+
+/// Environment variable source
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesEnvFrom {
+    pub config_map_ref: Option<KubernetesConfigMapRef>,
+    pub secret_ref: Option<KubernetesSecretRef>,
+    pub prefix: Option<String>,
+}
+
+/// ConfigMap reference
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesConfigMapRef {
+    pub name: String,
+    pub optional: Option<bool>,
+}
+
+/// Secret reference
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesSecretRef {
+    pub name: String,
+    pub optional: Option<bool>,
+}
+
+/// Container port
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesContainerPort {
+    pub name: Option<String>,
+    pub container_port: i32,
+    pub protocol: Option<String>,
+    pub host_ip: Option<String>,
+    pub host_port: Option<i32>,
+}
+
+/// Volume mount
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesVolumeMount {
+    pub name: String,
+    pub mount_path: String,
+    pub sub_path: Option<String>,
+    pub read_only: Option<bool>,
+}
+
+/// Affinity configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesAffinity {
+    pub node_affinity: Option<KubernetesNodeAffinity>,
+    pub pod_affinity: Option<KubernetesPodAffinity>,
+    pub pod_anti_affinity: Option<KubernetesPodAntiAffinity>,
+}
+
+/// Node affinity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesNodeAffinity {
+    pub preferred_during_scheduling_ignored_during_execution:
+        Vec<KubernetesPreferredSchedulingTerm>,
+    pub required_during_scheduling_ignored_during_execution: Option<KubernetesNodeSelector>,
+}
+
+/// Preferred scheduling term
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesPreferredSchedulingTerm {
+    pub weight: i32,
+    pub preference: KubernetesNodeSelectorTerm,
+}
+
+/// Node selector term
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesNodeSelectorTerm {
+    pub match_expressions: Vec<KubernetesNodeSelectorRequirement>,
+}
+
+/// Node selector requirement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesNodeSelectorRequirement {
+    pub key: String,
+    pub operator: String,
+    pub values: Vec<String>,
+}
+
+/// Node selector
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesNodeSelector {
+    pub node_selector_terms: Vec<KubernetesNodeSelectorTerm>,
+}
+
+/// Pod affinity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesPodAffinity {
+    pub required_during_scheduling_ignored_during_execution: Vec<KubernetesPodAffinityTerm>,
+}
+
+/// Pod anti-affinity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesPodAntiAffinity {
+    pub required_during_scheduling_ignored_during_execution: Vec<KubernetesPodAffinityTerm>,
+}
+
+/// Pod affinity term
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesPodAffinityTerm {
+    pub label_selector: Option<KubernetesLabelSelector>,
+    pub namespace_selector: Option<KubernetesLabelSelector>,
+    pub namespaces: Vec<String>,
+    pub topology_key: String,
+}
+
+/// Label selector
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesLabelSelector {
+    pub match_labels: Option<HashMap<String, String>>,
+    pub match_expressions: Vec<KubernetesLabelSelectorRequirement>,
+}
+
+/// Label selector requirement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesLabelSelectorRequirement {
+    pub key: String,
+    pub operator: String,
+    pub values: Vec<String>,
+}
+
+/// Toleration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesToleration {
+    pub key: Option<String>,
+    pub operator: Option<String>,
+    pub value: Option<String>,
+    pub effect: Option<String>,
+    pub toleration_seconds: Option<i64>,
+}
+
+/// DNS configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesDNSConfig {
+    pub nameservers: Vec<String>,
+    pub searches: Vec<String>,
+    pub options: Vec<KubernetesDNSConfigOption>,
+}
+
+/// DNS config option
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesDNSConfigOption {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+/// Host alias
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesHostAlias {
+    pub ip: String,
+    pub hostnames: Vec<String>,
+}
+
+/// Security context for Pod
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesSecurityContext {
+    pub run_as_non_root: Option<bool>,
+    pub run_as_user: Option<i64>,
+    pub run_as_group: Option<i64>,
+    pub fs_group: Option<i64>,
+    pub seccomp_profile: Option<KubernetesSeccompProfile>,
+}
+
+/// Security context for Container
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesContainerSecurityContext {
+    pub run_as_non_root: Option<bool>,
+    pub run_as_user: Option<i64>,
+    pub run_as_group: Option<i64>,
+    pub allow_privilege_escalation: Option<bool>,
+    pub capabilities: Option<KubernetesCapabilities>,
+    pub read_only_root_filesystem: Option<bool>,
+    pub seccomp_profile: Option<KubernetesSeccompProfile>,
+}
+
+/// Seccomp profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesSeccompProfile {
+    pub type_: String,
+    pub localhost_profile: Option<String>,
+}
+
+/// Capabilities
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesCapabilities {
+    pub add: Vec<String>,
+    pub drop: Vec<String>,
 }
 
 impl WorkerSpec {
@@ -186,6 +432,7 @@ impl WorkerSpec {
             idle_timeout: Duration::from_secs(300),  // 5 minutos default
             architecture: Architecture::default(),
             required_capabilities: vec![],
+            kubernetes: KubernetesWorkerConfig::default(),
         }
     }
 
@@ -211,6 +458,58 @@ impl WorkerSpec {
 
     pub fn with_capability(mut self, capability: impl Into<String>) -> Self {
         self.required_capabilities.push(capability.into());
+        self
+    }
+
+    /// Add Kubernetes-specific annotation
+    pub fn with_kubernetes_annotation(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.kubernetes.annotations.insert(key.into(), value.into());
+        self
+    }
+
+    /// Add Kubernetes-specific custom label
+    pub fn with_kubernetes_label(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.kubernetes
+            .custom_labels
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Add Kubernetes node selector
+    pub fn with_kubernetes_node_selector(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.kubernetes
+            .node_selector
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set Kubernetes service account
+    pub fn with_kubernetes_service_account(mut self, service_account: impl Into<String>) -> Self {
+        self.kubernetes.service_account = Some(service_account.into());
+        self
+    }
+
+    /// Add Kubernetes init container
+    pub fn with_kubernetes_init_container(mut self, container: KubernetesContainer) -> Self {
+        self.kubernetes.init_containers.push(container);
+        self
+    }
+
+    /// Add Kubernetes sidecar container
+    pub fn with_kubernetes_sidecar_container(mut self, container: KubernetesContainer) -> Self {
+        self.kubernetes.sidecar_containers.push(container);
         self
     }
 }
