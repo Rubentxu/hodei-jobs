@@ -7,7 +7,7 @@
 mod log_persistence_integration_tests {
     use crate::config::ServerConfig;
     use hodei_server_interface::log_persistence::{
-        LocalStorageConfig, LogPersistenceConfig, LogStorage, LogStorageFactory, StorageBackend,
+        LocalStorageConfig, LogPersistenceConfig, LogStorageFactory, StorageBackend,
     };
     use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ mod log_persistence_integration_tests {
     async fn test_config_conversion_to_storage_config() {
         let config = ServerConfig {
             port: 50051,
-            database_url: "postgres://test".to_string(),
+            database_url: Some("postgres://test".to_string()),
             log_level: "info".to_string(),
             log_persistence_enabled: true,
             log_storage_backend: "local".to_string(),
@@ -52,7 +52,7 @@ mod log_persistence_integration_tests {
     async fn test_s3_backend_config_defaults_to_local() {
         let config = ServerConfig {
             port: 50051,
-            database_url: "postgres://test".to_string(),
+            database_url: Some("postgres://test".to_string()),
             log_level: "info".to_string(),
             log_persistence_enabled: true,
             log_storage_backend: "s3".to_string(), // Unknown backend
@@ -76,7 +76,7 @@ mod log_persistence_integration_tests {
     async fn test_disabled_persistence() {
         let config = ServerConfig {
             port: 50051,
-            database_url: "postgres://test".to_string(),
+            database_url: Some("postgres://test".to_string()),
             log_level: "info".to_string(),
             log_persistence_enabled: false,
             log_storage_backend: "local".to_string(),
@@ -149,7 +149,7 @@ mod log_persistence_integration_tests {
         // 1. Create config
         let config = ServerConfig {
             port: 50051,
-            database_url: "postgres://test".to_string(),
+            database_url: Some("postgres://test".to_string()),
             log_level: "info".to_string(),
             log_persistence_enabled: true,
             log_storage_backend: "local".to_string(),

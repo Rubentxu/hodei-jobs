@@ -154,13 +154,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create shared log stream service with persistence
     let log_stream_service: Arc<LogStreamService> = if persistence_config.enabled {
+        let backend_name = if let StorageBackend::Local(_) = &persistence_config.storage_backend {
+            "local"
+        } else {
+            "unknown"
+        };
         info!(
             "📝 Log persistence enabled with storage backend: {}",
-            match &persistence_config.storage_backend {
-                StorageBackend::Local(_) => "local",
-                // StorageBackend::S3(_) => "s3",
-                _ => "unknown",
-            }
+            backend_name
         );
 
         Arc::new(LogStreamService::with_storage(

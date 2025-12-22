@@ -8,7 +8,7 @@
 //! 5. Event publishing for worker lifecycle events
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::timeout;
 
 use futures::StreamExt;
