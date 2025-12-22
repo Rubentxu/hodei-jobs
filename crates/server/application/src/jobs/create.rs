@@ -47,7 +47,7 @@ pub struct ExecuteNextJobResponse {
 
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, EventMetadata};
 
 /// DTO para Retry Job Response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,12 +210,15 @@ impl CreateJobUseCase {
         );
 
         // 6. Publicar evento JobCreated
+        // Refactoring: Use EventMetadata to centralize audit info
+        let metadata = EventMetadata::new(request.correlation_id.clone(), request.actor.clone());
+
         let event = DomainEvent::JobCreated {
             job_id: job_id.clone(),
             spec: job_spec,
             occurred_at: Utc::now(),
-            correlation_id: request.correlation_id.clone(),
-            actor: request.actor.clone(),
+            correlation_id: metadata.correlation_id.clone(),
+            actor: metadata.actor.clone(),
         };
 
         tracing::info!("🎯 About to publish JobCreated event for job: {}", job_id);
@@ -231,13 +234,14 @@ impl CreateJobUseCase {
 
         // 7. Publicar evento JobQueueDepthChanged para auto-scaling
         // Esto permite que ProviderManager reactive workers si la cola crece
+        // Refactoring: Reuse EventMetadata from JobCreated event
         if let Ok(queue_depth) = self.job_queue.len().await {
             let depth_event = DomainEvent::JobQueueDepthChanged {
                 queue_depth: queue_depth as u64,
                 threshold: self.queue_depth_threshold,
                 occurred_at: Utc::now(),
-                correlation_id: request.correlation_id,
-                actor: request.actor,
+                correlation_id: metadata.correlation_id.clone(),
+                actor: metadata.actor.clone(),
             };
 
             if let Err(e) = self.event_bus.publish(&depth_event).await {
@@ -391,13 +395,17 @@ impl ExecuteNextJobUseCase {
         self.job_repository.update(&processing_job).await?;
 
         // 3. Publicar evento
+        // Refactoring: Use EventMetadata to reduce Connascence of Algorithm
+        let metadata =
+            EventMetadata::from_job_metadata(processing_job.metadata(), &processing_job.id);
+
         let event = DomainEvent::JobStatusChanged {
             job_id: processing_job.id.clone(),
             old_state,
             new_state: hodei_server_domain::shared_kernel::JobState::Scheduled,
             occurred_at: Utc::now(),
-            correlation_id: processing_job.metadata().get("correlation_id").cloned(),
-            actor: processing_job.metadata().get("actor").cloned(),
+            correlation_id: metadata.correlation_id.clone(),
+            actor: metadata.actor.clone(),
         };
 
         if let Err(e) = self.event_bus.publish(&event).await {
@@ -660,5 +668,64 @@ mod tests {
         // No event should be published
         let events = bus.published.lock().unwrap();
         assert!(events.is_empty());
+    }
+
+    // ========================================================================
+    // EventMetadata Propagation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_event_metadata_propagation_in_job_dispatcher() {
+        // This test verifies that correlation_id and actor are properly
+        // propagated through the JobDispatcher using EventMetadata
+        use hodei_server_domain::events::EventMetadata;
+        use std::collections::HashMap;
+
+        let job_id = JobId::new();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "correlation_id".to_string(),
+            "workflow-test-123".to_string(),
+        );
+        metadata.insert("actor".to_string(), "test-system".to_string());
+
+        let event_metadata = EventMetadata::from_job_metadata(&metadata, &job_id);
+
+        assert_eq!(
+            event_metadata.correlation_id,
+            Some("workflow-test-123".to_string())
+        );
+        assert_eq!(event_metadata.actor, Some("test-system".to_string()));
+    }
+
+    #[test]
+    fn test_event_metadata_fallback_behavior() {
+        use hodei_server_domain::events::EventMetadata;
+        use std::collections::HashMap;
+
+        let job_id = JobId::new();
+        let empty_metadata = HashMap::new();
+
+        let event_metadata = EventMetadata::from_job_metadata(&empty_metadata, &job_id);
+
+        // Should fallback to job_id when correlation_id is not present
+        assert_eq!(event_metadata.correlation_id, Some(job_id.to_string()));
+        assert_eq!(event_metadata.actor, None);
+    }
+
+    #[test]
+    fn test_event_metadata_system_event_creation() {
+        use hodei_server_domain::events::EventMetadata;
+
+        let metadata = EventMetadata::for_system_event(
+            Some("system-correlation".to_string()),
+            "system:worker_monitor",
+        );
+
+        assert_eq!(
+            metadata.correlation_id,
+            Some("system-correlation".to_string())
+        );
+        assert_eq!(metadata.actor, Some("system:worker_monitor".to_string()));
     }
 }

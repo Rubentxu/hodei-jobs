@@ -3,7 +3,7 @@
 
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, EventMetadata};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::request_context::RequestContext;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
@@ -51,10 +51,18 @@ impl CancelJobUseCase {
         job.cancel()?;
         self.job_repository.update(&job).await?;
 
-        let correlation_id = ctx
-            .map(|c| c.correlation_id().to_string())
-            .or_else(|| job.metadata().get("correlation_id").cloned());
-        let actor = ctx.and_then(|c| c.actor_owned());
+        // Refactoring: Use EventMetadata to centralize audit info extraction
+        // This handles the fallback from context to job metadata automatically
+        let correlation_from_ctx = ctx.map(|c| c.correlation_id().to_string());
+        let actor_from_ctx = ctx.and_then(|c| c.actor_owned());
+
+        let metadata = if correlation_from_ctx.is_some() || actor_from_ctx.is_some() {
+            // If context provides audit info, use it
+            EventMetadata::new(correlation_from_ctx, actor_from_ctx)
+        } else {
+            // Otherwise, fall back to job metadata
+            EventMetadata::from_job_metadata(job.metadata(), &job.id)
+        };
 
         // Publicar evento JobStatusChanged (Cancelled)
         let event = DomainEvent::JobStatusChanged {
@@ -62,8 +70,8 @@ impl CancelJobUseCase {
             old_state,
             new_state: hodei_server_domain::shared_kernel::JobState::Cancelled,
             occurred_at: Utc::now(),
-            correlation_id: correlation_id.clone(),
-            actor: actor.clone(),
+            correlation_id: metadata.correlation_id.clone(),
+            actor: metadata.actor.clone(),
         };
 
         if let Err(e) = self.event_bus.publish(&event).await {
@@ -74,12 +82,13 @@ impl CancelJobUseCase {
         }
 
         // Publicar evento explícito JobCancelled
+        // Refactoring: Reuse EventMetadata from JobStatusChanged event
         let cancelled_event = DomainEvent::JobCancelled {
             job_id: job.id.clone(),
             reason: Some("User requested cancellation".to_string()),
             occurred_at: Utc::now(),
-            correlation_id,
-            actor,
+            correlation_id: metadata.correlation_id.clone(),
+            actor: metadata.actor.clone(),
         };
 
         if let Err(e) = self.event_bus.publish(&cancelled_event).await {

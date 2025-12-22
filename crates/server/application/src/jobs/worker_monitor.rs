@@ -5,7 +5,7 @@
 
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, EventMetadata};
 use hodei_server_domain::shared_kernel::{Result, WorkerId, WorkerState};
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
@@ -174,14 +174,17 @@ async fn monitor_workers(
     }
 
     // Publish WorkerDisconnected events for stale workers
+    // Refactoring: Use EventMetadata for system events
     for worker_id in disconnected_workers {
+        let metadata = EventMetadata::for_system_event(None, "system:worker_monitor");
+
         let event = DomainEvent::WorkerStatusChanged {
             worker_id: worker_id.clone(),
             old_status: WorkerState::Ready,
             new_status: WorkerState::Terminated,
             occurred_at: Utc::now(),
-            correlation_id: None,
-            actor: Some("system:worker_monitor".to_string()),
+            correlation_id: metadata.correlation_id,
+            actor: metadata.actor,
         };
 
         if let Err(e) = event_bus.publish(&event).await {

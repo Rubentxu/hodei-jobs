@@ -9,7 +9,7 @@ use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, EventMetadata};
 use hodei_server_domain::jobs::{ExecutionContext, Job, JobQueue, JobRepository};
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
@@ -358,18 +358,15 @@ impl JobDispatcher {
         );
 
         // Step 5: Publish JobAssigned event
-        let correlation_id = job
-            .metadata()
-            .get("correlation_id")
-            .cloned()
-            .or_else(|| Some(job.id.to_string()));
+        // Refactoring: Use EventMetadata to reduce Connascence of Algorithm
+        let metadata = EventMetadata::from_job_metadata(job.metadata(), &job.id);
 
         let assigned_event = DomainEvent::JobAssigned {
             job_id: job.id.clone(),
             worker_id: worker_id.clone(),
             occurred_at: Utc::now(),
-            correlation_id,
-            actor: Some("system:job_dispatcher".to_string()),
+            correlation_id: metadata.correlation_id,
+            actor: metadata.actor.or(Some("system:job_dispatcher".to_string())),
         };
 
         if let Err(e) = self.event_bus.publish(&assigned_event).await {

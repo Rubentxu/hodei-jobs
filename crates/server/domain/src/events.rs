@@ -2,6 +2,7 @@ use crate::jobs::JobSpec;
 use crate::shared_kernel::{JobId, JobState, ProviderId, ProviderStatus, WorkerId, WorkerState};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Representa un evento de dominio que ha ocurrido en el sistema.
 /// Los eventos son hechos inmutables.
@@ -188,6 +189,222 @@ impl std::fmt::Display for TerminationReason {
             TerminationReason::ProviderError { message } => {
                 write!(f, "PROVIDER_ERROR: {}", message)
             }
+        }
+    }
+}
+
+/// Metadatos de auditoría para todos los eventos
+///
+/// Reduce Connascence of Position transformando los campos de auditoría
+/// de una tupla repetitiva a un tipo cohesivo.
+///
+/// ## Ejemplo de uso
+///
+/// ```
+/// let metadata = EventMetadata::from_job_metadata(&job.metadata(), &job.id);
+/// let event = DomainEvent::JobCreated {
+///     job_id: job.id.clone(),
+///     spec: job.spec().clone(),
+///     occurred_at: Utc::now(),
+///     correlation_id: metadata.correlation_id,
+///     actor: metadata.actor,
+/// };
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventMetadata {
+    pub correlation_id: Option<String>,
+    pub actor: Option<String>,
+}
+
+impl EventMetadata {
+    /// Crea nuevos metadatos de evento
+    pub fn new(correlation_id: Option<String>, actor: Option<String>) -> Self {
+        Self {
+            correlation_id,
+            actor,
+        }
+    }
+
+    /// Crea metadatos desde metadata de un job
+    ///
+    /// # Algoritmo de extracción
+    /// 1. Busca `correlation_id` en metadata del job
+    /// 2. Si no existe, usa el job_id como fallback
+    /// 3. Busca `actor` en metadata del job
+    pub fn from_job_metadata(metadata: &HashMap<String, String>, job_id: &JobId) -> Self {
+        Self {
+            correlation_id: metadata
+                .get("correlation_id")
+                .cloned()
+                .or_else(|| Some(job_id.to_string())),
+            actor: metadata.get("actor").cloned(),
+        }
+    }
+
+    /// Crea metadatos con correlation_id específico y actor del sistema
+    pub fn for_system_event(correlation_id: Option<String>, system_actor: &str) -> Self {
+        Self {
+            correlation_id,
+            actor: Some(system_actor.to_string()),
+        }
+    }
+
+    /// Crea metadatos vacíos
+    pub fn empty() -> Self {
+        Self {
+            correlation_id: None,
+            actor: None,
+        }
+    }
+
+    /// Verifica si los metadatos contienen información de auditoría
+    pub fn has_audit_info(&self) -> bool {
+        self.correlation_id.is_some() || self.actor.is_some()
+    }
+}
+
+/// Trait para publicar eventos con metadatos de auditoría
+///
+/// Centraliza la lógica de auditoría y reduce Connascence of Algorithm
+/// al eliminar duplicación de código en múltiples use cases.
+///
+/// ## Ejemplo de uso
+///
+/// ```rust
+/// impl EventPublisher for MyEventBus {
+///     async fn publish_enriched(
+///         &self,
+///         event: DomainEvent,
+///         metadata: EventMetadata,
+///     ) -> Result<(), EventBusError> {
+///         // Lógica centralizada para publicar evento con metadatos
+///     }
+/// }
+/// ```
+pub trait EventPublisher {
+    type Error;
+
+    /// Publica un evento con metadatos de auditoría
+    ///
+    /// # Algoritmo
+    /// 1. Enriquecer el evento con los metadatos
+    /// 2. Persistir el evento en storage
+    /// 3. Notificar a suscriptores
+    async fn publish_enriched(
+        &self,
+        event: DomainEvent,
+        metadata: EventMetadata,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Trait Builder para eventos de dominio
+///
+/// Proporciona una API fluida para crear eventos con metadatos de auditoría.
+/// Reduce Connascence of Position transformando la construcción de eventos
+/// de argumentos posicionales a un builder chain.
+///
+/// ## Ejemplo de uso
+///
+/// ```rust
+/// let event = DomainEventBuilder::job_created(job_id, spec)
+///     .with_correlation_id("workflow-123")
+///     .with_actor("system:scheduler")
+///     .build();
+/// ```
+pub trait EventBuilder {
+    type Event;
+
+    /// Construye el evento con los metadatos configurados
+    fn build(self) -> Self::Event;
+
+    /// Establece correlation_id
+    fn with_correlation_id(self, correlation_id: String) -> Self;
+
+    /// Establece actor
+    fn with_actor(self, actor: String) -> Self;
+}
+
+/// Builder específico para eventos de JobCreated
+pub struct JobCreatedBuilder {
+    job_id: JobId,
+    spec: JobSpec,
+    occurred_at: DateTime<Utc>,
+    correlation_id: Option<String>,
+    actor: Option<String>,
+}
+
+impl JobCreatedBuilder {
+    pub fn new(job_id: JobId, spec: JobSpec) -> Self {
+        Self {
+            job_id,
+            spec,
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: None,
+        }
+    }
+
+    pub fn with_correlation_id(mut self, correlation_id: String) -> Self {
+        self.correlation_id = Some(correlation_id);
+        self
+    }
+
+    pub fn with_actor(mut self, actor: String) -> Self {
+        self.actor = Some(actor);
+        self
+    }
+
+    pub fn build(self) -> DomainEvent {
+        DomainEvent::JobCreated {
+            job_id: self.job_id,
+            spec: self.spec,
+            occurred_at: self.occurred_at,
+            correlation_id: self.correlation_id,
+            actor: self.actor,
+        }
+    }
+}
+
+/// Builder específico para eventos JobStatusChanged
+pub struct JobStatusChangedBuilder {
+    job_id: JobId,
+    old_state: JobState,
+    new_state: JobState,
+    occurred_at: DateTime<Utc>,
+    correlation_id: Option<String>,
+    actor: Option<String>,
+}
+
+impl JobStatusChangedBuilder {
+    pub fn new(job_id: JobId, old_state: JobState, new_state: JobState) -> Self {
+        Self {
+            job_id,
+            old_state,
+            new_state,
+            occurred_at: Utc::now(),
+            correlation_id: None,
+            actor: None,
+        }
+    }
+
+    pub fn with_correlation_id(mut self, correlation_id: String) -> Self {
+        self.correlation_id = Some(correlation_id);
+        self
+    }
+
+    pub fn with_actor(mut self, actor: String) -> Self {
+        self.actor = Some(actor);
+        self
+    }
+
+    pub fn build(self) -> DomainEvent {
+        DomainEvent::JobStatusChanged {
+            job_id: self.job_id,
+            old_state: self.old_state,
+            new_state: self.new_state,
+            occurred_at: self.occurred_at,
+            correlation_id: self.correlation_id,
+            actor: self.actor,
         }
     }
 }
@@ -593,5 +810,222 @@ mod tests {
             serde_json::from_str(&serialized).expect("Failed to deserialize");
         assert_eq!(failed, deserialized);
         assert_eq!(failed.event_type(), "WorkerRecoveryFailed");
+    }
+
+    // ========================================================================
+    // EventMetadata Tests
+    // ========================================================================
+
+    #[test]
+    fn test_event_metadata_creation() {
+        let metadata =
+            EventMetadata::new(Some("corr-123".to_string()), Some("user-456".to_string()));
+
+        assert_eq!(metadata.correlation_id, Some("corr-123".to_string()));
+        assert_eq!(metadata.actor, Some("user-456".to_string()));
+        assert!(metadata.has_audit_info());
+    }
+
+    #[test]
+    fn test_event_metadata_from_job_metadata_with_correlation() {
+        let job_id = JobId::new();
+        let mut metadata = HashMap::new();
+        metadata.insert("correlation_id".to_string(), "workflow-789".to_string());
+        metadata.insert("actor".to_string(), "scheduler".to_string());
+
+        let event_metadata = EventMetadata::from_job_metadata(&metadata, &job_id);
+
+        assert_eq!(
+            event_metadata.correlation_id,
+            Some("workflow-789".to_string())
+        );
+        assert_eq!(event_metadata.actor, Some("scheduler".to_string()));
+    }
+
+    #[test]
+    fn test_event_metadata_from_job_metadata_fallback_to_job_id() {
+        let job_id = JobId::new();
+        let metadata = HashMap::new();
+
+        let event_metadata = EventMetadata::from_job_metadata(&metadata, &job_id);
+
+        // Should fallback to job_id when correlation_id is not present
+        assert_eq!(event_metadata.correlation_id, Some(job_id.to_string()));
+        assert_eq!(event_metadata.actor, None);
+    }
+
+    #[test]
+    fn test_event_metadata_for_system_event() {
+        let event_metadata = EventMetadata::for_system_event(
+            Some("system-corr".to_string()),
+            "system:worker_monitor",
+        );
+
+        assert_eq!(
+            event_metadata.correlation_id,
+            Some("system-corr".to_string())
+        );
+        assert_eq!(
+            event_metadata.actor,
+            Some("system:worker_monitor".to_string())
+        );
+    }
+
+    #[test]
+    fn test_event_metadata_empty() {
+        let event_metadata = EventMetadata::empty();
+
+        assert_eq!(event_metadata.correlation_id, None);
+        assert_eq!(event_metadata.actor, None);
+        assert!(!event_metadata.has_audit_info());
+    }
+
+    #[test]
+    fn test_event_metadata_serialization() {
+        let original = EventMetadata::new(
+            Some("test-correlation".to_string()),
+            Some("test-actor".to_string()),
+        );
+
+        let serialized = serde_json::to_string(&original).expect("Failed to serialize");
+        let deserialized: EventMetadata =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_event_metadata_partial_info() {
+        // Test with only correlation_id
+        let metadata1 = EventMetadata::new(Some("corr".to_string()), None);
+        assert!(metadata1.has_audit_info());
+
+        // Test with only actor
+        let metadata2 = EventMetadata::new(None, Some("actor".to_string()));
+        assert!(metadata2.has_audit_info());
+
+        // Test with neither
+        let metadata3 = EventMetadata::empty();
+        assert!(!metadata3.has_audit_info());
+    }
+
+    // ========================================================================
+    // EventPublisher Tests
+    // ========================================================================
+    //
+    // Note: Async trait tests are implemented in integration tests
+    // since this module is synchronous. See hodei-server-integration crate.
+
+    // ========================================================================
+    // EventBuilder Tests
+    // ========================================================================
+
+    #[test]
+    fn test_job_created_builder() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["test".to_string(), "command".to_string()]);
+
+        let event = JobCreatedBuilder::new(job_id.clone(), spec.clone())
+            .with_correlation_id("workflow-456".to_string())
+            .with_actor("system:builder".to_string())
+            .build();
+
+        match event {
+            DomainEvent::JobCreated {
+                job_id: actual_job_id,
+                spec: actual_spec,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            } => {
+                assert_eq!(actual_job_id, job_id);
+                assert_eq!(actual_spec, spec);
+                assert_eq!(correlation_id, Some("workflow-456".to_string()));
+                assert_eq!(actor, Some("system:builder".to_string()));
+            }
+            _ => panic!("Expected JobCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_job_status_changed_builder() {
+        use crate::shared_kernel::JobState;
+
+        let job_id = JobId::new();
+        let old_state = JobState::Pending;
+        let new_state = JobState::Running;
+
+        let event =
+            JobStatusChangedBuilder::new(job_id.clone(), old_state.clone(), new_state.clone())
+                .with_correlation_id("transition-789".to_string())
+                .with_actor("system:dispatcher".to_string())
+                .build();
+
+        match event {
+            DomainEvent::JobStatusChanged {
+                job_id: actual_job_id,
+                old_state: actual_old_state,
+                new_state: actual_new_state,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            } => {
+                assert_eq!(actual_job_id, job_id);
+                assert_eq!(actual_old_state, old_state);
+                assert_eq!(actual_new_state, new_state);
+                assert_eq!(correlation_id, Some("transition-789".to_string()));
+                assert_eq!(actor, Some("system:dispatcher".to_string()));
+            }
+            _ => panic!("Expected JobStatusChanged event"),
+        }
+    }
+
+    #[test]
+    fn test_job_created_builder_without_metadata() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["test".to_string()]);
+
+        let event = JobCreatedBuilder::new(job_id.clone(), spec.clone()).build();
+
+        match event {
+            DomainEvent::JobCreated {
+                job_id: actual_job_id,
+                spec: actual_spec,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            } => {
+                assert_eq!(actual_job_id, job_id);
+                assert_eq!(actual_spec, spec);
+                assert_eq!(correlation_id, None);
+                assert_eq!(actor, None);
+            }
+            _ => panic!("Expected JobCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_builder_fluent_api() {
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
+
+        // Test fluent API chaining
+        let event = JobCreatedBuilder::new(job_id.clone(), spec.clone())
+            .with_correlation_id("chain-test".to_string())
+            .with_actor("test-user".to_string())
+            .with_correlation_id("override".to_string()) // Should override
+            .build();
+
+        match event {
+            DomainEvent::JobCreated {
+                correlation_id,
+                actor,
+                ..
+            } => {
+                assert_eq!(correlation_id, Some("override".to_string()));
+                assert_eq!(actor, Some("test-user".to_string()));
+            }
+            _ => panic!("Expected JobCreated event"),
+        }
     }
 }
