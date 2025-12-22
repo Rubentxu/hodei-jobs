@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-config
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      grpc_port: {{ .Values.service.grpcPort }}
+      http_port: {{ .Values.service.port }}
+      host: "0.0.0.0"
+
+    database:
+      {{- if .Values.postgresql.enabled }}
+      url: "postgresql://postgres:{{ .Values.postgresql.auth.postgresPassword }}@{{ include "hodei-jobs-platform.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+      {{- else }}
+      url: ""
+      {{- end }}
+
+    redis:
+      {{- if .Values.redis.enabled }}
+      url: "redis://{{ include "hodei-jobs-platform.fullname" . }}-redis-master:6379"
+      {{- else }}
+      url: ""
+      {{- end }}
+
+    providers:
+      kubernetes:
+        {{- if .Values.kubernetesProvider.enabled }}
+        enabled: true
+        namespace: {{ .Values.kubernetesProvider.namespace }}
+        kubeconfig_path: {{ .Values.kubernetesProvider.kubeconfigPath | quote }}
+        context: {{ .Values.kubernetesProvider.context | quote }}
+        service_account: {{ .Values.kubernetesProvider.serviceAccount | quote }}
+        image_pull_secrets: {{ toYaml .Values.kubernetesProvider.imagePullSecrets | nindent 10 }}
+        default_cpu_request: {{ .Values.kubernetesProvider.defaultCpuRequest | quote }}
+        default_memory_request: {{ .Values.kubernetesProvider.defaultMemoryRequest | quote }}
+        default_cpu_limit: {{ .Values.kubernetesProvider.defaultCpuLimit | quote }}
+        default_memory_limit: {{ .Values.kubernetesProvider.defaultMemoryLimit | quote }}
+        pod_security_standard: {{ .Values.kubernetesProvider.podSecurityStandard | quote }}
+        enable_hpa: {{ .Values.kubernetesProvider.enableHPA }}
+        enable_dynamic_namespaces: {{ .Values.kubernetesProvider.enableDynamicNamespaces }}
+        namespace_prefix: {{ .Values.kubernetesProvider.namespacePrefix | quote }}
+        {{- else }}
+        enabled: false
+        {{- end }}
+
+    logging:
+      level: "INFO"
+      format: "json"
+
+    metrics:
+      enabled: true
+      port: {{ .Values.service.port }}
+      path: "/metrics"
+
+    tracing:
+      enabled: true
+      exporter: "otlp"

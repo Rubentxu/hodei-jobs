@@ -1,0 +1,162 @@
+# Default values for Hodei Job Platform
+# This is a YAML-formatted file.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/rubentxu/hodei-jobs-platform
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 2000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+  grpcPort: 9090
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: hodei.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hodei-tls
+      hosts:
+        - hodei.example.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# PostgreSQL Configuration
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: "hodei_password"
+    database: "hodei_jobs"
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+
+# Redis Configuration
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# Prometheus Monitoring
+prometheus:
+  enabled: true
+  prometheus:
+    prometheusSpec:
+      serviceMonitorSelector:
+        matchLabels:
+          hodei.io/monitor: "true"
+
+# Kubernetes Provider Configuration
+kubernetesProvider:
+  enabled: true
+  namespace: "hodei-jobs-workers"
+  kubeconfigPath: ""
+  context: ""
+  serviceAccount: "hodei-jobs-worker"
+  imagePullSecrets: []
+  defaultCpuRequest: "100m"
+  defaultMemoryRequest: "128Mi"
+  defaultCpuLimit: "1000m"
+  defaultMemoryLimit: "512Mi"
+  podSecurityStandard: "Restricted"
+  enableHPA: true
+  enableDynamicNamespaces: false
+  namespacePrefix: "hodei-tenant"
+
+# Network Policies
+networkPolicy:
+  enabled: true
+  ingress:
+    enabled: true
+    ports:
+      - port: 8080
+        protocol: TCP
+      - port: 9090
+        protocol: TCP
+  egress:
+    enabled: true
+    rules:
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        ports:
+          - port: 53
+            protocol: UDP
+          - port: 53
+            protocol: TCP
+          - port: 443
+            protocol: TCP
+          - port: 80
+            protocol: TCP
+
+# Backup Configuration
+backup:
+  enabled: false
+  schedule: "0 2 * * *"
+  retention: "30d"
+  storage:
+    type: "s3"
+    bucket: "hodei-backups"
+    region: "us-east-1"
