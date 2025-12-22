@@ -15,7 +15,7 @@ use kube::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
@@ -200,8 +200,12 @@ impl SecurityContextConfig {
 /// Configuration for the Kubernetes Provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubernetesConfig {
-    /// Namespace where worker Pods will be created
+    /// Namespace where worker Pods will be created (default)
     pub namespace: String,
+    /// Allow dynamic namespace creation per tenant
+    pub enable_dynamic_namespaces: bool,
+    /// Default namespace prefix for tenant-specific namespaces
+    pub namespace_prefix: String,
     /// Path to kubeconfig file (None = in-cluster config)
     pub kubeconfig_path: Option<String>,
     /// Kubeconfig context to use (None = current-context)
@@ -259,6 +263,8 @@ impl Default for KubernetesConfig {
 
         Self {
             namespace: "hodei-jobs-workers".to_string(),
+            enable_dynamic_namespaces: false,
+            namespace_prefix: "hodei-tenant".to_string(),
             kubeconfig_path: None,
             context: None,
             service_account: Some("hodei-jobs-worker".to_string()),
@@ -395,6 +401,16 @@ impl KubernetesConfigBuilder {
 
     pub fn security_context(mut self, context: SecurityContextConfig) -> Self {
         self.config.security_context = context;
+        self
+    }
+
+    pub fn enable_dynamic_namespaces(mut self, enabled: bool) -> Self {
+        self.config.enable_dynamic_namespaces = enabled;
+        self
+    }
+
+    pub fn namespace_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.config.namespace_prefix = prefix.into();
         self
     }
 
@@ -591,6 +607,15 @@ impl KubernetesProvider {
 
     /// Create Pod spec from WorkerSpec
     fn create_pod_spec(&self, spec: &WorkerSpec, otp_token: Option<&str>) -> Pod {
+        self.create_pod_spec_with_namespace(spec, otp_token, &self.config.namespace)
+    }
+
+    fn create_pod_spec_with_namespace(
+        &self,
+        spec: &WorkerSpec,
+        otp_token: Option<&str>,
+        namespace: &str,
+    ) -> Pod {
         let pod_name = Self::pod_name(&spec.worker_id);
 
         // Build labels
@@ -750,7 +775,7 @@ impl KubernetesProvider {
         Pod {
             metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
                 name: Some(pod_name),
-                namespace: Some(self.config.namespace.clone()),
+                namespace: Some(namespace.to_string()),
                 labels: Some(labels),
                 annotations: Some(annotations),
                 ..Default::default()
@@ -1139,6 +1164,72 @@ impl KubernetesProvider {
             app_armor_profile: None,
         })
     }
+
+    /// Determine namespace for a worker based on configuration and labels
+    fn get_namespace_for_worker(&self, spec: &WorkerSpec) -> String {
+        // Check if dynamic namespaces are enabled and there's a tenant label
+        if self.config.enable_dynamic_namespaces {
+            if let Some(tenant_id) = spec.labels.get("hodei.io/tenant-id") {
+                return format!("{}-{}", self.config.namespace_prefix, tenant_id);
+            }
+        }
+
+        // Default to configured namespace
+        self.config.namespace.clone()
+    }
+
+    /// Ensure namespace exists, create if necessary
+    async fn ensure_namespace_exists(&self, namespace: &str) -> Result<()> {
+        if !self.config.enable_dynamic_namespaces || namespace == self.config.namespace {
+            return Ok(());
+        }
+
+        let namespaces: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(self.client.clone());
+
+        match namespaces.get_opt(namespace).await {
+            Ok(Some(_)) => {
+                // Namespace exists
+                Ok(())
+            }
+            Ok(None) => {
+                // Create namespace
+                info!("Creating namespace: {}", namespace);
+                let namespace_obj = k8s_openapi::api::core::v1::Namespace {
+                    metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                        name: Some(namespace.to_string()),
+                        labels: Some(BTreeMap::from([
+                            ("hodei.io/managed".to_string(), "true".to_string()),
+                            ("hodei.io/tenant-namespace".to_string(), "true".to_string()),
+                        ])),
+                        ..Default::default()
+                    },
+                    spec: Some(k8s_openapi::api::core::v1::NamespaceSpec { finalizers: None }),
+                    status: None,
+                };
+
+                match namespaces
+                    .create(&PostParams::default(), &namespace_obj)
+                    .await
+                {
+                    Ok(_) => {
+                        info!("Namespace {} created successfully", namespace);
+                        Ok(())
+                    }
+                    Err(kube::Error::Api(ae)) if ae.code == 409 => {
+                        // Namespace already exists (race condition)
+                        info!("Namespace {} already exists", namespace);
+                        Ok(())
+                    }
+                    Err(e) => Err(DomainError::InfrastructureError {
+                        message: format!("Failed to create namespace {}: {}", namespace, e),
+                    }),
+                }
+            }
+            Err(e) => Err(DomainError::InfrastructureError {
+                message: format!("Failed to check namespace {}: {}", namespace, e),
+            }),
+        }
+    }
 }
 
 #[async_trait]
@@ -1162,7 +1253,16 @@ impl WorkerProvider for KubernetesProvider {
         let worker_id = spec.worker_id.clone();
         info!("Creating Kubernetes worker Pod: {}", worker_id);
 
-        let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
+        // Determine namespace for this worker
+        let namespace = self.get_namespace_for_worker(spec);
+
+        // Ensure namespace exists if dynamic namespaces are enabled
+        if let Err(e) = self.ensure_namespace_exists(&namespace).await {
+            warn!("Failed to ensure namespace {} exists: {}", namespace, e);
+            // Continue anyway, namespace might already exist
+        }
+
+        let pods: Api<Pod> = Api::namespaced(self.client.clone(), &namespace);
         let pod_name = Self::pod_name(&worker_id);
 
         // Check if Pod already exists
@@ -1184,7 +1284,7 @@ impl WorkerProvider for KubernetesProvider {
         let otp_token = spec.environment.get("HODEI_OTP_TOKEN").map(|s| s.as_str());
 
         // Create Pod spec
-        let pod = self.create_pod_spec(spec, otp_token);
+        let pod = self.create_pod_spec_with_namespace(spec, otp_token, &namespace);
 
         // Create Pod
         let created_pod = pods
