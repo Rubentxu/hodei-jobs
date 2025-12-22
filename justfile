@@ -387,7 +387,7 @@ job-test:
 # Create a long-running job
 job-long:
     @echo "📤 Creating long-running job..."
-    cargo run --bin hodei-jobs-cli -- job run --name "Long Job" --command 'for i in {1..10}; do echo "Step $${i}/10"; sleep 1; done; echo "Job complete!"'
+    cargo run --bin hodei-jobs-cli -- job run --name "Long Job" --command "bash -c 'for i in {1..10}; do echo \"Step $${i}/10\"; sleep 1; done; echo \"Job complete!\"'"
     @echo "✅ Job created"
 
 # Create a job with error
@@ -652,6 +652,10 @@ debug-workers:
 # Detailed job diagnosis
 debug-job job_id:
     @./scripts/debug-job.sh {{ job_id }}
+
+# Job timeline visualization
+debug-job-timeline job_id:
+    @./scripts/debug-job-timeline.sh {{ job_id }}
 
 # Live server logs (tail)
 logs-server:

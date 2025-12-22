@@ -16,6 +16,41 @@ impl PostgresEventBus {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    pub async fn run_migrations(&self) -> Result<(), sqlx::Error> {
+        info!("Applying domain_events migration...");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS domain_events (
+                id UUID PRIMARY KEY,
+                occurred_at TIMESTAMPTZ NOT NULL,
+                event_type VARCHAR(255) NOT NULL,
+                aggregate_id VARCHAR(255) NOT NULL,
+                correlation_id VARCHAR(255),
+                actor VARCHAR(255),
+                payload JSONB NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_domain_events_occurred_at ON domain_events(occurred_at)")
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_domain_events_aggregate_id ON domain_events(aggregate_id)")
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_domain_events_correlation_id ON domain_events(correlation_id)")
+            .execute(&self.pool)
+            .await?;
+
+        info!("✅ Domain Events table migration applied");
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -31,7 +66,41 @@ impl EventBus for PostgresEventBus {
 
         info!("🔥 Publishing event to channel {}: {}", channel, payload);
 
-        // CRITICAL: pg_notify requires a DEDICATED connection (not from pool)
+        // 1. Persistir el evento para audit log (Timeline)
+        // Usamos una transacción implícita o explícita si fuera necesario,
+        // pero aquí basta con insertar antes de notificar.
+        let event_id = uuid::Uuid::new_v4();
+        let occurred_at = event.occurred_at();
+        let event_type = event.event_type();
+        let aggregate_id = event.aggregate_id();
+        let correlation_id = event.correlation_id();
+        let actor = event.actor();
+
+        // Convertir payload a JSON Value para inserción correcta en JSONB
+        let payload_json: serde_json::Value = serde_json::from_str(&payload)
+            .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO domain_events
+            (id, occurred_at, event_type, aggregate_id, correlation_id, actor, payload)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+        )
+        .bind(event_id)
+        .bind(occurred_at)
+        .bind(event_type)
+        .bind(aggregate_id)
+        .bind(correlation_id)
+        .bind(actor)
+        .bind(payload_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| EventBusError::PublishError(format!("Failed to persist event: {}", e)))?;
+
+        info!("💾 Event persisted with ID: {}", event_id);
+
+        // 2. CRITICAL: pg_notify requires a DEDICATED connection (not from pool)
         // Get a fresh connection for NOTIFY
         let mut conn = self.pool.acquire().await.map_err(|e| {
             EventBusError::PublishError(format!("Failed to acquire connection: {}", e))

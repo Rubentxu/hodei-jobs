@@ -51,7 +51,9 @@ impl CancelJobUseCase {
         job.cancel()?;
         self.job_repository.update(&job).await?;
 
-        let correlation_id = ctx.map(|c| c.correlation_id().to_string());
+        let correlation_id = ctx
+            .map(|c| c.correlation_id().to_string())
+            .or_else(|| job.metadata().get("correlation_id").cloned());
         let actor = ctx.and_then(|c| c.actor_owned());
 
         // Publicar evento JobStatusChanged (Cancelled)

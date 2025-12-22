@@ -760,8 +760,14 @@ impl WorkerAgentServiceImpl {
             } else {
                 result.error_message.clone()
             };
-            job.fail(msg)
-                .map_err(|e| Status::failed_precondition(e.to_string()))?;
+
+            if msg.starts_with("TIMEOUT:") {
+                job.timeout()
+                    .map_err(|e| Status::failed_precondition(e.to_string()))?;
+            } else {
+                job.fail(msg)
+                    .map_err(|e| Status::failed_precondition(e.to_string()))?;
+            }
         }
 
         job_repository
@@ -771,11 +777,7 @@ impl WorkerAgentServiceImpl {
 
         // Publicar evento JobStatusChanged
         if let Some(event_bus) = &self.event_bus {
-            let new_state = if result.success {
-                JobState::Succeeded
-            } else {
-                JobState::Failed
-            };
+            let new_state = job.state().clone();
 
             let correlation_id = job.metadata().get("correlation_id").cloned();
             let actor = job.metadata().get("actor").cloned();

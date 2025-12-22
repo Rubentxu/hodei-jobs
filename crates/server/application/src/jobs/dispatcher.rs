@@ -310,7 +310,24 @@ impl JobDispatcher {
             );
         }
 
-        // Step 3: Send RUN_JOB command to worker via gRPC (MOST IMPORTANT - do this first!)
+        // Step 3: Update job in repository (BEFORE gRPC to avoid race condition)
+        // Persist assignment state so it's safe for worker to update to RUNNING later
+        info!(
+            job_id = %job.id,
+            "💾 JobDispatcher: Updating job in repository (pre-dispatch)"
+        );
+        if let Err(e) = self.job_repository.update(job).await {
+            error!(
+                error = %e,
+                job_id = %job.id,
+                "❌ JobDispatcher: Failed to update job"
+            );
+            return Err(DomainError::InfrastructureError {
+                message: format!("Failed to persist job before dispatch: {}", e),
+            });
+        }
+
+        // Step 4: Send RUN_JOB command to worker via gRPC
         info!(
             worker_id = %worker_id,
             job_id = %job.id,
@@ -327,7 +344,8 @@ impl JobDispatcher {
                 job_id = %job.id,
                 "❌ JobDispatcher: Failed to send RUN_JOB"
             );
-            // Rollback: Do NOT update DB or publish events if gRPC fails
+            // Note: Job is already persisted as ASSIGNED.
+            // It will eventually timeout if worker doesn't pick it up, which is acceptable.
             return Err(DomainError::InfrastructureError {
                 message: format!("Failed to dispatch job to worker {}: {}", worker_id, e),
             });
@@ -339,13 +357,19 @@ impl JobDispatcher {
             "✅ JobDispatcher: RUN_JOB command sent successfully"
         );
 
-        // Step 4: Publish JobAssigned event (only after successful gRPC)
+        // Step 5: Publish JobAssigned event
+        let correlation_id = job
+            .metadata()
+            .get("correlation_id")
+            .cloned()
+            .or_else(|| Some(job.id.to_string()));
+
         let assigned_event = DomainEvent::JobAssigned {
             job_id: job.id.clone(),
             worker_id: worker_id.clone(),
             occurred_at: Utc::now(),
-            correlation_id: None, // TODO: Propagate from job metadata
-            actor: None,
+            correlation_id,
+            actor: Some("system:job_dispatcher".to_string()),
         };
 
         if let Err(e) = self.event_bus.publish(&assigned_event).await {
@@ -364,25 +388,10 @@ impl JobDispatcher {
             );
         }
 
-        // Step 5: Update job in repository (only after successful gRPC)
-        // Keep state as PENDING until worker acknowledges
         info!(
-            job_id = %job.id,
-            "💾 JobDispatcher: Updating job in repository"
+            "✅ JobDispatcher: Job {} dispatched and persisted successfully",
+            job.id
         );
-        if let Err(e) = self.job_repository.update(job).await {
-            error!(
-                error = %e,
-                job_id = %job.id,
-                "❌ JobDispatcher: Failed to update job"
-            );
-            // This is a critical error - job is dispatched but not persisted
-            return Err(DomainError::InfrastructureError {
-                message: format!("Failed to persist job after dispatch: {}", e),
-            });
-        }
-
-        info!("✅ JobDispatcher: Job {} persisted successfully", job.id);
 
         Ok(())
     }

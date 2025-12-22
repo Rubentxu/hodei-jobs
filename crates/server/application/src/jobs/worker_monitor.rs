@@ -181,7 +181,7 @@ async fn monitor_workers(
             new_status: WorkerState::Terminated,
             occurred_at: Utc::now(),
             correlation_id: None,
-            actor: None,
+            actor: Some("system:worker_monitor".to_string()),
         };
 
         if let Err(e) = event_bus.publish(&event).await {

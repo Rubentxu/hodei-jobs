@@ -289,6 +289,34 @@ impl DomainEvent {
             DomainEvent::ProviderRecovered { .. } => "ProviderRecovered",
         }
     }
+
+    /// Obtiene el ID del agregado principal asociado al evento
+    pub fn aggregate_id(&self) -> String {
+        match self {
+            DomainEvent::JobCreated { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobStatusChanged { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobCancelled { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobRetried { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobAssigned { job_id, .. } => job_id.to_string(),
+
+            DomainEvent::WorkerRegistered { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerStatusChanged { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerTerminated { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerDisconnected { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerProvisioned { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerReconnected { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerRecoveryFailed { worker_id, .. } => worker_id.to_string(),
+
+            DomainEvent::ProviderRegistered { provider_id, .. } => provider_id.to_string(),
+            DomainEvent::ProviderUpdated { provider_id, .. } => provider_id.to_string(),
+            DomainEvent::ProviderHealthChanged { provider_id, .. } => provider_id.to_string(),
+            DomainEvent::AutoScalingTriggered { provider_id, .. } => provider_id.to_string(),
+            DomainEvent::ProviderRecovered { provider_id, .. } => provider_id.to_string(),
+
+            // Para eventos globales o de sistema sin ID específico claro, usamos "SYSTEM" o el valor más relevante
+            DomainEvent::JobQueueDepthChanged { .. } => "SYSTEM_QUEUE".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

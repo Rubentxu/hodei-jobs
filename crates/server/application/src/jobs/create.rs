@@ -396,8 +396,8 @@ impl ExecuteNextJobUseCase {
             old_state,
             new_state: hodei_server_domain::shared_kernel::JobState::Scheduled,
             occurred_at: Utc::now(),
-            correlation_id: None, // TODO: Retrieve from context if available
-            actor: None,
+            correlation_id: processing_job.metadata().get("correlation_id").cloned(),
+            actor: processing_job.metadata().get("actor").cloned(),
         };
 
         if let Err(e) = self.event_bus.publish(&event).await {

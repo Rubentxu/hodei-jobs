@@ -274,7 +274,10 @@ impl JobExecutor {
                 // Timeout
                 warn!("Job {} timed out after {} seconds", job_id, timeout_secs);
                 let _ = child.kill().await;
-                Err(format!("Job timed out after {} seconds", timeout_secs))
+                Err(format!(
+                    "TIMEOUT: Job timed out after {} seconds",
+                    timeout_secs
+                ))
             }
         };
 

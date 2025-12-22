@@ -8,6 +8,7 @@ mod tests_integration;
 
 use std::collections::HashMap;
 use std::env;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -256,7 +257,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Database migrations completed");
 
     // Create Event Bus
-    let event_bus = Arc::new(PostgresEventBus::new(pool.clone()));
+    let event_bus_impl = PostgresEventBus::new(pool.clone());
+    event_bus_impl
+        .run_migrations()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to run event bus migrations: {}", e))?;
+    let event_bus = Arc::new(event_bus_impl);
 
     // Create Provider Registry
     let provider_registry = Arc::new(ProviderRegistry::new(provider_config_repo.clone()));
@@ -486,6 +492,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = manager.subscribe_to_events().await {
             tracing::error!("Failed to subscribe ProviderManager to events: {}", e);
         }
+
+        // Worker Monitor (Heartbeats & Disconnection)
+        // Keep guard alive to prevent shutdown
+        let _worker_monitor_guard =
+            match hodei_server_application::jobs::worker_monitor::WorkerMonitor::new(
+                worker_registry.clone(),
+                event_bus.clone(),
+            )
+            .start()
+            .await
+            {
+                Ok(guard) => {
+                    info!("Started WorkerMonitor");
+                    Some(guard)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to start WorkerMonitor: {}", e);
+                    None
+                }
+            };
     }
 
     // Configure CORS for gRPC-Web
@@ -498,7 +524,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ gRPC-Web support enabled");
     info!("  ✓ Context interceptor enabled");
 
-    // Build and start server
+    // Start HTTP API server (Background)
+    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "3000".to_string());
+    let http_addr: SocketAddr = format!("0.0.0.0:{}", http_port).parse()?;
+
+    tokio::spawn(async move {
+        info!("Starting HTTP API server on {}", http_addr);
+        if let Err(e) = hodei_server_interface::http::start_server(http_addr).await {
+            tracing::error!("HTTP server failed: {}", e);
+        }
+    });
+
+    // Build and start gRPC server
     Server::builder()
         .accept_http1(true)
         .layer(cors)

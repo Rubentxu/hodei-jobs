@@ -792,6 +792,26 @@ impl Job {
         Ok(())
     }
 
+    /// Marca el job como timed out
+    pub fn timeout(&mut self) -> Result<()> {
+        let new_state = JobState::Timeout;
+
+        // Validar transición usando el State Machine
+        if !self.state.can_transition_to(&new_state) {
+            return Err(DomainError::InvalidStateTransition {
+                job_id: self.id.clone(),
+                from_state: self.state.clone(),
+                to_state: new_state,
+            });
+        }
+
+        self.state = new_state;
+        self.completed_at = Some(Utc::now());
+        self.result = Some(JobResult::Timeout);
+        self.attempts += 1;
+        Ok(())
+    }
+
     /// Verifica si el job puede ser reintentado
     pub fn can_retry(&self) -> bool {
         self.attempts < self.max_attempts
