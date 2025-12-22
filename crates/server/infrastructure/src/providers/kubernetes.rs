@@ -124,6 +124,79 @@ impl PodAntiAffinityRule {
     }
 }
 
+/// Pod Security Standard level
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PodSecurityStandard {
+    Restricted,
+    Baseline,
+    Privileged,
+}
+
+impl Default for PodSecurityStandard {
+    fn default() -> Self {
+        Self::Restricted
+    }
+}
+
+impl std::fmt::Display for PodSecurityStandard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Restricted => write!(f, "restricted"),
+            Self::Baseline => write!(f, "baseline"),
+            Self::Privileged => write!(f, "privileged"),
+        }
+    }
+}
+
+/// Security Context configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecurityContextConfig {
+    pub run_as_non_root: bool,
+    pub run_as_user: Option<i64>,
+    pub run_as_group: Option<i64>,
+    pub read_only_root_filesystem: bool,
+    pub allow_privilege_escalation: bool,
+    pub drop_capabilities: Vec<String>,
+    pub add_capabilities: Vec<String>,
+    pub seccomp_profile_type: Option<String>,
+}
+
+impl SecurityContextConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn run_as_non_root(mut self) -> Self {
+        self.run_as_non_root = true;
+        self
+    }
+
+    pub fn run_as_user(mut self, uid: i64) -> Self {
+        self.run_as_user = Some(uid);
+        self
+    }
+
+    pub fn read_only_root_fs(mut self) -> Self {
+        self.read_only_root_filesystem = true;
+        self
+    }
+
+    pub fn drop_capability(mut self, capability: impl Into<String>) -> Self {
+        self.drop_capabilities.push(capability.into());
+        self
+    }
+
+    pub fn add_capability(mut self, capability: impl Into<String>) -> Self {
+        self.add_capabilities.push(capability.into());
+        self
+    }
+
+    pub fn seccomp_profile(mut self, profile: impl Into<String>) -> Self {
+        self.seccomp_profile_type = Some(profile.into());
+        self
+    }
+}
+
 /// Configuration for the Kubernetes Provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubernetesConfig {
@@ -161,6 +234,10 @@ pub struct KubernetesConfig {
     pub ttl_seconds_after_finished: Option<i32>,
     /// Timeout for Pod creation (seconds)
     pub creation_timeout_secs: u64,
+    /// Pod Security Standard level (restricted/baseline/privileged)
+    pub pod_security_standard: PodSecurityStandard,
+    /// Security Context configuration
+    pub security_context: SecurityContextConfig,
 }
 
 impl Default for KubernetesConfig {
@@ -168,6 +245,17 @@ impl Default for KubernetesConfig {
         let mut base_labels = HashMap::new();
         base_labels.insert("app".to_string(), "hodei-jobs-worker".to_string());
         base_labels.insert("hodei.io/managed".to_string(), "true".to_string());
+
+        let security_context = SecurityContextConfig {
+            run_as_non_root: true,
+            run_as_user: Some(1000),
+            run_as_group: Some(1000),
+            read_only_root_filesystem: true,
+            allow_privilege_escalation: false,
+            drop_capabilities: vec!["ALL".to_string()],
+            add_capabilities: Vec::new(),
+            seccomp_profile_type: Some("RuntimeDefault".to_string()),
+        };
 
         Self {
             namespace: "hodei-jobs-workers".to_string(),
@@ -187,6 +275,8 @@ impl Default for KubernetesConfig {
             default_memory_limit: "512Mi".to_string(),
             ttl_seconds_after_finished: Some(300),
             creation_timeout_secs: 60,
+            pod_security_standard: PodSecurityStandard::Restricted,
+            security_context,
         }
     }
 }
@@ -295,6 +385,16 @@ impl KubernetesConfigBuilder {
 
     pub fn creation_timeout_secs(mut self, timeout: u64) -> Self {
         self.config.creation_timeout_secs = timeout;
+        self
+    }
+
+    pub fn pod_security_standard(mut self, standard: PodSecurityStandard) -> Self {
+        self.config.pod_security_standard = standard;
+        self
+    }
+
+    pub fn security_context(mut self, context: SecurityContextConfig) -> Self {
+        self.config.security_context = context;
         self
     }
 
@@ -642,6 +742,7 @@ impl KubernetesProvider {
             env: Some(env_vars),
             resources: Some(resources),
             volume_mounts: volume_mounts,
+            security_context: self.build_security_context(),
             ..Default::default()
         };
 
@@ -976,6 +1077,67 @@ impl KubernetesProvider {
         };
 
         Some(affinity)
+    }
+
+    /// Build Kubernetes SecurityContext from config
+    fn build_security_context(&self) -> Option<k8s_openapi::api::core::v1::SecurityContext> {
+        let sc = &self.config.security_context;
+
+        // Skip security context if using privileged mode
+        if matches!(
+            self.config.pod_security_standard,
+            PodSecurityStandard::Privileged
+        ) {
+            return None;
+        }
+
+        let mut capabilities = None;
+        if !sc.drop_capabilities.is_empty() || !sc.add_capabilities.is_empty() {
+            let mut caps = k8s_openapi::api::core::v1::Capabilities {
+                drop: None,
+                add: None,
+            };
+
+            if !sc.drop_capabilities.is_empty() {
+                caps.drop = Some(
+                    sc.drop_capabilities
+                        .iter()
+                        .map(|c| c.clone().into())
+                        .collect(),
+                );
+            }
+
+            if !sc.add_capabilities.is_empty() {
+                caps.add = Some(
+                    sc.add_capabilities
+                        .iter()
+                        .map(|c| c.clone().into())
+                        .collect(),
+                );
+            }
+
+            capabilities = Some(caps);
+        }
+
+        Some(k8s_openapi::api::core::v1::SecurityContext {
+            allow_privilege_escalation: Some(sc.allow_privilege_escalation),
+            capabilities,
+            privileged: Some(false),
+            read_only_root_filesystem: Some(sc.read_only_root_filesystem),
+            run_as_non_root: Some(sc.run_as_non_root),
+            run_as_user: sc.run_as_user,
+            run_as_group: sc.run_as_group,
+            se_linux_options: None,
+            proc_mount: None,
+            seccomp_profile: sc.seccomp_profile_type.as_ref().map(|p| {
+                k8s_openapi::api::core::v1::SeccompProfile {
+                    type_: p.clone(),
+                    localhost_profile: None,
+                }
+            }),
+            windows_options: None,
+            app_armor_profile: None,
+        })
     }
 }
 
