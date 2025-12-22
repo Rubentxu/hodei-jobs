@@ -159,6 +159,18 @@ test-integration:
     cargo test -p hodei-server-integration --test postgres_integration
     @echo "✅ Integration tests passed"
 
+# Run multi-provider integration tests (Docker + Kubernetes)
+test-multi-provider:
+    @echo "🧪 Running multi-provider integration tests..."
+    ./scripts/test-multi-provider.sh docker
+    @echo "✅ Multi-provider tests passed"
+
+# Run multi-provider tests with Kubernetes enabled
+test-multi-provider-k8s:
+    @echo "🧪 Running multi-provider tests (including Kubernetes)..."
+    HODEI_K8S_TEST=1 ./scripts/test-multi-provider.sh all
+    @echo "✅ Multi-provider tests (K8s) passed"
+
 # Run tests with output
 test-verbose:
     @echo "🧪 Running tests (verbose)..."
