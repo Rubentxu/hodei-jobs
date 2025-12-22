@@ -87,6 +87,12 @@ async fn test_provider_scaling_flow() {
     // 2. Setup EventBus
     let event_bus = PostgresEventBus::new(pool.clone());
 
+    // Run migrations
+    event_bus
+        .run_migrations()
+        .await
+        .expect("Failed to run domain_events migrations");
+
     // Subscribe to events
     let mut event_stream = event_bus
         .subscribe("hodei_events")

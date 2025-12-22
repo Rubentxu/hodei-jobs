@@ -35,6 +35,11 @@ async fn test_postgres_event_bus_pub_sub() {
     // Initialize EventBus
     let bus = PostgresEventBus::new(pool);
 
+    // Run migrations
+    bus.run_migrations()
+        .await
+        .expect("Failed to run domain_events migrations");
+
     // Subscribe
     let mut stream = bus
         .subscribe("hodei_events")

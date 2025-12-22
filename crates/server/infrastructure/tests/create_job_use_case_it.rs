@@ -44,6 +44,10 @@ async fn test_create_job_atomic_persistence_and_event() {
         .run_migrations()
         .await
         .expect("Failed to migrate queue");
+    event_bus
+        .run_migrations()
+        .await
+        .expect("Failed to migrate domain events");
 
     // 3. Initialize Use Case
     let use_case = CreateJobUseCase::new(job_repo.clone(), job_queue.clone(), event_bus.clone());

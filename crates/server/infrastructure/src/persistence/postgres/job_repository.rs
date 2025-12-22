@@ -55,6 +55,14 @@ impl PostgresJobRepository {
 
     /// Run migrations to create job tables
     pub async fn run_migrations(&self) -> Result<()> {
+        // Enable pgcrypto extension for gen_random_uuid()
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to enable pgcrypto extension: {}", e),
+            })?;
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS jobs (

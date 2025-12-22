@@ -172,6 +172,12 @@ async fn test_job_controller_subscribes_to_job_created() {
 
     // 2. Setup Components
     let bus = Arc::new(PostgresEventBus::new(pool.clone()));
+
+    // Run migrations
+    bus.run_migrations()
+        .await
+        .expect("Failed to run domain_events migrations");
+
     let job_repo = Arc::new(MockJobRepository::default());
     let queue = Arc::new(MockJobQueue::default());
     let registry = Arc::new(MockWorkerRegistry::default());
