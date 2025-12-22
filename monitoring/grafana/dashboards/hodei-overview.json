@@ -1,0 +1,262 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Hodei Job Platform - Overview",
+    "tags": ["hodei", "kubernetes", "jobs"],
+    "style": "dark",
+    "timezone": "browser",
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Workers",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(hodei_kubernetes_workers_active)",
+            "legendFormat": "Active Workers"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 0,
+          "y": 0
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "green",
+                  "value": 0
+                },
+                {
+                  "color": "yellow",
+                  "value": 10
+                },
+                {
+                  "color": "red",
+                  "value": 50
+                }
+              ]
+            },
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Worker Creation Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(hodei_kubernetes_workers_created_total[5m])",
+            "legendFormat": "Workers/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 6,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "Pod Creation Duration (P95)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(hodei_kubernetes_pod_creation_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 12,
+          "y": 0
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "API Error Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(hodei_kubernetes_api_request_errors_total[5m])",
+            "legendFormat": "Errors/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 18,
+          "y": 0
+        }
+      },
+      {
+        "id": 5,
+        "title": "Workers Created/Deleted",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(hodei_kubernetes_workers_created_total[5m])",
+            "legendFormat": "Created"
+          },
+          {
+            "expr": "rate(hodei_kubernetes_workers_deleted_total[5m])",
+            "legendFormat": "Deleted"
+          }
+        ],
+        "gridPos": {
+          "h": 9,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 6,
+        "title": "Pod Creation Duration",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(hodei_kubernetes_pod_creation_duration_seconds_sum[5m]) / rate(hodei_kubernetes_pod_creation_duration_seconds_count[5m])",
+            "legendFormat": "Average"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(hodei_kubernetes_pod_creation_duration_seconds_bucket[5m]))",
+            "legendFormat": "P50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(hodei_kubernetes_pod_creation_duration_seconds_bucket[5m]))",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(hodei_kubernetes_pod_creation_duration_seconds_bucket[5m]))",
+            "legendFormat": "P99"
+          }
+        ],
+        "gridPos": {
+          "h": 9,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        }
+      },
+      {
+        "id": 7,
+        "title": "Pods by State",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "sum by (state) (hodei_kubernetes_pods_by_state_total)",
+            "legendFormat": "{{state}}"
+          }
+        ],
+        "gridPos": {
+          "h": 9,
+          "w": 12,
+          "x": 0,
+          "y": 17
+        }
+      },
+      {
+        "id": 8,
+        "title": "API Request Rate by Endpoint",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum by (endpoint) (rate(hodei_kubernetes_api_requests_total[5m]))",
+            "legendFormat": "{{endpoint}}"
+          }
+        ],
+        "gridPos": {
+          "h": 9,
+          "w": 12,
+          "x": 12,
+          "y": 17
+        }
+      },
+      {
+        "id": 9,
+        "title": "Resource Utilization",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "hodei_kubernetes_cpu_request_total",
+            "legendFormat": "CPU (mCores)"
+          },
+          {
+            "expr": "hodei_kubernetes_memory_request_total / 1024 / 1024 / 1024",
+            "legendFormat": "Memory (GiB)"
+          },
+          {
+            "expr": "hodei_kubernetes_gpu_count_total",
+            "legendFormat": "GPUs"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 26
+        }
+      },
+      {
+        "id": 10,
+        "title": "HPA Operations",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(hodei_kubernetes_hpa_operations_total[5m])",
+            "legendFormat": "{{operation}}"
+          }
+        ],
+        "gridPos": {
+          "h": 9,
+          "w": 12,
+          "x": 0,
+          "y": 34
+        }
+      },
+      {
+        "id": 11,
+        "title": "Network Policy Violations",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(hodei_kubernetes_network_policy_violations_total[5m])",
+            "legendFormat": "Violations/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 9,
+          "w": 12,
+          "x": 12,
+          "y": 34
+        }
+      }
+    ],
+    "templating": {
+      "list": []
+    },
+    "annotations": {
+      "list": []
+    }
+  }
+}

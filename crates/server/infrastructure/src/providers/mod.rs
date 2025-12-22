@@ -6,7 +6,9 @@
 pub mod docker;
 pub mod firecracker;
 pub mod kubernetes;
+pub mod kubernetes_health;
 pub mod kubernetes_hpa;
+pub mod kubernetes_metrics;
 
 pub use docker::{DockerProvider, DockerProviderBuilder};
 pub use firecracker::{
@@ -15,7 +17,11 @@ pub use firecracker::{
 pub use kubernetes::{
     KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesToleration,
 };
+pub use kubernetes_health::{
+    HealthCheckResult, HealthStatus, KubernetesHealthChecker, KubernetesSLIs, KubernetesSLOs,
+};
 pub use kubernetes_hpa::{HPAConfig, KubernetesHPAManager};
+pub use kubernetes_metrics::KubernetesProviderMetrics;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_worker_provider;
