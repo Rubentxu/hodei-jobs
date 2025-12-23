@@ -13,6 +13,7 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 /// Job Coordinator
@@ -28,6 +29,7 @@ pub struct JobCoordinator {
     event_bus: Arc<dyn EventBus>,
     job_dispatcher: Arc<JobDispatcher>,
     worker_monitor: Arc<WorkerMonitor>,
+    monitor_shutdown: Option<mpsc::Receiver<()>>,
 }
 
 impl JobCoordinator {
@@ -41,6 +43,7 @@ impl JobCoordinator {
             event_bus,
             job_dispatcher,
             worker_monitor,
+            monitor_shutdown: None,
         }
     }
 
@@ -54,8 +57,9 @@ impl JobCoordinator {
     pub async fn start(&mut self) -> Result<()> {
         info!("🚀 JobCoordinator: Starting job processing system");
 
-        // Start worker monitor
-        let _monitor_shutdown = self.worker_monitor.start().await?;
+        // Start worker monitor and keep the shutdown signal alive
+        let monitor_shutdown = self.worker_monitor.start().await?;
+        self.monitor_shutdown = Some(monitor_shutdown);
         info!("👁️ JobCoordinator: Worker monitor started");
 
         // Start continuous job processing loop

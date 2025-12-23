@@ -19,6 +19,7 @@ use hodei_server_domain::jobs::{JobQueue, JobRepository};
 use hodei_server_domain::shared_kernel::Result;
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::info;
 
 /// Job Controller (Refactored - Facade Pattern)
@@ -34,6 +35,7 @@ use tracing::info;
 pub struct JobController {
     coordinator: JobCoordinator,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+    coordinator_shutdown: Option<mpsc::Receiver<()>>,
 }
 
 impl JobController {
@@ -59,6 +61,7 @@ impl JobController {
             scheduler_config,
             worker_command_sender,
             event_bus.clone(),
+            None, // outbox_repository - can be configured later
             provisioning_service.clone(),
         ));
 
@@ -73,6 +76,7 @@ impl JobController {
         Self {
             coordinator,
             provisioning_service,
+            coordinator_shutdown: None,
         }
     }
 
@@ -84,7 +88,17 @@ impl JobController {
     ///
     /// Returns: Result<()>
     pub async fn start(&mut self) -> Result<()> {
-        self.coordinator.start().await
+        info!("🚀 JobController: Starting job controller");
+
+        // Start coordinator and keep the shutdown signal alive
+        self.coordinator.start().await?;
+        info!("✅ JobController: Job coordinator started");
+
+        // Keep the coordinator shutdown signal alive
+        // Note: We can't store it here because start() consumes self.coordinator
+        // This is handled by the main server loop keeping the controller alive
+
+        Ok(())
     }
 
     /// Manually trigger a job dispatch cycle
