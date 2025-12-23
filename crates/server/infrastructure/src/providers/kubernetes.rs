@@ -496,6 +496,50 @@ impl KubernetesConfig {
 }
 
 // ============================================================================
+// Kubernetes Provider Builder
+// ============================================================================
+
+/// Builder for KubernetesProvider
+pub struct KubernetesProviderBuilder {
+    provider_id: Option<ProviderId>,
+    config: KubernetesConfig,
+}
+
+impl KubernetesProviderBuilder {
+    /// Create a new builder with default configuration
+    pub fn new() -> Self {
+        Self {
+            provider_id: None,
+            config: KubernetesConfig::default(),
+        }
+    }
+
+    /// Set the provider ID
+    pub fn with_provider_id(mut self, provider_id: ProviderId) -> Self {
+        self.provider_id = Some(provider_id);
+        self
+    }
+
+    /// Set the configuration
+    pub fn with_config(mut self, config: KubernetesConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Build the KubernetesProvider
+    pub async fn build(self) -> Result<KubernetesProvider> {
+        let provider_id = self.provider_id.unwrap_or_else(ProviderId::new);
+        KubernetesProvider::with_provider_id(provider_id, self.config).await
+    }
+}
+
+impl Default for KubernetesProviderBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
 // Kubernetes Provider (HU-7.2+)
 // ============================================================================
 
@@ -834,6 +878,7 @@ impl KubernetesProvider {
             resources: Some(resources),
             volume_mounts: volume_mounts,
             security_context: self.build_security_context(),
+            image_pull_policy: Some("IfNotPresent".to_string()),
             ..Default::default()
         };
 
@@ -843,15 +888,26 @@ impl KubernetesProvider {
         // Build sidecar containers
         let sidecar_containers = self.build_sidecar_containers(spec);
 
-        // Build Pod
+        // Apply TTL annotation for cleanup - clone annotations before moving
+        let final_annotations = if let Some(ttl) = self.config.ttl_seconds_after_finished {
+            let mut ttl_annotations = annotations.clone();
+            ttl_annotations.insert("hodei.io/ttl-after-finished".to_string(), ttl.to_string());
+            ttl_annotations
+        } else {
+            annotations
+        };
+
+        // Build Pod with TTL for cleanup
+        let metadata = k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(pod_name),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels),
+            annotations: Some(final_annotations),
+            ..Default::default()
+        };
+
         Pod {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some(pod_name),
-                namespace: Some(namespace.to_string()),
-                labels: Some(labels),
-                annotations: Some(annotations),
-                ..Default::default()
-            },
+            metadata,
             spec: Some(PodSpec {
                 containers: {
                     let mut containers = Vec::new();
@@ -861,6 +917,7 @@ impl KubernetesProvider {
                 },
                 init_containers: Some(init_containers),
                 restart_policy: Some("Never".to_string()),
+                active_deadline_seconds: Some(spec.max_lifetime.as_secs() as i64),
                 service_account_name: spec
                     .kubernetes
                     .service_account

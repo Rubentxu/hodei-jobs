@@ -137,8 +137,7 @@ mod tests {
 
     #[test]
     fn test_builder_pattern() {
-        let ctx = RequestContext::with_correlation_id("build-789")
-            .actor("admin");
+        let ctx = RequestContext::with_correlation_id("build-789").actor("admin");
         assert_eq!(ctx.correlation_id(), "build-789");
         assert_eq!(ctx.get_actor(), Some("admin"));
     }
@@ -147,7 +146,7 @@ mod tests {
     fn test_child_context_inherits_correlation_id() {
         let parent = RequestContext::with_actor("parent-id", "parent-actor");
         let child = parent.child_context();
-        
+
         assert_eq!(child.correlation_id(), "parent-id");
         assert_eq!(child.get_actor(), Some("parent-actor"));
     }
@@ -156,7 +155,7 @@ mod tests {
     fn test_child_with_different_actor() {
         let parent = RequestContext::with_actor("parent-id", "parent-actor");
         let child = parent.child_with_actor("child-actor");
-        
+
         assert_eq!(child.correlation_id(), "parent-id");
         assert_eq!(child.get_actor(), Some("child-actor"));
     }
@@ -164,7 +163,7 @@ mod tests {
     #[test]
     fn test_owned_methods_for_events() {
         let ctx = RequestContext::with_actor("event-corr", "event-actor");
-        
+
         assert_eq!(ctx.correlation_id_owned(), Some("event-corr".to_string()));
         assert_eq!(ctx.actor_owned(), Some("event-actor".to_string()));
     }

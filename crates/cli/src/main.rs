@@ -11,11 +11,11 @@ use tonic::transport::Channel;
 use tracing::info;
 
 use hodei_jobs::{
+    ExecutionId, GetJobRequest, GetLogsRequest, GetQueueStatusRequest, JobDefinition, JobId,
+    ListJobsRequest, QueueJobRequest, ScheduleJobRequest, SchedulingInfo, SubscribeLogsRequest,
     job_execution_service_client::JobExecutionServiceClient,
     log_stream_service_client::LogStreamServiceClient,
     scheduler_service_client::SchedulerServiceClient,
-    ExecutionId, GetJobRequest, GetLogsRequest, GetQueueStatusRequest, JobDefinition, JobId,
-    ListJobsRequest, QueueJobRequest, ScheduleJobRequest, SubscribeLogsRequest,
 };
 
 #[derive(Parser)]
@@ -66,6 +66,9 @@ enum JobAction {
         /// Path to script file to execute (mutually exclusive with --command)
         #[arg(long, conflicts_with = "command")]
         script: Option<String>,
+        /// Preferred provider (docker, kubernetes, k8s, kube)
+        #[arg(short, long)]
+        provider: Option<String>,
         #[arg(long, default_value = "1.0")]
         cpu: f64,
         #[arg(long, default_value = "1073741824")]
@@ -83,6 +86,9 @@ enum JobAction {
         /// Path to script file to execute (mutually exclusive with --command)
         #[arg(long, conflicts_with = "command")]
         script: Option<String>,
+        /// Preferred provider (docker, kubernetes, k8s, kube)
+        #[arg(short, long)]
+        provider: Option<String>,
         #[arg(long, default_value = "1.0")]
         cpu: f64,
         #[arg(long, default_value = "1073741824")]
@@ -156,9 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     info!("Connecting to: {}", cli.server);
 
-    let channel = Channel::from_shared(cli.server.clone())?
-        .connect()
-        .await?;
+    let channel = Channel::from_shared(cli.server.clone())?.connect().await?;
 
     match cli.command {
         Commands::Job { action } => handle_job(channel, action).await?,
@@ -169,10 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_job(
-    channel: Channel,
-    action: JobAction,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn std::error::Error>> {
     let mut client = JobExecutionServiceClient::new(channel.clone());
 
     match action {
@@ -180,12 +181,13 @@ async fn handle_job(
             name,
             command,
             script,
+            provider,
             cpu,
             memory,
             timeout,
         } => {
             let cmd = resolve_command(command, script)?;
-            let job_definition = create_job_definition(name, cmd, cpu, memory, timeout);
+            let job_definition = create_job_definition(name, cmd, cpu, memory, timeout, provider);
             let request = QueueJobRequest {
                 job_definition: Some(job_definition),
                 queued_by: "cli".to_string(),
@@ -210,12 +212,14 @@ async fn handle_job(
             name,
             command,
             script,
+            provider,
             cpu,
             memory,
             timeout,
         } => {
             let cmd = resolve_command(command, script.clone())?;
-            let job_definition = create_job_definition(name.clone(), cmd.clone(), cpu, memory, timeout);
+            let job_definition =
+                create_job_definition(name.clone(), cmd.clone(), cpu, memory, timeout, provider);
             let request = QueueJobRequest {
                 job_definition: Some(job_definition),
                 queued_by: "cli".to_string(),
@@ -289,7 +293,11 @@ async fn handle_job(
                             .unwrap_or_else(chrono::Utc::now);
 
                         let ts_str = timestamp.format("%H:%M:%S.%3f").to_string();
-                        let prefix = if log_entry.is_stderr { "[ERR]" } else { "[OUT]" };
+                        let prefix = if log_entry.is_stderr {
+                            "[ERR]"
+                        } else {
+                            "[OUT]"
+                        };
 
                         println!("{} {} {}", ts_str, prefix, log_entry.line);
                         std::io::stdout().flush()?;
@@ -345,14 +353,23 @@ async fn handle_job(
             let result = response.into_inner();
             println!("Jobs ({} total):", result.total_count);
             for job in result.jobs {
-                let job_id = job.job_id.as_ref().map(|id| id.value.as_str()).unwrap_or_default();
+                let job_id = job
+                    .job_id
+                    .as_ref()
+                    .map(|id| id.value.as_str())
+                    .unwrap_or_default();
                 println!("  - {} ({}) - {:?}", job.name, job_id, job.status());
             }
         }
-        JobAction::Cancel { job_id, execution_id } => {
+        JobAction::Cancel {
+            job_id,
+            execution_id,
+        } => {
             let request = hodei_jobs::CancelJobRequest {
                 execution_id: execution_id.map(|id| ExecutionId { value: id }),
-                job_id: Some(JobId { value: job_id.clone() }),
+                job_id: Some(JobId {
+                    value: job_id.clone(),
+                }),
                 reason: "Cancelled by CLI".to_string(),
             };
             let response = client.cancel_job(request).await?;
@@ -389,7 +406,7 @@ async fn handle_scheduler(
             }
         }
         SchedulerAction::Schedule { name, command } => {
-            let job_definition = create_job_definition(name, command, 1.0, 1073741824, 600);
+            let job_definition = create_job_definition(name, command, 1.0, 1073741824, 600, None);
             let request = ScheduleJobRequest {
                 job_definition: Some(job_definition),
                 requested_by: "cli".to_string(),
@@ -406,7 +423,11 @@ async fn handle_scheduler(
             let result = response.into_inner();
             println!("Available Workers ({}):", result.workers.len());
             for worker in result.workers {
-                let worker_id = worker.worker_id.as_ref().map(|id| id.value.as_str()).unwrap_or_default();
+                let worker_id = worker
+                    .worker_id
+                    .as_ref()
+                    .map(|id| id.value.as_str())
+                    .unwrap_or_default();
                 println!("  - {} (status: {:?})", worker_id, worker.status());
             }
         }
@@ -421,7 +442,11 @@ async fn handle_logs(
     let mut client = LogStreamServiceClient::new(channel);
 
     match action {
-        LogsAction::Follow { job_id, history, tail } => {
+        LogsAction::Follow {
+            job_id,
+            history,
+            tail,
+        } => {
             let request = SubscribeLogsRequest {
                 job_id: job_id.clone(),
                 include_history: history,
@@ -446,7 +471,11 @@ async fn handle_logs(
                             .unwrap_or_else(chrono::Utc::now);
 
                         let ts_str = timestamp.format("%H:%M:%S.%3f").to_string();
-                        let prefix = if log_entry.is_stderr { "[ERR]" } else { "[OUT]" };
+                        let prefix = if log_entry.is_stderr {
+                            "[ERR]"
+                        } else {
+                            "[OUT]"
+                        };
 
                         println!("{} {} {}", ts_str, prefix, log_entry.line);
                         std::io::stdout().flush()?;
@@ -471,7 +500,11 @@ async fn handle_logs(
             let response = client.get_logs(request).await?;
             let result = response.into_inner();
 
-            println!("Logs for job {} ({} entries):", job_id, result.entries.len());
+            println!(
+                "Logs for job {} ({} entries):",
+                job_id,
+                result.entries.len()
+            );
             for entry in result.entries {
                 let prefix = if entry.is_stderr { "[ERR]" } else { "[OUT]" };
                 println!("{} {}", prefix, entry.line);
@@ -509,7 +542,18 @@ fn create_job_definition(
     cpu: f64,
     memory: i64,
     timeout_secs: i64,
+    provider: Option<String>,
 ) -> JobDefinition {
+    // EPIC-21: Set preferred_provider in SchedulingInfo
+    let scheduling = Some(SchedulingInfo {
+        priority: 0, // Default priority
+        scheduler_name: String::new(),
+        deadline: None,
+        preemption_allowed: false,
+        preferred_provider: provider.unwrap_or_default(),
+        required_labels: std::collections::HashMap::new(),
+    });
+
     JobDefinition {
         job_id: None,
         name,
@@ -524,7 +568,7 @@ fn create_job_definition(
             gpu_count: 0,
             custom_required: std::collections::HashMap::new(),
         }),
-        scheduling: None,
+        scheduling,
         selector: None,
         tolerations: vec![],
         tags: vec![],

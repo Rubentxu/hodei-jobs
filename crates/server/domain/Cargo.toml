@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+lifecycle-management = []
+
 [dependencies]
 # Core dependencies
 serde = { workspace = true }
@@ -18,5 +22,9 @@ async-trait = { workspace = true }
 futures = "0.3.31"
 tracing = { workspace = true }
 
+# Outbox Pattern
+sqlx = { workspace = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }

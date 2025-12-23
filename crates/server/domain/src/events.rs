@@ -3,6 +3,7 @@ use crate::shared_kernel::{JobId, JobState, ProviderId, ProviderStatus, WorkerId
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Representa un evento de dominio que ha ocurrido en el sistema.
 /// Los eventos son hechos inmutables.
@@ -126,6 +127,31 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// Un job ha sido aceptado por un worker (ACK recibido)
+    JobAccepted {
+        job_id: JobId,
+        worker_id: WorkerId,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un job ha sido confirmado por el servidor tras recibir ACK del worker
+    /// Este evento representa la confirmación de transporte (físico) vs JobAssigned (lógico)
+    JobDispatchAcknowledged {
+        job_id: JobId,
+        worker_id: WorkerId,
+        acknowledged_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker ha recibido el comando RUN_JOB (antes del ACK)
+    RunJobReceived {
+        job_id: JobId,
+        worker_id: WorkerId,
+        received_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
     /// El estado de salud de un provider ha cambiado
     ProviderHealthChanged {
         provider_id: ProviderId,
@@ -159,6 +185,137 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// Un worker efímero ha sido creado
+    WorkerEphemeralCreated {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        max_lifetime_secs: u64,
+        ttl_after_completion_secs: Option<u64>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker efímero está listo para recibir jobs
+    WorkerEphemeralReady {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker está listo para recibir jobs (disponible para asignación)
+    WorkerReady {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        ready_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Evento compuesto con toda la información del estado del worker
+    /// Útil para auditoría y reconciliación - contiene snapshot completo
+    WorkerStateUpdated {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        old_state: WorkerState,
+        new_state: WorkerState,
+        current_job_id: Option<JobId>,
+        last_heartbeat: Option<DateTime<Utc>>,
+        capabilities: Vec<String>,
+        metadata: HashMap<String, String>,
+        transition_reason: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker efímero ha iniciado su terminación
+    WorkerEphemeralTerminating {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        reason: TerminationReason,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker efímero ha completado su terminación
+    WorkerEphemeralTerminated {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        cleanup_scheduled: bool,
+        ttl_expires_at: Option<DateTime<Utc>>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker efímero ha sido limpiado por el garbage collector
+    WorkerEphemeralCleanedUp {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        cleanup_reason: CleanupReason,
+        cleanup_duration_ms: u64,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Se ha detectado un worker huérfano
+    OrphanWorkerDetected {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        last_seen: DateTime<Utc>,
+        orphaned_duration_secs: u64,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// El garbage collector ha ejecutado un ciclo
+    GarbageCollectionCompleted {
+        provider_id: ProviderId,
+        workers_cleaned: usize,
+        orphans_detected: usize,
+        errors: usize,
+        duration_ms: u64,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un worker efímero ha sido marcado como idle
+    WorkerEphemeralIdle {
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        idle_since: DateTime<Utc>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+}
+
+/// Razón de limpieza de un worker efímero
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CleanupReason {
+    /// Limpieza normal después de terminación exitosa
+    NormalTermination,
+    /// Limpieza por TTL expirado
+    TtlExpired,
+    /// Limpieza de worker huérfano detectado
+    OrphanDetected,
+    /// Limpieza forzada por administrador
+    ForceCleanup,
+    /// Limpieza por shutdown del provider
+    ProviderShutdown,
+    /// Limpieza por error en el worker
+    WorkerError,
+}
+
+impl std::fmt::Display for CleanupReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CleanupReason::NormalTermination => write!(f, "NORMAL_TERMINATION"),
+            CleanupReason::TtlExpired => write!(f, "TTL_EXPIRED"),
+            CleanupReason::OrphanDetected => write!(f, "ORPHAN_DETECTED"),
+            CleanupReason::ForceCleanup => write!(f, "FORCE_CLEANUP"),
+            CleanupReason::ProviderShutdown => write!(f, "PROVIDER_SHUTDOWN"),
+            CleanupReason::WorkerError => write!(f, "WORKER_ERROR"),
+        }
+    }
 }
 
 /// Razón de terminación de un worker
@@ -201,6 +358,7 @@ impl std::fmt::Display for TerminationReason {
 pub struct EventMetadata {
     pub correlation_id: Option<String>,
     pub actor: Option<String>,
+    pub trace_context: Option<TraceContext>,
 }
 
 impl EventMetadata {
@@ -209,6 +367,16 @@ impl EventMetadata {
         Self {
             correlation_id,
             actor,
+            trace_context: None,
+        }
+    }
+
+    /// Crea metadatos con correlation_id específico y actor del sistema
+    pub fn for_system_event(correlation_id: Option<String>, system_actor: &str) -> Self {
+        Self {
+            correlation_id,
+            actor: Some(system_actor.to_string()),
+            trace_context: None,
         }
     }
 
@@ -225,14 +393,7 @@ impl EventMetadata {
                 .cloned()
                 .or_else(|| Some(job_id.to_string())),
             actor: metadata.get("actor").cloned(),
-        }
-    }
-
-    /// Crea metadatos con correlation_id específico y actor del sistema
-    pub fn for_system_event(correlation_id: Option<String>, system_actor: &str) -> Self {
-        Self {
-            correlation_id,
-            actor: Some(system_actor.to_string()),
+            trace_context: None,
         }
     }
 
@@ -241,12 +402,110 @@ impl EventMetadata {
         Self {
             correlation_id: None,
             actor: None,
+            trace_context: None,
         }
     }
 
     /// Verifica si los metadatos contienen información de auditoría
     pub fn has_audit_info(&self) -> bool {
         self.correlation_id.is_some() || self.actor.is_some()
+    }
+
+    /// Establece el contexto de trace
+    pub fn with_trace_context(mut self, trace_context: TraceContext) -> Self {
+        self.trace_context = Some(trace_context);
+        self
+    }
+
+    /// Establece el trace ID y span ID desde strings
+    pub fn with_trace_ids(mut self, trace_id: Option<String>, span_id: Option<String>) -> Self {
+        self.trace_context = match (trace_id, span_id) {
+            (Some(t), Some(s)) => Some(TraceContext {
+                trace_id: t,
+                span_id: s,
+            }),
+            _ => None,
+        };
+        self
+    }
+}
+
+/// Contexto de trazabilidad OpenTelemetry
+///
+/// Almacena los identificadores de trace y span para propagar
+/// el contexto de trazabilidad a través de servicios.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TraceContext {
+    pub trace_id: String,
+    pub span_id: String,
+}
+
+impl TraceContext {
+    /// Crea un nuevo TraceContext
+    pub fn new(trace_id: String, span_id: String) -> Self {
+        Self { trace_id, span_id }
+    }
+
+    /// Crea un TraceContext desde un correlation_id
+    /// Genera un UUID como trace_id y un span_id derivado
+    pub fn from_correlation_id(correlation_id: &str) -> Self {
+        let trace_id = correlation_id.to_string();
+        let span_id = format!("span-{}", trace_id);
+        Self { trace_id, span_id }
+    }
+
+    /// Extrae el trace_id como UUID si es válido
+    pub fn trace_id_as_uuid(&self) -> Option<Uuid> {
+        Uuid::parse_str(&self.trace_id).ok()
+    }
+
+    /// Crea un TraceContext con IDs aleatorios
+    pub fn random() -> Self {
+        let trace_id = Uuid::new_v4().to_string();
+        let span_id = Uuid::new_v4().to_string();
+        Self { trace_id, span_id }
+    }
+
+    /// Extrae el TraceContext desde headers HTTP
+    pub fn from_headers(headers: &impl HeaderExtraction) -> Option<Self> {
+        let trace_id = headers
+            .get_header("x-trace-id")
+            .or_else(|| headers.get_header("traceparent"));
+        let span_id = headers
+            .get_header("x-span-id")
+            .or_else(|| headers.get_header("grpc-trace-bin"));
+
+        match (trace_id, span_id) {
+            (Some(trace), Some(span)) => Some(TraceContext::new(trace, span)),
+            _ => None,
+        }
+    }
+
+    /// Extrae el TraceContext desde gRPC metadata
+    pub fn from_grpc_metadata(_metadata: &impl std::fmt::Debug) -> Option<Self> {
+        // En una implementación completa, extraeríamos de los headers de gRPC
+        // Por ahora, retornamos None como placeholder
+        None
+    }
+}
+
+/// Trait para extraer headers de manera polimórfica
+pub trait HeaderExtraction {
+    /// Obtiene un header por nombre
+    fn get_header(&self, name: &str) -> Option<String>;
+}
+
+/// Implementación para HashMap de headers
+impl HeaderExtraction for std::collections::HashMap<String, String> {
+    fn get_header(&self, name: &str) -> Option<String> {
+        self.get(name).cloned()
+    }
+}
+
+/// Implementación para std::collections::BTreeMap
+impl HeaderExtraction for std::collections::BTreeMap<String, String> {
+    fn get_header(&self, name: &str) -> Option<String> {
+        self.get(name).cloned()
     }
 }
 
@@ -295,6 +554,7 @@ pub struct JobCreatedBuilder {
     occurred_at: DateTime<Utc>,
     correlation_id: Option<String>,
     actor: Option<String>,
+    trace_context: Option<TraceContext>,
 }
 
 impl JobCreatedBuilder {
@@ -305,6 +565,7 @@ impl JobCreatedBuilder {
             occurred_at: Utc::now(),
             correlation_id: None,
             actor: None,
+            trace_context: None,
         }
     }
 
@@ -315,6 +576,11 @@ impl JobCreatedBuilder {
 
     pub fn with_actor(mut self, actor: String) -> Self {
         self.actor = Some(actor);
+        self
+    }
+
+    pub fn with_trace_context(mut self, trace_context: TraceContext) -> Self {
+        self.trace_context = Some(trace_context);
         self
     }
 
@@ -389,12 +655,25 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioned { correlation_id, .. }
             | DomainEvent::JobRetried { correlation_id, .. }
             | DomainEvent::JobAssigned { correlation_id, .. }
+            | DomainEvent::JobAccepted { correlation_id, .. }
+            | DomainEvent::JobDispatchAcknowledged { correlation_id, .. }
+            | DomainEvent::RunJobReceived { correlation_id, .. }
             | DomainEvent::ProviderHealthChanged { correlation_id, .. }
             | DomainEvent::JobQueueDepthChanged { correlation_id, .. }
             | DomainEvent::AutoScalingTriggered { correlation_id, .. }
             | DomainEvent::WorkerReconnected { correlation_id, .. }
             | DomainEvent::WorkerRecoveryFailed { correlation_id, .. }
-            | DomainEvent::ProviderRecovered { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::ProviderRecovered { correlation_id, .. }
+            | DomainEvent::WorkerEphemeralCreated { correlation_id, .. }
+            | DomainEvent::WorkerEphemeralReady { correlation_id, .. }
+            | DomainEvent::WorkerReady { correlation_id, .. }
+            | DomainEvent::WorkerStateUpdated { correlation_id, .. }
+            | DomainEvent::WorkerEphemeralTerminating { correlation_id, .. }
+            | DomainEvent::WorkerEphemeralTerminated { correlation_id, .. }
+            | DomainEvent::WorkerEphemeralCleanedUp { correlation_id, .. }
+            | DomainEvent::OrphanWorkerDetected { correlation_id, .. }
+            | DomainEvent::GarbageCollectionCompleted { correlation_id, .. }
+            | DomainEvent::WorkerEphemeralIdle { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -413,12 +692,25 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioned { actor, .. }
             | DomainEvent::JobRetried { actor, .. }
             | DomainEvent::JobAssigned { actor, .. }
+            | DomainEvent::JobAccepted { actor, .. }
+            | DomainEvent::JobDispatchAcknowledged { actor, .. }
+            | DomainEvent::RunJobReceived { actor, .. }
             | DomainEvent::ProviderHealthChanged { actor, .. }
             | DomainEvent::JobQueueDepthChanged { actor, .. }
             | DomainEvent::AutoScalingTriggered { actor, .. }
             | DomainEvent::WorkerReconnected { actor, .. }
             | DomainEvent::WorkerRecoveryFailed { actor, .. }
-            | DomainEvent::ProviderRecovered { actor, .. } => actor.clone(),
+            | DomainEvent::ProviderRecovered { actor, .. }
+            | DomainEvent::WorkerEphemeralCreated { actor, .. }
+            | DomainEvent::WorkerEphemeralReady { actor, .. }
+            | DomainEvent::WorkerReady { actor, .. }
+            | DomainEvent::WorkerStateUpdated { actor, .. }
+            | DomainEvent::WorkerEphemeralTerminating { actor, .. }
+            | DomainEvent::WorkerEphemeralTerminated { actor, .. }
+            | DomainEvent::WorkerEphemeralCleanedUp { actor, .. }
+            | DomainEvent::OrphanWorkerDetected { actor, .. }
+            | DomainEvent::GarbageCollectionCompleted { actor, .. }
+            | DomainEvent::WorkerEphemeralIdle { actor, .. } => actor.clone(),
         }
     }
 
@@ -437,12 +729,28 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioned { occurred_at, .. }
             | DomainEvent::JobRetried { occurred_at, .. }
             | DomainEvent::JobAssigned { occurred_at, .. }
-            | DomainEvent::ProviderHealthChanged { occurred_at, .. }
-            | DomainEvent::JobQueueDepthChanged { occurred_at, .. }
+            | DomainEvent::JobAccepted { occurred_at, .. }
+            | DomainEvent::ProviderHealthChanged { occurred_at, .. } => *occurred_at,
+            DomainEvent::JobDispatchAcknowledged {
+                acknowledged_at, ..
+            } => *acknowledged_at,
+            DomainEvent::JobQueueDepthChanged { occurred_at, .. }
             | DomainEvent::AutoScalingTriggered { occurred_at, .. }
             | DomainEvent::WorkerReconnected { occurred_at, .. }
             | DomainEvent::WorkerRecoveryFailed { occurred_at, .. }
-            | DomainEvent::ProviderRecovered { occurred_at, .. } => *occurred_at,
+            | DomainEvent::ProviderRecovered { occurred_at, .. }
+            | DomainEvent::WorkerEphemeralCreated { occurred_at, .. }
+            | DomainEvent::WorkerEphemeralReady { occurred_at, .. }
+            | DomainEvent::WorkerEphemeralTerminating { occurred_at, .. }
+            | DomainEvent::WorkerEphemeralTerminated { occurred_at, .. }
+            | DomainEvent::WorkerEphemeralCleanedUp { occurred_at, .. }
+            | DomainEvent::OrphanWorkerDetected { occurred_at, .. }
+            | DomainEvent::GarbageCollectionCompleted { occurred_at, .. }
+            | DomainEvent::WorkerEphemeralIdle { occurred_at, .. } => *occurred_at,
+
+            DomainEvent::RunJobReceived { received_at, .. } => *received_at,
+            DomainEvent::WorkerReady { ready_at, .. } => *ready_at,
+            DomainEvent::WorkerStateUpdated { occurred_at, .. } => *occurred_at,
         }
     }
 
@@ -453,6 +761,7 @@ impl DomainEvent {
             DomainEvent::JobStatusChanged { .. } => "JobStatusChanged",
             DomainEvent::WorkerRegistered { .. } => "WorkerRegistered",
             DomainEvent::WorkerStatusChanged { .. } => "WorkerStatusChanged",
+            DomainEvent::WorkerStateUpdated { .. } => "WorkerStateUpdated",
             DomainEvent::ProviderRegistered { .. } => "ProviderRegistered",
             DomainEvent::ProviderUpdated { .. } => "ProviderUpdated",
 
@@ -462,12 +771,24 @@ impl DomainEvent {
             DomainEvent::WorkerProvisioned { .. } => "WorkerProvisioned",
             DomainEvent::JobRetried { .. } => "JobRetried",
             DomainEvent::JobAssigned { .. } => "JobAssigned",
+            DomainEvent::JobAccepted { .. } => "JobAccepted",
+            DomainEvent::JobDispatchAcknowledged { .. } => "JobDispatchAcknowledged",
+            DomainEvent::RunJobReceived { .. } => "RunJobReceived",
             DomainEvent::ProviderHealthChanged { .. } => "ProviderHealthChanged",
             DomainEvent::JobQueueDepthChanged { .. } => "JobQueueDepthChanged",
             DomainEvent::AutoScalingTriggered { .. } => "AutoScalingTriggered",
             DomainEvent::WorkerReconnected { .. } => "WorkerReconnected",
             DomainEvent::WorkerRecoveryFailed { .. } => "WorkerRecoveryFailed",
             DomainEvent::ProviderRecovered { .. } => "ProviderRecovered",
+            DomainEvent::WorkerEphemeralCreated { .. } => "WorkerEphemeralCreated",
+            DomainEvent::WorkerEphemeralReady { .. } => "WorkerEphemeralReady",
+            DomainEvent::WorkerReady { .. } => "WorkerReady",
+            DomainEvent::WorkerEphemeralTerminating { .. } => "WorkerEphemeralTerminating",
+            DomainEvent::WorkerEphemeralTerminated { .. } => "WorkerEphemeralTerminated",
+            DomainEvent::WorkerEphemeralCleanedUp { .. } => "WorkerEphemeralCleanedUp",
+            DomainEvent::OrphanWorkerDetected { .. } => "OrphanWorkerDetected",
+            DomainEvent::GarbageCollectionCompleted { .. } => "GarbageCollectionCompleted",
+            DomainEvent::WorkerEphemeralIdle { .. } => "WorkerEphemeralIdle",
         }
     }
 
@@ -479,6 +800,9 @@ impl DomainEvent {
             DomainEvent::JobCancelled { job_id, .. } => job_id.to_string(),
             DomainEvent::JobRetried { job_id, .. } => job_id.to_string(),
             DomainEvent::JobAssigned { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobAccepted { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobDispatchAcknowledged { job_id, .. } => job_id.to_string(),
+            DomainEvent::RunJobReceived { job_id, .. } => job_id.to_string(),
 
             DomainEvent::WorkerRegistered { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerStatusChanged { worker_id, .. } => worker_id.to_string(),
@@ -487,6 +811,17 @@ impl DomainEvent {
             DomainEvent::WorkerProvisioned { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerReconnected { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerRecoveryFailed { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerEphemeralCreated { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerEphemeralReady { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerReady { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerStateUpdated { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerEphemeralTerminating { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerEphemeralTerminated { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerEphemeralCleanedUp { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::OrphanWorkerDetected { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerEphemeralIdle { worker_id, .. } => worker_id.to_string(),
+
+            DomainEvent::GarbageCollectionCompleted { provider_id, .. } => provider_id.to_string(),
 
             DomainEvent::ProviderRegistered { provider_id, .. } => provider_id.to_string(),
             DomainEvent::ProviderUpdated { provider_id, .. } => provider_id.to_string(),
@@ -678,6 +1013,26 @@ mod tests {
                 },
                 "JobAssigned",
             ),
+            (
+                DomainEvent::RunJobReceived {
+                    job_id: JobId::new(),
+                    worker_id: WorkerId::new(),
+                    received_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "RunJobReceived",
+            ),
+            (
+                DomainEvent::WorkerReady {
+                    worker_id: WorkerId::new(),
+                    provider_id: ProviderId::new(),
+                    ready_at: Utc::now(),
+                    correlation_id: None,
+                    actor: None,
+                },
+                "WorkerReady",
+            ),
         ];
 
         for (event, expected_type) in events {
@@ -723,6 +1078,46 @@ mod tests {
 
         assert_eq!(event, deserialized);
         assert_eq!(event.event_type(), "JobAssigned");
+    }
+
+    #[test]
+    fn test_run_job_received_event_serialization() {
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
+        let event = DomainEvent::RunJobReceived {
+            job_id: job_id.clone(),
+            worker_id: worker_id.clone(),
+            received_at: Utc::now(),
+            correlation_id: Some("run-789".to_string()),
+            actor: Some("worker-agent".to_string()),
+        };
+
+        let serialized = serde_json::to_string(&event).expect("Failed to serialize");
+        let deserialized: DomainEvent =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(event, deserialized);
+        assert_eq!(event.event_type(), "RunJobReceived");
+    }
+
+    #[test]
+    fn test_worker_ready_event_serialization() {
+        let worker_id = WorkerId::new();
+        let provider_id = ProviderId::new();
+        let event = DomainEvent::WorkerReady {
+            worker_id: worker_id.clone(),
+            provider_id: provider_id.clone(),
+            ready_at: Utc::now(),
+            correlation_id: Some("ready-123".to_string()),
+            actor: Some("worker-lifecycle".to_string()),
+        };
+
+        let serialized = serde_json::to_string(&event).expect("Failed to serialize");
+        let deserialized: DomainEvent =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(event, deserialized);
+        assert_eq!(event.event_type(), "WorkerReady");
     }
 
     #[test]

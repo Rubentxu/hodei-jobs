@@ -1,4 +1,4 @@
-use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -92,8 +92,10 @@ pub async fn get_postgres_context() -> PostgresTestDatabase {
         .await
         .expect("Failed to create test database");
 
-    let connection_string =
-        format!("postgres://postgres:postgres@{}:{}/{}", ctx.host, ctx.port, db_name);
+    let connection_string = format!(
+        "postgres://postgres:postgres@{}:{}/{}",
+        ctx.host, ctx.port, db_name
+    );
 
     PostgresTestDatabase {
         connection_string,

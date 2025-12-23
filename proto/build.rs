@@ -23,4 +23,3 @@ fn main() {
         )
         .expect("Failed to compile proto files");
 }
-

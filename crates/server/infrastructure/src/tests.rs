@@ -434,8 +434,8 @@ mod worker_registry_tests {
         registry.release_from_job(&worker_id).await.unwrap();
 
         let worker = registry.get(&worker_id).await.unwrap().unwrap();
-        // PRD v6.0: After release, worker goes back to Ready
-        assert_eq!(*worker.state(), WorkerState::Ready);
+        // EPIC-21: Workers are ephemeral - after job completion, worker is terminated
+        assert_eq!(*worker.state(), WorkerState::Terminated);
     }
 
     #[tokio::test]

@@ -554,8 +554,12 @@ mod tests {
                 correlation_id,
                 actor,
             } => {
-                assert_eq!(spec.command_vec()[0], "echo");
-                assert_eq!(spec.command_vec()[1], "hello");
+                // EPIC-21 Jenkins sh behavior: commands are wrapped as bash -c "command"
+                let cmd_vec = spec.command_vec();
+                assert_eq!(cmd_vec[0], "bash"); // Interpreter
+                assert_eq!(cmd_vec[1], "-c"); // Flag
+                assert!(cmd_vec[2].contains("echo")); // Content contains original command
+                assert!(cmd_vec[2].contains("hello"));
                 assert_eq!(correlation_id.as_deref(), Some("test-correlation"));
                 assert_eq!(actor.as_deref(), Some("test-user"));
             }

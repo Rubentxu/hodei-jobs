@@ -149,7 +149,7 @@ impl AuditCleanupService {
     /// This spawns a tokio task that runs cleanup at the configured interval
     pub fn start_background_cleanup(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         let service = self.clone();
-        
+
         tokio::spawn(async move {
             if !service.config.enabled {
                 warn!("Audit cleanup is disabled. Background task will not run.");
@@ -158,8 +158,7 @@ impl AuditCleanupService {
 
             info!(
                 "Starting audit cleanup background task (interval: {:?}, retention: {} days)",
-                service.config.cleanup_interval,
-                service.config.retention_days
+                service.config.cleanup_interval, service.config.retention_days
             );
 
             // Run initial cleanup on startup
@@ -173,7 +172,7 @@ impl AuditCleanupService {
 
             loop {
                 interval.tick().await;
-                
+
                 if let Err(e) = service.run_cleanup().await {
                     warn!("Scheduled audit cleanup failed: {}", e);
                 }
@@ -378,10 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_cleanup_no_old_logs() {
-        let logs = vec![
-            create_test_log(10),
-            create_test_log(5),
-        ];
+        let logs = vec![create_test_log(10), create_test_log(5)];
         let repo = Arc::new(MockAuditRepository::with_logs(logs));
         let config = AuditRetentionConfig::default().with_retention_days(90);
         let service = AuditCleanupService::new(repo.clone(), config);

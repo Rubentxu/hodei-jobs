@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use hodei_jobs::{
+    AuditEventTypeCount, AuditLogEntry, GetAuditLogsByCorrelationRequest, GetAuditLogsRequest,
+    GetAuditLogsResponse, GetEventCountsRequest, GetEventCountsResponse,
     audit_service_server::AuditService as AuditServiceTrait,
-    AuditEventTypeCount, AuditLogEntry, GetAuditLogsByCorrelationRequest,
-    GetAuditLogsRequest, GetAuditLogsResponse, GetEventCountsRequest, GetEventCountsResponse,
 };
 use hodei_server_domain::audit::{AuditQuery, AuditRepository};
 use prost_types::Timestamp;
@@ -39,8 +39,7 @@ fn datetime_to_timestamp(dt: DateTime<Utc>) -> Timestamp {
 }
 
 fn timestamp_to_datetime(ts: &Timestamp) -> DateTime<Utc> {
-    DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-        .unwrap_or_else(Utc::now)
+    DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_else(Utc::now)
 }
 
 fn audit_log_to_proto(log: &hodei_server_domain::audit::AuditLog) -> AuditLogEntry {
@@ -88,10 +87,7 @@ impl AuditServiceTrait for AuditServiceImpl {
         }
 
         if let (Some(start), Some(end)) = (req.start_time.as_ref(), req.end_time.as_ref()) {
-            query = query.with_date_range(
-                timestamp_to_datetime(start),
-                timestamp_to_datetime(end),
-            );
+            query = query.with_date_range(timestamp_to_datetime(start), timestamp_to_datetime(end));
         } else if let Some(start) = req.start_time.as_ref() {
             query.start_time = Some(timestamp_to_datetime(start));
         } else if let Some(end) = req.end_time.as_ref() {
@@ -346,7 +342,11 @@ mod tests {
         }
     }
 
-    fn create_test_log(event_type: &str, correlation_id: Option<&str>, actor: Option<&str>) -> AuditLog {
+    fn create_test_log(
+        event_type: &str,
+        correlation_id: Option<&str>,
+        actor: Option<&str>,
+    ) -> AuditLog {
         AuditLog {
             id: Uuid::new_v4(),
             correlation_id: correlation_id.map(String::from),
@@ -419,7 +419,10 @@ mod tests {
             correlation_id: "corr-1".to_string(),
         });
 
-        let response = service.get_audit_logs_by_correlation(request).await.unwrap();
+        let response = service
+            .get_audit_logs_by_correlation(request)
+            .await
+            .unwrap();
         let inner = response.into_inner();
 
         assert_eq!(inner.logs.len(), 2);

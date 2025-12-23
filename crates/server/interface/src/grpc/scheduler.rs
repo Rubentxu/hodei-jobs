@@ -197,7 +197,8 @@ impl SchedulerServiceImpl {
         };
 
         Ok(SchedulingContext {
-            job,
+            job: job.clone(),
+            job_preferences: job.spec.preferences.clone(),
             available_workers,
             available_providers: Vec::new(),
             pending_jobs_count,

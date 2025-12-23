@@ -4,6 +4,13 @@ set -e
 PORT=50051
 MAX_WAIT=10
 
+if [ -f ".env" ]; then
+    echo "Loading environment from .env..."
+    set -a
+    source .env
+    set +a
+fi
+
 echo "========================================="
 echo "  Hodei Server Dev Startup"
 echo "========================================="

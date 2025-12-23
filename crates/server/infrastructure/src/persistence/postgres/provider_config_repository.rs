@@ -255,7 +255,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
             r#"
             SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
-            WHERE status = 'ACTIVE' AND active_workers < max_workers
+            WHERE status = 'ACTIVE'
             ORDER BY priority DESC, name ASC
             "#,
         )
@@ -278,15 +278,14 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     }
 
     async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) as count FROM provider_configs WHERE name = $1",
-        )
-        .bind(name)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to check provider config existence: {}", e),
-        })?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) as count FROM provider_configs WHERE name = $1")
+                .bind(name)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to check provider config existence: {}", e),
+                })?;
 
         Ok(row.0 > 0)
     }

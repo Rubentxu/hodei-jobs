@@ -156,9 +156,12 @@ pub struct WorkerSpec {
     pub resources: ResourceRequirements,
     /// Labels para el worker
     pub labels: HashMap<String, String>,
+    /// Annotations para el worker (EPIC-21 US-07)
+    pub annotations: HashMap<String, String>,
     /// Variables de entorno
     pub environment: HashMap<String, String>,
     /// Volúmenes a montar
+    #[serde(default)]
     pub volumes: Vec<VolumeSpec>,
     /// Dirección del servidor Hodei para que el agent se conecte
     pub server_address: String,
@@ -171,6 +174,7 @@ pub struct WorkerSpec {
     /// Capabilities requeridas
     pub required_capabilities: Vec<String>,
     /// Kubernetes-specific configuration
+    #[serde(default)]
     pub kubernetes: KubernetesWorkerConfig,
 }
 
@@ -425,6 +429,7 @@ impl WorkerSpec {
             image,
             resources: ResourceRequirements::default(),
             labels: HashMap::new(),
+            annotations: HashMap::new(),
             environment: HashMap::new(),
             volumes: Vec::new(),
             server_address,
@@ -654,6 +659,10 @@ impl Worker {
         self.created_at
     }
 
+    pub fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
+
     pub fn provider_type(&self) -> &ProviderType {
         &self.handle.provider_type
     }
@@ -712,13 +721,13 @@ impl Worker {
         Ok(())
     }
 
-    /// Job completado - worker vuelve a Ready
+    /// Job completado - worker se termina (efímero)
     pub fn complete_job(&mut self) -> Result<()> {
-        match &self.state {
-            WorkerState::Busy => {
+        match self.state {
+            WorkerState::Busy | WorkerState::Draining => {
                 self.current_job_id = None;
                 self.jobs_executed += 1;
-                self.state = WorkerState::Ready;
+                self.state = WorkerState::Terminated;
                 self.updated_at = Utc::now();
                 Ok(())
             }
@@ -840,7 +849,7 @@ mod tests {
     fn test_worker_lifecycle() {
         let mut worker = create_test_worker();
 
-        // Estado inicial: Creating (PRD v6.0)
+        // Estado inicial: Creating
         assert_eq!(*worker.state(), WorkerState::Creating);
 
         // Transición a Connecting
@@ -858,24 +867,25 @@ mod tests {
         assert_eq!(*worker.state(), WorkerState::Busy);
         assert!(!worker.state().can_accept_jobs());
 
-        // Completar job -> Ready (PRD v6.0: vuelve a Ready, no Idle)
+        // Completar job -> Terminated (EPIC-21: Workers efímeros)
         worker.complete_job().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Ready);
-        assert_eq!(worker.jobs_executed(), 1);
-
-        // Draining (nuevo en PRD v6.0)
-        worker.mark_draining().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Draining);
-        assert!(!worker.state().can_accept_jobs());
-
-        // Terminating
-        worker.mark_terminating().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Terminating);
-
-        // Terminated
-        worker.mark_terminated().unwrap();
         assert_eq!(*worker.state(), WorkerState::Terminated);
+        assert_eq!(worker.jobs_executed(), 1);
         assert!(worker.state().is_terminated());
+
+        // Test alternativo: Worker puede ser marcado como draining ANTES de completar job
+        let mut worker2 = create_test_worker();
+        worker2.mark_connecting().unwrap();
+        worker2.mark_ready().unwrap();
+        worker2.assign_job(JobId::new()).unwrap();
+
+        // Draining antes de completar (para jobs largos)
+        worker2.mark_draining().unwrap();
+        assert_eq!(*worker2.state(), WorkerState::Draining);
+
+        // Completar job -> Terminated (desde Draining también termina)
+        worker2.complete_job().unwrap();
+        assert_eq!(*worker2.state(), WorkerState::Terminated);
     }
 
     #[test]
@@ -888,5 +898,65 @@ mod tests {
 
         let result = worker.assign_job(JobId::new());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_worker_terminates_after_successful_job_completion() {
+        // GIVEN: Worker en estado Busy con job asignado
+        let mut worker = create_test_worker();
+        worker.mark_starting().unwrap();
+        worker.mark_ready().unwrap();
+        let job_id = JobId::new();
+        worker.assign_job(job_id).unwrap();
+
+        // WHEN: complete_job() es llamado
+        worker.complete_job().unwrap();
+
+        // THEN: Estado debe ser Terminated
+        assert_eq!(*worker.state(), WorkerState::Terminated);
+        assert!(worker.state().is_terminated());
+        assert!(!worker.state().can_accept_jobs());
+        // AND: current_job_id debe ser None
+        assert!(worker.current_job_id().is_none());
+        // AND: jobs_executed debe ser incremented
+        assert_eq!(worker.jobs_executed(), 1);
+    }
+
+    #[test]
+    fn test_worker_cannot_complete_job_when_not_busy() {
+        // GIVEN: Worker en estado Ready
+        let mut worker = create_test_worker();
+        worker.mark_starting().unwrap();
+        worker.mark_ready().unwrap();
+
+        // WHEN: complete_job() es llamado
+        let result = worker.complete_job();
+
+        // THEN: Debe retornar error WorkerNotAvailable
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(DomainError::WorkerNotAvailable { .. })
+        ));
+        // AND: Estado debe permanecer Ready
+        assert_eq!(*worker.state(), WorkerState::Ready);
+    }
+
+    #[test]
+    fn test_worker_termination_emits_correct_event() {
+        // GIVEN: Worker en estado Busy
+        let mut worker = create_test_worker();
+        worker.mark_starting().unwrap();
+        worker.mark_ready().unwrap();
+        let job_id = JobId::new();
+        worker.assign_job(job_id).unwrap();
+
+        // WHEN: complete_job() es llamado
+        worker.complete_job().unwrap();
+
+        // THEN: Estado debe ser Terminated con reason implícito JobCompleted
+        assert_eq!(*worker.state(), WorkerState::Terminated);
+        // NOTA: El evento WorkerTerminated se emite en la aplicación, no en el dominio
+        // El dominio solo cambia el estado
     }
 }

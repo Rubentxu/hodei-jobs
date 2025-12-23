@@ -8,6 +8,7 @@ authors.workspace = true
 [features]
 default = []
 test-utils = []
+lifecycle-management = []
 
 [dependencies]
 # Internal dependencies

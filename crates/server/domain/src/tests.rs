@@ -128,8 +128,12 @@ mod job_execution_tests {
     #[test]
     fn test_job_spec_new() {
         let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
-        // PRD v6.0: command es ahora CommandType
-        assert_eq!(spec.command_vec(), vec!["echo", "hello"]);
+        // EPIC-21 Jenkins sh behavior: commands are wrapped as bash -c "command"
+        let cmd_vec = spec.command_vec();
+        assert_eq!(cmd_vec[0], "bash");
+        assert_eq!(cmd_vec[1], "-c");
+        assert!(cmd_vec[2].contains("echo"));
+        assert!(cmd_vec[2].contains("hello"));
         assert_eq!(spec.timeout_ms, 300_000);
     }
 

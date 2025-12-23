@@ -157,6 +157,8 @@ impl JobExecutionServiceImpl {
                 scheduler_name: "default".to_string(),
                 deadline: None,
                 preemption_allowed: false,
+                preferred_provider: String::new(),
+                required_labels: std::collections::HashMap::new(),
             }),
             selector: None,
             tolerations: vec![],

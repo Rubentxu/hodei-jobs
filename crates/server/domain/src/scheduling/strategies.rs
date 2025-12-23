@@ -1,6 +1,12 @@
 //! Job Scheduler - Estrategias de scheduling y selección de workers
 //!
 //! Define traits y tipos para la programación inteligente de jobs.
+//!
+//! ## EPIC-21: Ephemeral Workers Model
+//! Workers are provisioned fresh for each job and terminated after completion.
+//! The scheduler primarily uses `ProvisionWorker` decision. `AssignToWorker`
+//! is only used when re-assigning a job to a worker that was already provisioned
+//! for that specific job (e.g., after a transient failure during assignment).
 
 use crate::jobs::Job;
 use crate::shared_kernel::{JobId, ProviderId, Result, WorkerId};
@@ -10,11 +16,17 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Resultado de una decisión de scheduling
+///
+/// ## Ephemeral Workers Model (EPIC-21)
+/// In the ephemeral model, `ProvisionWorker` is the primary decision.
+/// Workers are NOT reused between jobs.
 #[derive(Debug, Clone)]
 pub enum SchedulingDecision {
-    /// Asignar job a un worker existente
+    /// Assign job to an already-provisioned worker (for retry/recovery scenarios only)
+    /// NOTE: In ephemeral model, this is ONLY used when the worker was provisioned
+    /// specifically for this job but assignment failed and needs retry.
     AssignToWorker { job_id: JobId, worker_id: WorkerId },
-    /// Provisionar nuevo worker para el job
+    /// Provision a NEW ephemeral worker for the job (primary decision path)
     ProvisionWorker {
         job_id: JobId,
         provider_id: ProviderId,
@@ -30,6 +42,8 @@ pub enum SchedulingDecision {
 pub struct SchedulingContext {
     /// Job a programar
     pub job: Job,
+    /// Preferencias del job (ciudadano de primera clase)
+    pub job_preferences: crate::jobs::JobPreferences,
     /// Workers disponibles
     pub available_workers: Vec<Worker>,
     /// Providers disponibles con capacidad
@@ -391,5 +405,36 @@ mod tests {
         assert!(selected.is_some());
         // Kubernetes tiene más capacidad (90% disponible vs 50%)
         assert_eq!(selected.unwrap(), providers[1].provider_id);
+    }
+
+    #[test]
+    fn test_scheduling_context_includes_job_preferences() {
+        // GIVEN: Un job con preferencias específicas
+        let job = Job::new(
+            crate::shared_kernel::JobId::new(),
+            crate::jobs::JobSpec::new(vec!["echo".to_string()]),
+        );
+
+        // WHEN: Creamos un SchedulingContext
+        let providers = create_test_providers();
+        let workers = Vec::new();
+
+        let context = SchedulingContext {
+            job: job.clone(),
+            job_preferences: job.spec.preferences.clone(),
+            available_workers: workers.clone(),
+            available_providers: providers.clone(),
+            pending_jobs_count: 0,
+            system_load: 0.5,
+        };
+
+        // THEN: El context debe incluir las preferencias del job
+        assert_eq!(context.job.id, job.id);
+        assert_eq!(
+            context.job_preferences.preferred_provider,
+            job.spec.preferences.preferred_provider
+        );
+        assert_eq!(context.available_providers.len(), 2);
+        assert_eq!(context.available_workers.len(), 0);
     }
 }

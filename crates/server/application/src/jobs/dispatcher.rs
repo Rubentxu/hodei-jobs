@@ -11,11 +11,13 @@ use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
 use hodei_server_domain::jobs::{ExecutionContext, Job, JobQueue, JobRepository};
+use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };
-use hodei_server_domain::shared_kernel::{DomainError, Result, WorkerId};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, WorkerId};
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
+use sqlx::postgres::PgPool;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -36,6 +38,9 @@ pub struct JobDispatcher {
     scheduler: SchedulingService,
     worker_command_sender: Arc<dyn WorkerCommandSender>,
     event_bus: Arc<dyn EventBus>,
+    outbox_repository: Option<
+        Arc<dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError> + Send + Sync>,
+    >,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
 }
 
@@ -49,6 +54,13 @@ impl JobDispatcher {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
+        outbox_repository: Option<
+            Arc<
+                dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError>
+                    + Send
+                    + Sync,
+            >,
+        >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
     ) -> Self {
         Self {
@@ -59,6 +71,34 @@ impl JobDispatcher {
             scheduler: SchedulingService::new(scheduler_config),
             worker_command_sender,
             event_bus,
+            outbox_repository,
+            provisioning_service,
+        }
+    }
+
+    /// Create a JobDispatcher with outbox repository
+    pub fn with_outbox_repository(
+        job_queue: Arc<dyn JobQueue>,
+        job_repository: Arc<dyn JobRepository>,
+        worker_registry: Arc<dyn WorkerRegistry>,
+        provider_registry: Arc<ProviderRegistry>,
+        scheduler_config: SchedulerConfig,
+        worker_command_sender: Arc<dyn WorkerCommandSender>,
+        event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<
+            dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError> + Send + Sync,
+        >,
+        provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+    ) -> Self {
+        Self {
+            job_queue,
+            job_repository,
+            worker_registry,
+            provider_registry,
+            scheduler: SchedulingService::new(scheduler_config),
+            worker_command_sender,
+            event_bus,
+            outbox_repository: Some(outbox_repository),
             provisioning_service,
         }
     }
@@ -111,6 +151,7 @@ impl JobDispatcher {
         let queue_len = self.job_queue.len().await?;
         let ctx = SchedulingContext {
             job: job.clone(),
+            job_preferences: job.spec.preferences.clone(),
             available_workers: available_workers.clone(),
             available_providers,
             pending_jobs_count: queue_len,
@@ -274,6 +315,12 @@ impl JobDispatcher {
     }
 
     /// Assign job to worker and dispatch
+    ///
+    /// ⚠️ DEPRECATED: Use `assign_job_idempotent` instead for Transactional Outbox Pattern
+    ///
+    /// This method implements the old pattern (DB update → event publish) which can lead
+    /// to inconsistencies. Use `assign_job_idempotent` for atomic DB + Outbox operations.
+    ///
     /// Implements safe operation order: gRPC → Events → DB
     async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> Result<()> {
         info!(
@@ -357,32 +404,71 @@ impl JobDispatcher {
             "✅ JobDispatcher: RUN_JOB command sent successfully"
         );
 
-        // Step 5: Publish JobAssigned event
+        // Step 5: Publish JobAssigned event with idempotency key
         // Refactoring: Use EventMetadata to reduce Connascence of Algorithm
         let metadata = EventMetadata::from_job_metadata(job.metadata(), &job.id);
 
-        let assigned_event = DomainEvent::JobAssigned {
-            job_id: job.id.clone(),
-            worker_id: worker_id.clone(),
-            occurred_at: Utc::now(),
-            correlation_id: metadata.correlation_id,
-            actor: metadata.actor.or(Some("system:job_dispatcher".to_string())),
-        };
+        // Generate idempotency key for JobAssigned to prevent duplicates
+        let idempotency_key = format!("job-assigned-{}-{}", job.id.0, worker_id.0);
 
-        if let Err(e) = self.event_bus.publish(&assigned_event).await {
-            error!(
-                error = %e,
-                job_id = %job.id,
-                event = "JobAssigned",
-                "❌ JobDispatcher: Failed to publish JobAssigned event"
+        // Try to publish via outbox first (if available)
+        if let Some(ref outbox_repo) = self.outbox_repository {
+            let event = OutboxEventInsert::for_job(
+                job.id.0,
+                "JobAssigned".to_string(),
+                serde_json::json!({
+                    "job_id": job.id.0.to_string(),
+                    "worker_id": worker_id.0.to_string(),
+                    "occurred_at": Utc::now().to_rfc3339()
+                }),
+                Some(serde_json::json!({
+                    "source": "JobDispatcher",
+                    "correlation_id": metadata.correlation_id,
+                    "actor": metadata.actor.or(Some("system:job_dispatcher".to_string()))
+                })),
+                Some(idempotency_key),
             );
-            // Continue anyway, job is already dispatched
+
+            if let Err(e) = outbox_repo.insert_events(&[event]).await {
+                error!(
+                    error = %e,
+                    job_id = %job.id,
+                    event = "JobAssigned",
+                    "❌ JobDispatcher: Failed to insert JobAssigned event into outbox"
+                );
+                // Continue anyway, job is already dispatched
+            } else {
+                debug!(
+                    job_id = %job.id,
+                    event = "JobAssigned",
+                    "📢 JobDispatcher: JobAssigned event inserted into outbox"
+                );
+            }
         } else {
-            debug!(
-                job_id = %job.id,
-                event = "JobAssigned",
-                "📢 JobDispatcher: JobAssigned event published"
-            );
+            // Fallback to direct event bus publishing (legacy mode)
+            let assigned_event = DomainEvent::JobAssigned {
+                job_id: job.id.clone(),
+                worker_id: worker_id.clone(),
+                occurred_at: Utc::now(),
+                correlation_id: metadata.correlation_id,
+                actor: metadata.actor.or(Some("system:job_dispatcher".to_string())),
+            };
+
+            if let Err(e) = self.event_bus.publish(&assigned_event).await {
+                error!(
+                    error = %e,
+                    job_id = %job.id,
+                    event = "JobAssigned",
+                    "❌ JobDispatcher: Failed to publish JobAssigned event"
+                );
+                // Continue anyway, job is already dispatched
+            } else {
+                debug!(
+                    job_id = %job.id,
+                    event = "JobAssigned",
+                    "📢 JobDispatcher: JobAssigned event published"
+                );
+            }
         }
 
         info!(
@@ -416,8 +502,21 @@ impl JobDispatcher {
                 return Ok(());
             }
 
-            // Try to provision a worker using the first available provider
-            let provider = &providers[0];
+            // Select provider based on job preferences or use strategy
+            let selected_provider_id = self.select_provider_for_provisioning(&providers).await?;
+            let provider = providers
+                .iter()
+                .find(|p| p.id == selected_provider_id)
+                .ok_or_else(|| {
+                    error!(
+                        "❌ JobDispatcher::trigger_provisioning: Selected provider {} not found",
+                        selected_provider_id
+                    );
+                    DomainError::ProviderNotFound {
+                        provider_id: selected_provider_id,
+                    }
+                })?;
+
             info!(
                 "🔧 JobDispatcher::trigger_provisioning: Provisioning worker on provider {} ({})",
                 provider.id, provider.name
@@ -465,5 +564,104 @@ impl JobDispatcher {
             info!("⚠️ JobDispatcher::trigger_provisioning: No provisioning service available");
             Ok(())
         }
+    }
+
+    /// Select provider for provisioning using scheduling strategy
+    async fn select_provider_for_provisioning(
+        &self,
+        providers: &[hodei_server_domain::providers::ProviderConfig],
+    ) -> Result<ProviderId> {
+        // Convert ProviderConfig to ProviderInfo for scheduler
+        let providers_info: Vec<hodei_server_domain::scheduling::ProviderInfo> = providers
+            .iter()
+            .map(|p| hodei_server_domain::scheduling::ProviderInfo {
+                provider_id: p.id.clone(),
+                provider_type: p.provider_type.clone(),
+                active_workers: p.active_workers as usize,
+                max_workers: p.max_workers as usize,
+                estimated_startup_time: std::time::Duration::from_secs(5),
+                health_score: 0.9,
+                cost_per_hour: 0.0,
+            })
+            .collect();
+
+        // Create a dummy job with default preferences for provisioning
+        let dummy_job = hodei_server_domain::jobs::Job::new(
+            hodei_server_domain::shared_kernel::JobId::new(),
+            hodei_server_domain::jobs::JobSpec::new(vec!["echo".to_string()]),
+        );
+
+        // Use scheduler to select provider
+        if let Some(provider_id) = self
+            .scheduler
+            .select_provider_with_preferences(&dummy_job, &providers_info)
+        {
+            info!(
+                provider_id = %provider_id,
+                "JobDispatcher::select_provider_for_provisioning: Selected provider"
+            );
+            Ok(provider_id)
+        } else {
+            // Fallback to first provider if selection fails
+            warn!(
+                "JobDispatcher::select_provider_for_provisioning: Selection failed, using first provider"
+            );
+            Ok(providers.first().map(|p| p.id.clone()).ok_or_else(|| {
+                DomainError::ProviderNotFound {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId::new(),
+                }
+            })?)
+        }
+    }
+
+    /// Assign job atomically using Transactional Outbox Pattern
+    ///
+    /// This method ensures atomicity between the database state and event publication.
+    /// It performs both the job update and outbox event insertion in a single transaction.
+    ///
+    /// # Arguments
+    /// * `pool` - PostgreSQL connection pool for the transaction
+    /// * `job_id` - ID of the job to assign
+    /// * `worker_id` - ID of the worker to assign the job to
+    /// * `job` - The job object to update
+    ///
+    /// # Returns
+    /// * `Result<()>` - Success or error
+    ///
+    /// # Errors
+    /// * Returns an error if:
+    ///   - Transaction fails to begin or commit
+    ///   - Job update fails
+    ///   - Outbox event insertion fails
+    ///   - Duplicate idempotency key is detected
+    ///
+    /// # Note
+    /// This implementation requires the following database schema:
+    /// - jobs table must have: worker_id, provider_id, execution_context columns
+    /// - outbox_events table must exist (see migration 20241223_add_outbox_events.sql)
+    ///
+    /// TODO: Complete implementation when database schema is ready
+    /// This is a placeholder that demonstrates the Transactional Outbox Pattern
+    pub async fn assign_job_idempotent(
+        &self,
+        pool: &PgPool,
+        job_id: &hodei_server_domain::shared_kernel::JobId,
+        worker_id: &WorkerId,
+        job: &mut Job,
+    ) -> Result<()> {
+        info!(
+            job_id = %job_id,
+            worker_id = %worker_id,
+            "⚠️ JobDispatcher: Transactional Outbox not yet implemented - using legacy method"
+        );
+
+        // For now, use the legacy method until the database schema is updated
+        // TODO: Replace with actual transactional outbox implementation
+        // This requires:
+        // 1. Migration to add worker_id, provider_id, execution_context to jobs table
+        // 2. Ensure outbox_events table exists
+        // 3. Update this method to use SQLx queries within a transaction
+
+        self.assign_and_dispatch(job, worker_id).await
     }
 }

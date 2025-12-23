@@ -2,8 +2,8 @@
 // Carga providers desde configuración YAML al arranque
 
 use hodei_server_domain::providers::{
-    ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
-    DockerConfig, KubernetesConfig, LambdaConfig, FargateConfig,
+    DockerConfig, FargateConfig, KubernetesConfig, LambdaConfig, ProviderConfig,
+    ProviderConfigRepository, ProviderTypeConfig,
 };
 use hodei_server_domain::shared_kernel::{DomainError, Result};
 use hodei_server_domain::workers::ProviderType;
@@ -60,8 +60,8 @@ impl ProviderBootstrap {
 
     /// Cargar providers desde archivo YAML
     pub async fn load_from_file(&self, path: &Path) -> Result<BootstrapResult> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| DomainError::InfrastructureError {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to read bootstrap file: {}", e),
             })?;
 
@@ -70,8 +70,8 @@ impl ProviderBootstrap {
 
     /// Cargar providers desde string YAML
     pub async fn load_from_yaml(&self, yaml_content: &str) -> Result<BootstrapResult> {
-        let config: ProviderBootstrapConfig = serde_yaml::from_str(yaml_content)
-            .map_err(|e| DomainError::InfrastructureError {
+        let config: ProviderBootstrapConfig =
+            serde_yaml::from_str(yaml_content).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to parse bootstrap YAML: {}", e),
             })?;
 
@@ -79,7 +79,10 @@ impl ProviderBootstrap {
     }
 
     /// Ejecutar bootstrap de providers
-    pub async fn bootstrap_providers(&self, config: &ProviderBootstrapConfig) -> Result<BootstrapResult> {
+    pub async fn bootstrap_providers(
+        &self,
+        config: &ProviderBootstrapConfig,
+    ) -> Result<BootstrapResult> {
         let mut result = BootstrapResult::default();
 
         for definition in &config.providers {
@@ -101,7 +104,10 @@ impl ProviderBootstrap {
     }
 
     /// Registrar provider desde definición YAML
-    async fn register_provider_from_definition(&self, def: &ProviderDefinition) -> Result<ProviderConfig> {
+    async fn register_provider_from_definition(
+        &self,
+        def: &ProviderDefinition,
+    ) -> Result<ProviderConfig> {
         // Verificar si ya existe
         if self.repository.exists_by_name(&def.name).await? {
             return Err(DomainError::InvalidProviderConfig {
@@ -207,22 +213,26 @@ impl ProviderBootstrap {
             }
             ProviderType::Fargate => {
                 let fc = FargateConfig {
-                    region: config_map.get("region")
+                    region: config_map
+                        .get("region")
                         .and_then(|v| v.as_str())
                         .unwrap_or("us-east-1")
                         .to_string(),
-                    cluster_arn: config_map.get("cluster_arn")
+                    cluster_arn: config_map
+                        .get("cluster_arn")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
                     subnets: vec![],
                     security_groups: vec![],
-                    execution_role_arn: config_map.get("execution_role_arn")
+                    execution_role_arn: config_map
+                        .get("execution_role_arn")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
                     task_role_arn: None,
-                    default_image: config_map.get("default_image")
+                    default_image: config_map
+                        .get("default_image")
                         .and_then(|v| v.as_str())
                         .unwrap_or("hodei-jobs-worker:latest")
                         .to_string(),
@@ -282,10 +292,16 @@ mod tests {
     #[async_trait::async_trait]
     impl ProviderConfigRepository for MockProviderConfigRepository {
         async fn save(&self, config: &ProviderConfig) -> Result<()> {
-            self.configs.write().await.insert(config.name.clone(), config.clone());
+            self.configs
+                .write()
+                .await
+                .insert(config.name.clone(), config.clone());
             Ok(())
         }
-        async fn find_by_id(&self, _id: &hodei_server_domain::shared_kernel::ProviderId) -> Result<Option<ProviderConfig>> {
+        async fn find_by_id(
+            &self,
+            _id: &hodei_server_domain::shared_kernel::ProviderId,
+        ) -> Result<Option<ProviderConfig>> {
             Ok(None)
         }
         async fn find_by_name(&self, name: &str) -> Result<Option<ProviderConfig>> {
@@ -295,7 +311,11 @@ mod tests {
             Ok(vec![])
         }
         async fn find_enabled(&self) -> Result<Vec<ProviderConfig>> {
-            Ok(self.configs.read().await.values()
+            Ok(self
+                .configs
+                .read()
+                .await
+                .values()
                 .filter(|c| c.status == ProviderStatus::Active)
                 .cloned()
                 .collect())
@@ -307,7 +327,10 @@ mod tests {
             Ok(self.configs.read().await.values().cloned().collect())
         }
         async fn update(&self, config: &ProviderConfig) -> Result<()> {
-            self.configs.write().await.insert(config.name.clone(), config.clone());
+            self.configs
+                .write()
+                .await
+                .insert(config.name.clone(), config.clone());
             Ok(())
         }
         async fn delete(&self, _id: &hodei_server_domain::shared_kernel::ProviderId) -> Result<()> {
@@ -350,7 +373,7 @@ providers:
 "#;
 
         let result = bootstrap.load_from_yaml(yaml).await.unwrap();
-        
+
         assert_eq!(result.registered.len(), 2);
         assert!(result.registered.contains(&"docker-local".to_string()));
         assert!(result.registered.contains(&"k8s-production".to_string()));
@@ -388,11 +411,29 @@ providers:
         let repo = Arc::new(MockProviderConfigRepository::new());
         let bootstrap = ProviderBootstrap::new(repo);
 
-        assert_eq!(bootstrap.parse_provider_type("docker").unwrap(), ProviderType::Docker);
-        assert_eq!(bootstrap.parse_provider_type("kubernetes").unwrap(), ProviderType::Kubernetes);
-        assert_eq!(bootstrap.parse_provider_type("k8s").unwrap(), ProviderType::Kubernetes);
-        assert_eq!(bootstrap.parse_provider_type("lambda").unwrap(), ProviderType::Lambda);
-        assert_eq!(bootstrap.parse_provider_type("aws_lambda").unwrap(), ProviderType::Lambda);
-        assert_eq!(bootstrap.parse_provider_type("custom_type").unwrap(), ProviderType::Custom("custom_type".to_string()));
+        assert_eq!(
+            bootstrap.parse_provider_type("docker").unwrap(),
+            ProviderType::Docker
+        );
+        assert_eq!(
+            bootstrap.parse_provider_type("kubernetes").unwrap(),
+            ProviderType::Kubernetes
+        );
+        assert_eq!(
+            bootstrap.parse_provider_type("k8s").unwrap(),
+            ProviderType::Kubernetes
+        );
+        assert_eq!(
+            bootstrap.parse_provider_type("lambda").unwrap(),
+            ProviderType::Lambda
+        );
+        assert_eq!(
+            bootstrap.parse_provider_type("aws_lambda").unwrap(),
+            ProviderType::Lambda
+        );
+        assert_eq!(
+            bootstrap.parse_provider_type("custom_type").unwrap(),
+            ProviderType::Custom("custom_type".to_string())
+        );
     }
 }

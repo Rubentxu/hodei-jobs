@@ -4,7 +4,9 @@
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::providers::{ProviderConfig, ProviderConfigRepository, ProviderTypeConfig};
+use hodei_server_domain::providers::{
+    ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
+};
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, ProviderStatus, Result};
 use hodei_server_domain::workers::JobRequirements;
 use hodei_server_domain::workers::ProviderType;

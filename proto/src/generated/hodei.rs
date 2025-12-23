@@ -201,7 +201,7 @@ pub struct TimeoutConfig {
     pub cleanup_timeout: ::core::option::Option<::prost_types::Duration>,
 }
 /// Información de scheduling
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SchedulingInfo {
     #[prost(enumeration = "PriorityLevel", tag = "1")]
     pub priority: i32,
@@ -213,6 +213,15 @@ pub struct SchedulingInfo {
     pub deadline: ::core::option::Option<::prost_types::Duration>,
     #[prost(bool, tag = "4")]
     pub preemption_allowed: bool,
+    /// Provider preferido (docker, kubernetes)
+    #[prost(string, tag = "5")]
+    pub preferred_provider: ::prost::alloc::string::String,
+    /// Labels requeridos en el worker
+    #[prost(map = "string, string", tag = "6")]
+    pub required_labels: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 /// Información del worker agent
 #[derive(Clone, PartialEq, ::prost::Message)]

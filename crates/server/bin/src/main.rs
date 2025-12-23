@@ -35,8 +35,12 @@ use hodei_jobs::{
 use hodei_server_application::jobs::{CancelJobUseCase, CreateJobUseCase, JobController};
 use hodei_server_application::providers::ProviderRegistry;
 use hodei_server_application::scheduling::smart_scheduler::SchedulerConfig;
-use hodei_server_application::workers::{DefaultWorkerProvisioningService, ProvisioningConfig};
+use hodei_server_application::workers::{
+    DefaultWorkerProvisioningService, ProvisioningConfig, WorkerLifecycleConfig,
+    WorkerLifecycleManager,
+};
 
+use hodei_server_domain::providers::ProviderConfigRepository;
 use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
 
@@ -46,6 +50,9 @@ use hodei_server_infrastructure::persistence::postgres::{
     PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
 };
 use hodei_server_infrastructure::providers::docker::DockerProviderBuilder;
+use hodei_server_infrastructure::providers::kubernetes::{
+    KubernetesConfig, KubernetesConfigBuilder, KubernetesProviderBuilder,
+};
 
 use hodei_server_interface::grpc::{
     GrpcWorkerCommandSender, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc,
@@ -265,6 +272,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| anyhow::anyhow!("Failed to run event bus migrations: {}", e))?;
     let event_bus = Arc::new(event_bus_impl);
 
+    // Create Outbox Repository and Relay
+    // TEMPORARILY DISABLED - Outbox pattern compilation issues
+    // TODO: Re-enable once outbox implementation is fully compiled
+    /*
+    let outbox_repository_impl: PostgresOutboxRepository =
+        PostgresOutboxRepository::new(pool.clone());
+    outbox_repository_impl
+        .run_migrations()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to run outbox migrations: {}", e))?;
+    let outbox_repository = Arc::new(outbox_repository_impl);
+
+    // Start OutboxRelay background service
+    let outbox_relay: OutboxRelay<_, _> =
+        OutboxRelay::new(outbox_repository.clone(), event_bus.clone());
+    let outbox_relay_handle = outbox_relay
+        .start()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start OutboxRelay: {}", e))?;
+    info!("  ✓ OutboxRelay started (Transactional Outbox Pattern enabled)");
+    tokio::spawn(async move {
+        if let Err(e) = outbox_relay_handle.await {
+            tracing::error!("OutboxRelay stopped with error: {}", e);
+        }
+    });
+    */
+    info!("  ⚠️ OutboxRelay disabled (Transactional Outbox Pattern not active)");
+
+    // Execute outbox migrations manually (table creation)
+    // This ensures outbox_events table exists even if OutboxRelay is disabled
+    info!("  Running outbox_events table migration...");
+    // Create table if not exists (idempotent)
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS outbox_events (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            aggregate_id UUID NOT NULL,
+            aggregate_type VARCHAR(20) NOT NULL CHECK (aggregate_type IN ('JOB', 'WORKER', 'PROVIDER')),
+            event_type VARCHAR(50) NOT NULL,
+            event_version INTEGER DEFAULT 1,
+            payload JSONB NOT NULL,
+            metadata JSONB,
+            idempotency_key VARCHAR(100),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            published_at TIMESTAMPTZ,
+            status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'FAILED')),
+            retry_count INTEGER DEFAULT 0,
+            last_error TEXT,
+            UNIQUE(idempotency_key)
+        )
+    "#)
+        .execute(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create outbox_events table: {}", e))?;
+
+    // Create indexes if not exists
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_outbox_status_created
+        ON outbox_events(status, created_at)
+        WHERE status = 'PENDING'
+    "#,
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create outbox index: {}", e))?;
+
+    info!("  ✓ outbox_events table created");
+
+    // Cleanup orphaned workers from previous runs
+    // Remove workers in TERMINATING or TERMINATED state
+    info!("  Cleaning up terminated workers from previous runs...");
+    sqlx::query("DELETE FROM workers WHERE state = 'TERMINATING' OR state = 'TERMINATED'")
+        .execute(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to cleanup terminated workers: {}", e))?;
+    info!("  ✓ Terminated workers cleaned up");
+
     // Create Provider Registry
     let provider_registry = Arc::new(ProviderRegistry::new(provider_config_repo.clone()));
 
@@ -370,6 +454,135 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            // Initialize Kubernetes provider
+            let kubernetes_enabled =
+                env::var("HODEI_KUBERNETES_ENABLED").unwrap_or_else(|_| "1".to_string()) == "1";
+
+            if kubernetes_enabled {
+                use hodei_server_domain::providers::ProviderConfigRepository;
+                // Try to find existing Kubernetes provider in DB
+                let k8s_config: Option<hodei_server_domain::providers::ProviderConfig> =
+                    provider_config_repo
+                        .find_by_name("Kubernetes")
+                        .await
+                        .ok()
+                        .flatten();
+
+                // Get existing provider ID or create new one
+                let provider_id = k8s_config
+                    .as_ref()
+                    .map(|c| c.id.clone())
+                    .unwrap_or_else(ProviderId::new);
+
+                info!("Using Kubernetes provider with ID: {}", provider_id);
+
+                // Save provider to database if it doesn't exist
+                if k8s_config.is_none() {
+                    use hodei_server_domain::ProviderType;
+                    use hodei_server_domain::providers::{
+                        KubernetesConfig as DomainKubernetesConfig, ProviderTypeConfig,
+                    };
+
+                    // Load Kubernetes config from environment or use default
+                    let k8s_config_for_db = std::env::var("HODEI_K8S_KUBECONFIG")
+                        .map(|path| {
+                            KubernetesConfig::builder()
+                                .kubeconfig_path(path)
+                                .namespace(
+                                    std::env::var("HODEI_K8S_NAMESPACE")
+                                        .unwrap_or_else(|_| "hodei-jobs-workers".to_string()),
+                                )
+                                .build()
+                                .unwrap_or_else(|_| KubernetesConfig::default())
+                        })
+                        .unwrap_or_else(|_| KubernetesConfig::default());
+
+                    // Convert to domain type
+                    let domain_k8s_config = DomainKubernetesConfig {
+                        kubeconfig_path: k8s_config_for_db.kubeconfig_path,
+                        namespace: k8s_config_for_db.namespace,
+                        service_account: k8s_config_for_db.service_account.unwrap_or_default(),
+                        default_image: "hodei-jobs-worker:latest".to_string(), // Default image
+                        image_pull_secrets: k8s_config_for_db.image_pull_secrets,
+                        node_selector: k8s_config_for_db.node_selector,
+                        tolerations: vec![], // Convert tolerations if needed
+                        default_resources: None,
+                    };
+
+                    // IMPORTANT: Use the same provider_id for the config
+                    let k8s_provider_config =
+                        hodei_server_domain::providers::ProviderConfig::with_id(
+                            provider_id.clone(),
+                            "Kubernetes".to_string(),
+                            ProviderType::Kubernetes,
+                            ProviderTypeConfig::Kubernetes(domain_k8s_config),
+                        );
+
+                    if let Err(e) = provider_config_repo.save(&k8s_provider_config).await {
+                        tracing::warn!("Failed to save Kubernetes provider to database: {}", e);
+                    } else {
+                        info!("  ✓ Kubernetes provider saved to database");
+                    }
+                }
+
+                // Build KubernetesProvider with proper kubeconfig configuration
+                let k8s_provider = {
+                    // Try to load kubeconfig from environment or use default path
+                    let k8s_config = std::env::var("HODEI_K8S_KUBECONFIG")
+                        .map(|path| {
+                            KubernetesConfig::builder()
+                                .kubeconfig_path(path)
+                                .namespace(
+                                    std::env::var("HODEI_K8S_NAMESPACE")
+                                        .unwrap_or_else(|_| "hodei-jobs-workers".to_string()),
+                                )
+                                .build()
+                        })
+                        .unwrap_or_else(|_| {
+                            // Fallback to default path
+                            KubernetesConfig::builder()
+                                .kubeconfig_path("/home/rubentxu/.kube/config")
+                                .namespace("hodei-jobs-workers".to_string())
+                                .build()
+                        });
+
+                    match k8s_config {
+                        Ok(config) => {
+                            info!(
+                                "Using Kubernetes config from: {}",
+                                config
+                                    .kubeconfig_path
+                                    .as_deref()
+                                    .unwrap_or("default inference")
+                            );
+                            KubernetesProviderBuilder::new()
+                                .with_provider_id(provider_id.clone())
+                                .with_config(config)
+                                .build()
+                                .await
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to build Kubernetes config: {}", e);
+                            KubernetesProviderBuilder::new()
+                                .with_provider_id(provider_id.clone())
+                                .build()
+                                .await
+                        }
+                    }
+                };
+
+                match k8s_provider {
+                    Ok(provider) => {
+                        info!("  ✓ Kubernetes provider initialized (id: {})", provider_id);
+                        providers
+                            .insert(provider_id, Arc::new(provider) as Arc<dyn WorkerProvider>);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Kubernetes provider not available: {}", e);
+                    }
+                }
+            }
+
             if !providers.is_empty() {
                 let providers = Arc::new(RwLock::new(providers));
 
@@ -388,11 +601,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let service = Arc::new(DefaultWorkerProvisioningService::new(
                     worker_registry.clone(),
                     token_store.clone(),
-                    providers,
+                    providers.clone(),
                     provisioning_config,
                 ));
 
                 info!("  ✓ WorkerProvisioningService configured");
+                info!("  ✓ WorkerProvisioningService configured");
+
+                // Lifecycle Manager (Cleanup & Termination)
+                let lifecycle_config = WorkerLifecycleConfig::default();
+                let lifecycle_manager = Arc::new(WorkerLifecycleManager::new(
+                    worker_registry.clone(),
+                    providers.clone(),
+                    lifecycle_config,
+                    event_bus.clone(),
+                ));
+
+                // Spawn background cleanup task
+                let cleanup_manager = lifecycle_manager.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(30));
+                    loop {
+                        interval.tick().await;
+                        // Run health check
+                        if let Err(e) = cleanup_manager.run_health_check().await {
+                            tracing::error!("Health check failed: {}", e);
+                        }
+                        // Run cleanup (terminate idle/expired)
+                        if let Err(e) = cleanup_manager.cleanup_workers().await {
+                            tracing::error!("Worker cleanup failed: {}", e);
+                        }
+                    }
+                });
+
+                info!("  ✓ WorkerLifecycleManager started (background cleanup enabled)");
+
                 Some(service)
             } else {
                 tracing::warn!("No providers available. Provisioning disabled.");
@@ -479,6 +722,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             info!("JobController processing loop ended");
         });
+
+        // Keep controller reference alive (drop at end of main)
+        let _controller_keep_alive = controller;
     } else {
         info!("JobController loop disabled (HODEI_JOB_CONTROLLER_ENABLED != 1)");
     }
@@ -539,6 +785,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build and start gRPC server
     Server::builder()
         .accept_http1(true)
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+        // .http2_permit_keep_alive_without_calls(true)
         .layer(cors)
         .layer(GrpcWebLayer::new())
         .add_service(reflection_service)

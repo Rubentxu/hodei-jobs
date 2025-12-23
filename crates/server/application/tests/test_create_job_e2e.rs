@@ -166,7 +166,7 @@ async fn test_create_job_saves_and_enqueues_atomically() {
     assert!(
         events.len() >= 1,
         "Should publish at least JobCreated event"
-);
+    );
 
     match &events[0] {
         DomainEvent::JobCreated { job_id, .. } => {
@@ -294,9 +294,24 @@ async fn test_create_job_publishes_correct_event_data() {
             );
 
             let cmd_vec = spec.command_vec();
-            assert_eq!(cmd_vec[0], "echo", "First command should be 'echo'");
-            assert_eq!(cmd_vec[1], "hello", "Second arg should be 'hello'");
-            assert_eq!(cmd_vec[2], "world", "Third arg should be 'world'");
+            // EPIC-21 Jenkins sh behavior: commands are wrapped as bash -c "command"
+            assert_eq!(
+                cmd_vec[0], "bash",
+                "First element should be 'bash' interpreter"
+            );
+            assert_eq!(cmd_vec[1], "-c", "Second element should be '-c' flag");
+            assert!(
+                cmd_vec[2].contains("echo"),
+                "Script content should contain 'echo'"
+            );
+            assert!(
+                cmd_vec[2].contains("hello"),
+                "Script content should contain 'hello'"
+            );
+            assert!(
+                cmd_vec[2].contains("world"),
+                "Script content should contain 'world'"
+            );
             assert_eq!(spec.image.as_deref(), Some("ubuntu:latest"));
             assert_eq!(spec.env.get("KEY1"), Some(&"VALUE1".to_string()));
             assert_eq!(spec.timeout_ms, 5000);

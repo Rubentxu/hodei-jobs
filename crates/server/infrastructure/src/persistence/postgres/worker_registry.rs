@@ -341,7 +341,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         sqlx::query(
             "UPDATE workers SET current_job_id = NULL, state = $1, updated_at = NOW() WHERE id = $2",
         )
-        .bind(WorkerState::Ready.to_string())
+        .bind(WorkerState::Terminated.to_string()) // EPIC-21: Workers terminate after job completion
         .bind(worker_uuid)
         .execute(&self.pool)
         .await
@@ -353,11 +353,18 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     }
 
     async fn find_unhealthy(&self, _timeout: std::time::Duration) -> Result<Vec<Worker>> {
+        // Optimized query: Uses index on (state, last_heartbeat) for efficient filtering
+        // Only fetches workers that are in active states (Ready, Busy, Connecting)
+        // Excludes already terminated workers to reduce result set
         let rows = sqlx::query(
             r#"
             SELECT id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at
             FROM workers
-            WHERE last_heartbeat IS NOT NULL AND last_heartbeat < NOW() - ($1 || ' seconds')::INTERVAL
+            WHERE last_heartbeat IS NOT NULL
+              AND last_heartbeat < NOW() - ($1 || ' seconds')::INTERVAL
+              AND state NOT IN ('TERMINATED', 'TERMINATING')
+            ORDER BY last_heartbeat ASC
+            LIMIT 100
             "#,
         )
         .bind(_timeout.as_secs() as i64)
@@ -376,11 +383,16 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     }
 
     async fn find_for_termination(&self) -> Result<Vec<Worker>> {
+        // Optimized query: Batch-limited to prevent large result sets
+        // Uses compound condition for Ready workers and stale workers
         let rows = sqlx::query(
             r#"
             SELECT id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at
             FROM workers
-            WHERE state = $1 OR (last_heartbeat IS NOT NULL AND last_heartbeat < NOW() - INTERVAL '10 minutes')
+            WHERE state = $1
+               OR (last_heartbeat IS NOT NULL AND last_heartbeat < NOW() - INTERVAL '10 minutes')
+            ORDER BY updated_at ASC
+            LIMIT 50
             "#,
         )
         .bind(WorkerState::Ready.to_string())

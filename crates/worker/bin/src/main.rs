@@ -101,10 +101,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channel: Channel = if let Some(tls) = tls_config.clone() {
         Channel::from_shared(config.server_addr.clone())?
             .tls_config(tls)?
+            .keep_alive_while_idle(true)
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
             .connect()
             .await?
     } else {
         Channel::from_shared(config.server_addr.clone())?
+            .keep_alive_while_idle(true)
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
             .connect()
             .await?
     };
@@ -232,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+                let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(15));
                 let mut cached_metrics: Option<CachedResourceUsage> = None;
 
                 // Inner communication loop

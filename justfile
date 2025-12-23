@@ -11,7 +11,7 @@
 
 export RUST_BACKTRACE := "1"
 export RUST_LOG := "debug"
-export DATABASE_URL := "postgres://postgres:postgres@localhost:5432/hodei_dev"
+export DATABASE_URL := "postgres://postgres:postgres@localhost:5432/hodei_jobs"
 
 # Default target
 _default:
@@ -393,12 +393,12 @@ job-examples-all:
 # Run Hello World on Docker provider
 job-docker-hello:
     @echo "🐳 Running Hello World on Docker provider..."
-    @cargo run --bin hodei-jobs-cli -- job run --name "Docker Hello World" --command "echo 'Hello from Docker provider!' && echo 'Provider: Docker' && echo 'Timestamp: '$(date)"
+    @cargo run --bin hodei-jobs-cli -- job run --name "Docker Hello World" --command "echo Hello from Docker provider" --provider docker
 
 # Run Hello World on Kubernetes provider
 job-k8s-hello:
     @echo "☸️  Running Hello World on Kubernetes provider..."
-    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Hello World" --command "echo 'Hello from Kubernetes provider!' && echo 'Provider: Kubernetes' && echo 'Timestamp: '$(date)"
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Hello World" --command "echo Hello from Kubernetes provider" --provider kubernetes --memory 134217728
 
 # Run CPU-intensive job on Docker (fast startup)
 job-docker-cpu:
@@ -455,26 +455,20 @@ job-provider-comparison:
     @echo "⚖️  Comparing Docker vs Kubernetes providers..."
     @echo ""
     @echo "=== Running job on Docker (fast startup) ==="
-    @time (just job-docker-hello)
+    @just job-docker-hello
     @echo ""
     @echo "=== Running job on Kubernetes (scalable) ==="
-    @time (just job-k8s-hello)
+    @just job-k8s-hello
     @echo ""
     @echo "✅ Provider comparison completed!"
 
 # Run concurrent jobs on both providers
 job-concurrent-test:
     @echo "🔀 Running concurrent jobs on both providers..."
-    @echo ""
-    @echo "Starting Docker job in background..."
-    @cargo run --bin hodei-jobs-cli -- job run --name "Concurrent Docker Job" --command "for i in {1..5}; do echo \"Docker: Iteration \$$i\"; sleep 1; done" &
-    DOCKER_PID=$$!
-    @echo "Starting Kubernetes job in background..."
-    @cargo run --bin hodei-jobs-cli -- job run --name "Concurrent K8s Job" --command "for i in {1..5}; do echo \"Kubernetes: Iteration \$$i\"; sleep 1; done" &
-    K8S_PID=$$!
+    @bash -c 'cargo run --bin hodei-jobs-cli -- job run --name "Concurrent Docker Job" --command "bash -c \"echo Docker: Starting concurrent job; for i in {1..5}; do echo \"Docker: Iteration \$$i\"; sleep 1; done\"" &'
+    @bash -c 'cargo run --bin hodei-jobs-cli -- job run --name "Concurrent K8s Job" --command "bash -c \"echo K8s: Starting concurrent job; for i in {1..5}; do echo \"Kubernetes: Iteration \$$i\"; sleep 1; done\"" &'
     @echo "Waiting for jobs to complete..."
-    @wait $$DOCKER_PID
-    @wait $$K8S_PID
+    @bash -c 'wait'
     @echo "✅ Concurrent jobs completed!"
 
 # Run stress test on both providers
@@ -544,17 +538,17 @@ job-multi-provider-all:
 # =============================================================================
 
 # Run job on Docker provider (manual selection)
-job-run-docker:
+job-run-docker name="Docker Test Job" command="echo 'Hello from Docker'" cpu="1.0" memory="1073741824" timeout="600":
     @echo "🐳 Running job on Docker provider..."
     @./scripts/job-run-docker.sh "{{ name }}" "{{ command }}" "{{ cpu }}" "{{ memory }}" "{{ timeout }}"
 
 # Run job on Kubernetes provider (manual selection)
-job-run-k8s:
+job-run-k8s name="K8s Test Job" command="echo 'Hello from Kubernetes'" cpu="1.0" memory="1073741824" timeout="600":
     @echo "☸️  Running job on Kubernetes provider..."
     @./scripts/job-run-provider.sh k8s "{{ name }}" "{{ command }}" "{{ cpu }}" "{{ memory }}" "{{ timeout }}"
 
 # Run job with provider auto-selection
-job-run-auto:
+job-run-auto name="Auto Test Job" command="echo 'Hello from auto-selected provider'" cpu="1.0" memory="1073741824" timeout="600":
     @echo "🤖 Running job with auto provider selection..."
     @./scripts/job-run-provider.sh auto "{{ name }}" "{{ command }}" "{{ cpu }}" "{{ memory }}" "{{ timeout }}"
 
@@ -574,6 +568,24 @@ job-quick-test:
     @time (cargo run --bin hodei-jobs-cli -- job run --name "Quick K8s Test" --command "echo 'Kubernetes test' && sleep 2")
     @echo ""
     @echo "✅ Quick comparison completed!"
+
+# Verify Kubernetes jobs create pods
+job-verify-k8s-pods:
+    @echo "🔍 Verifying Kubernetes jobs create pods in correct namespace..."
+    @./scripts/verify-k8s-jobs.sh
+
+# Watch Kubernetes pods in real-time
+job-watch-k8s-pods:
+    @echo "👀 Watching Kubernetes pods in namespace hodei-jobs-workers..."
+    @kubectl get pods -n hodei-jobs-workers -w
+
+# Show Kubernetes job pods with details
+job-k8s-pods:
+    @echo "📋 Listing all Kubernetes job pods..."
+    @kubectl get pods -n hodei-jobs-workers -o wide
+    @echo ""
+    @echo "Labels:"
+    @kubectl get pods -n hodei-jobs-workers --show-labels
 
 # =============================================================================
 # JOB OPERATIONS (Basic)
@@ -882,6 +894,48 @@ watch-workers:
 # Watch queue length (live updates)
 watch-queue:
     @watch -n 1 "docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT COUNT(*) as queued_jobs FROM job_queue;'"
+
+# =============================================================================
+# Provider Provisioning & Testing
+# =============================================================================
+
+# Start server with Kubernetes provisioning enabled
+dev-k8s:
+    @echo "🚀 Starting server with Kubernetes provisioning enabled..."
+    @HODEI_PROVISIONING_ENABLED=1 HODEI_KUBERNETES_ENABLED=1 HODEI_DOCKER_ENABLED=1 DATABASE_URL=postgres://postgres:postgres@localhost:5432/hodei_jobs cargo run --bin hodei-server-bin > /tmp/server-k8s.log 2>&1 &
+    @echo "✅ Server started with Kubernetes provider support"
+    @echo "📊 Server logs: /tmp/server-k8s.log"
+    @echo "🔍 Monitor: tail -f /tmp/server-k8s.log"
+
+# Test Kubernetes provider with a simple job
+test-k8s-provider:
+    @echo "🧪 Testing Kubernetes provider..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Provider Test" --cpu 1 --memory 536870912 --command "echo 'Testing Kubernetes provider...'; kubectl get pods 2>/dev/null || echo 'kubectl not available'; echo 'Test completed!'"
+    @echo "✅ Kubernetes provider test submitted!"
+
+# Full Kubernetes job test with pod verification
+test-k8s-job:
+    @echo "📦 Testing Kubernetes job execution with pod verification..."
+    @cargo run --bin hodei-jobs-cli -- job run --name "Full K8s Test" --cpu 1 --memory 1073741824 --command "echo 'Running on Kubernetes...'; kubectl get pods -n default 2>/dev/null || echo 'Cluster check'; echo 'Job execution completed!'"
+    @echo ""
+    @echo "🔍 Checking for Kubernetes pods (wait 10 seconds)..."
+    @sleep 10
+    @kubectl get pods 2>/dev/null || echo "⚠️  kubectl not available or no pods found"
+    @echo "✅ Test completed!"
+
+# Verify providers are registered in database
+verify-providers:
+    @echo "🔍 Verifying registered providers..."
+    @docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT id, name, provider_type FROM provider_configs;"
+    @echo "✅ Provider verification complete!"
+
+# Check provider health
+check-provider-health:
+    @echo "❤️  Checking provider health..."
+    @docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT id, name, provider_type, metadata FROM provider_configs;"
+    @echo ""
+    @echo "📊 Current workers:"
+    @docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT id, state, provider_id, last_heartbeat FROM workers ORDER BY last_heartbeat DESC LIMIT 10;"
 
 # Restart entire system (clean + start)
 restart-all:

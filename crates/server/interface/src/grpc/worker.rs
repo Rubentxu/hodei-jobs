@@ -26,6 +26,7 @@ use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::iam::OtpToken;
+use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::shared_kernel::{
     DomainError, JobId, JobResult, JobState, ProviderId, WorkerId, WorkerState,
 };
@@ -55,6 +56,9 @@ struct InMemoryOtpState {
 }
 
 /// Servicio gRPC para Worker Agents (PRD v6.0)
+///
+/// Implementa el patrón Transactional Outbox para garantizar
+/// consistencia entre actualizaciones de estado y publicación de eventos.
 #[derive(Clone)]
 pub struct WorkerAgentServiceImpl {
     workers: Arc<RwLock<HashMap<String, RegisteredWorker>>>,
@@ -66,8 +70,10 @@ pub struct WorkerAgentServiceImpl {
     token_store: Option<Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>>,
     /// Channel para log streaming
     log_service: Option<Arc<LogStreamService>>,
-    /// Event Bus para publicar eventos de dominio
+    /// Event Bus para publicar eventos de dominio (legacy, used by OutboxRelay)
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
+    /// Outbox Repository para patrón Transactional Outbox
+    outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
 }
 
 impl Default for WorkerAgentServiceImpl {
@@ -333,7 +339,8 @@ mod tests {
             .await
             .expect("get worker")
             .expect("worker exists");
-        assert!(matches!(worker.state(), WorkerState::Ready));
+        // EPIC-21: Workers are ephemeral - after job completion, worker is terminated
+        assert!(matches!(worker.state(), WorkerState::Terminated));
         assert!(worker.current_job_id().is_none());
     }
     #[tokio::test]
@@ -538,6 +545,196 @@ mod tests {
             assert!(!workers.contains_key(&worker_uuid.to_string()));
         }
     }
+
+    #[tokio::test]
+    async fn test_on_job_acknowledged_publishes_event() {
+        let job_repository: Arc<dyn JobRepository> = Arc::new(InMemoryJobRepository::new());
+        let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
+        let log_service = Arc::new(LogStreamService::new());
+        let bus = Arc::new(MockEventBus::new());
+
+        let service = WorkerAgentServiceImpl::with_registry_job_repository_and_log_service(
+            worker_registry.clone(),
+            job_repository.clone(),
+            log_service,
+            bus.clone(),
+        );
+
+        // 1. Setup Job
+        let job_uuid = uuid::Uuid::new_v4();
+        let job_id = JobId(job_uuid);
+        let mut job = Job::new(job_id.clone(), JobSpec::new(vec!["echo".to_string()]));
+
+        let provider_id = ProviderId::new();
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "test-exec".to_string());
+        job.assign_to_provider(provider_id, context)
+            .expect("assign");
+        job.set_state(JobState::Assigned)
+            .expect("set state assigned");
+
+        job_repository.save(&job).await.expect("save job");
+
+        // 2. Setup Worker
+        let worker_uuid = uuid::Uuid::new_v4();
+        let worker_id_str = worker_uuid.to_string();
+
+        // 3. Act
+        service
+            .on_job_acknowledged(&worker_id_str, &job_uuid.to_string())
+            .await
+            .expect("on_job_acknowledged failed");
+
+        // 4. Verify JobAccepted Event
+        let events = bus.published.lock().unwrap();
+        let accepted = events
+            .iter()
+            .find(|e| matches!(e, DomainEvent::JobAccepted { .. }));
+        assert!(accepted.is_some(), "JobAccepted event was not published");
+
+        if let Some(DomainEvent::JobAccepted { job_id: jid, .. }) = accepted {
+            assert_eq!(jid, &job_id);
+        }
+
+        // 5. Verify JobStatusChanged(Running)
+        let running = events.iter().find(|e| {
+            matches!(
+                e,
+                DomainEvent::JobStatusChanged {
+                    new_state: JobState::Running,
+                    ..
+                }
+            )
+        });
+        assert!(
+            running.is_some(),
+            "JobStatusChanged(Running) event was not published"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_job_lifecycle_event_sequence() {
+        let job_repository: Arc<dyn JobRepository> = Arc::new(InMemoryJobRepository::new());
+        let worker_registry: Arc<dyn WorkerRegistry> = Arc::new(InMemoryWorkerRegistry::new());
+        let log_service = Arc::new(LogStreamService::new());
+        let bus = Arc::new(MockEventBus::new());
+
+        let service = WorkerAgentServiceImpl::with_registry_job_repository_and_log_service(
+            worker_registry.clone(),
+            job_repository.clone(),
+            log_service,
+            bus.clone(),
+        );
+
+        // Setup: Create a job with metadata
+        let job_uuid = uuid::Uuid::new_v4();
+        let job_id = JobId(job_uuid);
+        let worker_uuid = uuid::Uuid::new_v4();
+        let worker_id_str = worker_uuid.to_string();
+
+        let mut job = Job::new(
+            job_id.clone(),
+            JobSpec::new(vec!["echo".to_string(), "test".to_string()]),
+        );
+        job.metadata_mut()
+            .insert("correlation_id".to_string(), "TEST-CORR-123".to_string());
+        job.metadata_mut()
+            .insert("actor".to_string(), "test-actor".to_string());
+
+        let provider_id = ProviderId::new();
+        let context =
+            ExecutionContext::new(job_id.clone(), provider_id.clone(), "test-exec".to_string());
+        job.assign_to_provider(provider_id, context)
+            .expect("assign");
+        job.set_state(JobState::Assigned)
+            .expect("set state assigned");
+
+        job_repository.save(&job).await.expect("save job");
+
+        // Simulate the complete event sequence:
+        // 1. Worker receives RUN_JOB (simulated via ACK handler with RunJobReceived)
+        // 2. on_job_acknowledged publishes JobAccepted and JobStatusChanged(Running)
+
+        service
+            .on_job_acknowledged(&worker_id_str, &job_uuid.to_string())
+            .await
+            .expect("on_job_acknowledged failed");
+
+        // Verify event sequence
+        let events = bus.published.lock().unwrap();
+
+        // Check that we have at least JobAccepted and JobStatusChanged events
+        assert!(
+            events.len() >= 2,
+            "Expected at least 2 events, got {}",
+            events.len()
+        );
+
+        // Verify JobAccepted event comes first
+        let accepted_index = events
+            .iter()
+            .position(|e| matches!(e, DomainEvent::JobAccepted { .. }));
+        assert!(
+            accepted_index.is_some(),
+            "JobAccepted event was not published"
+        );
+
+        // Verify JobStatusChanged(Running) event exists
+        let running_index = events.iter().position(|e| {
+            matches!(
+                e,
+                DomainEvent::JobStatusChanged {
+                    new_state: JobState::Running,
+                    ..
+                }
+            )
+        });
+        assert!(
+            running_index.is_some(),
+            "JobStatusChanged(Running) event was not published"
+        );
+
+        // Verify the order: JobAccepted should come before JobStatusChanged(Running)
+        if let (Some(accepted_idx), Some(running_idx)) = (accepted_index, running_index) {
+            assert!(
+                accepted_idx < running_idx,
+                "JobAccepted (index {}) should come before JobStatusChanged(Running) (index {})",
+                accepted_idx,
+                running_idx
+            );
+        }
+
+        // Verify JobAccepted has correct metadata
+        if let Some(DomainEvent::JobAccepted {
+            job_id: jid,
+            worker_id,
+            correlation_id,
+            actor,
+            ..
+        }) = events
+            .iter()
+            .find(|e| matches!(e, DomainEvent::JobAccepted { .. }))
+        {
+            assert_eq!(jid, &job_id);
+            assert_eq!(
+                &worker_id.to_string(),
+                &worker_uuid.to_string(),
+                "Worker ID should match"
+            );
+            assert_eq!(
+                correlation_id.as_deref(),
+                Some("TEST-CORR-123"),
+                "Correlation ID should be preserved"
+            );
+            assert_eq!(
+                actor.as_deref(),
+                Some("test-actor"),
+                "Actor should be preserved"
+            );
+        } else {
+            panic!("Failed to extract JobAccepted event details");
+        }
+    }
 }
 
 impl WorkerAgentServiceImpl {
@@ -551,6 +748,7 @@ impl WorkerAgentServiceImpl {
             token_store: None,
             log_service: None,
             event_bus: None,
+            outbox_repository: None,
         }
     }
 
@@ -567,6 +765,7 @@ impl WorkerAgentServiceImpl {
             token_store: None,
             log_service: None,
             event_bus: Some(event_bus),
+            outbox_repository: None,
         }
     }
 
@@ -584,6 +783,7 @@ impl WorkerAgentServiceImpl {
             token_store: None,
             log_service: Some(log_service),
             event_bus: Some(event_bus),
+            outbox_repository: None,
         }
     }
 
@@ -592,6 +792,23 @@ impl WorkerAgentServiceImpl {
         token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
     ) -> Self {
         self.token_store = Some(token_store);
+        self
+    }
+
+    pub fn with_job_repository(
+        mut self,
+        job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
+    ) -> Self {
+        self.job_repository = Some(job_repository);
+        self
+    }
+
+    /// Add outbox repository for transactional event publishing
+    pub fn with_outbox_repository(
+        mut self,
+        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+    ) -> Self {
+        self.outbox_repository = Some(outbox_repository);
         self
     }
 
@@ -610,6 +827,7 @@ impl WorkerAgentServiceImpl {
             token_store: None,
             log_service: Some(log_service),
             event_bus: Some(event_bus),
+            outbox_repository: None,
         }
     }
 
@@ -629,6 +847,29 @@ impl WorkerAgentServiceImpl {
             token_store: Some(token_store),
             log_service: Some(log_service),
             event_bus: Some(event_bus),
+            outbox_repository: None,
+        }
+    }
+
+    /// Full constructor with outbox repository support (production-ready)
+    pub fn with_all_dependencies(
+        worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
+        job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
+        token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
+        log_service: Arc<LogStreamService>,
+        event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+    ) -> Self {
+        Self {
+            workers: Arc::new(RwLock::new(HashMap::new())),
+            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
+            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            worker_registry: Some(worker_registry),
+            job_repository: Some(job_repository),
+            token_store: Some(token_store),
+            log_service: Some(log_service),
+            event_bus: Some(event_bus),
+            outbox_repository: Some(outbox_repository),
         }
     }
 
@@ -654,17 +895,30 @@ impl WorkerAgentServiceImpl {
         self.job_repository.as_ref()
     }
 
+    fn outbox_repository(
+        &self,
+    ) -> Option<&Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>> {
+        self.outbox_repository.as_ref()
+    }
+
     fn parse_job_uuid(job_id: &str) -> Result<JobId, Status> {
         let id = uuid::Uuid::parse_str(job_id)
             .map_err(|_| Status::invalid_argument("job_id must be a UUID"))?;
         Ok(JobId(id))
     }
 
+    /// Handle worker registration using Transactional Outbox Pattern
+    ///
+    /// This method:
+    /// 1. Updates worker state to Ready in registry
+    /// 2. Inserts events into outbox table (if configured)
+    /// 3. Falls back to direct event publishing if outbox not configured
+    ///
+    /// Events emitted:
+    /// - WorkerStatusChanged: State transition to Ready
+    /// - WorkerReady: Worker availability for job assignment
     async fn on_worker_registered(&self, worker_id: &str) -> Result<(), Status> {
         let Some(registry) = self.worker_registry() else {
-            return Ok(());
-        };
-        let Some(ref event_bus) = self.event_bus else {
             return Ok(());
         };
         let worker_id = Self::parse_worker_uuid(worker_id)?;
@@ -691,6 +945,8 @@ impl WorkerAgentServiceImpl {
             WorkerState::Creating | WorkerState::Connecting
         ) {
             let old_state = worker.state().clone();
+            let now = chrono::Utc::now();
+            let provider_id = worker.handle().provider_id.clone();
 
             // 1. First update state in registry (persistence)
             registry
@@ -698,27 +954,89 @@ impl WorkerAgentServiceImpl {
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
 
-            // 2. Then publish event for reactive handlers
-            use hodei_server_domain::events::DomainEvent;
+            // 2. Use Transactional Outbox Pattern if configured
+            if let Some(outbox_repo) = self.outbox_repository() {
+                let idempotency_base = format!("reg-{}", worker_id.0);
 
-            let event = DomainEvent::WorkerStatusChanged {
-                worker_id: worker_id.clone(),
-                old_status: old_state,
-                new_status: WorkerState::Ready,
-                occurred_at: chrono::Utc::now(),
-                correlation_id: None,
-                actor: None,
-            };
+                let events = vec![
+                    // WorkerStatusChanged: State transition
+                    OutboxEventInsert::for_worker(
+                        worker_id.0,
+                        "WorkerStatusChanged".to_string(),
+                        serde_json::json!({
+                            "worker_id": worker_id.0.to_string(),
+                            "old_status": format!("{:?}", old_state),
+                            "new_status": "Ready",
+                            "occurred_at": now.to_rfc3339()
+                        }),
+                        Some(serde_json::json!({
+                            "source": "WorkerHandler"
+                        })),
+                        Some(format!("{}-status-changed", idempotency_base)),
+                    ),
+                    // WorkerReady: Availability notification
+                    OutboxEventInsert::for_worker(
+                        worker_id.0,
+                        "WorkerReady".to_string(),
+                        serde_json::json!({
+                            "worker_id": worker_id.0.to_string(),
+                            "provider_id": provider_id.0.to_string(),
+                            "ready_at": now.to_rfc3339(),
+                            "actor": "worker-agent"
+                        }),
+                        Some(serde_json::json!({
+                            "source": "WorkerHandler",
+                            "actor": "worker-agent"
+                        })),
+                        Some(format!("{}-ready", idempotency_base)),
+                    ),
+                ];
 
-            event_bus.publish(&event).await.map_err(|e| {
-                Status::internal(format!(
-                    "Failed to publish WorkerStatusChanged event: {}",
-                    e
-                ))
-            })?;
+                if let Err(e) = outbox_repo.insert_events(&events).await {
+                    warn!(
+                        "Failed to insert events into outbox for worker {}: {:?}",
+                        worker_id.0, e
+                    );
+                } else {
+                    info!(
+                        "📦 Inserted {} outbox events for worker {} registration",
+                        events.len(),
+                        worker_id.0
+                    );
+                }
+            } else if let Some(event_bus) = &self.event_bus {
+                // Legacy: Direct event publishing (fallback)
+                let status_event = DomainEvent::WorkerStatusChanged {
+                    worker_id: worker_id.clone(),
+                    old_status: old_state,
+                    new_status: WorkerState::Ready,
+                    occurred_at: now,
+                    correlation_id: None,
+                    actor: None,
+                };
+
+                event_bus.publish(&status_event).await.map_err(|e| {
+                    Status::internal(format!(
+                        "Failed to publish WorkerStatusChanged event: {}",
+                        e
+                    ))
+                })?;
+
+                let ready_event = DomainEvent::WorkerReady {
+                    worker_id: worker_id.clone(),
+                    provider_id,
+                    ready_at: now,
+                    correlation_id: None,
+                    actor: Some("worker-agent".to_string()),
+                };
+
+                event_bus.publish(&ready_event).await.map_err(|e| {
+                    Status::internal(format!("Failed to publish WorkerReady event: {}", e))
+                })?;
+            }
 
             info!(
-                "Worker {} state updated to Ready and event published",
+                "Worker {} state updated to Ready and events published",
                 worker_id
             );
         }
@@ -811,12 +1129,23 @@ impl WorkerAgentServiceImpl {
         Ok(())
     }
 
+    /// Handle job acknowledgment from worker using Transactional Outbox Pattern
+    ///
+    /// This method:
+    /// 1. Updates job state to Running
+    /// 2. Inserts events into outbox table (if configured)
+    /// 3. Falls back to direct event publishing if outbox not configured
+    ///
+    /// Events emitted:
+    /// - JobAccepted: Worker has accepted the job
+    /// - JobDispatchAcknowledged: Transport-level confirmation
+    /// - JobStatusChanged: State transition to Running
     async fn on_job_acknowledged(&self, worker_id: &str, job_id: &str) -> Result<(), Status> {
         let Some(job_repository) = self.job_repository() else {
             return Ok(());
         };
 
-        let _worker_id = Self::parse_worker_uuid(worker_id)?;
+        let worker_uuid = Self::parse_worker_uuid(worker_id)?;
         let job_id = Self::parse_job_uuid(job_id)?;
 
         let mut job = job_repository
@@ -825,8 +1154,13 @@ impl WorkerAgentServiceImpl {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
-        // Update job state to RUNNING when worker acknowledges
+        // Extract metadata for events
+        let correlation_id = job.metadata().get("correlation_id").cloned();
+        let actor = job.metadata().get("actor").cloned();
         let old_state = job.state().clone();
+        let now = Utc::now();
+
+        // Update job state to RUNNING when worker acknowledges
         job.mark_running()
             .map_err(|e: DomainError| Status::failed_precondition(e.to_string()))?;
 
@@ -835,20 +1169,114 @@ impl WorkerAgentServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Publish JobStatusChanged event
-        if let Some(event_bus) = &self.event_bus {
-            let correlation_id = job.metadata().get("correlation_id").cloned();
-            let actor = job.metadata().get("actor").cloned();
+        // Use Transactional Outbox Pattern if configured
+        if let Some(outbox_repo) = self.outbox_repository() {
+            let idempotency_base = format!("ack-{}-{}", job_id.0, worker_uuid.0);
 
-            let event = DomainEvent::JobStatusChanged {
-                job_id: job.id.clone(),
+            let events = vec![
+                // JobAccepted: Logical acknowledgment
+                OutboxEventInsert::for_job(
+                    job_id.0,
+                    "JobAccepted".to_string(),
+                    serde_json::json!({
+                        "job_id": job_id.0.to_string(),
+                        "worker_id": worker_uuid.0.to_string(),
+                        "occurred_at": now.to_rfc3339(),
+                        "correlation_id": correlation_id,
+                        "actor": actor
+                    }),
+                    Some(serde_json::json!({
+                        "correlation_id": correlation_id,
+                        "actor": actor,
+                        "source": "WorkerHandler"
+                    })),
+                    Some(format!("{}-accepted", idempotency_base)),
+                ),
+                // JobDispatchAcknowledged: Transport-level confirmation
+                OutboxEventInsert::for_job(
+                    job_id.0,
+                    "JobDispatchAcknowledged".to_string(),
+                    serde_json::json!({
+                        "job_id": job_id.0.to_string(),
+                        "worker_id": worker_uuid.0.to_string(),
+                        "acknowledged_at": now.to_rfc3339(),
+                        "correlation_id": correlation_id,
+                        "actor": actor
+                    }),
+                    Some(serde_json::json!({
+                        "correlation_id": correlation_id,
+                        "actor": actor,
+                        "source": "WorkerHandler"
+                    })),
+                    Some(format!("{}-dispatch-ack", idempotency_base)),
+                ),
+                // JobStatusChanged: State transition
+                OutboxEventInsert::for_job(
+                    job_id.0,
+                    "JobStatusChanged".to_string(),
+                    serde_json::json!({
+                        "job_id": job_id.0.to_string(),
+                        "old_state": format!("{:?}", old_state),
+                        "new_state": "Running",
+                        "occurred_at": now.to_rfc3339(),
+                        "correlation_id": correlation_id,
+                        "actor": actor
+                    }),
+                    Some(serde_json::json!({
+                        "correlation_id": correlation_id,
+                        "actor": actor,
+                        "source": "WorkerHandler"
+                    })),
+                    Some(format!("{}-status-changed", idempotency_base)),
+                ),
+            ];
+
+            if let Err(e) = outbox_repo.insert_events(&events).await {
+                // Log error but don't fail - state is already updated
+                warn!(
+                    "Failed to insert events into outbox for job {}: {:?}",
+                    job_id.0, e
+                );
+            } else {
+                info!(
+                    "📦 Inserted {} outbox events for job {} acknowledgment",
+                    events.len(),
+                    job_id.0
+                );
+            }
+        } else if let Some(event_bus) = &self.event_bus {
+            // Legacy: Direct event publishing (fallback when outbox not configured)
+            let job_accepted = DomainEvent::JobAccepted {
+                job_id: job_id.clone(),
+                worker_id: worker_uuid.clone(),
+                occurred_at: now,
+                correlation_id: correlation_id.clone(),
+                actor: actor.clone(),
+            };
+            if let Err(e) = event_bus.publish(&job_accepted).await {
+                warn!("Failed to publish JobAccepted event: {}", e);
+            }
+
+            let dispatch_ack = DomainEvent::JobDispatchAcknowledged {
+                job_id: job_id.clone(),
+                worker_id: worker_uuid.clone(),
+                acknowledged_at: now,
+                correlation_id: correlation_id.clone(),
+                actor: actor.clone(),
+            };
+            if let Err(e) = event_bus.publish(&dispatch_ack).await {
+                warn!("Failed to publish JobDispatchAcknowledged event: {}", e);
+            }
+
+            let status_changed = DomainEvent::JobStatusChanged {
+                job_id: job_id.clone(),
                 old_state,
                 new_state: JobState::Running,
-                occurred_at: Utc::now(),
+                occurred_at: now,
                 correlation_id,
                 actor,
             };
-            if let Err(e) = event_bus.publish(&event).await {
+            if let Err(e) = event_bus.publish(&status_changed).await {
                 warn!(
                     "Failed to publish JobStatusChanged event in on_job_acknowledged: {}",
                     e
@@ -1389,8 +1817,54 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                     if ack.message_id.starts_with("job-") {
                                         let job_id = ack.message_id.trim_start_matches("job-");
                                         let worker_id = ack.worker_id;
+
+                                        // Publish RunJobReceived event (worker confirmed receipt)
+                                        if let (Some(event_bus), Some(job_repo)) = (
+                                            &registry_service.event_bus,
+                                            &registry_service.job_repository,
+                                        ) {
+                                            if let Ok(job_uuid) = uuid::Uuid::parse_str(job_id) {
+                                                let job_id_parsed =
+                                                    hodei_server_domain::shared_kernel::JobId(
+                                                        job_uuid,
+                                                    );
+                                                if let Ok(Some(job)) =
+                                                    job_repo.find_by_id(&job_id_parsed).await
+                                                {
+                                                    let correlation_id = job
+                                                        .metadata()
+                                                        .get("correlation_id")
+                                                        .cloned();
+                                                    let actor =
+                                                        job.metadata().get("actor").cloned();
+
+                                                    let run_received_event = DomainEvent::RunJobReceived {
+                                                    job_id: job.id.clone(),
+                                                    worker_id: hodei_server_domain::shared_kernel::WorkerId::from_string(&worker_id).unwrap_or_default(),
+                                                    received_at: Utc::now(),
+                                                    correlation_id,
+                                                    actor,
+                                                };
+
+                                                    if let Err(e) =
+                                                        event_bus.publish(&run_received_event).await
+                                                    {
+                                                        warn!(
+                                                            "Failed to publish RunJobReceived event: {}",
+                                                            e
+                                                        );
+                                                    } else {
+                                                        info!(
+                                                            "📢 RunJobReceived event published for job {}",
+                                                            job_id
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         info!(
-                                            "🔄 Updating job {} state to RUNNING (from worker {})",
+                                            "🔄 Processing job acknowledgment for {} (from worker {})",
                                             job_id, worker_id
                                         );
 
@@ -1404,7 +1878,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                                     e
                                                 );
                                             } else {
-                                                info!("✅ Job {} marked as RUNNING", job_id);
+                                                info!("✅ Job {} acknowledgment processed", job_id);
                                             }
                                         } else {
                                             warn!("Acknowledgment received without worker_id");

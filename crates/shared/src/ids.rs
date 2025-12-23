@@ -82,7 +82,7 @@ impl fmt::Display for WorkerId {
 
 impl From<String> for WorkerId {
     fn from(s: String) -> Self {
-        Self::from_string(&s).unwrap_or_else(Self::new)
+        Self::from_string(&s).unwrap_or_default()
     }
 }
 

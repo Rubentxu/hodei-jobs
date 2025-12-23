@@ -27,3 +27,11 @@ pub trait EventBus: Send + Sync {
         topic: &str,
     ) -> Result<BoxStream<'static, Result<DomainEvent, EventBusError>>, EventBusError>;
 }
+
+impl From<EventBusError> for crate::shared_kernel::DomainError {
+    fn from(err: EventBusError) -> Self {
+        crate::shared_kernel::DomainError::InfrastructureError {
+            message: err.to_string(),
+        }
+    }
+}

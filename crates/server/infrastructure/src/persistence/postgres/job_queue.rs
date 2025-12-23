@@ -143,8 +143,16 @@ fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
 #[async_trait::async_trait]
 impl JobQueue for PostgresJobQueue {
     async fn enqueue(&self, job: Job) -> Result<()> {
-        tracing::info!("PostgresJobQueue::enqueue called for job_id: {}", job.id.0);
-        let result = sqlx::query(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to start transaction for enqueue: {}", e),
+            })?;
+
+        // Insert into queue
+        sqlx::query(
             r#"
             INSERT INTO job_queue (job_id)
             VALUES ($1)
@@ -152,16 +160,27 @@ impl JobQueue for PostgresJobQueue {
             "#,
         )
         .bind(job.id.0)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to enqueue job: {}", e),
+            message: format!("Failed to insert into job_queue: {}", e),
         })?;
 
-        tracing::info!(
-            "PostgresJobQueue::enqueue result - rows_affected: {}",
-            result.rows_affected()
-        );
+        // Ensure job state is PENDING so it can be picked up by dequeue
+        sqlx::query("UPDATE jobs SET state = 'PENDING' WHERE id = $1")
+            .bind(job.id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to update job state to PENDING: {}", e),
+            })?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to commit enqueue transaction: {}", e),
+            })?;
+
         Ok(())
     }
 

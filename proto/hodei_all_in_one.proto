@@ -168,6 +168,8 @@ message SchedulingInfo {
     string scheduler_name = 2;  // Nombre del scheduler (para multiple schedulers)
     google.protobuf.Duration deadline = 3;  // Deadline para el job
     bool preemption_allowed = 4;
+    string preferred_provider = 5;  // Provider preferido (docker, kubernetes)
+    map<string, string> required_labels = 6;  // Labels requeridos en el worker
 }
 
 // =============================================================================

@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+lifecycle-management = []
+
 [dependencies]
 # Internal dependencies
 hodei-server-domain = { path = "../domain" }
@@ -12,6 +16,9 @@ hodei-shared = { path = "../../shared" }
 
 # Async runtime
 tokio = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
 async-trait = { workspace = true }
 
 # HTTP & Web (para API adapters)

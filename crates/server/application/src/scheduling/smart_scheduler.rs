@@ -35,4 +35,13 @@ impl SchedulingService {
     pub async fn make_decision(&self, context: SchedulingContext) -> Result<SchedulingDecision> {
         self.scheduler.schedule(context).await
     }
+
+    /// Select a provider considering job preferences
+    pub fn select_provider_with_preferences(
+        &self,
+        job: &hodei_server_domain::jobs::Job,
+        providers: &[hodei_server_domain::scheduling::ProviderInfo],
+    ) -> Option<hodei_server_domain::shared_kernel::ProviderId> {
+        self.scheduler.select_provider_with_preferences(job, providers)
+    }
 }

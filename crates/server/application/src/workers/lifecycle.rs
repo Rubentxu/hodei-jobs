@@ -1,15 +1,17 @@
 //! Worker Lifecycle Manager
 //!
 //! Servicio de aplicación para gestionar el ciclo de vida de workers:
-//! - Heartbeat monitoring
+//! - Heartbeat monitoring and reconciliation
 //! - Auto-scaling basado en demanda
 //! - Terminación de workers idle/unhealthy
+//! - Job reassignment for failed workers (via Transactional Outbox)
 
 use chrono::Utc;
 use hodei_server_domain::{
     event_bus::EventBus,
     events::{DomainEvent, TerminationReason},
-    shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
+    outbox::{OutboxError, OutboxEventInsert, OutboxRepository},
+    shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId, WorkerState},
     workers::WorkerProvider,
     workers::{Worker, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
@@ -25,6 +27,8 @@ pub struct WorkerLifecycleConfig {
     pub heartbeat_timeout: Duration,
     /// Interval for running health checks
     pub health_check_interval: Duration,
+    /// Interval for running reconciliation
+    pub reconciliation_interval: Duration,
     /// Minimum workers to keep ready
     pub min_ready_workers: usize,
     /// Maximum workers allowed
@@ -33,6 +37,8 @@ pub struct WorkerLifecycleConfig {
     pub scale_up_threshold: usize,
     /// Scale down when idle workers exceed this
     pub scale_down_threshold: usize,
+    /// Grace period before considering a worker truly dead
+    pub worker_dead_grace_period: Duration,
 }
 
 impl Default for WorkerLifecycleConfig {
@@ -40,10 +46,12 @@ impl Default for WorkerLifecycleConfig {
         Self {
             heartbeat_timeout: Duration::from_secs(60),
             health_check_interval: Duration::from_secs(30),
+            reconciliation_interval: Duration::from_secs(15),
             min_ready_workers: 1,
             max_workers: 10,
             scale_up_threshold: 5,
             scale_down_threshold: 3,
+            worker_dead_grace_period: Duration::from_secs(120),
         }
     }
 }
@@ -55,25 +63,55 @@ impl Default for WorkerLifecycleConfig {
 /// - Auto-scale workers based on demand
 /// - Terminate idle/unhealthy workers
 /// - Provision new workers when needed
+/// - Reconcile stale worker states and reassign jobs
 pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
     providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
     config: WorkerLifecycleConfig,
     event_bus: Arc<dyn EventBus>,
+    /// Optional outbox repository for transactional event publishing
+    outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
 }
 
 impl WorkerLifecycleManager {
     pub fn new(
         registry: Arc<dyn WorkerRegistry>,
+        providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
         config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
             registry,
-            providers: Arc::new(RwLock::new(HashMap::new())),
+            providers,
             config,
             event_bus,
+            outbox_repository: None,
         }
+    }
+
+    /// Create with outbox repository for transactional event publishing
+    pub fn with_outbox_repository(
+        registry: Arc<dyn WorkerRegistry>,
+        providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+        config: WorkerLifecycleConfig,
+        event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+    ) -> Self {
+        Self {
+            registry,
+            providers,
+            config,
+            event_bus,
+            outbox_repository: Some(outbox_repository),
+        }
+    }
+
+    /// Set outbox repository after construction
+    pub fn set_outbox_repository(
+        &mut self,
+        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+    ) {
+        self.outbox_repository = Some(outbox_repository);
     }
 
     /// Register a provider with the lifecycle manager
@@ -121,12 +159,297 @@ impl WorkerLifecycleManager {
         Ok(result)
     }
 
+    /// Reconcile worker states and handle stale workers with active jobs
+    ///
+    /// This method:
+    /// 1. Detects workers with stale heartbeats that have assigned jobs
+    /// 2. Emits WorkerHeartbeatMissed events for monitoring
+    /// 3. Marks workers as unhealthy if beyond grace period
+    /// 4. Triggers job reassignment for affected jobs
+    ///
+    /// Uses Transactional Outbox pattern when available for consistency.
+    pub async fn run_reconciliation(&self) -> Result<ReconciliationResult> {
+        let mut result = ReconciliationResult::default();
+        let now = Utc::now();
+
+        // Find workers with stale heartbeats (haven't reported in heartbeat_timeout)
+        let stale_workers = self
+            .registry
+            .find_unhealthy(self.config.heartbeat_timeout)
+            .await?;
+
+        for worker in stale_workers {
+            let worker_id = worker.id().clone();
+            let last_heartbeat = worker.updated_at();
+            let stale_duration = now.signed_duration_since(last_heartbeat);
+
+            info!(
+                "🔍 Reconciliation: Worker {} has stale heartbeat ({}s ago)",
+                worker_id,
+                stale_duration.num_seconds()
+            );
+
+            result.stale_workers.push(worker_id.clone());
+
+            // Check if worker has an assigned job
+            if let Some(job_id) = worker.current_job_id() {
+                result.affected_jobs.push(job_id.clone());
+
+                // Emit events for job reassignment
+                if let Err(e) = self.emit_worker_heartbeat_missed(&worker, job_id).await {
+                    warn!(
+                        "Failed to emit heartbeat missed event for worker {}: {:?}",
+                        worker_id, e
+                    );
+                }
+
+                // If beyond grace period, mark for job reassignment
+                if stale_duration.num_seconds()
+                    > self.config.worker_dead_grace_period.as_secs() as i64
+                {
+                    info!(
+                        "⚠️ Worker {} exceeded grace period, triggering job reassignment for {}",
+                        worker_id, job_id
+                    );
+
+                    if let Err(e) = self.emit_job_reassignment_required(&worker, job_id).await {
+                        warn!(
+                            "Failed to emit job reassignment event for job {}: {:?}",
+                            job_id, e
+                        );
+                    }
+
+                    result.jobs_requiring_reassignment.push(job_id.clone());
+                }
+            }
+
+            // Update worker state to reflect unhealthy status
+            if *worker.state() != WorkerState::Terminated {
+                if let Err(e) = self
+                    .registry
+                    .update_state(&worker_id, WorkerState::Terminating)
+                    .await
+                {
+                    error!(
+                        "Failed to update worker {} to Terminating state: {}",
+                        worker_id, e
+                    );
+                } else {
+                    result.workers_marked_unhealthy.push(worker_id.clone());
+
+                    // Emit WorkerStatusChanged event
+                    if let Err(e) = self
+                        .emit_worker_status_changed(
+                            &worker_id,
+                            worker.state().clone(),
+                            WorkerState::Terminating,
+                            "heartbeat_timeout",
+                        )
+                        .await
+                    {
+                        warn!(
+                            "Failed to emit status changed event for worker {}: {:?}",
+                            worker_id, e
+                        );
+                    }
+                }
+            }
+        }
+
+        if !result.stale_workers.is_empty() {
+            info!(
+                "📊 Reconciliation complete: {} stale workers, {} affected jobs, {} requiring reassignment",
+                result.stale_workers.len(),
+                result.affected_jobs.len(),
+                result.jobs_requiring_reassignment.len()
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Emit WorkerHeartbeatMissed event using outbox or direct publishing
+    async fn emit_worker_heartbeat_missed(&self, worker: &Worker, job_id: &JobId) -> Result<()> {
+        let now = Utc::now();
+        let worker_id = worker.id();
+
+        if let Some(outbox_repo) = &self.outbox_repository {
+            let event = OutboxEventInsert::for_worker(
+                worker_id.0,
+                "WorkerHeartbeatMissed".to_string(),
+                serde_json::json!({
+                    "worker_id": worker_id.0.to_string(),
+                    "last_heartbeat": worker.updated_at().to_rfc3339(),
+                    "current_job_id": job_id.0.to_string(),
+                    "detected_at": now.to_rfc3339()
+                }),
+                Some(serde_json::json!({
+                    "source": "WorkerLifecycleManager",
+                    "reconciliation_run": true
+                })),
+                Some(format!(
+                    "heartbeat-missed-{}-{}",
+                    worker_id.0,
+                    now.timestamp()
+                )),
+            );
+
+            outbox_repo.insert_events(&[event]).await.map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: format!("Failed to insert outbox event: {:?}", e),
+                }
+            })?;
+        } else {
+            // Legacy: Direct event publishing
+            let event = DomainEvent::WorkerStatusChanged {
+                worker_id: worker_id.clone(),
+                old_status: worker.state().clone(),
+                new_status: WorkerState::Terminating,
+                occurred_at: now,
+                correlation_id: None,
+                actor: Some("lifecycle-reconciliation".to_string()),
+            };
+
+            self.event_bus
+                .publish(&event)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to publish event: {}", e),
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Emit JobReassignmentRequired event for jobs on dead workers
+    async fn emit_job_reassignment_required(&self, worker: &Worker, job_id: &JobId) -> Result<()> {
+        let now = Utc::now();
+        let worker_id = worker.id();
+
+        if let Some(outbox_repo) = &self.outbox_repository {
+            let event = OutboxEventInsert::for_job(
+                job_id.0,
+                "JobReassignmentRequired".to_string(),
+                serde_json::json!({
+                    "job_id": job_id.0.to_string(),
+                    "failed_worker_id": worker_id.0.to_string(),
+                    "reason": "worker_heartbeat_timeout",
+                    "occurred_at": now.to_rfc3339()
+                }),
+                Some(serde_json::json!({
+                    "source": "WorkerLifecycleManager",
+                    "reconciliation_run": true,
+                    "worker_last_heartbeat": worker.updated_at().to_rfc3339()
+                })),
+                Some(format!("job-reassign-{}-{}", job_id.0, now.timestamp())),
+            );
+
+            outbox_repo.insert_events(&[event]).await.map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: format!("Failed to insert outbox event: {:?}", e),
+                }
+            })?;
+        } else {
+            // Legacy: Direct event publishing - emit JobStatusChanged to Failed
+            use hodei_server_domain::shared_kernel::JobState;
+            let event = DomainEvent::JobStatusChanged {
+                job_id: job_id.clone(),
+                old_state: JobState::Running,
+                new_state: JobState::Failed,
+                occurred_at: now,
+                correlation_id: None,
+                actor: Some("lifecycle-reconciliation".to_string()),
+            };
+
+            self.event_bus
+                .publish(&event)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to publish event: {}", e),
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Emit WorkerStatusChanged event
+    async fn emit_worker_status_changed(
+        &self,
+        worker_id: &WorkerId,
+        old_state: WorkerState,
+        new_state: WorkerState,
+        reason: &str,
+    ) -> Result<()> {
+        let now = Utc::now();
+
+        if let Some(outbox_repo) = &self.outbox_repository {
+            let event = OutboxEventInsert::for_worker(
+                worker_id.0,
+                "WorkerStatusChanged".to_string(),
+                serde_json::json!({
+                    "worker_id": worker_id.0.to_string(),
+                    "old_status": format!("{:?}", old_state),
+                    "new_status": format!("{:?}", new_state),
+                    "reason": reason,
+                    "occurred_at": now.to_rfc3339()
+                }),
+                Some(serde_json::json!({
+                    "source": "WorkerLifecycleManager",
+                    "transition_reason": reason
+                })),
+                Some(format!(
+                    "worker-status-{}-{}-{}",
+                    worker_id.0,
+                    format!("{:?}", new_state),
+                    now.timestamp()
+                )),
+            );
+
+            outbox_repo.insert_events(&[event]).await.map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: format!("Failed to insert outbox event: {:?}", e),
+                }
+            })?;
+        } else {
+            let event = DomainEvent::WorkerStatusChanged {
+                worker_id: worker_id.clone(),
+                old_status: old_state,
+                new_status: new_state,
+                occurred_at: now,
+                correlation_id: None,
+                actor: Some("lifecycle-reconciliation".to_string()),
+            };
+
+            self.event_bus
+                .publish(&event)
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to publish event: {}", e),
+                })?;
+        }
+
+        Ok(())
+    }
+
     /// Find workers that should be terminated and terminate them
+    ///
+    /// EPIC-21: Workers are ephemeral - ALL Ready workers are terminated
+    /// to eliminate persistent pool behavior
     pub async fn cleanup_workers(&self) -> Result<CleanupResult> {
         let mut result = CleanupResult::default();
 
-        // Find workers to terminate (idle timeout or lifetime exceeded)
-        let workers_to_terminate = self.registry.find_for_termination().await?;
+        // Find potential candidates for termination
+        // (This includes ALL Ready workers AND workers with very old heartbeats)
+        let candidates = self.registry.find_for_termination().await?;
+
+        // EPIC-21: Eliminate persistent pool - terminate ALL Ready workers
+        // No separation needed - all candidates go to termination
+        let workers_to_terminate = candidates;
+
+        info!(
+            "EPIC-21 Cleanup: Terminating {} workers (ephemeral mode - no pool persistence)",
+            workers_to_terminate.len()
+        );
 
         for worker in workers_to_terminate {
             info!(
@@ -134,18 +457,20 @@ impl WorkerLifecycleManager {
                 worker.id()
             );
 
-            // Mark as terminating
-            if let Err(e) = self
-                .registry
-                .update_state(worker.id(), WorkerState::Terminating)
-                .await
-            {
-                error!(
-                    "Failed to mark worker {} as terminating: {}",
-                    worker.id(),
-                    e
-                );
-                continue;
+            // Mark as terminating (skip if already terminating)
+            if !matches!(*worker.state(), WorkerState::Terminating) {
+                if let Err(e) = self
+                    .registry
+                    .update_state(worker.id(), WorkerState::Terminating)
+                    .await
+                {
+                    error!(
+                        "Failed to mark worker {} as terminating: {}",
+                        worker.id(),
+                        e
+                    );
+                    continue;
+                }
             }
 
             // Destroy via provider
@@ -300,15 +625,146 @@ pub struct CleanupResult {
     pub failed: Vec<WorkerId>,
 }
 
+/// Result of a reconciliation run
+#[derive(Debug, Default)]
+pub struct ReconciliationResult {
+    /// Workers with stale heartbeats detected
+    pub stale_workers: Vec<WorkerId>,
+    /// Workers marked as unhealthy
+    pub workers_marked_unhealthy: Vec<WorkerId>,
+    /// Jobs affected by stale workers
+    pub affected_jobs: Vec<JobId>,
+    /// Jobs that require reassignment (worker exceeded grace period)
+    pub jobs_requiring_reassignment: Vec<JobId>,
+}
+
+impl ReconciliationResult {
+    /// Check if any action was taken
+    pub fn has_changes(&self) -> bool {
+        !self.stale_workers.is_empty()
+            || !self.workers_marked_unhealthy.is_empty()
+            || !self.jobs_requiring_reassignment.is_empty()
+    }
+
+    /// Get total number of issues detected
+    pub fn total_issues(&self) -> usize {
+        self.stale_workers.len() + self.jobs_requiring_reassignment.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::stream::BoxStream;
     use hodei_server_domain::event_bus::EventBusError;
-    use hodei_server_domain::workers::WorkerHandle;
+    use hodei_server_domain::workers::{ProviderType, WorkerHandle};
     use std::collections::HashMap as StdHashMap;
     use std::sync::Mutex;
     use tokio::sync::RwLock as TokioRwLock;
+
+    fn create_test_worker() -> Worker {
+        let spec = WorkerSpec::new(
+            "hodei-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+        let handle = WorkerHandle::new(
+            spec.worker_id.clone(),
+            "container-123".to_string(),
+            ProviderType::Docker,
+            hodei_server_domain::shared_kernel::ProviderId::new(),
+        );
+        Worker::new(handle, spec)
+    }
+
+    fn create_test_worker_with_provider(
+        provider_id: hodei_server_domain::shared_kernel::ProviderId,
+    ) -> Worker {
+        let spec = WorkerSpec::new(
+            "hodei-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+        let handle = WorkerHandle::new(
+            spec.worker_id.clone(),
+            format!("container-{}", spec.worker_id.0),
+            ProviderType::Docker,
+            provider_id,
+        );
+        Worker::new(handle, spec)
+    }
+
+    struct MockWorkerProvider {
+        pub provider_id: hodei_server_domain::shared_kernel::ProviderId,
+        capabilities: hodei_server_domain::workers::ProviderCapabilities,
+    }
+
+    impl MockWorkerProvider {
+        fn new(provider_id: hodei_server_domain::shared_kernel::ProviderId) -> Self {
+            Self {
+                provider_id,
+                capabilities: hodei_server_domain::workers::ProviderCapabilities::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl hodei_server_domain::workers::WorkerProvider for MockWorkerProvider {
+        fn provider_id(&self) -> &hodei_server_domain::shared_kernel::ProviderId {
+            &self.provider_id
+        }
+
+        fn provider_type(&self) -> hodei_server_domain::workers::ProviderType {
+            hodei_server_domain::workers::ProviderType::Docker
+        }
+
+        fn capabilities(&self) -> &hodei_server_domain::workers::ProviderCapabilities {
+            &self.capabilities
+        }
+
+        async fn create_worker(
+            &self,
+            _spec: &WorkerSpec,
+        ) -> std::result::Result<WorkerHandle, hodei_server_domain::workers::ProviderError>
+        {
+            unimplemented!()
+        }
+
+        async fn destroy_worker(
+            &self,
+            _handle: &WorkerHandle,
+        ) -> std::result::Result<(), hodei_server_domain::workers::ProviderError> {
+            Ok(())
+        }
+
+        async fn get_worker_status(
+            &self,
+            _handle: &WorkerHandle,
+        ) -> std::result::Result<
+            hodei_server_domain::shared_kernel::WorkerState,
+            hodei_server_domain::workers::ProviderError,
+        > {
+            unimplemented!()
+        }
+
+        async fn get_worker_logs(
+            &self,
+            _handle: &WorkerHandle,
+            _tail: Option<u32>,
+        ) -> std::result::Result<
+            Vec<hodei_server_domain::workers::LogEntry>,
+            hodei_server_domain::workers::ProviderError,
+        > {
+            unimplemented!()
+        }
+
+        async fn health_check(
+            &self,
+        ) -> std::result::Result<
+            hodei_server_domain::workers::HealthStatus,
+            hodei_server_domain::workers::ProviderError,
+        > {
+            Ok(hodei_server_domain::workers::HealthStatus::Healthy)
+        }
+    }
 
     struct MockEventBus {
         published: Arc<Mutex<Vec<DomainEvent>>>,
@@ -400,10 +856,26 @@ mod tests {
             if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
                 match state {
                     WorkerState::Creating => {} // Estado inicial, no transición
-                    WorkerState::Connecting => worker.mark_connecting()?,
-                    WorkerState::Ready => worker.mark_ready()?,
-                    WorkerState::Terminating => worker.mark_terminating()?,
-                    WorkerState::Terminated => worker.mark_terminated()?,
+                    WorkerState::Connecting => worker.mark_connecting().map_err(|e| {
+                        tracing::error!("Failed to mark worker {} as Connecting: {}", worker_id, e);
+                        e
+                    })?,
+                    WorkerState::Ready => worker.mark_ready().map_err(|e| {
+                        tracing::error!("Failed to mark worker {} as Ready: {}", worker_id, e);
+                        e
+                    })?,
+                    WorkerState::Terminating => worker.mark_terminating().map_err(|e| {
+                        tracing::error!(
+                            "Failed to mark worker {} as Terminating: {}",
+                            worker_id,
+                            e
+                        );
+                        e
+                    })?,
+                    WorkerState::Terminated => worker.mark_terminated().map_err(|e| {
+                        tracing::error!("Failed to mark worker {} as Terminated: {}", worker_id, e);
+                        e
+                    })?,
                     _ => {}
                 }
             }
@@ -419,9 +891,15 @@ mod tests {
 
         async fn assign_to_job(
             &self,
-            _worker_id: &WorkerId,
-            _job_id: hodei_server_domain::shared_kernel::JobId,
+            worker_id: &WorkerId,
+            job_id: hodei_server_domain::shared_kernel::JobId,
         ) -> Result<()> {
+            if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
+                worker.assign_job(job_id).map_err(|e| {
+                    tracing::error!("Failed to assign job to worker {}: {}", worker_id, e);
+                    e
+                })?;
+            }
             Ok(())
         }
 
@@ -434,13 +912,38 @@ mod tests {
         }
 
         async fn find_for_termination(&self) -> Result<Vec<Worker>> {
-            Ok(vec![])
+            // Return all workers that are in states that can be terminated
+            Ok(self
+                .workers
+                .read()
+                .await
+                .values()
+                .filter(|w| matches!(*w.state(), WorkerState::Ready | WorkerState::Terminating))
+                .cloned()
+                .collect())
         }
 
         async fn stats(&self) -> Result<WorkerRegistryStats> {
             let workers = self.workers.read().await;
+            let mut total_workers = 0;
+            let mut ready_workers = 0;
+            let mut busy_workers = 0;
+            let mut idle_workers = 0;
+
+            for worker in workers.values() {
+                total_workers += 1;
+                match worker.state() {
+                    WorkerState::Ready => ready_workers += 1,
+                    WorkerState::Busy => busy_workers += 1,
+                    _ => {}
+                }
+            }
+
             Ok(WorkerRegistryStats {
-                total_workers: workers.len(),
+                total_workers,
+                ready_workers,
+                busy_workers,
+                idle_workers,
                 ..Default::default()
             })
         }
@@ -455,7 +958,8 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let _manager = WorkerLifecycleManager::new(registry, config, event_bus);
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let _manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
     }
 
     #[tokio::test]
@@ -463,7 +967,8 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let manager = WorkerLifecycleManager::new(registry, config, event_bus);
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
 
         assert!(manager.should_scale_up(1).await);
     }
@@ -473,5 +978,216 @@ mod tests {
         let result = HealthCheckResult::default();
         assert_eq!(result.total_checked, 0);
         assert!(result.unhealthy_workers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_terminates_all_non_busy_workers() {
+        // GIVEN: Workers en estado Ready, Terminating, y Busy
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig {
+            min_ready_workers: 0, // No mantener workers ready
+            ..Default::default()
+        };
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        // Registrar un mock provider para evitar errores en destroy_worker_via_provider
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
+        providers.write().await.insert(
+            provider_id.clone(),
+            mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
+        );
+
+        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+
+        // Crear workers en diferentes estados (todos con el mismo provider_id que el mock)
+        let ready_worker = create_test_worker_with_provider(provider_id.clone());
+        let terminating_worker = create_test_worker_with_provider(provider_id.clone());
+        let busy_worker = create_test_worker_with_provider(provider_id.clone());
+
+        // Registrar workers
+        let ready_worker = registry
+            .register(ready_worker.handle().clone(), ready_worker.spec().clone())
+            .await
+            .unwrap();
+        let terminating_worker = registry
+            .register(
+                terminating_worker.handle().clone(),
+                terminating_worker.spec().clone(),
+            )
+            .await
+            .unwrap();
+        let busy_worker = registry
+            .register(busy_worker.handle().clone(), busy_worker.spec().clone())
+            .await
+            .unwrap();
+
+        // Cambiar estados DESPUÉS del registro (para que se reflejen en el registry)
+        registry
+            .update_state(ready_worker.id(), WorkerState::Connecting)
+            .await
+            .unwrap();
+        registry
+            .update_state(ready_worker.id(), WorkerState::Ready)
+            .await
+            .unwrap();
+
+        registry
+            .update_state(terminating_worker.id(), WorkerState::Connecting)
+            .await
+            .unwrap();
+        registry
+            .update_state(terminating_worker.id(), WorkerState::Ready)
+            .await
+            .unwrap();
+        registry
+            .update_state(terminating_worker.id(), WorkerState::Terminating)
+            .await
+            .unwrap();
+
+        registry
+            .update_state(busy_worker.id(), WorkerState::Connecting)
+            .await
+            .unwrap();
+        registry
+            .update_state(busy_worker.id(), WorkerState::Ready)
+            .await
+            .unwrap();
+        // Para marcar como Busy, necesitamos asignar un job
+        let job_id = JobId::new();
+        registry
+            .assign_to_job(busy_worker.id(), job_id)
+            .await
+            .unwrap();
+
+        // WHEN: cleanup_workers() es llamado
+        let result = manager.cleanup_workers().await.unwrap();
+
+        // THEN: Solo Ready y Terminating workers deben ser terminados
+        // Busy workers deben permanecer
+        assert_eq!(result.terminated.len(), 2); // Ready + Terminating
+        assert!(result.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_no_pool_persistence_after_cleanup() {
+        // GIVEN: Workers en estado Ready
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig {
+            min_ready_workers: 2, // Config indica mantener 2, pero para ephemeral workers no debe aplicarse
+            ..Default::default()
+        };
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        // Registrar un mock provider
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
+        providers.write().await.insert(
+            provider_id.clone(),
+            mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
+        );
+
+        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+
+        // Crear 5 workers Ready con el mismo provider_id
+        for _i in 0..5 {
+            let worker = registry
+                .register(
+                    create_test_worker_with_provider(provider_id.clone())
+                        .handle()
+                        .clone(),
+                    create_test_worker_with_provider(provider_id.clone())
+                        .spec()
+                        .clone(),
+                )
+                .await
+                .unwrap();
+            // Set state to Connecting then Ready (proper state transitions)
+            registry
+                .update_state(worker.id(), WorkerState::Connecting)
+                .await
+                .unwrap();
+            registry
+                .update_state(worker.id(), WorkerState::Ready)
+                .await
+                .unwrap();
+        }
+
+        // WHEN: cleanup_workers() es llamado
+        let result = manager.cleanup_workers().await.unwrap();
+
+        // THEN: TODOS los Ready workers deben ser terminados (no pool persistente)
+        assert_eq!(
+            result.terminated.len(),
+            5,
+            "All ready workers should be terminated"
+        );
+        assert!(result.failed.is_empty());
+
+        // Verificar que no hay workers Ready en el registry
+        let stats = registry.stats().await.unwrap();
+        assert_eq!(stats.ready_workers, 0, "No ready workers should remain");
+    }
+
+    #[tokio::test]
+    async fn test_all_workers_terminated_when_ephemeral_mode_enabled() {
+        // GIVEN: Workers en diferentes estados (Ready, Busy, Terminating)
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig {
+            min_ready_workers: 5, // Config alta, pero no debe aplicarse
+            ..Default::default()
+        };
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        // Registrar un mock provider
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
+        providers.write().await.insert(
+            provider_id.clone(),
+            mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
+        );
+
+        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+
+        // Crear workers en estado Ready con el mismo provider_id
+        for _i in 0..3 {
+            let worker = registry
+                .register(
+                    create_test_worker_with_provider(provider_id.clone())
+                        .handle()
+                        .clone(),
+                    create_test_worker_with_provider(provider_id.clone())
+                        .spec()
+                        .clone(),
+                )
+                .await
+                .unwrap();
+            // Set state to Connecting then Ready (proper state transitions)
+            registry
+                .update_state(worker.id(), WorkerState::Connecting)
+                .await
+                .unwrap();
+            registry
+                .update_state(worker.id(), WorkerState::Ready)
+                .await
+                .unwrap();
+        }
+
+        // WHEN: cleanup_workers() es llamado
+        let result = manager.cleanup_workers().await.unwrap();
+
+        // THEN: Todos los Ready workers deben ser terminados, independientemente de min_ready_workers
+        assert_eq!(result.terminated.len(), 3);
+        assert!(result.failed.is_empty());
+
+        // Verificar estado final
+        let stats = registry.stats().await.unwrap();
+        assert_eq!(
+            stats.ready_workers, 0,
+            "Pool persistence must be eliminated"
+        );
     }
 }

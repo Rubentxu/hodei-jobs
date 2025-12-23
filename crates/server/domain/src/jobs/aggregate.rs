@@ -171,30 +171,33 @@ impl JobSpec {
     }
 
     /// Builder Pattern: Crea un JobSpec con comando shell simple (retrocompatibilidad)
+    /// COMPORTAMIENTO JENKINS SH: Todos los comandos se escriben a un archivo temporal
+    /// y se ejecutan via shell para evitar problemas de expansión de variables
     pub fn new(command: Vec<String>) -> Self {
-        // Detectar si el comando es contenido de script (múltiples líneas o contiene shebang)
+        // TODOS los comandos se tratan como scripts y se ejecutan via shell
+        // (comportamiento idéntico a Jenkins sh step)
         let cmd_type = if command.is_empty() {
-            CommandType::shell("echo")
-        } else if command.len() == 1 && Self::looks_like_script(&command[0]) {
-            // Si hay un solo elemento y parece ser contenido de script, crear CommandType::Script
-            let content = command[0].clone();
-            // Detectar el interprete del shebang o usar bash por defecto
-            let interpreter = if content.starts_with("#!") {
-                let shebang_line = content.lines().next().unwrap_or("");
-                if let Some(path) = shebang_line.strip_prefix("#!") {
-                    let path = path.trim();
-                    // Extraer el interprete del path (ej: /bin/bash -> bash)
-                    path.split('/').last().unwrap_or("bash").to_string()
+            // Si no hay comando, ejecutar echo vacío
+            CommandType::script("bash", "echo")
+        } else {
+            // Combinar todos los elementos del comando en un solo string
+            // Esto asegura que comandos como "echo Hello" se ejecuten correctamente
+            let content = if command.len() == 1 {
+                // Un solo elemento: puede ser comando simple o script multilinea
+                if Self::looks_like_script(&command[0]) {
+                    // Es contenido de script (multilinea o con shebang)
+                    command[0].clone()
                 } else {
-                    "bash".to_string()
+                    // Comando simple: lo ejecutamos via bash -c
+                    command[0].clone()
                 }
             } else {
-                "bash".to_string()
+                // Múltiples elementos: join con espacios para formar comando completo
+                command.join(" ")
             };
-            CommandType::script(interpreter, content)
-        } else {
-            // Comportamiento original: comando shell con argumentos
-            CommandType::shell_with_args(command[0].clone(), command[1..].to_vec())
+
+            // Usar bash como interprete por defecto (comportamiento Jenkins)
+            CommandType::script("bash", content)
         };
         Self {
             command: cmd_type,
@@ -491,6 +494,10 @@ pub struct JobPreferences {
     pub priority: JobPriority,
     /// Permite reintentos
     pub allow_retry: bool,
+    /// Labels requeridos para el worker (EPIC-21 US-07)
+    pub required_labels: HashMap<String, String>,
+    /// Annotations requeridas para el worker (EPIC-21 US-07)
+    pub required_annotations: HashMap<String, String>,
 }
 
 impl Default for JobPreferences {
@@ -501,6 +508,8 @@ impl Default for JobPreferences {
             max_budget: None,
             priority: JobPriority::Normal,
             allow_retry: true,
+            required_labels: HashMap::new(),
+            required_annotations: HashMap::new(),
         }
     }
 }

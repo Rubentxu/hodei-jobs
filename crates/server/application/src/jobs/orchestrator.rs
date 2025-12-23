@@ -45,17 +45,20 @@ impl JobOrchestrator {
             "http://localhost:50051".to_string(),
         );
 
+        let providers = Arc::new(RwLock::new(HashMap::new()));
+
         Self {
             scheduler: SchedulingService::new(scheduler_config),
             lifecycle_manager: WorkerLifecycleManager::new(
                 registry.clone(),
+                providers.clone(),
                 lifecycle_config,
                 event_bus,
             ),
             registry,
             job_repository,
             job_queue,
-            providers: Arc::new(RwLock::new(HashMap::new())),
+            providers,
             default_worker_spec,
         }
     }
@@ -149,7 +152,8 @@ impl JobOrchestrator {
         };
 
         Ok(SchedulingContext {
-            job,
+            job: job.clone(),
+            job_preferences: job.spec.preferences.clone(),
             available_workers,
             available_providers,
             pending_jobs_count,

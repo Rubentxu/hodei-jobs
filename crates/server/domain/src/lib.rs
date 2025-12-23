@@ -11,6 +11,7 @@
 // - iam: Tokens OTP y autenticación
 
 pub mod event_bus;
+pub mod outbox;
 pub mod shared_kernel;
 
 // Bounded Contexts
