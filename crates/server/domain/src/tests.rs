@@ -246,7 +246,7 @@ mod job_execution_tests {
     fn test_job_cannot_retry_max_attempts() {
         let mut job = create_test_job();
         job.set_attempts(3);
-        job.set_state(JobState::Failed);
+        let _ = job.set_state(JobState::Failed);
         assert!(!job.can_retry());
     }
 

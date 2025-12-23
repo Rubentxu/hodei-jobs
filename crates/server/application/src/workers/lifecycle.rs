@@ -13,6 +13,7 @@ use hodei_server_domain::{
     outbox::{OutboxError, OutboxEventInsert, OutboxRepository},
     shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId, WorkerState},
     workers::WorkerProvider,
+    workers::health::WorkerHealthService,
     workers::{Worker, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
@@ -71,6 +72,7 @@ pub struct WorkerLifecycleManager {
     event_bus: Arc<dyn EventBus>,
     /// Optional outbox repository for transactional event publishing
     outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+    health_service: Arc<WorkerHealthService>,
 }
 
 impl WorkerLifecycleManager {
@@ -83,9 +85,14 @@ impl WorkerLifecycleManager {
         Self {
             registry,
             providers,
-            config,
+            config: config.clone(),
             event_bus,
             outbox_repository: None,
+            health_service: Arc::new(
+                WorkerHealthService::builder()
+                    .with_heartbeat_timeout(config.heartbeat_timeout)
+                    .build(),
+            ),
         }
     }
 
@@ -100,9 +107,14 @@ impl WorkerLifecycleManager {
         Self {
             registry,
             providers,
-            config,
+            config: config.clone(),
             event_bus,
             outbox_repository: Some(outbox_repository),
+            health_service: Arc::new(
+                WorkerHealthService::builder()
+                    .with_heartbeat_timeout(config.heartbeat_timeout)
+                    .build(),
+            ),
         }
     }
 
@@ -180,13 +192,12 @@ impl WorkerLifecycleManager {
 
         for worker in stale_workers {
             let worker_id = worker.id().clone();
-            let last_heartbeat = worker.updated_at();
-            let stale_duration = now.signed_duration_since(last_heartbeat);
+            let heartbeat_age = self.health_service.calculate_heartbeat_age(&worker);
+            let stale_seconds = heartbeat_age.as_duration().as_secs();
 
             info!(
                 "🔍 Reconciliation: Worker {} has stale heartbeat ({}s ago)",
-                worker_id,
-                stale_duration.num_seconds()
+                worker_id, stale_seconds
             );
 
             result.stale_workers.push(worker_id.clone());
@@ -204,9 +215,7 @@ impl WorkerLifecycleManager {
                 }
 
                 // If beyond grace period, mark for job reassignment
-                if stale_duration.num_seconds()
-                    > self.config.worker_dead_grace_period.as_secs() as i64
-                {
+                if stale_seconds > self.config.worker_dead_grace_period.as_secs() {
                     info!(
                         "⚠️ Worker {} exceeded grace period, triggering job reassignment for {}",
                         worker_id, job_id

@@ -2,11 +2,13 @@
 //!
 //! Contiene casos de uso para gestión de workers
 
+pub mod auto_scaling;
 pub mod commands;
 pub mod lifecycle;
 pub mod provisioning;
 pub mod provisioning_impl;
 
+pub use auto_scaling::*;
 pub use commands::*;
 pub use lifecycle::*;
 pub use provisioning::*;

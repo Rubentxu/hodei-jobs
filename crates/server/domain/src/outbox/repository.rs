@@ -184,7 +184,6 @@ impl OutboxStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outbox::AggregateType;
     use uuid::Uuid;
 
     // Mock implementation for testing

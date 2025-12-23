@@ -44,7 +44,10 @@ use hodei_server_domain::providers::ProviderConfigRepository;
 use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
 
+use hodei_server_infrastructure::messaging::OutboxEventBus;
+use hodei_server_infrastructure::messaging::outbox_relay::OutboxRelay;
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
+use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
 use hodei_server_infrastructure::persistence::postgres::{
     LogStorageRepository, PostgresJobQueue, PostgresJobRepository,
     PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
@@ -264,18 +267,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Database migrations completed");
 
-    // Create Event Bus
-    let event_bus_impl = PostgresEventBus::new(pool.clone());
-    event_bus_impl
+    // Create Real Event Bus (Postgres/Notify)
+    let real_event_bus_impl = PostgresEventBus::new(pool.clone());
+    real_event_bus_impl
         .run_migrations()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to run event bus migrations: {}", e))?;
-    let event_bus = Arc::new(event_bus_impl);
+    let real_event_bus = Arc::new(real_event_bus_impl);
 
-    // Create Outbox Repository and Relay
-    // TEMPORARILY DISABLED - Outbox pattern compilation issues
-    // TODO: Re-enable once outbox implementation is fully compiled
-    /*
+    // Create Outbox Repository
+    // Transactional Outbox Pattern enabled
     let outbox_repository_impl: PostgresOutboxRepository =
         PostgresOutboxRepository::new(pool.clone());
     outbox_repository_impl
@@ -285,60 +286,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outbox_repository = Arc::new(outbox_repository_impl);
 
     // Start OutboxRelay background service
-    let outbox_relay: OutboxRelay<_, _> =
-        OutboxRelay::new(outbox_repository.clone(), event_bus.clone());
-    let outbox_relay_handle = outbox_relay
-        .start()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to start OutboxRelay: {}", e))?;
-    info!("  ✓ OutboxRelay started (Transactional Outbox Pattern enabled)");
+    // Reads from OutboxRepo and publishes to RealEventBus
+    let outbox_relay = OutboxRelay::new_with_defaults(pool.clone(), real_event_bus.clone());
+    let outbox_relay = Arc::new(outbox_relay);
+
+    let outbox_relay_clone = outbox_relay.clone();
     tokio::spawn(async move {
-        if let Err(e) = outbox_relay_handle.await {
+        if let Err(e) = outbox_relay_clone.run().await {
             tracing::error!("OutboxRelay stopped with error: {}", e);
         }
     });
-    */
-    info!("  ⚠️ OutboxRelay disabled (Transactional Outbox Pattern not active)");
 
-    // Execute outbox migrations manually (table creation)
-    // This ensures outbox_events table exists even if OutboxRelay is disabled
-    info!("  Running outbox_events table migration...");
-    // Create table if not exists (idempotent)
-    sqlx::query(r#"
-        CREATE TABLE IF NOT EXISTS outbox_events (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            aggregate_id UUID NOT NULL,
-            aggregate_type VARCHAR(20) NOT NULL CHECK (aggregate_type IN ('JOB', 'WORKER', 'PROVIDER')),
-            event_type VARCHAR(50) NOT NULL,
-            event_version INTEGER DEFAULT 1,
-            payload JSONB NOT NULL,
-            metadata JSONB,
-            idempotency_key VARCHAR(100),
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            published_at TIMESTAMPTZ,
-            status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'FAILED')),
-            retry_count INTEGER DEFAULT 0,
-            last_error TEXT,
-            UNIQUE(idempotency_key)
-        )
-    "#)
-        .execute(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create outbox_events table: {}", e))?;
+    info!("  ✓ OutboxRelay started (Transactional Outbox Pattern enabled)");
 
-    // Create indexes if not exists
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_outbox_status_created
-        ON outbox_events(status, created_at)
-        WHERE status = 'PENDING'
-    "#,
-    )
-    .execute(&pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create outbox index: {}", e))?;
-
-    info!("  ✓ outbox_events table created");
+    // Create App Event Bus (Outbox Adapter) and SHADOW 'event_bus' variable
+    // All downstream services will use this Outbox-aware bus
+    let event_bus = Arc::new(OutboxEventBus::new(
+        outbox_repository.clone(),
+        real_event_bus.clone(),
+    ));
 
     // Cleanup orphaned workers from previous runs
     // Remove workers in TERMINATING or TERMINATED state

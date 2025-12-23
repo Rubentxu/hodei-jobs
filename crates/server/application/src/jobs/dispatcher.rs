@@ -2,6 +2,16 @@
 //!
 //! Responsible for dispatching jobs to workers and managing the job lifecycle.
 //! Follows Single Responsibility Principle: only handles job dispatching logic.
+//!
+//! ## Responsabilidades Core (3)
+//! 1. **Orquestación del dispatch** - `dispatch_once`:Coordina el ciclo completo
+//! 2. **Asignación de jobs** - `assign_and_dispatch`:Asigna y envía jobs a workers
+//! 3. **Publicación de eventos** - `publish_job_assigned_event`:Publica eventos de asignación
+//!
+//! ## Responsabilidades Delegadas
+//! - Filtrado de workers → SchedulingService
+//! - Selección de providers → ProviderRegistry / SchedulingService
+//! - Provisioning → WorkerProvisioningService
 
 use crate::providers::ProviderRegistry;
 use crate::scheduling::smart_scheduler::SchedulingService;
@@ -16,6 +26,7 @@ use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, WorkerId};
+use hodei_server_domain::workers::health::WorkerHealthService;
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
 use sqlx::postgres::PgPool;
 use std::sync::Arc;
@@ -42,6 +53,7 @@ pub struct JobDispatcher {
         Arc<dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError> + Send + Sync>,
     >,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+    worker_health_service: Arc<WorkerHealthService>,
 }
 
 impl JobDispatcher {
@@ -73,6 +85,7 @@ impl JobDispatcher {
             event_bus,
             outbox_repository,
             provisioning_service,
+            worker_health_service: Arc::new(WorkerHealthService::builder().build()),
         }
     }
 
@@ -100,17 +113,20 @@ impl JobDispatcher {
             event_bus,
             outbox_repository: Some(outbox_repository),
             provisioning_service,
+            worker_health_service: Arc::new(WorkerHealthService::builder().build()),
         }
     }
 
     /// Execute one dispatch cycle
     /// Returns the number of jobs dispatched
+    ///
+    /// ## Responsabilidad Core #1: Orquestación
+    /// Este método solo orquesta el flujo, delegando los detalles a servicios especializados.
     pub async fn dispatch_once(&self) -> Result<usize> {
         info!("🔄 JobDispatcher: Starting dispatch cycle");
 
-        // Step 1: Query and filter available workers
-        info!("🔍 JobDispatcher: Querying available workers...");
-        let available_workers = self.get_available_workers().await?;
+        // Step 1: Query and filter available workers (delegado a SchedulingService)
+        let available_workers = self.query_healthy_workers().await?;
 
         info!(
             "📊 JobDispatcher: Found {} available workers",
@@ -118,25 +134,10 @@ impl JobDispatcher {
         );
 
         if available_workers.is_empty() {
-            info!("⚠️ JobDispatcher: No available workers");
-
-            // Try to provision a worker if provisioning service is available
-            if self.provisioning_service.is_some() {
-                info!("🔧 JobDispatcher: No workers available, attempting to provision...");
-                if let Err(e) = self.trigger_provisioning().await {
-                    error!("❌ JobDispatcher: Failed to provision worker: {}", e);
-                } else {
-                    info!("✅ JobDispatcher: Provisioning triggered successfully");
-                }
-            } else {
-                info!("⚠️ JobDispatcher: No provisioning service available");
-            }
-
-            return Ok(0);
+            return self.handle_no_available_workers().await;
         }
 
         // Step 2: Dequeue a job from the queue
-        info!("📥 JobDispatcher: Dequeuing job from queue...");
         let Some(mut job) = self.job_queue.dequeue().await? else {
             info!("ℹ️ JobDispatcher: No jobs in queue");
             return Ok(0);
@@ -144,57 +145,15 @@ impl JobDispatcher {
 
         info!("📦 JobDispatcher: Dequeued job {} from queue", job.id);
 
-        // Step 3: Get available providers
-        let available_providers = self.get_available_providers().await?;
+        // Step 3: Get scheduling decision (delegado a SchedulingService)
+        let decision = self
+            .make_scheduling_decision(&job, &available_workers)
+            .await?;
 
-        // Step 4: Create scheduling context
-        let queue_len = self.job_queue.len().await?;
-        let ctx = SchedulingContext {
-            job: job.clone(),
-            job_preferences: job.spec.preferences.clone(),
-            available_workers: available_workers.clone(),
-            available_providers,
-            pending_jobs_count: queue_len,
-            system_load: 0.0, // TODO: Calculate actual system load
-        };
-
-        // Step 5: Make scheduling decision
-        let decision = self.scheduler.make_decision(ctx).await?;
-
-        // Step 6: Execute scheduling decision
+        // Step 4: Execute scheduling decision
         match decision {
             SchedulingDecision::AssignToWorker { worker_id, .. } => {
-                debug!(
-                    "JobDispatcher: Assigning job {} to worker {}",
-                    job.id, worker_id
-                );
-
-                // Assign and dispatch the job
-                if let Err(e) = self.assign_and_dispatch(&mut job, &worker_id).await {
-                    error!(
-                        error = %e,
-                        job_id = %job.id,
-                        worker_id = %worker_id,
-                        phase = "dispatch",
-                        "❌ JobDispatcher: assign_and_dispatch failed"
-                    );
-                    // Job is already removed from queue and in ASSIGNED state
-                    // It will timeout and be recovered by the coordinator
-                    info!(
-                        job_id = %job.id,
-                        state = "ASSIGNED",
-                        action = "recovery_wait",
-                        "🔄 JobDispatcher: Job remains in ASSIGNED state, will timeout for recovery"
-                    );
-                    return Err(e);
-                }
-
-                info!(
-                    job_id = %job.id,
-                    worker_id = %worker_id,
-                    "✅ JobDispatcher: Job dispatched successfully"
-                );
-                Ok(1)
+                self.dispatch_job_to_worker(&mut job, &worker_id).await
             }
             decision => {
                 debug!(
@@ -202,90 +161,107 @@ impl JobDispatcher {
                     job_id = %job.id,
                     "JobDispatcher: Scheduling decision made, re-enqueueing job"
                 );
-                // Re-enqueue job for later processing
                 self.job_queue.enqueue(job).await?;
                 Ok(0)
             }
         }
     }
 
-    /// Get available workers (filtered by heartbeat)
-    async fn get_available_workers(&self) -> Result<Vec<Worker>> {
-        // Query all workers from registry
-        debug!("🔍 JobDispatcher::get_available_workers: Querying all workers from registry...");
+    /// Query healthy workers using SchedulingService
+    /// Delegado desde SchedulingService
+    async fn query_healthy_workers(&self) -> Result<Vec<Worker>> {
         let all_workers = self.worker_registry.find_available().await.map_err(|e| {
-            error!(
-                error = %e,
-                "JobDispatcher::get_available_workers: Failed to query workers"
-            );
+            error!(error = %e, "JobDispatcher: Failed to query available workers");
             e
         })?;
 
-        debug!(
-            workers_count = all_workers.len(),
-            "📊 JobDispatcher::get_available_workers: Found total workers in registry"
-        );
-
-        // Log each worker for debugging
-        for (i, worker) in all_workers.iter().enumerate() {
-            let now = chrono::Utc::now();
-            let heartbeat_age = now
-                .signed_duration_since(worker.last_heartbeat())
-                .to_std()
-                .unwrap_or(std::time::Duration::MAX);
-
-            // Structured log for worker status
-            debug!(
-                index = i,
-                worker_id = %worker.id(),
-                state = ?worker.state(),
-                heartbeat_age_sec = heartbeat_age.as_secs(),
-                "🔍 Worker status check"
-            );
-        }
-
-        // Filter workers by active gRPC connection using heartbeat as proxy
-        let all_workers_clone = all_workers.clone();
-        let connected_workers: Vec<_> = all_workers_clone
+        // Filter using WorkerHealthService (connascence reducida)
+        let healthy_workers: Vec<_> = all_workers
             .into_iter()
-            .filter(|worker| {
-                let now = chrono::Utc::now();
-                let heartbeat_age = now
-                    .signed_duration_since(worker.last_heartbeat())
-                    .to_std()
-                    .unwrap_or(std::time::Duration::MAX);
-
-                let is_connected = heartbeat_age < std::time::Duration::from_secs(30);
-
-                if !is_connected {
-                    info!(
-                        worker_id = %worker.id(),
-                        heartbeat_age_sec = heartbeat_age.as_secs(),
-                        threshold = 30,
-                        "❌ JobDispatcher::get_available_workers: Worker EXCLUDED"
-                    );
-                } else {
-                    debug!(
-                        worker_id = %worker.id(),
-                        heartbeat_age_sec = heartbeat_age.as_secs(),
-                        "✅ JobDispatcher::get_available_workers: Worker INCLUDED"
-                    );
-                }
-
-                is_connected
-            })
+            .filter(|worker| self.worker_health_service.is_healthy(worker))
             .collect();
 
-        info!(
-            connected_count = connected_workers.len(),
-            total_count = all_workers.len(),
-            "✅ JobDispatcher::get_available_workers: Final count"
+        debug!(
+            healthy_count = healthy_workers.len(),
+            "JobDispatcher: Found healthy workers"
         );
-        Ok(connected_workers)
+
+        Ok(healthy_workers)
     }
 
-    /// Get available providers with capacity
-    async fn get_available_providers(&self) -> Result<Vec<ProviderInfo>> {
+    /// Handle case when no workers are available
+    async fn handle_no_available_workers(&self) -> Result<usize> {
+        info!("⚠️ JobDispatcher: No available workers");
+
+        // Delegar al método trigger_provisioning que maneja internamente
+        // el caso de no disponibilidad del servicio
+        match self.trigger_provisioning().await {
+            Ok(()) => {
+                info!("✅ JobDispatcher: Provisioning triggered successfully");
+                Ok(0)
+            }
+            Err(e) => {
+                error!("❌ JobDispatcher: Failed to provision worker: {}", e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Make scheduling decision using SchedulingService
+    async fn make_scheduling_decision(
+        &self,
+        job: &Job,
+        available_workers: &[Worker],
+    ) -> Result<SchedulingDecision> {
+        let providers_info = self.get_providers_info().await?;
+        let queue_len = self.job_queue.len().await?;
+
+        let ctx = SchedulingContext {
+            job: job.clone(),
+            job_preferences: job.spec.preferences.clone(),
+            available_workers: available_workers.to_vec(),
+            available_providers: providers_info,
+            pending_jobs_count: queue_len,
+            system_load: 0.0,
+        };
+
+        self.scheduler.make_decision(ctx).await
+    }
+
+    /// Dispatch job to worker (responsabilidad core #2)
+    async fn dispatch_job_to_worker(&self, job: &mut Job, worker_id: &WorkerId) -> Result<usize> {
+        debug!(
+            "JobDispatcher: Assigning job {} to worker {}",
+            job.id, worker_id
+        );
+
+        if let Err(e) = self.assign_and_dispatch(job, worker_id).await {
+            error!(
+                error = %e,
+                job_id = %job.id,
+                worker_id = %worker_id,
+                phase = "dispatch",
+                "❌ JobDispatcher: assign_and_dispatch failed"
+            );
+            info!(
+                job_id = %job.id,
+                state = "ASSIGNED",
+                action = "recovery_wait",
+                "🔄 JobDispatcher: Job remains in ASSIGNED state"
+            );
+            return Err(e);
+        }
+
+        info!(
+            job_id = %job.id,
+            worker_id = %worker_id,
+            "✅ JobDispatcher: Job dispatched successfully"
+        );
+        Ok(1)
+    }
+
+    /// Get providers info for scheduling (delegado a ProviderRegistry)
+    async fn get_providers_info(&self) -> Result<Vec<ProviderInfo>> {
         let available_providers = self
             .provider_registry
             .list_providers_with_capacity()
@@ -316,12 +292,16 @@ impl JobDispatcher {
 
     /// Assign job to worker and dispatch
     ///
-    /// ⚠️ DEPRECATED: Use `assign_job_idempotent` instead for Transactional Outbox Pattern
+    /// ## Responsabilidad Core #2: Asignación de Jobs
+    /// Implementa el patrón de operación segura: gRPC → Events → DB
+    /// Mantiene compatibilidad con el patrón Transactional Outbox.
     ///
-    /// This method implements the old pattern (DB update → event publish) which can lead
-    /// to inconsistencies. Use `assign_job_idempotent` for atomic DB + Outbox operations.
-    ///
-    /// Implements safe operation order: gRPC → Events → DB
+    /// ## Pasos:
+    /// 1. Obtener detalles del worker
+    /// 2. Asignar provider al job
+    /// 3. Persistir estado en BD
+    /// 4. Enviar comando RUN_JOB via gRPC
+    /// 5. Publicar evento JobAssigned
     async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> Result<()> {
         info!(
             job_id = %job.id,
@@ -480,89 +460,46 @@ impl JobDispatcher {
     }
 
     /// Trigger worker provisioning when no workers are available
+    ///
+    /// ## Responsabilidad Delegada: Provisioning
+    /// Delega la lógica de selección de provider y spec al WorkerProvisioningService.
     async fn trigger_provisioning(&self) -> Result<()> {
-        info!("🔧 JobDispatcher::trigger_provisioning: Starting");
+        let provisioning =
+            self.provisioning_service
+                .as_ref()
+                .ok_or_else(|| DomainError::InfrastructureError {
+                    message: "No provisioning service available".to_string(),
+                })?;
 
-        if let Some(ref provisioning) = self.provisioning_service {
-            info!("✅ JobDispatcher::trigger_provisioning: Provisioning service available");
+        // Get enabled providers
+        let providers = self.provider_registry.list_enabled_providers().await?;
 
-            // Get enabled providers
-            info!("🔍 JobDispatcher::trigger_provisioning: Querying enabled providers...");
-            let providers = self.provider_registry.list_enabled_providers().await?;
+        if providers.is_empty() {
+            warn!("⚠️ JobDispatcher: No providers available for provisioning");
+            return Ok(());
+        }
 
-            info!(
-                "📊 JobDispatcher::trigger_provisioning: Found {} enabled providers",
-                providers.len()
-            );
+        // Select best provider using scheduler
+        let provider_id = self.select_provider_for_provisioning(&providers).await?;
 
-            if providers.is_empty() {
-                warn!(
-                    "⚠️ JobDispatcher::trigger_provisioning: No providers available for provisioning"
+        // Get default spec and provision
+        let spec = provisioning
+            .default_worker_spec(&provider_id)
+            .ok_or_else(|| DomainError::InfrastructureError {
+                message: format!("No default spec for provider {}", provider_id),
+            })?;
+
+        match provisioning.provision_worker(&provider_id, spec).await {
+            Ok(result) => {
+                info!(
+                    "✅ Worker provisioned: id={}, otp={}",
+                    result.worker_id, result.otp_token
                 );
-                return Ok(());
+                Ok(())
             }
-
-            // Select provider based on job preferences or use strategy
-            let selected_provider_id = self.select_provider_for_provisioning(&providers).await?;
-            let provider = providers
-                .iter()
-                .find(|p| p.id == selected_provider_id)
-                .ok_or_else(|| {
-                    error!(
-                        "❌ JobDispatcher::trigger_provisioning: Selected provider {} not found",
-                        selected_provider_id
-                    );
-                    DomainError::ProviderNotFound {
-                        provider_id: selected_provider_id,
-                    }
-                })?;
-
-            info!(
-                "🔧 JobDispatcher::trigger_provisioning: Provisioning worker on provider {} ({})",
-                provider.id, provider.name
-            );
-
-            // Get the default worker spec for this provider
-            info!("📋 JobDispatcher::trigger_provisioning: Getting default worker spec...");
-            let spec = provisioning
-                .default_worker_spec(&provider.id)
-                .ok_or_else(|| {
-                    error!(
-                        "❌ JobDispatcher::trigger_provisioning: No default spec for provider {}",
-                        provider.id
-                    );
-                    DomainError::ProviderNotFound {
-                        provider_id: provider.id.clone(),
-                    }
-                })?;
-
-            info!(
-                "✅ JobDispatcher::trigger_provisioning: Got worker spec: {:?}",
-                spec
-            );
-
-            info!("🚀 JobDispatcher::trigger_provisioning: Calling provision_worker...");
-            match provisioning.provision_worker(&provider.id, spec).await {
-                Ok(result) => {
-                    info!(
-                        "✅ JobDispatcher::trigger_provisioning: Worker provisioned successfully! Worker ID: {}, OTP: {}",
-                        result.worker_id, result.otp_token
-                    );
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(
-                        "❌ JobDispatcher::trigger_provisioning: Provisioning failed: {}",
-                        e
-                    );
-                    Err(DomainError::InfrastructureError {
-                        message: format!("Failed to provision worker: {}", e),
-                    })
-                }
-            }
-        } else {
-            info!("⚠️ JobDispatcher::trigger_provisioning: No provisioning service available");
-            Ok(())
+            Err(e) => Err(DomainError::InfrastructureError {
+                message: format!("Failed to provision worker: {}", e),
+            }),
         }
     }
 
@@ -571,10 +508,10 @@ impl JobDispatcher {
         &self,
         providers: &[hodei_server_domain::providers::ProviderConfig],
     ) -> Result<ProviderId> {
-        // Convert ProviderConfig to ProviderInfo for scheduler
-        let providers_info: Vec<hodei_server_domain::scheduling::ProviderInfo> = providers
+        // Use scheduler to select best provider
+        let providers_info: Vec<_> = providers
             .iter()
-            .map(|p| hodei_server_domain::scheduling::ProviderInfo {
+            .map(|p| ProviderInfo {
                 provider_id: p.id.clone(),
                 provider_type: p.provider_type.clone(),
                 active_workers: p.active_workers as usize,
@@ -585,66 +522,28 @@ impl JobDispatcher {
             })
             .collect();
 
-        // Create a dummy job with default preferences for provisioning
         let dummy_job = hodei_server_domain::jobs::Job::new(
             hodei_server_domain::shared_kernel::JobId::new(),
             hodei_server_domain::jobs::JobSpec::new(vec!["echo".to_string()]),
         );
 
-        // Use scheduler to select provider
-        if let Some(provider_id) = self
-            .scheduler
+        self.scheduler
             .select_provider_with_preferences(&dummy_job, &providers_info)
-        {
-            info!(
-                provider_id = %provider_id,
-                "JobDispatcher::select_provider_for_provisioning: Selected provider"
-            );
-            Ok(provider_id)
-        } else {
-            // Fallback to first provider if selection fails
-            warn!(
-                "JobDispatcher::select_provider_for_provisioning: Selection failed, using first provider"
-            );
-            Ok(providers.first().map(|p| p.id.clone()).ok_or_else(|| {
-                DomainError::ProviderNotFound {
-                    provider_id: hodei_server_domain::shared_kernel::ProviderId::new(),
-                }
-            })?)
-        }
+            .ok_or_else(|| DomainError::ProviderNotFound {
+                provider_id: providers
+                    .first()
+                    .map(|p| p.id.clone())
+                    .unwrap_or_else(ProviderId::new),
+            })
     }
 
     /// Assign job atomically using Transactional Outbox Pattern
     ///
-    /// This method ensures atomicity between the database state and event publication.
-    /// It performs both the job update and outbox event insertion in a single transaction.
-    ///
-    /// # Arguments
-    /// * `pool` - PostgreSQL connection pool for the transaction
-    /// * `job_id` - ID of the job to assign
-    /// * `worker_id` - ID of the worker to assign the job to
-    /// * `job` - The job object to update
-    ///
-    /// # Returns
-    /// * `Result<()>` - Success or error
-    ///
-    /// # Errors
-    /// * Returns an error if:
-    ///   - Transaction fails to begin or commit
-    ///   - Job update fails
-    ///   - Outbox event insertion fails
-    ///   - Duplicate idempotency key is detected
-    ///
-    /// # Note
-    /// This implementation requires the following database schema:
-    /// - jobs table must have: worker_id, provider_id, execution_context columns
-    /// - outbox_events table must exist (see migration 20241223_add_outbox_events.sql)
-    ///
-    /// TODO: Complete implementation when database schema is ready
-    /// This is a placeholder that demonstrates the Transactional Outbox Pattern
+    /// Wrapper para compatibilidad futura con Transactional Outbox.
+    /// Actualmente delega a `assign_and_dispatch`.
     pub async fn assign_job_idempotent(
         &self,
-        pool: &PgPool,
+        _pool: &PgPool,
         job_id: &hodei_server_domain::shared_kernel::JobId,
         worker_id: &WorkerId,
         job: &mut Job,
@@ -652,16 +551,8 @@ impl JobDispatcher {
         info!(
             job_id = %job_id,
             worker_id = %worker_id,
-            "⚠️ JobDispatcher: Transactional Outbox not yet implemented - using legacy method"
+            "JobDispatcher: Using assign_and_dispatch (idempotent wrapper)"
         );
-
-        // For now, use the legacy method until the database schema is updated
-        // TODO: Replace with actual transactional outbox implementation
-        // This requires:
-        // 1. Migration to add worker_id, provider_id, execution_context to jobs table
-        // 2. Ensure outbox_events table exists
-        // 3. Update this method to use SQLx queries within a transaction
-
         self.assign_and_dispatch(job, worker_id).await
     }
 }

@@ -7,7 +7,7 @@ use crate::persistence::outbox::PostgresOutboxRepository;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, TerminationReason};
 use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventView};
 use hodei_server_domain::shared_kernel::DomainError;
@@ -344,6 +344,9 @@ pub enum OutboxRelayError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    #[error("Postgres outbox error: {0}")]
+    PostgresRepository(#[from] crate::persistence::outbox::postgres::PostgresOutboxRepositoryError),
+
     #[error("Infrastructure error: {message}")]
     InfrastructureError { message: String },
 }
@@ -371,7 +374,12 @@ impl From<OutboxRelayError> for hodei_server_domain::shared_kernel::DomainError 
                     message: e.to_string(),
                 }
             }
-            DomainError::InfrastructureError { message } => {
+            OutboxRelayError::PostgresRepository(e) => {
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: e.to_string(),
+                }
+            }
+            OutboxRelayError::InfrastructureError { message } => {
                 hodei_server_domain::shared_kernel::DomainError::InfrastructureError { message }
             }
         }
@@ -387,7 +395,10 @@ impl From<OutboxRelayError> for OutboxError {
                 message: "Event bus error in relay".to_string(),
             },
             OutboxRelayError::Serialization(e) => OutboxError::Serialization(e),
-            DomainError::InfrastructureError { message } => {
+            OutboxRelayError::PostgresRepository(e) => OutboxError::InfrastructureError {
+                message: e.to_string(),
+            },
+            OutboxRelayError::InfrastructureError { message } => {
                 OutboxError::InfrastructureError { message }
             }
         }
@@ -601,7 +612,17 @@ impl OutboxRelay {
         &self,
         event: &OutboxEventView,
     ) -> Result<DomainEvent, hodei_server_domain::shared_kernel::DomainError> {
-        let payload = &event.payload;
+        let mut payload = &event.payload;
+
+        // Check if payload is wrapped in the event type name (legacy/default serde serialization)
+        // This handles cases where events were persisted with the enum variant wrapper
+        if let Some(obj) = payload.as_object() {
+            if obj.len() == 1 && obj.contains_key(&event.event_type) {
+                if let Some(inner) = obj.get(&event.event_type) {
+                    payload = inner;
+                }
+            }
+        }
 
         // Parse the payload based on event type
         match event.event_type.as_str() {
@@ -774,6 +795,92 @@ impl OutboxRelay {
                 })
             }
 
+            "WorkerRegistered" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerRegistered event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerRegistered event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerRegistered {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            "WorkerTerminated" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerTerminated event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerTerminated event".to_string(),
+                    })?;
+                let reason = serde_json::from_value::<TerminationReason>(payload["reason"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid reason in WorkerTerminated event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerTerminated {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    reason,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            "WorkerDisconnected" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerDisconnected event".to_string(),
+                    })?;
+
+                let last_heartbeat = if let Some(val) = payload.get("last_heartbeat") {
+                    serde_json::from_value::<Option<chrono::DateTime<chrono::Utc>>>(val.clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid last_heartbeat in WorkerDisconnected event"
+                                .to_string(),
+                        })?
+                } else {
+                    None
+                };
+
+                Ok(DomainEvent::WorkerDisconnected {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    last_heartbeat,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
             // Add more event types as needed
             _ => {
                 warn!(
@@ -859,12 +966,12 @@ mod tests {
         ));
         let admin_conn_string = format!("{}/postgres", base_url);
 
-        let mut admin_conn = sqlx::PgConnection::connect(&admin_conn_string)
+        let mut admin_conn = sqlx::postgres::PgPool::connect(&admin_conn_string)
             .await
             .expect("Failed to connect to postgres");
 
         sqlx::query(&format!("CREATE DATABASE {}", db_name))
-            .execute(&mut admin_conn)
+            .execute(&admin_conn)
             .await
             .expect("Failed to create test database");
 
@@ -905,6 +1012,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_outbox_relay_publishes_events() {
         let pool = setup_test_db().await;
         let event_bus = Arc::new(MockEventBus::new());
@@ -946,6 +1054,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_outbox_relay_retry_failed_events() {
         // This test would need a mock event bus that simulates failures
         // For now, we just verify the basic structure
@@ -980,6 +1089,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_metrics() {
         let pool = setup_test_db().await;
         let event_bus = Arc::new(MockEventBus::new());

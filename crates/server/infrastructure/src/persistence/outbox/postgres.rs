@@ -3,10 +3,10 @@
 //! SQLx-based implementation of OutboxRepository for PostgreSQL.
 
 use hodei_server_domain::outbox::{
-    AggregateType, OutboxError, OutboxEventInsert, OutboxEventView, OutboxRepository,
-    OutboxStats,
+    AggregateType, OutboxError, OutboxEventInsert, OutboxEventView, OutboxRepository, OutboxStats,
+    OutboxStatus,
 };
-use sqlx::{postgres::PgPool, Row};
+use sqlx::postgres::{PgConnectOptions, PgPool};
 use uuid::Uuid;
 
 /// Error type specific to PostgreSQL outbox repository
@@ -55,6 +55,46 @@ impl PostgresOutboxRepository {
         Self { pool }
     }
 
+    /// Run database migrations for the outbox table
+    pub async fn run_migrations(&self) -> Result<(), PostgresOutboxRepositoryError> {
+        // Create table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS outbox_events (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                aggregate_id UUID NOT NULL,
+                aggregate_type VARCHAR(20) NOT NULL CHECK (aggregate_type IN ('JOB', 'WORKER', 'PROVIDER')),
+                event_type VARCHAR(50) NOT NULL,
+                event_version INTEGER DEFAULT 1,
+                payload JSONB NOT NULL,
+                metadata JSONB,
+                idempotency_key VARCHAR(100),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                published_at TIMESTAMPTZ,
+                status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'FAILED')),
+                retry_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                UNIQUE(idempotency_key)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Create indexes
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_outbox_status_created
+            ON outbox_events(status, created_at)
+            WHERE status = 'PENDING'
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Helper to convert aggregate type to string for database
     fn aggregate_type_to_str(aggregate_type: &AggregateType) -> &'static str {
         match aggregate_type {
@@ -87,37 +127,23 @@ impl OutboxRepository for PostgresOutboxRepository {
         }
 
         // Build the INSERT query with all events
-        let mut query_builder =
-            sqlx::QueryBuilder::new(
-                "INSERT INTO outbox_events (aggregate_id, aggregate_type, event_type, payload, metadata, idempotency_key, created_at) VALUES ",
-            );
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO outbox_events (aggregate_id, aggregate_type, event_type, payload, metadata, idempotency_key, created_at) ",
+        );
 
-        let mut separated = query_builder.separated(", ");
-        for event in events {
-            separated.push(
-                "(?, ?, ?, ?::jsonb, ?::jsonb, ?, NOW())",
-            );
-        }
-        separated.push(" ON CONFLICT (idempotency_key) DO NOTHING");
+        query_builder.push_values(events, |mut b, event| {
+            b.push_bind(event.aggregate_id);
+            b.push_bind(Self::aggregate_type_to_str(&event.aggregate_type));
+            b.push_bind(&event.event_type);
+            b.push_bind(&event.payload);
+            b.push_bind(&event.metadata);
+            b.push_bind(&event.idempotency_key);
+            b.push("NOW()");
+        });
 
-        let mut query = query_builder.build();
+        query_builder.push(" ON CONFLICT (idempotency_key) DO NOTHING");
 
-        // Bind parameters for each event
-        for event in events {
-            query = query
-                .bind(event.aggregate_id)
-                .bind(Self::aggregate_type_to_str(&event.aggregate_type))
-                .bind(&event.event_type)
-                .bind(serde_json::to_string(&event.payload)?)
-                .bind(
-                    event
-                        .metadata
-                        .as_ref()
-                        .map(|m| serde_json::to_string(m).unwrap())
-                )
-                .bind(&event.idempotency_key);
-        }
-
+        let query = query_builder.build();
         query.execute(&self.pool).await?;
 
         Ok(())
@@ -156,23 +182,22 @@ impl OutboxRepository for PostgresOutboxRepository {
                 aggregate_id: row.aggregate_id,
                 aggregate_type,
                 event_type: row.event_type,
-                event_version: row.event_version,
-                payload: serde_json::from_str(&row.payload)?,
-                metadata: row
-                    .metadata
-                    .as_ref()
-                    .map(|m| serde_json::from_str(m).unwrap()),
+                event_version: row.event_version.unwrap_or(1),
+                payload: row.payload,
+                metadata: row.metadata,
                 idempotency_key: row.idempotency_key,
-                created_at: row.created_at,
+                created_at: row.created_at.expect("created_at should not be null"),
                 published_at: row.published_at,
-                status: match row.status.as_str() {
-                    "PENDING" => crate::outbox::OutboxStatus::Pending,
-                    "PUBLISHED" => crate::outbox::OutboxStatus::Published,
-                    "FAILED" => crate::outbox::OutboxStatus::Failed,
-                    _ => return Err(OutboxError::InfrastructureError {
-                        message: format!("Invalid status: {}", row.status),
+                status: match row.status.as_deref() {
+                    Some("PENDING") => OutboxStatus::Pending,
+                    Some("PUBLISHED") => OutboxStatus::Published,
+                    Some("FAILED") => OutboxStatus::Failed,
+                    _ => {
+                        return Err(OutboxError::InfrastructureError {
+                            message: format!("Invalid status: {:?}", row.status),
+                        }
+                        .into());
                     }
-                    .into()),
                 },
                 retry_count: row.retry_count.unwrap_or(0),
                 last_error: row.last_error,
@@ -193,19 +218,16 @@ impl OutboxRepository for PostgresOutboxRepository {
             "UPDATE outbox_events SET status = 'PUBLISHED', published_at = NOW() WHERE id IN (",
         );
 
-        let mut separated = query_builder.separated(", ");
-        for _ in event_ids {
-            separated.push("?");
-        }
-        separated.push(")");
+        {
+            let mut separated = query_builder.separated(", ");
+            for id in event_ids {
+                separated.push_bind(id);
+            }
+        } // separated is dropped here, releasing the borrow on query_builder
 
-        let mut query = query_builder.build();
+        query_builder.push(")");
 
-        for id in event_ids {
-            query = query.bind(id);
-        }
-
-        query.execute(&self.pool).await?;
+        query_builder.build().execute(&self.pool).await?;
 
         Ok(())
     }
@@ -231,7 +253,7 @@ impl OutboxRepository for PostgresOutboxRepository {
     async fn exists_by_idempotency_key(&self, idempotency_key: &str) -> Result<bool, Self::Error> {
         let row = sqlx::query!(
             r#"
-            SELECT 1
+            SELECT 1 as "exists_val"
             FROM outbox_events
             WHERE idempotency_key = $1
             LIMIT 1
@@ -255,7 +277,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(row.count as u64)
+        Ok(row.count.unwrap_or(0) as u64)
     }
 
     async fn get_stats(&self) -> Result<OutboxStats, Self::Error> {
@@ -265,7 +287,7 @@ impl OutboxRepository for PostgresOutboxRepository {
                 COUNT(CASE WHEN status = 'PENDING' THEN 1 END) as pending_count,
                 COUNT(CASE WHEN status = 'PUBLISHED' THEN 1 END) as published_count,
                 COUNT(CASE WHEN status = 'FAILED' THEN 1 END) as failed_count,
-                MIN(CASE WHEN status = 'PENDING' THEN EXTRACT(EPOCH FROM (NOW() - created_at)) END) as oldest_pending_age_seconds
+                CAST(MIN(CASE WHEN status = 'PENDING' THEN EXTRACT(EPOCH FROM (NOW() - created_at)) END) AS BIGINT) as oldest_pending_age_seconds
             FROM outbox_events
             "#
         )
@@ -273,11 +295,52 @@ impl OutboxRepository for PostgresOutboxRepository {
         .await?;
 
         Ok(OutboxStats {
-            pending_count: row.pending_count as u64,
-            published_count: row.published_count as u64,
-            failed_count: row.failed_count as u64,
-            oldest_pending_age_seconds: row.oldest_pending_age_seconds.map(|v| v as i64),
+            pending_count: row.pending_count.unwrap_or(0) as u64,
+            published_count: row.published_count.unwrap_or(0) as u64,
+            failed_count: row.failed_count.unwrap_or(0) as u64,
+            oldest_pending_age_seconds: row.oldest_pending_age_seconds,
         })
+    }
+
+    async fn cleanup_published_events(
+        &self,
+        older_than: std::time::Duration,
+    ) -> Result<u64, Self::Error> {
+        let older_than_secs = older_than.as_secs_f64();
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM outbox_events
+            WHERE status = 'PUBLISHED'
+            AND published_at < NOW() - make_interval(secs => $1)
+            "#,
+            older_than_secs
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn cleanup_failed_events(
+        &self,
+        max_retries: i32,
+        older_than: std::time::Duration,
+    ) -> Result<u64, Self::Error> {
+        let older_than_secs = older_than.as_secs_f64();
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM outbox_events
+            WHERE status = 'FAILED'
+            AND retry_count >= $1
+            AND created_at < NOW() - make_interval(secs => $2)
+            "#,
+            max_retries,
+            older_than_secs
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 }
 
@@ -287,26 +350,26 @@ mod tests {
     use hodei_server_domain::outbox::OutboxRepository;
     use sqlx::postgres::PgPoolOptions;
     use sqlx::{Connection, PgConnection};
-    use std::time::Duration;
 
     async fn setup_test_db() -> PgPool {
-        let connection_string =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-                "postgres://hodei:hodei@localhost:5432/hodei_test".to_string()
-            });
+        let connection_string = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://hodei:hodei@localhost:5432/hodei_test".to_string());
 
         // Create a unique database for this test
         let db_name = format!("hodei_outbox_test_{}", uuid::Uuid::new_v4());
-        let base_url = connection_string.trim_end_matches(&format!("/{}", connection_string.split('/').last().unwrap()));
+        let base_url = connection_string.trim_end_matches(&format!(
+            "/{}",
+            connection_string.split('/').last().unwrap()
+        ));
         let admin_conn_string = format!("{}/postgres", base_url);
 
         // Connect to postgres to create test database
-        let mut admin_conn = PgConnection::connect(&admin_conn_string)
+        let mut admin_conn = sqlx::postgres::PgPool::connect(&admin_conn_string)
             .await
             .expect("Failed to connect to postgres");
 
         sqlx::query(&format!("CREATE DATABASE {}", db_name))
-            .execute(&mut admin_conn)
+            .execute(&admin_conn)
             .await
             .expect("Failed to create test database");
 
@@ -348,6 +411,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_insert_events() {
         let pool = setup_test_db().await;
         let repo = PostgresOutboxRepository::new(pool);
@@ -369,6 +433,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_idempotency_check() {
         let pool = setup_test_db().await;
         let repo = PostgresOutboxRepository::new(pool);
@@ -389,6 +454,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_mark_published() {
         let pool = setup_test_db().await;
         let repo = PostgresOutboxRepository::new(pool);
@@ -414,6 +480,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_mark_failed() {
         let pool = setup_test_db().await;
         let repo = PostgresOutboxRepository::new(pool);
@@ -437,6 +504,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_stats() {
         let pool = setup_test_db().await;
         let repo = PostgresOutboxRepository::new(pool);
@@ -461,6 +529,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_duplicate_idempotency_key() {
         let pool = setup_test_db().await;
         let repo = PostgresOutboxRepository::new(pool);
