@@ -137,12 +137,9 @@ web/*.local
 # web/bun.lock - DO NOT IGNORE (needed for reproducible builds)
 
 # -----------------------------------------------------------------------------
-# Misc
+# Documentation - Now tracked locally only (not in git)
 # -----------------------------------------------------------------------------
-*.pid
-*.seed
-*.pid.lock
-docs/**/*
+docs/**
 
 # -----------------------------------------------------------------------------
 # Agent and Artifacts

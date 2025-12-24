@@ -3,7 +3,11 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+/// Integration test for graceful shutdown during worker registration.
+/// Requires a running gRPC server to connect to.
+/// Run with: cargo test --test graceful_shutdown -- --ignored
 #[test]
+#[ignore = "Requires running gRPC server at localhost:50051"]
 fn test_worker_graceful_shutdown_during_registration() {
     // Build the binary first to ensure we are running the latest version
     // Build step removed to avoid deadlock. Cargo handles this.

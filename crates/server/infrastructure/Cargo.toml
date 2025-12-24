@@ -67,5 +67,3 @@ futures = "0.3.31"
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = "3.15"
-testcontainers = "0.26"
-testcontainers-modules = { version = "0.14", features = ["postgres"] }

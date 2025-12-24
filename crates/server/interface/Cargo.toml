@@ -44,5 +44,3 @@ tokio-stream = { workspace = true, features = ["sync"] }
 prometheus = { workspace = true }
 
 [dev-dependencies]
-testcontainers = { workspace = true }
-testcontainers-modules = { workspace = true, features = ["postgres"] }

@@ -212,7 +212,10 @@ const PROVIDER_CACHE_MAX_ENTRIES: usize = 500;
 /// ## Usage
 /// For optimal performance, share a single instance across threads:
 /// ```rust
-/// let mapping: SharedProviderTypeMapping = Arc::new(ProviderTypeMapping::shared());
+/// use std::sync::Arc;
+/// use hodei_server_domain::scheduling::ProviderTypeMapping;
+///
+/// let mapping: Arc<ProviderTypeMapping> = Arc::new(ProviderTypeMapping::new());
 /// // Clone and use in multiple threads
 /// ```
 #[derive(Debug, Clone)]

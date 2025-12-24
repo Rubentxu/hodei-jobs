@@ -41,7 +41,11 @@ async fn test_worker_registration_with_otp() -> anyhow::Result<()> {
 }
 
 /// Test worker lifecycle events
+///
+/// Requires running PostgreSQL with migrations applied.
+/// Set DATABASE_URL environment variable and run migrations before executing.
 #[tokio::test]
+#[ignore = "Requires running PostgreSQL with migrations applied"]
 async fn test_worker_lifecycle_events() -> anyhow::Result<()> {
     println!("\n🧪 Worker Lifecycle Events Test");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

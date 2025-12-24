@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 authors = ["Hodei Team Platform"]
@@ -87,8 +87,6 @@ bcrypt = "0.17.1"
 jsonwebtoken = "10.2.0"
 validator = { version = "0.20.0", features = ["derive"] }
 mockall = "0.14.0"
-testcontainers = "0.26.0"
-testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
 bollard = "0.19.4"
 textplots = "0.8"
 sysinfo = "0.37.2"
