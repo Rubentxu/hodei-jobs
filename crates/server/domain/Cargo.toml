@@ -28,3 +28,8 @@ sqlx = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
+criterion = { workspace = true, default-features = false, features = ["html_reports"] }
+
+[[bench]]
+name = "scheduling_benchmarks"
+harness = true

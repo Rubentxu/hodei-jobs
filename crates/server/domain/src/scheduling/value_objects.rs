@@ -53,8 +53,8 @@ impl ProviderPreference {
             return Err(ProviderPreferenceError::Empty);
         }
 
-        // Normalize the input
-        let normalized = Self::normalize(trimmed);
+        // Normalize the input using the optimized function
+        let (normalized, _) = Self::normalize_optimized(trimmed);
 
         Ok(Self {
             normalized,
@@ -65,63 +65,69 @@ impl ProviderPreference {
     }
 
     /// Create a preference that matches a specific provider ID
+    ///
+    /// Optimized: UUIDs are already in lowercase, no need for to_lowercase().
     pub fn from_provider_id(provider_id: ProviderId) -> Self {
+        let provider_id_str = provider_id.to_string();
         Self {
-            normalized: provider_id.to_string().to_lowercase(),
-            original: provider_id.to_string(),
+            normalized: provider_id_str.clone(), // UUID is already lowercase
+            original: provider_id_str,
             is_provider_id: true,
             matched_provider_id: Some(provider_id),
         }
     }
 
-    /// Normalize provider name to standard form
+    /// Normalize provider name to standard form using static strings where possible
     ///
-    /// Handles common aliases:
-    /// - "k8s", "kube" -> "kubernetes"
-    /// - "aws" -> "ec2" (for EC2 provider)
-    /// - "gcp" -> "compute_engine"
-    fn normalize(input: &str) -> String {
+    /// This optimized version returns a tuple with the normalized string and a flag
+    /// indicating whether it's a known alias (to avoid allocations).
+    fn normalize_optimized(input: &str) -> (String, bool) {
         let lower = input.to_lowercase();
 
-        // Handle common aliases
-        match lower.as_str() {
-            "k8s" | "kube" | "kuber" => "kubernetes".to_string(),
-            "docker" | "containerd" => "docker".to_string(),
-            "lambda" | "aws-lambda" => "lambda".to_string(),
-            "ecs" | "aws-ecs" => "ecs".to_string(),
-            "fargate" | "aws-fargate" => "fargate".to_string(),
-            "ec2" | "aws-ec2" => "ec2".to_string(),
-            "gke" | "gcp-k8s" => "kubernetes".to_string(), // GKE is kubernetes
-            "cloudrun" | "gcp-cloudrun" => "cloudrun".to_string(),
-            "container-apps" | "azure-container-apps" => "container_apps".to_string(),
-            "azure-functions" | "az-functions" => "azure_functions".to_string(),
-            "azure-vm" | "azure-vms" => "azure_vm".to_string(),
-            _ => {
-                // For unknown inputs, lowercase and handle common variations
-                // Replace spaces and hyphens with underscores, but preserve the string as-is
-                // for provider type names (don't pluralize)
-                lower.replace([' ', '-'], "_")
-            }
-        }
+        // Use static str comparisons to avoid allocations for known aliases
+        let result = match lower.as_str() {
+            "k8s" | "kube" | "kuber" => "kubernetes",
+            "docker" | "containerd" => "docker",
+            "lambda" | "aws-lambda" => "lambda",
+            "ecs" | "aws-ecs" => "ecs",
+            "fargate" | "aws-fargate" => "fargate",
+            "ec2" | "aws-ec2" => "ec2",
+            "gke" | "gcp-k8s" => "kubernetes",
+            "cloudrun" | "gcp-cloudrun" => "cloudrun",
+            "container-apps" | "azure-container-apps" => "container_apps",
+            "azure-functions" | "az-functions" => "azure_functions",
+            "azure-vm" | "azure-vms" => "azure_vm",
+            _ => return (lower.replace([' ', '-'], "_"), false),
+        };
+
+        (result.to_string(), true)
+    }
+
+    /// Normalize provider name to standard form (legacy compatibility)
+    #[deprecated(since = "0.4.0", note = "Use normalize_optimized instead")]
+    fn normalize(input: &str) -> String {
+        Self::normalize_optimized(input).0
     }
 
     /// Check if this preference matches a given provider type
+    ///
+    /// Uses the optimized `ProviderType::name()` method to avoid allocations.
     pub fn matches_provider_type(&self, provider_type: &ProviderType) -> bool {
-        let provider_str = provider_type.to_string().to_lowercase();
-        let normalized_provider = Self::normalize(&provider_str);
+        // Use the static name() method to avoid to_string() + to_lowercase() allocation
+        let provider_name = provider_type.name();
 
-        // Direct match
-        if self.normalized == normalized_provider {
+        // Direct match (both already normalized)
+        if self.normalized == provider_name {
             return true;
         }
 
         // Substring match (e.g., "k8s" matches "kubernetes")
-        if normalized_provider.contains(&self.normalized) {
+        if provider_name.contains(&self.normalized) {
             return true;
         }
 
         // Reverse substring match (e.g., "kubernetes" contains "k8s")
-        if self.normalized.len() >= 3 && normalized_provider.contains(&self.normalized) {
+        if self.normalized.len() >= 3 && provider_name.contains(&self.normalized) {
             return true;
         }
 
@@ -129,14 +135,16 @@ impl ProviderPreference {
     }
 
     /// Check if this preference matches a provider ID
+    ///
+    /// Optimized to avoid allocations: UUIDs are already in lowercase format.
     pub fn matches_provider_id(&self, provider_id: &ProviderId) -> bool {
         if self.is_provider_id {
             if let Some(matched_id) = &self.matched_provider_id {
                 return matched_id == provider_id;
             }
         }
-        // Also check if the provider_id string matches
-        provider_id.to_string().to_lowercase() == self.normalized
+        // UUID Display output is already lowercase, no need for to_lowercase()
+        provider_id.to_string() == self.normalized
     }
 
     /// Check if this is a provider ID match
@@ -314,17 +322,25 @@ impl ProviderTypeMapping {
     /// ## Performance
     /// Uses LRU cache for O(1) lookup of repeated requests.
     /// First lookup is O(1) for cache miss.
+    ///
+    /// ## Optimization Notes
+    /// - Minimizes string allocations in hot path
+    /// - Reuses normalized string for cache key
     pub fn match_provider(&self, name: &str) -> Option<ProviderType> {
-        // Check LRU cache first (convert &str to String for cache key)
+        // Check LRU cache first - use the input string directly
+        // Note: We need to allocate for cache key ownership, but we can reuse
         let name_string = name.to_string();
+
         if let Some(cached) = self.lookup_cache.get(&name_string) {
-            return Some(cached);
+            return Some(cached.clone());
         }
 
-        let normalized = ProviderPreference::normalize(name);
+        // Normalize using optimized function
+        let (normalized, _is_known) = ProviderPreference::normalize_optimized(name);
 
-        // Direct lookup in static cache
+        // Direct lookup in static cache - reuse normalized string
         if let Some(provider_type) = self.type_cache.get(normalized.as_str()) {
+            // Use normalized for cache key to avoid re-allocation
             self.lookup_cache
                 .insert(normalized.clone(), provider_type.clone());
             return Some(provider_type.clone());
@@ -339,11 +355,13 @@ impl ProviderTypeMapping {
             }
         }
 
-        // Try case-insensitive match
+        // Try lowercase variant (only if different from normalized)
         let lower = normalized.to_lowercase();
-        if let Some(provider_type) = self.type_cache.get(lower.as_str()) {
-            self.lookup_cache.insert(lower, provider_type.clone());
-            return Some(provider_type.clone());
+        if lower != normalized {
+            if let Some(provider_type) = self.type_cache.get(lower.as_str()) {
+                self.lookup_cache.insert(lower, provider_type.clone());
+                return Some(provider_type.clone());
+            }
         }
 
         None

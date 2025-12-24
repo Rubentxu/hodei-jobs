@@ -238,15 +238,16 @@ impl ProviderSelector for LowestCostProviderSelector {
         }
 
         // Convert to score inputs and score each provider
+        // Note: Duration is Copy, no clone needed. ProviderId is cheap to clone (Uuid wrapper).
         let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
             .map(|p| {
                 let input = ProviderScoreInput::from_provider_info(
-                    p.provider_id.clone(),
+                    p.provider_id.clone(), // Cheap clone (Uuid wrapper)
                     p.provider_type.clone(),
                     p.health_score,
                     p.cost_per_hour,
-                    p.estimated_startup_time.clone(),
+                    p.estimated_startup_time, // Copy, no clone
                     p.active_workers,
                     p.max_workers,
                 );
@@ -304,6 +305,7 @@ impl ProviderSelector for FastestStartupProviderSelector {
         }
 
         // Convert to score inputs and score each provider
+        // Note: Duration is Copy, no clone needed.
         let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
             .map(|p| {
@@ -312,7 +314,7 @@ impl ProviderSelector for FastestStartupProviderSelector {
                     p.provider_type.clone(),
                     p.health_score,
                     p.cost_per_hour,
-                    p.estimated_startup_time.clone(),
+                    p.estimated_startup_time, // Copy, no clone
                     p.active_workers,
                     p.max_workers,
                 );
@@ -369,6 +371,7 @@ impl ProviderSelector for MostCapacityProviderSelector {
         }
 
         // Convert to score inputs and score each provider
+        // Note: Duration is Copy, no clone needed.
         let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
             .map(|p| {
@@ -377,7 +380,7 @@ impl ProviderSelector for MostCapacityProviderSelector {
                     p.provider_type.clone(),
                     p.health_score,
                     p.cost_per_hour,
-                    p.estimated_startup_time.clone(),
+                    p.estimated_startup_time, // Copy, no clone
                     p.active_workers,
                     p.max_workers,
                 );
@@ -434,6 +437,7 @@ impl ProviderSelector for HealthiestProviderSelector {
         }
 
         // Convert to score inputs and score each provider
+        // Note: Duration is Copy, no clone needed.
         let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
             .map(|p| {
@@ -442,7 +446,7 @@ impl ProviderSelector for HealthiestProviderSelector {
                     p.provider_type.clone(),
                     p.health_score,
                     p.cost_per_hour,
-                    p.estimated_startup_time.clone(),
+                    p.estimated_startup_time, // Copy, no clone
                     p.active_workers,
                     p.max_workers,
                 );

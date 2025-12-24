@@ -50,6 +50,29 @@ impl ProviderType {
             Self::Test | Self::BareMetal | Self::Custom(_) => ProviderCategory::BareMetal,
         }
     }
+
+    /// Get the normalized name as a static string reference
+    ///
+    /// This avoids allocation by returning a compile-time string reference.
+    /// For Custom types, returns "custom" as the base type name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Kubernetes => "kubernetes",
+            Self::Fargate => "fargate",
+            Self::CloudRun => "cloudrun",
+            Self::ContainerApps => "containerapps",
+            Self::Lambda => "lambda",
+            Self::CloudFunctions => "cloudfunctions",
+            Self::AzureFunctions => "azurefunctions",
+            Self::EC2 => "ec2",
+            Self::ComputeEngine => "computeengine",
+            Self::AzureVMs => "azurevms",
+            Self::Test => "test",
+            Self::BareMetal => "baremetal",
+            Self::Custom(_) => "custom",
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderType {

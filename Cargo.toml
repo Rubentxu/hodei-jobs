@@ -136,3 +136,8 @@ tonic-prost-build = "0.14"
 # Dev dependencies
 [workspace.dependencies.tokio-test]
 version = "0.4"
+
+[workspace.dependencies.criterion]
+version = "0.5"
+default-features = false
+features = ["html_reports"]
