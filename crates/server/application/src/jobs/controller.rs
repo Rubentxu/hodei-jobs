@@ -87,7 +87,7 @@ impl JobController {
     /// - Job dispatching coordination
     ///
     /// Returns: Result<()>
-    pub async fn start(&mut self) -> Result<()> {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         info!("🚀 JobController: Starting job controller");
 
         // Start coordinator and keep the shutdown signal alive
@@ -103,13 +103,13 @@ impl JobController {
 
     /// Manually trigger a job dispatch cycle
     /// This is useful for testing or manual triggering
-    pub async fn dispatch_now(&self) -> Result<usize> {
+    pub async fn dispatch_now(&self) -> anyhow::Result<usize> {
         self.coordinator.dispatch_now().await
     }
 
     /// Legacy method for backward compatibility
     /// Delegates to the coordinator
-    pub async fn run_once(&self) -> Result<usize> {
+    pub async fn run_once(&self) -> anyhow::Result<usize> {
         self.dispatch_now().await
     }
 }

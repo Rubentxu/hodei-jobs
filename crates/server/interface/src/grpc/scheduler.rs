@@ -13,9 +13,7 @@ use hodei_server_application::scheduling::{SchedulerConfig, SchedulingService};
 use hodei_server_application::workers::WorkerProvisioningService;
 use hodei_server_domain::jobs::{ExecutionContext, JobQueue, JobRepository};
 use hodei_server_domain::scheduling::{ProviderSelectionStrategy, SchedulingContext};
-use hodei_server_domain::shared_kernel::{
-    DomainError, JobId, JobState, Result as DomainResult, WorkerId, WorkerState,
-};
+use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use hodei_server_domain::workers::registry::{WorkerFilter, WorkerRegistry};
 use uuid::Uuid;
 
@@ -28,6 +26,21 @@ use hodei_jobs::{
 };
 
 use chrono;
+
+/// Convert anyhow::Error to tonic::Status
+fn error_to_status(err: impl std::fmt::Display) -> Status {
+    let err_str = err.to_string();
+    // Try to parse as DomainError for specific status mapping
+    if err_str.contains("not found") || err_str.contains("NotFound") {
+        Status::not_found(err_str)
+    } else if err_str.contains("not available") || err_str.contains("NotAvailable") {
+        Status::failed_precondition(err_str)
+    } else if err_str.contains("invalid") || err_str.contains("Invalid") {
+        Status::invalid_argument(err_str)
+    } else {
+        Status::internal(err_str)
+    }
+}
 use prost_types;
 
 #[derive(Clone)]
@@ -96,18 +109,6 @@ impl SchedulerServiceImpl {
         let uuid = Uuid::parse_str(&value)
             .map_err(|_| Status::invalid_argument("job_id must be a UUID"))?;
         Ok(JobId(uuid))
-    }
-
-    fn to_status(err: DomainError) -> Status {
-        match err {
-            DomainError::JobNotFound { .. } => Status::not_found(err.to_string()),
-            DomainError::WorkerNotFound { .. } => Status::not_found(err.to_string()),
-            DomainError::WorkerNotAvailable { .. } => Status::failed_precondition(err.to_string()),
-            DomainError::InvalidStateTransition { .. } => {
-                Status::failed_precondition(err.to_string())
-            }
-            _ => Status::internal(err.to_string()),
-        }
     }
 
     fn map_worker_status(state: &WorkerState) -> i32 {
@@ -185,7 +186,7 @@ impl SchedulerServiceImpl {
     async fn build_scheduling_context(
         &self,
         job: hodei_server_domain::jobs::Job,
-    ) -> DomainResult<SchedulingContext> {
+    ) -> anyhow::Result<SchedulingContext> {
         let available_workers = self.worker_registry.find_available().await?;
         let pending_jobs_count = self.job_queue.len().await?;
         let stats = self.worker_registry.stats().await?;
@@ -206,7 +207,7 @@ impl SchedulerServiceImpl {
         })
     }
 
-    async fn remove_job_from_queue(&self, target_job_id: &JobId) -> DomainResult<()> {
+    async fn remove_job_from_queue(&self, target_job_id: &JobId) -> anyhow::Result<()> {
         let original_len = self.job_queue.len().await?;
         if original_len == 0 {
             return Ok(());
@@ -265,7 +266,7 @@ impl SchedulerService for SchedulerServiceImpl {
             .create_job_usecase
             .execute(create_request)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         info!("Scheduling job via gRPC: {}", create_response.job_id);
 
@@ -277,20 +278,20 @@ impl SchedulerService for SchedulerServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found after creation"))?;
 
         let context = self
             .build_scheduling_context(job.clone())
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
         let decision = self
             .scheduling_service
             .read()
             .await
             .make_decision(context)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         match decision {
             hodei_server_domain::scheduling::SchedulingDecision::AssignToWorker {
@@ -301,7 +302,7 @@ impl SchedulerService for SchedulerServiceImpl {
                     .worker_registry
                     .get(&worker_id)
                     .await
-                    .map_err(Self::to_status)?
+                    .map_err(error_to_status)?
                     .ok_or_else(|| Status::not_found("Worker not found"))?;
 
                 let provider_id = worker.handle().provider_id.clone();
@@ -313,15 +314,15 @@ impl SchedulerService for SchedulerServiceImpl {
                 );
 
                 job.submit_to_provider(provider_id, exec_ctx)
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
                 self.worker_registry
                     .assign_to_job(&worker_id, job_id.clone())
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 self.remove_job_from_queue(&job_id)
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 let reasons = vec!["Assigned to existing worker".to_string()];
                 Self::persist_decision_metadata(
@@ -334,7 +335,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 self.job_repository
                     .update(&job)
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: true,
@@ -363,7 +364,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 self.job_repository
                     .update(&job)
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: true,
@@ -387,7 +388,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 self.job_repository
                     .update(&job)
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: false,
@@ -444,7 +445,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 let provisioning_result = provisioning_service
                     .provision_worker(&provider_id, spec)
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 let worker_id = provisioning_result.worker_id;
                 info!(
@@ -464,7 +465,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 self.job_repository
                     .update(&job)
                     .await
-                    .map_err(Self::to_status)?;
+                    .map_err(error_to_status)?;
 
                 let reasons = vec![
                     format!(
@@ -510,7 +511,7 @@ impl SchedulerService for SchedulerServiceImpl {
             .job_repository
             .find_by_id(&domain_job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         let decision = Self::build_decision_from_job(job_id, &job);
@@ -592,30 +593,30 @@ impl SchedulerService for SchedulerServiceImpl {
         &self,
         _request: Request<GetQueueStatusRequest>,
     ) -> Result<Response<GetQueueStatusResponse>, Status> {
-        let pending_jobs = self.job_queue.len().await.map_err(Self::to_status)? as i32;
+        let pending_jobs = self.job_queue.len().await.map_err(error_to_status)? as i32;
         let running_jobs = self
             .job_repository
             .find_by_state(&JobState::Running)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .len() as i32;
         let completed_jobs = self
             .job_repository
             .find_by_state(&JobState::Succeeded)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .len() as i32;
         let failed_jobs = self
             .job_repository
             .find_by_state(&JobState::Failed)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .len() as i32;
         let cancelled_jobs = self
             .job_repository
             .find_by_state(&JobState::Cancelled)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .len() as i32;
 
         Ok(Response::new(GetQueueStatusResponse {
@@ -662,7 +663,7 @@ impl SchedulerService for SchedulerServiceImpl {
             .worker_registry
             .find(&filter)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         if let Some(criteria) = criteria {
             if let Some(max_age) = criteria.max_age {

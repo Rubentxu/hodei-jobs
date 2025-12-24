@@ -1,26 +1,44 @@
-//! Job Scheduler - Estrategias de scheduling y selección de workers
+//! Job Scheduler - Estrategias de selección de workers y providers
 //!
-//! Define traits y tipos para la programación inteligente de jobs.
+//! ## EPIC-022: Strategy Composition
+//! This module contains the selector traits and implementations for worker
+//! and provider selection.
 //!
-//! ## EPIC-21: Ephemeral Workers Model
-//! Workers are provisioned fresh for each job and terminated after completion.
-//! The scheduler primarily uses `ProvisionWorker` decision. `AssignToWorker`
-//! is only used when re-assigning a job to a worker that was already provisioned
-//! for that specific job (e.g., after a transient failure during assignment).
+//! ## Selector Traits
+//! - `WorkerSelector`: Trait for selecting workers
+//! - `ProviderSelector`: Trait for selecting providers
+//!
+//! ## Provider Selectors
+//! - `LowestCostProviderSelector`: Cost-optimized selection (uses CostScoring)
+//! - `FastestStartupProviderSelector`: Performance-optimized selection (uses StartupTimeScoring)
+//! - `MostCapacityProviderSelector`: Capacity-optimized selection (uses CapacityScoring)
+//! - `HealthiestProviderSelector`: Health-optimized selection (uses CompositeProviderScoring)
+//!
+//! ## Worker Selectors
+//! - `FirstAvailableWorkerSelector`: First available worker
+//! - `LeastLoadedWorkerSelector`: Worker with fewest jobs
 
 use crate::jobs::Job;
-use crate::shared_kernel::{JobId, ProviderId, Result, WorkerId};
+use crate::scheduling::scoring::{
+    CapacityScoring, CostScoring, HealthScoring, ProviderScoreInput, ProviderScoring,
+    StartupTimeScoring,
+};
+use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::Worker;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+// =============================================================================
+// Scheduling Types (re-exported from here to avoid duplication)
+// =============================================================================
 
 /// Resultado de una decisión de scheduling
 ///
 /// ## Ephemeral Workers Model (EPIC-21)
 /// In the ephemeral model, `ProvisionWorker` is the primary decision.
 /// Workers are NOT reused between jobs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SchedulingDecision {
     /// Assign job to an already-provisioned worker (for retry/recovery scenarios only)
     /// NOTE: In ephemeral model, this is ONLY used when the worker was provisioned
@@ -55,7 +73,7 @@ pub struct SchedulingContext {
 }
 
 /// Información de un provider para scheduling
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderInfo {
     pub provider_id: ProviderId,
     pub provider_type: crate::workers::ProviderType,
@@ -81,17 +99,17 @@ impl ProviderInfo {
     }
 }
 
-/// Trait para schedulers de jobs
+/// Trait for schedulers de jobs
 #[async_trait]
 pub trait JobScheduler: Send + Sync {
     /// Decide cómo programar un job
-    async fn schedule(&self, context: SchedulingContext) -> Result<SchedulingDecision>;
+    async fn schedule(&self, context: SchedulingContext) -> anyhow::Result<SchedulingDecision>;
 
     /// Nombre de la estrategia
     fn strategy_name(&self) -> &str;
 }
 
-/// Trait para selección de workers
+/// Trait for selection of workers
 pub trait WorkerSelector: Send + Sync {
     /// Selecciona el mejor worker para un job
     fn select_worker(&self, job: &Job, workers: &[Worker]) -> Option<WorkerId>;
@@ -100,7 +118,7 @@ pub trait WorkerSelector: Send + Sync {
     fn strategy_name(&self) -> &str;
 }
 
-/// Trait para selección de providers
+/// Trait for selection of providers
 pub trait ProviderSelector: Send + Sync {
     /// Selecciona el mejor provider para provisionar un worker
     fn select_provider(&self, job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId>;
@@ -141,7 +159,12 @@ pub enum ProviderSelectionStrategy {
     Healthiest,
 }
 
+// =============================================================================
+// Worker Selectors
+// =============================================================================
+
 /// Selector de workers: First Available
+#[derive(Debug, Clone, Default)]
 pub struct FirstAvailableWorkerSelector;
 
 impl WorkerSelector for FirstAvailableWorkerSelector {
@@ -158,6 +181,7 @@ impl WorkerSelector for FirstAvailableWorkerSelector {
 }
 
 /// Selector de workers: Least Loaded
+#[derive(Debug, Clone, Default)]
 pub struct LeastLoadedWorkerSelector;
 
 impl WorkerSelector for LeastLoadedWorkerSelector {
@@ -174,35 +198,69 @@ impl WorkerSelector for LeastLoadedWorkerSelector {
     }
 }
 
+// =============================================================================
+// Provider Selectors
+// =============================================================================
+
 /// Selector de providers: Lowest Cost
-pub struct LowestCostProviderSelector;
+///
+/// Selecciona el provider con menor costo efectivo.
+/// Usa internamente `CostScoring` del módulo de scoring para cálculos de score.
+///
+/// ## Connascence Reduction
+/// Previously: Connascence of Position - duplicated health/capacity logic
+/// Now: Connascence of Type - uses ProviderScoring trait
+#[derive(Debug, Clone)]
+pub struct LowestCostProviderSelector {
+    /// Scoring implementation for cost-based selection
+    scoring: CostScoring,
+}
+
+impl Default for LowestCostProviderSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LowestCostProviderSelector {
+    /// Create a new lowest cost selector
+    pub fn new() -> Self {
+        Self {
+            scoring: CostScoring,
+        }
+    }
+}
 
 impl ProviderSelector for LowestCostProviderSelector {
-    fn select_provider(&self, _job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
-        providers
+    fn select_provider(&self, job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
+        if providers.is_empty() {
+            return None;
+        }
+
+        // Convert to score inputs and score each provider
+        let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
-            .filter(|p| p.can_accept_workers())
             .map(|p| {
-                // Calculate effective cost considering health and capacity
-                // Healthy providers get full weight, degraded providers get 1.5x cost penalty,
-                // unhealthy providers get 2x cost penalty
-                let health_multiplier = match p.health_score {
-                    score if score >= 0.9 => 1.0, // Excellent health - no penalty
-                    score if score >= 0.7 => 1.2, // Good health - 20% penalty
-                    score if score >= 0.5 => 1.5, // Degraded - 50% penalty
-                    _ => 2.0,                     // Unhealthy - 100% penalty
-                };
-
-                // Factor in capacity - providers with more available capacity get slight discount
-                // This encourages using providers that can handle more load
-                let capacity_bonus = 1.0 - (p.available_capacity() * 0.1); // Up to 10% discount
-
-                let effective_cost = p.cost_per_hour * health_multiplier * capacity_bonus;
-
-                (p.provider_id.clone(), effective_cost)
+                let input = ProviderScoreInput::from_provider_info(
+                    p.provider_id.clone(),
+                    p.provider_type.clone(),
+                    p.health_score,
+                    p.cost_per_hour,
+                    p.estimated_startup_time.clone(),
+                    p.active_workers,
+                    p.max_workers,
+                );
+                let score = self.scoring.score(job, &input);
+                (p.provider_id.clone(), score)
             })
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .map(|(provider_id, _)| provider_id)
+            .filter(|(_, score)| *score > 0.0)
+            .collect();
+
+        // Sort by score ascending (lower cost = higher score, but we want lowest cost)
+        // CostScoring returns higher score for lower cost, so we want highest score
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        scored.first().map(|(provider_id, _)| provider_id.clone())
     }
 
     fn strategy_name(&self) -> &str {
@@ -211,34 +269,63 @@ impl ProviderSelector for LowestCostProviderSelector {
 }
 
 /// Selector de providers: Fastest Startup
-pub struct FastestStartupProviderSelector;
+///
+/// Selecciona el provider con menor tiempo de startup.
+/// Usa internamente `StartupTimeScoring` del módulo de scoring.
+///
+/// ## Connascence Reduction
+/// Previously: Connascence of Position - duplicated health/capacity logic
+/// Now: Connascence of Type - uses ProviderScoring trait
+#[derive(Debug, Clone)]
+pub struct FastestStartupProviderSelector {
+    /// Scoring implementation for startup-time-based selection
+    scoring: StartupTimeScoring,
+}
+
+impl Default for FastestStartupProviderSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FastestStartupProviderSelector {
+    /// Create a new fastest startup selector
+    pub fn new() -> Self {
+        Self {
+            scoring: StartupTimeScoring,
+        }
+    }
+}
 
 impl ProviderSelector for FastestStartupProviderSelector {
-    fn select_provider(&self, _job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
-        providers
+    fn select_provider(&self, job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
+        if providers.is_empty() {
+            return None;
+        }
+
+        // Convert to score inputs and score each provider
+        let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
-            .filter(|p| p.can_accept_workers())
             .map(|p| {
-                // Calculate effective startup time considering health
-                // Unhealthy providers have longer effective retries/f startup times due toailures
-                let health_penalty = match p.health_score {
-                    score if score >= 0.9 => 1.0, // Excellent health - no penalty
-                    score if score >= 0.7 => 1.3, // Good health - 30% penalty
-                    score if score >= 0.5 => 1.8, // Degraded - 80% penalty
-                    _ => 2.5,                     // Unhealthy - 150% penalty
-                };
-
-                // Factor in capacity - providers with more capacity might have slightly longer startup
-                // due to resource allocation overhead
-                let capacity_penalty = 1.0 + (p.available_capacity() * 0.1);
-
-                let effective_startup_ms =
-                    p.estimated_startup_time.as_millis() as f64 * health_penalty * capacity_penalty;
-
-                (p.provider_id.clone(), effective_startup_ms)
+                let input = ProviderScoreInput::from_provider_info(
+                    p.provider_id.clone(),
+                    p.provider_type.clone(),
+                    p.health_score,
+                    p.cost_per_hour,
+                    p.estimated_startup_time.clone(),
+                    p.active_workers,
+                    p.max_workers,
+                );
+                let score = self.scoring.score(job, &input);
+                (p.provider_id.clone(), score)
             })
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .map(|(provider_id, _)| provider_id)
+            .filter(|(_, score)| *score > 0.0)
+            .collect();
+
+        // Sort by score descending (higher score = faster startup)
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        scored.first().map(|(provider_id, _)| provider_id.clone())
     }
 
     fn strategy_name(&self) -> &str {
@@ -247,19 +334,63 @@ impl ProviderSelector for FastestStartupProviderSelector {
 }
 
 /// Selector de providers: Most Capacity
-pub struct MostCapacityProviderSelector;
+///
+/// Selecciona el provider con mayor capacidad disponible.
+/// Usa internamente `CapacityScoring` del módulo de scoring.
+///
+/// ## Connascence Reduction
+/// Previously: Connascence of Position - direct capacity calculation
+/// Now: Connascence of Type - uses ProviderScoring trait
+#[derive(Debug, Clone)]
+pub struct MostCapacityProviderSelector {
+    /// Scoring implementation for capacity-based selection
+    scoring: CapacityScoring,
+}
+
+impl Default for MostCapacityProviderSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MostCapacityProviderSelector {
+    /// Create a new most capacity selector
+    pub fn new() -> Self {
+        Self {
+            scoring: CapacityScoring,
+        }
+    }
+}
 
 impl ProviderSelector for MostCapacityProviderSelector {
-    fn select_provider(&self, _job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
-        providers
+    fn select_provider(&self, job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
+        if providers.is_empty() {
+            return None;
+        }
+
+        // Convert to score inputs and score each provider
+        let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
-            .filter(|p| p.can_accept_workers())
-            .max_by(|a, b| {
-                a.available_capacity()
-                    .partial_cmp(&b.available_capacity())
-                    .unwrap()
+            .map(|p| {
+                let input = ProviderScoreInput::from_provider_info(
+                    p.provider_id.clone(),
+                    p.provider_type.clone(),
+                    p.health_score,
+                    p.cost_per_hour,
+                    p.estimated_startup_time.clone(),
+                    p.active_workers,
+                    p.max_workers,
+                );
+                let score = self.scoring.score(job, &input);
+                (p.provider_id.clone(), score)
             })
-            .map(|p| p.provider_id.clone())
+            .filter(|(_, score)| *score > 0.0)
+            .collect();
+
+        // Sort by score descending (higher score = more capacity)
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        scored.first().map(|(provider_id, _)| provider_id.clone())
     }
 
     fn strategy_name(&self) -> &str {
@@ -268,50 +399,63 @@ impl ProviderSelector for MostCapacityProviderSelector {
 }
 
 /// Selector de providers: Healthiest
-pub struct HealthiestProviderSelector;
+///
+/// Selecciona el provider con mejor salud compuesta.
+/// Usa internamente `HealthScoring` y `CompositeProviderScoring` para cálculos.
+///
+/// ## Connascence Reduction
+/// Previously: Connascence of Position - duplicated multi-factor scoring logic
+/// Now: Connascence of Type - uses ProviderScoring trait composition
+#[derive(Debug, Clone)]
+pub struct HealthiestProviderSelector {
+    /// Composite scoring for health-optimized selection
+    scoring: HealthScoring,
+}
+
+impl Default for HealthiestProviderSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HealthiestProviderSelector {
+    /// Create a new healthiest selector
+    pub fn new() -> Self {
+        Self {
+            scoring: HealthScoring,
+        }
+    }
+}
 
 impl ProviderSelector for HealthiestProviderSelector {
-    fn select_provider(&self, _job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
-        providers
+    fn select_provider(&self, job: &Job, providers: &[ProviderInfo]) -> Option<ProviderId> {
+        if providers.is_empty() {
+            return None;
+        }
+
+        // Convert to score inputs and score each provider
+        let mut scored: Vec<(ProviderId, f64)> = providers
             .iter()
-            .filter(|p| p.can_accept_workers() && p.health_score > 0.5)
             .map(|p| {
-                // Calculate a composite health score that considers:
-                // 1. Health score (40% weight)
-                // 2. Available capacity (25% weight) - prefer providers with more capacity
-                // 3. Cost efficiency (20% weight) - normalized inverse cost
-                // 4. Startup time efficiency (15% weight) - normalized inverse startup time
-
-                let health_score = p.health_score;
-                let capacity_score = p.available_capacity();
-
-                // Normalize cost (lower is better, so we use 1/cost)
-                let max_cost = providers
-                    .iter()
-                    .map(|pr| pr.cost_per_hour)
-                    .fold(0.0, f64::max)
-                    .max(0.01); // Avoid division by zero
-                let cost_efficiency = 1.0 - (p.cost_per_hour / max_cost);
-
-                // Normalize startup time (lower is better, so we use 1/time)
-                let max_startup = providers
-                    .iter()
-                    .map(|pr| pr.estimated_startup_time.as_millis() as f64)
-                    .fold(0.0, f64::max)
-                    .max(1.0); // Avoid division by zero
-                let startup_efficiency =
-                    1.0 - ((p.estimated_startup_time.as_millis() as f64) / max_startup);
-
-                // Calculate composite score with weights
-                let composite_score = (health_score * 0.40)
-                    + (capacity_score * 0.25)
-                    + (cost_efficiency * 0.20)
-                    + (startup_efficiency * 0.15);
-
-                (p.provider_id.clone(), composite_score)
+                let input = ProviderScoreInput::from_provider_info(
+                    p.provider_id.clone(),
+                    p.provider_type.clone(),
+                    p.health_score,
+                    p.cost_per_hour,
+                    p.estimated_startup_time.clone(),
+                    p.active_workers,
+                    p.max_workers,
+                );
+                let score = self.scoring.score(job, &input);
+                (p.provider_id.clone(), score)
             })
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .map(|(provider_id, _)| provider_id)
+            .filter(|(_, score)| *score > 0.0)
+            .collect();
+
+        // Sort by score descending (higher score = healthier)
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        scored.first().map(|(provider_id, _)| provider_id.clone())
     }
 
     fn strategy_name(&self) -> &str {
@@ -367,7 +511,7 @@ mod tests {
     #[test]
     fn test_lowest_cost_selector() {
         let providers = create_test_providers();
-        let selector = LowestCostProviderSelector;
+        let selector = LowestCostProviderSelector::new();
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
@@ -380,7 +524,7 @@ mod tests {
     #[test]
     fn test_fastest_startup_selector() {
         let providers = create_test_providers();
-        let selector = FastestStartupProviderSelector;
+        let selector = FastestStartupProviderSelector::new();
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
@@ -388,14 +532,14 @@ mod tests {
 
         let selected = selector.select_provider(&job, &providers);
         assert!(selected.is_some());
-        // Docker debería ser seleccionado (5s vs 30s)
+        // Docker should be selected (5s vs 30s)
         assert_eq!(selected.unwrap(), providers[0].provider_id);
     }
 
     #[test]
     fn test_most_capacity_selector() {
         let providers = create_test_providers();
-        let selector = MostCapacityProviderSelector;
+        let selector = MostCapacityProviderSelector::new();
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
@@ -403,19 +547,17 @@ mod tests {
 
         let selected = selector.select_provider(&job, &providers);
         assert!(selected.is_some());
-        // Kubernetes tiene más capacidad (90% disponible vs 50%)
+        // Kubernetes has more capacity (90% available vs 50%)
         assert_eq!(selected.unwrap(), providers[1].provider_id);
     }
 
     #[test]
     fn test_scheduling_context_includes_job_preferences() {
-        // GIVEN: Un job con preferencias específicas
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
         );
 
-        // WHEN: Creamos un SchedulingContext
         let providers = create_test_providers();
         let workers = Vec::new();
 
@@ -428,7 +570,6 @@ mod tests {
             system_load: 0.5,
         };
 
-        // THEN: El context debe incluir las preferencias del job
         assert_eq!(context.job.id, job.id);
         assert_eq!(
             context.job_preferences.preferred_provider,

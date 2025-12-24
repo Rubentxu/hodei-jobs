@@ -75,7 +75,7 @@ impl JobOrchestrator {
     }
 
     /// Submit a job for execution
-    pub async fn submit_job(&self, job: Job) -> Result<JobId> {
+    pub async fn submit_job(&self, job: Job) -> anyhow::Result<JobId> {
         let job_id = job.id.clone();
         info!("Submitting job: {}", job_id);
 
@@ -105,13 +105,13 @@ impl JobOrchestrator {
     }
 
     /// Try to schedule a job
-    async fn try_schedule_job(&self, job: Job) -> Result<SchedulingDecision> {
+    async fn try_schedule_job(&self, job: Job) -> anyhow::Result<SchedulingDecision> {
         let context = self.build_scheduling_context(job).await?;
         self.scheduler.make_decision(context).await
     }
 
     /// Build scheduling context
-    async fn build_scheduling_context(&self, job: Job) -> Result<SchedulingContext> {
+    async fn build_scheduling_context(&self, job: Job) -> anyhow::Result<SchedulingContext> {
         let available_workers = self.registry.find_available().await?;
         let pending_jobs_count = self.job_queue.len().await?;
         let stats = self.registry.stats().await?;
@@ -162,7 +162,7 @@ impl JobOrchestrator {
     }
 
     /// Handle a scheduling decision
-    async fn handle_scheduling_decision(&self, decision: SchedulingDecision) -> Result<()> {
+    async fn handle_scheduling_decision(&self, decision: SchedulingDecision) -> anyhow::Result<()> {
         match decision {
             SchedulingDecision::AssignToWorker { job_id, worker_id } => {
                 self.assign_job_to_worker(&job_id, &worker_id).await?;
@@ -197,7 +197,11 @@ impl JobOrchestrator {
     }
 
     /// Assign a job to an existing worker
-    async fn assign_job_to_worker(&self, job_id: &JobId, worker_id: &WorkerId) -> Result<()> {
+    async fn assign_job_to_worker(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+    ) -> anyhow::Result<()> {
         info!("Assigning job {} to worker {}", job_id, worker_id);
 
         // Update worker state
@@ -215,7 +219,11 @@ impl JobOrchestrator {
     }
 
     /// Provision a new worker and assign job
-    async fn provision_and_assign(&self, job_id: &JobId, provider_id: &ProviderId) -> Result<()> {
+    async fn provision_and_assign(
+        &self,
+        job_id: &JobId,
+        provider_id: &ProviderId,
+    ) -> anyhow::Result<()> {
         info!("Provisioning worker for job {} via {}", job_id, provider_id);
 
         // Provision worker
@@ -235,7 +243,7 @@ impl JobOrchestrator {
     }
 
     /// Process pending jobs in the queue
-    pub async fn process_queue(&self) -> Result<usize> {
+    pub async fn process_queue(&self) -> anyhow::Result<usize> {
         let mut processed = 0;
 
         while let Some(job) = self.job_queue.dequeue().await? {
@@ -261,7 +269,7 @@ impl JobOrchestrator {
     }
 
     /// Run maintenance tasks (health checks, cleanup)
-    pub async fn run_maintenance(&self) -> Result<MaintenanceResult> {
+    pub async fn run_maintenance(&self) -> anyhow::Result<MaintenanceResult> {
         let mut result = MaintenanceResult::default();
 
         // Health check
@@ -285,7 +293,7 @@ impl JobOrchestrator {
     }
 
     /// Get orchestrator statistics
-    pub async fn stats(&self) -> Result<OrchestratorStats> {
+    pub async fn stats(&self) -> anyhow::Result<OrchestratorStats> {
         let registry_stats = self.registry.stats().await?;
         let queue_depth = self.job_queue.len().await?;
         let provider_count = self.providers.read().await.len();

@@ -572,7 +572,11 @@ impl CreateJobUseCaseTrait for hodei_server_application::jobs::create::CreateJob
         &self,
         request: CreateJobRequest,
     ) -> Result<CreateJobResponse, hodei_server_domain::shared_kernel::DomainError> {
-        self.execute(request).await
+        self.execute(request).await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: e.to_string(),
+            }
+        })
     }
 }
 
@@ -582,7 +586,11 @@ impl GetJobStatusUseCaseTrait for hodei_server_application::jobs::queries::GetJo
         &self,
         job_id: hodei_server_domain::shared_kernel::JobId,
     ) -> Result<TrackJobResponse, hodei_server_domain::shared_kernel::DomainError> {
-        self.execute(job_id).await
+        self.execute(job_id).await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: e.to_string(),
+            }
+        })
     }
 }
 
@@ -592,7 +600,11 @@ impl CancelJobUseCaseTrait for hodei_server_application::jobs::cancel::CancelJob
         &self,
         job_id: hodei_server_domain::shared_kernel::JobId,
     ) -> Result<CancelJobResponse, hodei_server_domain::shared_kernel::DomainError> {
-        self.execute(job_id).await
+        self.execute(job_id).await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: e.to_string(),
+            }
+        })
     }
 }
 

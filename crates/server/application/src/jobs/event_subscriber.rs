@@ -17,7 +17,7 @@ pub trait EventHandler: Send + Sync {
     async fn handle_event(
         &self,
         event: DomainEvent,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> anyhow::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Event Subscriber
@@ -52,7 +52,7 @@ impl EventSubscriber {
     /// Returns a shutdown signal receiver
     pub async fn subscribe(
         &mut self,
-    ) -> Result<mpsc::Receiver<()>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> anyhow::Result<mpsc::Receiver<()>, Box<dyn std::error::Error + Send + Sync>> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
         self.shutdown_tx = Some(shutdown_tx);
 
@@ -109,7 +109,7 @@ impl EventSubscriber {
     }
 
     /// Gracefully shutdown the event subscriber
-    pub async fn shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn shutdown(self) -> anyhow::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(tx) = self.shutdown_tx {
             let _ = tx.send(()).await;
         }

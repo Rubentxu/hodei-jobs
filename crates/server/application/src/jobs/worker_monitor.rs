@@ -75,7 +75,7 @@ impl WorkerMonitor {
 
     /// Start the monitoring loop
     /// Returns a shutdown signal receiver
-    pub async fn start(&self) -> Result<tokio::sync::mpsc::Receiver<()>> {
+    pub async fn start(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<()>> {
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         let worker_registry = self.worker_registry.clone();
@@ -109,13 +109,13 @@ impl WorkerMonitor {
     }
 
     /// Stop the monitor
-    pub async fn stop(&self, _shutdown_rx: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
+    pub async fn stop(&self, _shutdown_rx: tokio::sync::mpsc::Receiver<()>) -> anyhow::Result<()> {
         // The shutdown receiver will be dropped, causing the monitoring loop to exit
         Ok(())
     }
 
     /// Check if a specific worker is healthy
-    pub async fn is_worker_healthy(&self, worker_id: &WorkerId) -> Result<bool> {
+    pub async fn is_worker_healthy(&self, worker_id: &WorkerId) -> anyhow::Result<bool> {
         let worker = self.worker_registry.get(worker_id).await?;
 
         match worker {
@@ -137,7 +137,7 @@ impl WorkerMonitor {
     }
 
     /// Get list of healthy workers
-    pub async fn get_healthy_workers(&self) -> Result<Vec<WorkerId>> {
+    pub async fn get_healthy_workers(&self) -> anyhow::Result<Vec<WorkerId>> {
         let workers = self.worker_registry.find_available().await?;
 
         let healthy_workers: Vec<WorkerId> = workers
@@ -164,7 +164,7 @@ async fn monitor_workers(
     worker_registry: &Arc<dyn WorkerRegistry>,
     event_bus: &Arc<dyn EventBus>,
     health_service: Arc<WorkerHealthService>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let workers = worker_registry.find_available().await?;
     let mut disconnected_workers: Vec<(WorkerId, WorkerState, Duration)> = Vec::new();
 

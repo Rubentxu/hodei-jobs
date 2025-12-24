@@ -8,7 +8,6 @@ pub use hodei_server_domain::scheduling::{
 };
 
 use hodei_server_domain::scheduling::JobScheduler;
-use hodei_server_domain::shared_kernel::Result;
 
 /// Scheduling Service - Coordina scheduling con registry y providers
 pub struct SchedulingService {
@@ -32,7 +31,10 @@ impl SchedulingService {
     }
 
     /// Make a scheduling decision
-    pub async fn make_decision(&self, context: SchedulingContext) -> Result<SchedulingDecision> {
+    pub async fn make_decision(
+        &self,
+        context: SchedulingContext,
+    ) -> anyhow::Result<SchedulingDecision> {
         self.scheduler.schedule(context).await
     }
 
@@ -42,6 +44,7 @@ impl SchedulingService {
         job: &hodei_server_domain::jobs::Job,
         providers: &[hodei_server_domain::scheduling::ProviderInfo],
     ) -> Option<hodei_server_domain::shared_kernel::ProviderId> {
-        self.scheduler.select_provider_with_preferences(job, providers)
+        self.scheduler
+            .select_provider_with_preferences(job, providers)
     }
 }

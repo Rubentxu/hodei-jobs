@@ -76,7 +76,7 @@ impl RetryJobUseCase {
         }
     }
 
-    pub async fn execute(&self, job_id: JobId) -> Result<RetryJobResponse> {
+    pub async fn execute(&self, job_id: JobId) -> anyhow::Result<RetryJobResponse> {
         self.execute_with_context(job_id, None).await
     }
 
@@ -84,7 +84,7 @@ impl RetryJobUseCase {
         &self,
         job_id: JobId,
         ctx: Option<&RequestContext>,
-    ) -> Result<RetryJobResponse> {
+    ) -> anyhow::Result<RetryJobResponse> {
         let mut job = self
             .job_repository
             .find_by_id(&job_id)
@@ -163,7 +163,7 @@ impl CreateJobUseCase {
         self
     }
 
-    pub async fn execute(&self, request: CreateJobRequest) -> Result<CreateJobResponse> {
+    pub async fn execute(&self, request: CreateJobRequest) -> anyhow::Result<CreateJobResponse> {
         // 1. Convertir request a JobSpec usando Builder Pattern
         let job_spec = self.convert_to_job_spec(request.spec)?;
 
@@ -264,7 +264,7 @@ impl CreateJobUseCase {
 
     /// Builder Pattern: Convierte JobSpecRequest a JobSpec
     /// La lógica de construcción está en el dominio (JobSpec), no en el use case
-    fn convert_to_job_spec(&self, request: JobSpecRequest) -> Result<JobSpec> {
+    fn convert_to_job_spec(&self, request: JobSpecRequest) -> anyhow::Result<JobSpec> {
         // Usar Builder Pattern para construir JobSpec de forma fluida
         let mut spec = JobSpec::new(request.command);
 
@@ -331,7 +331,7 @@ impl ExecuteNextJobUseCase {
         }
     }
 
-    pub async fn execute(&self) -> Result<ExecuteNextJobResponse> {
+    pub async fn execute(&self) -> anyhow::Result<ExecuteNextJobResponse> {
         // 1. Desencolar siguiente job
         let job =
             self.job_queue

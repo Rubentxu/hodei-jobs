@@ -10,7 +10,6 @@
 use crate::jobs::dispatcher::JobDispatcher;
 use crate::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -54,7 +53,7 @@ impl JobCoordinator {
     /// 3. Continuous job processing loop
     ///
     /// Returns: Result<()>
-    pub async fn start(&mut self) -> Result<()> {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         info!("🚀 JobCoordinator: Starting job processing system");
 
         // Start worker monitor and keep the shutdown signal alive
@@ -94,7 +93,7 @@ impl JobCoordinator {
 
     /// Manually trigger a job dispatch cycle
     /// This is useful for testing or manual triggering
-    pub async fn dispatch_now(&self) -> Result<usize> {
+    pub async fn dispatch_now(&self) -> anyhow::Result<usize> {
         info!("🔄 JobCoordinator: Manual dispatch trigger");
         self.job_dispatcher.dispatch_once().await
     }

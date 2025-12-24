@@ -313,14 +313,14 @@ async fn test_provider_selection_by_labels() {
     );
 
     // Lowest Cost Strategy - should prefer Kubernetes (0.05 vs 0.10)
-    let lowest_cost_selector = LowestCostProviderSelector;
+    let lowest_cost_selector = LowestCostProviderSelector::new();
     let selected = lowest_cost_selector.select_provider(&job, &providers);
     if let Some(provider_id) = selected {
         println!("✓ LowestCost selector chose provider: {:?}", provider_id);
     }
 
     // Fastest Startup Strategy - should prefer Docker (5s vs 30s)
-    let fastest_startup_selector = FastestStartupProviderSelector;
+    let fastest_startup_selector = FastestStartupProviderSelector::new();
     let selected = fastest_startup_selector.select_provider(&job, &providers);
     if let Some(provider_id) = selected {
         println!(
@@ -330,14 +330,14 @@ async fn test_provider_selection_by_labels() {
     }
 
     // Most Capacity Strategy - should prefer Kubernetes (90% vs 50%)
-    let most_capacity_selector = MostCapacityProviderSelector;
+    let most_capacity_selector = MostCapacityProviderSelector::new();
     let selected = most_capacity_selector.select_provider(&job, &providers);
     if let Some(provider_id) = selected {
         println!("✓ MostCapacity selector chose provider: {:?}", provider_id);
     }
 
     // Healthiest Strategy - should prefer the healthier one
-    let healthiest_selector = HealthiestProviderSelector;
+    let healthiest_selector = HealthiestProviderSelector::new();
     let selected = healthiest_selector.select_provider(&job, &providers);
     if let Some(provider_id) = selected {
         println!("✓ Healthiest selector chose provider: {:?}", provider_id);

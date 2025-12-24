@@ -25,7 +25,7 @@ use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };
-use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, WorkerId};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId};
 use hodei_server_domain::workers::health::WorkerHealthService;
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
 use sqlx::postgres::PgPool;
@@ -122,7 +122,7 @@ impl JobDispatcher {
     ///
     /// ## Responsabilidad Core #1: Orquestación
     /// Este método solo orquesta el flujo, delegando los detalles a servicios especializados.
-    pub async fn dispatch_once(&self) -> Result<usize> {
+    pub async fn dispatch_once(&self) -> anyhow::Result<usize> {
         info!("🔄 JobDispatcher: Starting dispatch cycle");
 
         // Step 1: Query and filter available workers (delegado a SchedulingService)
@@ -169,7 +169,7 @@ impl JobDispatcher {
 
     /// Query healthy workers using SchedulingService
     /// Delegado desde SchedulingService
-    async fn query_healthy_workers(&self) -> Result<Vec<Worker>> {
+    async fn query_healthy_workers(&self) -> anyhow::Result<Vec<Worker>> {
         let all_workers = self.worker_registry.find_available().await.map_err(|e| {
             error!(error = %e, "JobDispatcher: Failed to query available workers");
             e
@@ -190,7 +190,7 @@ impl JobDispatcher {
     }
 
     /// Handle case when no workers are available
-    async fn handle_no_available_workers(&self) -> Result<usize> {
+    async fn handle_no_available_workers(&self) -> anyhow::Result<usize> {
         info!("⚠️ JobDispatcher: No available workers");
 
         // Delegar al método trigger_provisioning que maneja internamente
@@ -212,7 +212,7 @@ impl JobDispatcher {
         &self,
         job: &Job,
         available_workers: &[Worker],
-    ) -> Result<SchedulingDecision> {
+    ) -> anyhow::Result<SchedulingDecision> {
         let providers_info = self.get_providers_info().await?;
         let queue_len = self.job_queue.len().await?;
 
@@ -229,7 +229,11 @@ impl JobDispatcher {
     }
 
     /// Dispatch job to worker (responsabilidad core #2)
-    async fn dispatch_job_to_worker(&self, job: &mut Job, worker_id: &WorkerId) -> Result<usize> {
+    async fn dispatch_job_to_worker(
+        &self,
+        job: &mut Job,
+        worker_id: &WorkerId,
+    ) -> anyhow::Result<usize> {
         debug!(
             "JobDispatcher: Assigning job {} to worker {}",
             job.id, worker_id
@@ -261,7 +265,7 @@ impl JobDispatcher {
     }
 
     /// Get providers info for scheduling (delegado a ProviderRegistry)
-    async fn get_providers_info(&self) -> Result<Vec<ProviderInfo>> {
+    async fn get_providers_info(&self) -> anyhow::Result<Vec<ProviderInfo>> {
         let available_providers = self
             .provider_registry
             .list_providers_with_capacity()
@@ -302,7 +306,7 @@ impl JobDispatcher {
     /// 3. Persistir estado en BD
     /// 4. Enviar comando RUN_JOB via gRPC
     /// 5. Publicar evento JobAssigned
-    async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> Result<()> {
+    async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> anyhow::Result<()> {
         info!(
             job_id = %job.id,
             worker_id = %worker_id,
@@ -349,9 +353,10 @@ impl JobDispatcher {
                 job_id = %job.id,
                 "❌ JobDispatcher: Failed to update job"
             );
-            return Err(DomainError::InfrastructureError {
-                message: format!("Failed to persist job before dispatch: {}", e),
-            });
+            return Err(anyhow::anyhow!(
+                "Failed to persist job before dispatch: {}",
+                e
+            ));
         }
 
         // Step 4: Send RUN_JOB command to worker via gRPC
@@ -373,9 +378,11 @@ impl JobDispatcher {
             );
             // Note: Job is already persisted as ASSIGNED.
             // It will eventually timeout if worker doesn't pick it up, which is acceptable.
-            return Err(DomainError::InfrastructureError {
-                message: format!("Failed to dispatch job to worker {}: {}", worker_id, e),
-            });
+            return Err(anyhow::anyhow!(
+                "Failed to dispatch job to worker {}: {}",
+                worker_id,
+                e
+            ));
         }
 
         info!(
@@ -463,7 +470,7 @@ impl JobDispatcher {
     ///
     /// ## Responsabilidad Delegada: Provisioning
     /// Delega la lógica de selección de provider y spec al WorkerProvisioningService.
-    async fn trigger_provisioning(&self) -> Result<()> {
+    async fn trigger_provisioning(&self) -> anyhow::Result<()> {
         let provisioning =
             self.provisioning_service
                 .as_ref()
@@ -485,9 +492,7 @@ impl JobDispatcher {
         // Get default spec and provision
         let spec = provisioning
             .default_worker_spec(&provider_id)
-            .ok_or_else(|| DomainError::InfrastructureError {
-                message: format!("No default spec for provider {}", provider_id),
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
 
         match provisioning.provision_worker(&provider_id, spec).await {
             Ok(result) => {
@@ -497,9 +502,7 @@ impl JobDispatcher {
                 );
                 Ok(())
             }
-            Err(e) => Err(DomainError::InfrastructureError {
-                message: format!("Failed to provision worker: {}", e),
-            }),
+            Err(e) => anyhow::bail!("Failed to provision worker: {}", e),
         }
     }
 
@@ -507,7 +510,7 @@ impl JobDispatcher {
     async fn select_provider_for_provisioning(
         &self,
         providers: &[hodei_server_domain::providers::ProviderConfig],
-    ) -> Result<ProviderId> {
+    ) -> anyhow::Result<ProviderId> {
         // Use scheduler to select best provider
         let providers_info: Vec<_> = providers
             .iter()
@@ -529,12 +532,7 @@ impl JobDispatcher {
 
         self.scheduler
             .select_provider_with_preferences(&dummy_job, &providers_info)
-            .ok_or_else(|| DomainError::ProviderNotFound {
-                provider_id: providers
-                    .first()
-                    .map(|p| p.id.clone())
-                    .unwrap_or_else(ProviderId::new),
-            })
+            .ok_or_else(|| anyhow::anyhow!("No provider found"))
     }
 
     /// Assign job atomically using Transactional Outbox Pattern
@@ -547,7 +545,7 @@ impl JobDispatcher {
         job_id: &hodei_server_domain::shared_kernel::JobId,
         worker_id: &WorkerId,
         job: &mut Job,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         info!(
             job_id = %job_id,
             worker_id = %worker_id,

@@ -30,7 +30,7 @@ impl CancelJobUseCase {
         }
     }
 
-    pub async fn execute(&self, job_id: JobId) -> Result<CancelJobResponse> {
+    pub async fn execute(&self, job_id: JobId) -> anyhow::Result<CancelJobResponse> {
         self.execute_with_context(job_id, None).await
     }
 
@@ -38,7 +38,7 @@ impl CancelJobUseCase {
         &self,
         job_id: JobId,
         ctx: Option<&RequestContext>,
-    ) -> Result<CancelJobResponse> {
+    ) -> anyhow::Result<CancelJobResponse> {
         let mut job = self
             .job_repository
             .find_by_id(&job_id)

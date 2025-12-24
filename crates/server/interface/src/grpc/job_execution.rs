@@ -8,7 +8,7 @@ use tracing::info;
 
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
-use hodei_server_domain::shared_kernel::{DomainError, JobId};
+use hodei_server_domain::shared_kernel::JobId;
 use uuid::Uuid;
 
 use hodei_jobs::{
@@ -22,6 +22,21 @@ use hodei_jobs::{
 
 use chrono::Utc;
 use prost_types;
+
+/// Convert anyhow::Error to tonic::Status
+fn error_to_status(err: impl std::fmt::Display) -> Status {
+    let err_str = err.to_string();
+    // Try to parse as DomainError for specific status mapping
+    if err_str.contains("not found") || err_str.contains("NotFound") {
+        Status::not_found(err_str)
+    } else if err_str.contains("not available") || err_str.contains("NotAvailable") {
+        Status::failed_precondition(err_str)
+    } else if err_str.contains("invalid") || err_str.contains("Invalid") {
+        Status::invalid_argument(err_str)
+    } else {
+        Status::internal(err_str)
+    }
+}
 
 #[derive(Clone)]
 pub struct JobExecutionServiceImpl {
@@ -62,18 +77,6 @@ impl JobExecutionServiceImpl {
         prost_types::Timestamp {
             seconds: now.timestamp(),
             nanos: now.timestamp_subsec_nanos() as i32,
-        }
-    }
-
-    fn to_status(err: DomainError) -> Status {
-        match err {
-            DomainError::JobNotFound { .. } => Status::not_found(err.to_string()),
-            DomainError::InvalidStateTransition { .. } => {
-                Status::failed_precondition(err.to_string())
-            }
-            DomainError::WorkerNotFound { .. } => Status::not_found(err.to_string()),
-            DomainError::WorkerNotAvailable { .. } => Status::failed_precondition(err.to_string()),
-            _ => Status::internal(err.to_string()),
         }
     }
 
@@ -264,7 +267,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .create_job_usecase
             .execute(create_request)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         info!("Queued job via gRPC: {}", result.job_id);
 
@@ -299,7 +302,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .worker_registry
             .get(&worker_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Worker not found"))?;
 
         let provider_id = worker.handle().provider_id.clone();
@@ -309,7 +312,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         let context = hodei_server_domain::jobs::ExecutionContext::new(
@@ -318,17 +321,17 @@ impl JobExecutionService for JobExecutionServiceImpl {
             provider_execution_id.clone(),
         );
         job.submit_to_provider(provider_id, context)
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         self.worker_registry
             .assign_to_job(&worker_id, job_id.clone())
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         self.job_repository
             .update(&job)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         Ok(Response::new(AssignJobResponse {
             success: true,
@@ -357,7 +360,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
@@ -371,11 +374,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
             ));
         }
 
-        job.mark_running().map_err(Self::to_status)?;
+        job.mark_running().map_err(error_to_status)?;
         self.job_repository
             .update(&job)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         Ok(Response::new(StartJobResponse {
             success: true,
@@ -400,7 +403,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
@@ -430,7 +433,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         self.job_repository
             .update(&job)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         Ok(Response::new(UpdateProgressResponse {
             success: true,
@@ -455,7 +458,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
@@ -475,12 +478,12 @@ impl JobExecutionService for JobExecutionServiceImpl {
             output: req.output,
             error_output: req.error_output,
         })
-        .map_err(Self::to_status)?;
+        .map_err(error_to_status)?;
 
         self.job_repository
             .update(&job)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         Ok(Response::new(CompleteJobResponse {
             success: true,
@@ -505,7 +508,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         if job
@@ -519,11 +522,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
             ));
         }
 
-        job.fail(req.error_message).map_err(Self::to_status)?;
+        job.fail(req.error_message).map_err(error_to_status)?;
         self.job_repository
             .update(&job)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         Ok(Response::new(FailJobResponse {
             success: true,
@@ -543,7 +546,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .cancel_job_usecase
             .execute(job_id)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         Ok(Response::new(CancelJobResponse {
             success: true,
@@ -563,7 +566,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_by_id(&job_id)
             .await
-            .map_err(Self::to_status)?
+            .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
         let definition = Self::map_job_to_definition(&job);
@@ -632,7 +635,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .job_repository
             .find_all(limit, offset)
             .await
-            .map_err(Self::to_status)?;
+            .map_err(error_to_status)?;
 
         let job_summaries = jobs.into_iter().map(Self::map_job_to_summary).collect();
 

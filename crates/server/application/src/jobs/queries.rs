@@ -25,7 +25,7 @@ impl GetJobStatusUseCase {
         Self { job_repository }
     }
 
-    pub async fn execute(&self, job_id: JobId) -> Result<TrackJobResponse> {
+    pub async fn execute(&self, job_id: JobId) -> anyhow::Result<TrackJobResponse> {
         let job = self
             .job_repository
             .find_by_id(&job_id)
