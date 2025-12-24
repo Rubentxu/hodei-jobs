@@ -6,7 +6,7 @@ use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::shared_kernel::{ProviderId, ProviderStatus, Result};
-use hodei_server_domain::workers::{ProviderError, WorkerProvider};
+use hodei_server_domain::workers::{ProviderError, WorkerProvider, WorkerProviderExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -193,7 +193,7 @@ where
                                 .await;
 
                             // Perform health check
-                            match provider.health_check().await {
+                            match provider.health_check_ext().await {
                                 Ok(health_status) => {
                                     let response_time = start.elapsed().as_secs_f64();
                                     consecutive_errors.insert(provider_id.clone(), 0);
@@ -365,7 +365,7 @@ where
     ) -> Result<hodei_server_domain::workers::HealthStatus> {
         for provider in &self.providers {
             if provider.provider_id() == provider_id {
-                return provider.health_check().await.map_err(|e| {
+                return provider.health_check_ext().await.map_err(|e| {
                     hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
                         message: format!("Health check failed: {}", e),
                     }
@@ -402,10 +402,15 @@ pub mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
+    use hodei_server_domain::workers::provider_api::{
+        WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
+        WorkerProviderIdentity,
+    };
     use hodei_server_domain::workers::{
         HealthStatus, ProviderCapabilities, ProviderError, ProviderType, WorkerHandle, WorkerSpec,
     };
     use hodei_server_domain::{DomainEvent, EventBusError};
+    use std::time::Duration;
 
     pub struct MockEventBus {
         published_events: Arc<tokio::sync::Mutex<Vec<DomainEvent>>>,
@@ -461,8 +466,8 @@ pub mod tests {
         }
     }
 
-    #[async_trait]
-    impl WorkerProvider for MockWorkerProvider {
+    // Implement ISP traits individually
+    impl WorkerProviderIdentity for MockWorkerProvider {
         fn provider_id(&self) -> &ProviderId {
             &self.provider_id
         }
@@ -476,7 +481,10 @@ pub mod tests {
                 std::sync::LazyLock::new(|| ProviderCapabilities::default());
             &CAPABILITIES
         }
+    }
 
+    #[async_trait]
+    impl WorkerLifecycle for MockWorkerProvider {
         async fn create_worker(
             &self,
             _spec: &WorkerSpec,
@@ -498,7 +506,10 @@ pub mod tests {
         ) -> std::result::Result<(), ProviderError> {
             unimplemented!()
         }
+    }
 
+    #[async_trait]
+    impl WorkerLogs for MockWorkerProvider {
         async fn get_worker_logs(
             &self,
             _handle: &WorkerHandle,
@@ -507,11 +518,62 @@ pub mod tests {
         {
             unimplemented!()
         }
+    }
 
+    impl WorkerCost for MockWorkerProvider {
+        fn estimate_cost(
+            &self,
+            _spec: &WorkerSpec,
+            _duration: Duration,
+        ) -> Option<hodei_server_domain::workers::CostEstimate> {
+            None
+        }
+
+        fn estimated_startup_time(&self) -> Duration {
+            Duration::from_secs(5)
+        }
+    }
+
+    #[async_trait]
+    impl WorkerHealth for MockWorkerProvider {
         async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
             Ok(self.health_status.clone())
         }
     }
+
+    impl WorkerEligibility for MockWorkerProvider {
+        fn can_fulfill(
+            &self,
+            _requirements: &hodei_server_domain::workers::JobRequirements,
+        ) -> bool {
+            true
+        }
+    }
+
+    impl WorkerMetrics for MockWorkerProvider {
+        fn get_performance_metrics(
+            &self,
+        ) -> hodei_server_domain::workers::ProviderPerformanceMetrics {
+            hodei_server_domain::workers::ProviderPerformanceMetrics::default()
+        }
+
+        fn record_worker_creation(&self, _startup_time: Duration, _success: bool) {}
+
+        fn get_startup_time_history(&self) -> Vec<Duration> {
+            Vec::new()
+        }
+
+        fn calculate_average_cost_per_hour(&self) -> f64 {
+            0.0
+        }
+
+        fn calculate_health_score(&self) -> f64 {
+            100.0
+        }
+    }
+
+    // Implement WorkerProvider as marker trait (combines all ISP traits)
+    impl WorkerProvider for MockWorkerProvider {}
 }
 
 #[cfg(test)]

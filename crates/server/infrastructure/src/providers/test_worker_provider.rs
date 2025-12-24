@@ -17,12 +17,15 @@
 //! ```
 
 use async_trait::async_trait;
+// Import the individual ISP traits
+use hodei_server_domain::workers::provider_api::{
+    HealthStatus, JobRequirements, LogEntry, ProviderCapabilities, ProviderError, ProviderFeature,
+    ProviderPerformanceMetrics, ResourceLimits, WorkerCost, WorkerEligibility, WorkerHealth,
+    WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProvider, WorkerProviderIdentity,
+};
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerState},
-    workers::provider_api::{
-        HealthStatus, LogEntry, ProviderCapabilities, ProviderError, ResourceLimits, WorkerProvider,
-    },
-    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
+    workers::{Architecture, CostEstimate, ProviderType, WorkerHandle, WorkerSpec},
 };
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -163,7 +166,7 @@ impl TestWorkerProviderBuilder {
             max_execution_time: Some(Duration::from_secs(86400)),
             persistent_storage: true,
             custom_networking: true,
-            features: HashMap::new(),
+            features: Vec::new(),
         }
     }
 }
@@ -293,7 +296,7 @@ impl TestWorkerProvider {
 }
 
 #[async_trait]
-impl WorkerProvider for TestWorkerProvider {
+impl WorkerProviderIdentity for TestWorkerProvider {
     fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
@@ -305,7 +308,11 @@ impl WorkerProvider for TestWorkerProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+}
 
+#[async_trait]
+#[async_trait]
+impl WorkerLifecycle for TestWorkerProvider {
     async fn create_worker(
         &self,
         spec: &WorkerSpec,
@@ -407,7 +414,10 @@ impl WorkerProvider for TestWorkerProvider {
         info!("Test worker {} destroyed successfully", handle.worker_id);
         Ok(())
     }
+}
 
+#[async_trait]
+impl WorkerLogs for TestWorkerProvider {
     async fn get_worker_logs(
         &self,
         _handle: &WorkerHandle,
@@ -419,7 +429,10 @@ impl WorkerProvider for TestWorkerProvider {
 
         Ok(vec![])
     }
+}
 
+#[async_trait]
+impl WorkerHealth for TestWorkerProvider {
     async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
         // Check if worker binary is executable
         let path = std::path::Path::new(&self.worker_binary_path);
@@ -437,6 +450,85 @@ impl WorkerProvider for TestWorkerProvider {
 
         let _workers = self.active_workers.read().await;
         Ok(HealthStatus::Healthy)
+    }
+}
+
+impl WorkerCost for TestWorkerProvider {
+    fn estimate_cost(&self, _spec: &WorkerSpec, _duration: Duration) -> Option<CostEstimate> {
+        None
+    }
+
+    fn estimated_startup_time(&self) -> Duration {
+        Duration::from_secs(1) // Very fast for test provider
+    }
+}
+
+impl WorkerEligibility for TestWorkerProvider {
+    fn can_fulfill(&self, requirements: &JobRequirements) -> bool {
+        // Test provider is very flexible - it can handle most test scenarios
+        // Check architecture compatibility
+        if let Some(required_arch) = &requirements.architecture {
+            if !self.capabilities.architectures.contains(required_arch) {
+                return false;
+            }
+        }
+
+        // Check resource requirements (test provider has generous limits)
+        if self.capabilities.max_resources.max_cpu_cores < requirements.resources.cpu_cores
+            || self.capabilities.max_resources.max_memory_bytes
+                < requirements.resources.memory_bytes
+        {
+            return false;
+        }
+
+        // Check GPU requirements (test provider doesn't support GPU)
+        if requirements.resources.gpu_count > 0 {
+            return false;
+        }
+
+        // Check required capabilities - test provider supports most basic capabilities
+        if !requirements.required_capabilities.is_empty() {
+            // Test provider supports: gpu_direct, mpi, rdma via Specialized feature
+            let has_specialized = self.capabilities.features.iter().any(|f| {
+                matches!(
+                    f,
+                    ProviderFeature::Specialized {
+                        supports_mpi: true,
+                        supports_gpu_direct: true,
+                        supports_rdma: true,
+                        ..
+                    }
+                )
+            });
+
+            if !has_specialized {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl WorkerMetrics for TestWorkerProvider {
+    fn get_performance_metrics(&self) -> ProviderPerformanceMetrics {
+        ProviderPerformanceMetrics::default()
+    }
+
+    fn record_worker_creation(&self, _startup_time: Duration, _success: bool) {
+        // No-op for test provider
+    }
+
+    fn get_startup_time_history(&self) -> Vec<Duration> {
+        Vec::new()
+    }
+
+    fn calculate_average_cost_per_hour(&self) -> f64 {
+        0.0
+    }
+
+    fn calculate_health_score(&self) -> f64 {
+        100.0
     }
 }
 
@@ -472,3 +564,8 @@ mod tests {
         }
     }
 }
+
+// Blanket implementation of WorkerProvider trait combining all ISP traits
+// This allows TestWorkerProvider to be used as dyn WorkerProvider
+#[async_trait]
+impl WorkerProvider for TestWorkerProvider {}

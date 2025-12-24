@@ -26,13 +26,14 @@ use tracing::{debug, error, info, warn};
 
 use crate::providers::metrics_collector::ProviderMetricsCollector;
 use hodei_server_domain::providers::DockerConfig;
-use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, WorkerState};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result};
 use hodei_server_domain::workers::{
-    Architecture, ProviderType, WorkerHandle, WorkerProvider, WorkerSpec,
+    Architecture, CostEstimate, HealthStatus, JobRequirements, LogEntry, LogLevel,
+    ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics, ProviderType,
+    ResourceLimits, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLifecycle,
+    WorkerLogs, WorkerMetrics, WorkerProvider, WorkerProviderIdentity, WorkerSpec,
 };
-use hodei_server_domain::workers::{
-    HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
-};
+use hodei_shared::WorkerState;
 
 /// Docker Provider for creating ephemeral worker containers
 ///
@@ -211,7 +212,7 @@ impl DockerProviderBuilder {
             max_execution_time: Some(Duration::from_secs(86400)),
             persistent_storage: true,
             custom_networking: true,
-            features: HashMap::new(),
+            features: Vec::new(),
         }
     }
 }
@@ -336,7 +337,7 @@ impl DockerProvider {
 }
 
 #[async_trait]
-impl WorkerProvider for DockerProvider {
+impl WorkerProviderIdentity for DockerProvider {
     fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
@@ -348,7 +349,10 @@ impl WorkerProvider for DockerProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+}
 
+#[async_trait]
+impl WorkerLifecycle for DockerProvider {
     async fn create_worker(
         &self,
         spec: &WorkerSpec,
@@ -462,7 +466,10 @@ impl WorkerProvider for DockerProvider {
         info!("Worker {} destroyed successfully", handle.worker_id);
         Ok(())
     }
+}
 
+#[async_trait]
+impl WorkerLogs for DockerProvider {
     async fn get_worker_logs(
         &self,
         handle: &WorkerHandle,
@@ -517,7 +524,10 @@ impl WorkerProvider for DockerProvider {
 
         Ok(logs)
     }
+}
 
+#[async_trait]
+impl WorkerHealth for DockerProvider {
     async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
         match self.client.ping().await {
             Ok(_) => {
@@ -529,12 +539,130 @@ impl WorkerProvider for DockerProvider {
             }),
         }
     }
+}
 
-    // ========================================
-    // MÉTRICAS REALES (nuevo)
-    // ========================================
+impl WorkerCost for DockerProvider {
+    fn estimate_cost(&self, _spec: &WorkerSpec, _duration: Duration) -> Option<CostEstimate> {
+        None
+    }
 
-    fn get_performance_metrics(&self) -> hodei_server_domain::workers::ProviderPerformanceMetrics {
+    fn estimated_startup_time(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+}
+
+impl WorkerEligibility for DockerProvider {
+    fn can_fulfill(&self, requirements: &JobRequirements) -> bool {
+        // Check architecture compatibility
+        if let Some(required_arch) = &requirements.architecture {
+            if !self.capabilities.architectures.contains(required_arch) {
+                return false;
+            }
+        }
+
+        // Check resource requirements
+        if self.capabilities.max_resources.max_cpu_cores < requirements.resources.cpu_cores
+            || self.capabilities.max_resources.max_memory_bytes
+                < requirements.resources.memory_bytes
+        {
+            return false;
+        }
+
+        // Check GPU requirements
+        if requirements.resources.gpu_count > 0 && !self.capabilities.gpu_support {
+            return false;
+        }
+
+        // Check required capabilities
+        // For typed features, we check if any feature matches the required capability
+        let has_required_capability = if requirements.required_capabilities.is_empty() {
+            true
+        } else {
+            // Check if any typed feature supports the required capability
+            let capability_check = |feat: &ProviderFeature| -> bool {
+                match feat {
+                    ProviderFeature::Gpu { .. } => requirements
+                        .required_capabilities
+                        .contains(&"gpu".to_string()),
+                    ProviderFeature::Network {
+                        custom_networking, ..
+                    } => {
+                        requirements
+                            .required_capabilities
+                            .contains(&"custom_networking".to_string())
+                            && *custom_networking
+                    }
+                    ProviderFeature::Storage { persistent, .. } => {
+                        (requirements
+                            .required_capabilities
+                            .contains(&"persistent_storage".to_string())
+                            || requirements
+                                .required_capabilities
+                                .contains(&"storage".to_string()))
+                            && *persistent
+                    }
+                    ProviderFeature::Runtime { name, versions, .. } => requirements
+                        .required_capabilities
+                        .iter()
+                        .any(|cap| cap == name || versions.iter().any(|v| cap == v)),
+                    ProviderFeature::Security {
+                        isolated_tenant, ..
+                    } => {
+                        requirements
+                            .required_capabilities
+                            .contains(&"isolated_tenant".to_string())
+                            && *isolated_tenant
+                    }
+                    ProviderFeature::Specialized {
+                        supports_mpi,
+                        supports_gpu_direct,
+                        supports_rdma,
+                        ..
+                    } => {
+                        (requirements
+                            .required_capabilities
+                            .contains(&"mpi".to_string())
+                            && *supports_mpi)
+                            || (requirements
+                                .required_capabilities
+                                .contains(&"gpu_direct".to_string())
+                                && *supports_gpu_direct)
+                            || (requirements
+                                .required_capabilities
+                                .contains(&"rdma".to_string())
+                                && *supports_rdma)
+                    }
+                    _ => false,
+                }
+            };
+            self.capabilities.features.iter().any(capability_check)
+        };
+
+        if !has_required_capability && !requirements.required_capabilities.is_empty() {
+            return false;
+        }
+
+        // Check allowed regions (empty means all regions allowed)
+        if !requirements.allowed_regions.is_empty() {
+            let provider_region = self
+                .capabilities
+                .regions
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            if !requirements.allowed_regions.contains(&provider_region)
+                && !requirements.allowed_regions.contains(&"*".to_string())
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl WorkerMetrics for DockerProvider {
+    fn get_performance_metrics(&self) -> ProviderPerformanceMetrics {
         self.metrics_collector.get_metrics()
     }
 
@@ -610,3 +738,12 @@ mod tests {
         ));
     }
 }
+
+// Blanket implementation of WorkerProvider trait combining all ISP traits
+// This allows DockerProvider to be used as dyn WorkerProvider
+#[async_trait]
+impl WorkerProvider for DockerProvider {}
+
+// ============================================================================
+// Docker Provider Builder
+// ============================================================================

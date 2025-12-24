@@ -14,7 +14,8 @@ pub mod metrics_collector;
 
 pub use docker::{DockerProvider, DockerProviderBuilder};
 pub use firecracker::{
-    FirecrackerConfig, FirecrackerConfigBuilder, FirecrackerNetworkConfig, FirecrackerProvider,
+    FirecrackerConfig, FirecrackerConfigBuilder, FirecrackerCreationGuard,
+    FirecrackerNetworkConfig, FirecrackerProvider, NetworkResources,
 };
 pub use kubernetes::{
     KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesProviderBuilder,

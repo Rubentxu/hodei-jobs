@@ -42,5 +42,6 @@ uuid = { workspace = true }
 async-stream = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 prometheus = { workspace = true }
+dashmap = "6.1"
 
 [dev-dependencies]

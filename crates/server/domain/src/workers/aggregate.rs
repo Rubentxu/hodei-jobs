@@ -3,6 +3,7 @@
 use crate::shared_kernel::{
     Aggregate, DomainError, JobId, ProviderId, Result, WorkerId, WorkerState,
 };
+use crate::workers::ProviderConfig;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -169,6 +170,22 @@ pub enum VolumeSpec {
 }
 
 /// Especificación para crear un worker on-demand
+///
+/// Esta estructura es agnóstica de la infraestructura. Para configuración
+/// específica del provider, use el campo `provider_config` con el patrón
+/// Extension Objects (EPIC-23).
+///
+/// # Example
+///
+/// ```ignore
+/// use hodei_server_domain::workers::{WorkerSpec, ProviderConfig, KubernetesConfigExt};
+///
+/// let k8s_config = KubernetesConfigExt::default();
+/// let provider_config = ProviderConfig::Kubernetes(k8s_config);
+///
+/// let spec = WorkerSpec::new("image:latest", "server:50051")
+///     .with_provider_config(provider_config);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerSpec {
     /// ID único para el worker
@@ -196,7 +213,14 @@ pub struct WorkerSpec {
     pub architecture: Architecture,
     /// Capabilities requeridas
     pub required_capabilities: Vec<String>,
-    /// Kubernetes-specific configuration
+    /// Provider-specific configuration using Extension Objects pattern
+    ///
+    /// Este campo reemplaza el uso de campos específicos de providers
+    /// (como `kubernetes`) y permite que `WorkerSpec` permanezca agnóstico
+    /// de la infraestructura.
+    #[serde(default)]
+    pub provider_config: Option<ProviderConfig>,
+    /// @deprecated Use `provider_config` instead. This field will be removed in a future version.
     #[serde(default)]
     pub kubernetes: KubernetesWorkerConfig,
 }
@@ -460,8 +484,30 @@ impl WorkerSpec {
             idle_timeout: Duration::from_secs(300),  // 5 minutos default
             architecture: Architecture::default(),
             required_capabilities: vec![],
+            provider_config: None,
             kubernetes: KubernetesWorkerConfig::default(),
         }
+    }
+
+    /// Set provider-specific configuration using Extension Objects pattern
+    ///
+    /// Este método permite configurar aspectos específicos del provider
+    /// sin contaminar `WorkerSpec` con campos de infraestructura.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use hodei_server_domain::workers::{ProviderConfig, KubernetesConfigExt, WorkerSpec};
+    ///
+    /// let k8s_config = KubernetesConfigExt::default();
+    /// let provider_config = ProviderConfig::Kubernetes(k8s_config);
+    ///
+    /// let spec = WorkerSpec::new("image:latest", "server:50051")
+    ///     .with_provider_config(provider_config);
+    /// ```
+    pub fn with_provider_config(mut self, config: ProviderConfig) -> Self {
+        self.provider_config = Some(config);
+        self
     }
 
     pub fn with_resources(mut self, resources: ResourceRequirements) -> Self {
@@ -489,7 +535,7 @@ impl WorkerSpec {
         self
     }
 
-    /// Add Kubernetes-specific annotation
+    /// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
     pub fn with_kubernetes_annotation(
         mut self,
         key: impl Into<String>,
@@ -499,7 +545,7 @@ impl WorkerSpec {
         self
     }
 
-    /// Add Kubernetes-specific custom label
+    /// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
     pub fn with_kubernetes_label(
         mut self,
         key: impl Into<String>,
@@ -511,7 +557,7 @@ impl WorkerSpec {
         self
     }
 
-    /// Add Kubernetes node selector
+    /// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
     pub fn with_kubernetes_node_selector(
         mut self,
         key: impl Into<String>,
@@ -523,19 +569,19 @@ impl WorkerSpec {
         self
     }
 
-    /// Set Kubernetes service account
+    /// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
     pub fn with_kubernetes_service_account(mut self, service_account: impl Into<String>) -> Self {
         self.kubernetes.service_account = Some(service_account.into());
         self
     }
 
-    /// Add Kubernetes init container
+    /// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
     pub fn with_kubernetes_init_container(mut self, container: KubernetesContainer) -> Self {
         self.kubernetes.init_containers.push(container);
         self
     }
 
-    /// Add Kubernetes sidecar container
+    /// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
     pub fn with_kubernetes_sidecar_container(mut self, container: KubernetesContainer) -> Self {
         self.kubernetes.sidecar_containers.push(container);
         self

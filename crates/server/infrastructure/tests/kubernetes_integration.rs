@@ -9,6 +9,10 @@
 //! 3. Apply manifests: kubectl apply -f deploy/kubernetes/
 //! 4. Run tests: HODEI_K8S_TEST=1 cargo test --test kubernetes_integration
 
+use hodei_server_domain::workers::provider_api::{
+    WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
+    WorkerProviderIdentity,
+};
 use hodei_server_domain::{
     shared_kernel::{WorkerId, WorkerState},
     workers::{HealthStatus, ResourceRequirements, WorkerHandle, WorkerProvider},

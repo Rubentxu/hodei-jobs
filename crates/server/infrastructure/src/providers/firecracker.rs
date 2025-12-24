@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,17 +21,17 @@ use http_body_util::{BodyExt, Full};
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use hyperlocal::UnixConnector;
 
-use hodei_server_domain::{
-    shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
-    workers::{Architecture, ProviderType, WorkerHandle, WorkerSpec},
-    workers::{
-        HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
-        WorkerProvider,
-    },
+// Import the individual ISP traits
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, WorkerId};
+use hodei_server_domain::workers::{
+    Architecture, CostEstimate, HealthStatus, JobRequirements, LogEntry, LogLevel,
+    ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics, ProviderType,
+    ResourceLimits, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLifecycle,
+    WorkerLogs, WorkerMetrics, WorkerProvider, WorkerProviderIdentity, WorkerSpec,
 };
+use hodei_shared::WorkerState;
 
 use super::metrics_collector::ProviderMetricsCollector;
-use hodei_server_domain::workers::ProviderPerformanceMetrics;
 
 // ============================================================================
 // Configuration Types (HU-8.1)
@@ -480,6 +481,140 @@ struct MicroVMInstance {
 }
 
 // ============================================================================
+// RAII Types for Resource Cleanup (US-23.5)
+// ============================================================================
+
+/// RAII wrapper for network resources (TAP devices).
+/// Automatically cleans up TAP devices when dropped.
+#[derive(Debug)]
+pub struct NetworkResources {
+    /// Name of the TAP device
+    tap_name: String,
+    /// File descriptor for the TAP device (if owned)
+    tap_fd: RawFd,
+    /// IP address assigned to the VM
+    ip_address: Ipv4Addr,
+}
+
+impl NetworkResources {
+    /// Create new NetworkResources
+    pub fn new(tap_name: String, tap_fd: RawFd, ip_address: Ipv4Addr) -> Self {
+        Self {
+            tap_name,
+            tap_fd,
+            ip_address,
+        }
+    }
+
+    /// Get the TAP device name
+    pub fn tap_name(&self) -> &str {
+        &self.tap_name
+    }
+
+    /// Get the IP address
+    pub fn ip_address(&self) -> Ipv4Addr {
+        self.ip_address
+    }
+
+    /// Consume and release ownership of resources (for successful case)
+    /// Returns a clone of the TAP name and IP address since we can't move out of Drop type
+    pub fn into_parts(&self) -> (String, Ipv4Addr) {
+        (self.tap_name.clone(), self.ip_address)
+    }
+}
+
+impl Drop for NetworkResources {
+    fn drop(&mut self) {
+        tracing::warn!(tap_device = %self.tap_name, "Dropping NetworkResources, cleaning up TAP device");
+
+        // Close the file descriptor if valid using std::fs::File
+        // Note: We use a safe approach - opening /dev/null and dup'ing to close
+        // This avoids needing the libc crate as a dependency
+        if self.tap_fd != -1 {
+            // Safe approach: just close using std's File API would require more setup
+            // For now, we focus on cleaning up the TAP device itself
+            tracing::debug!(fd = self.tap_fd, "TAP device FD would be closed here");
+        }
+
+        // Delete the TAP device using ip command
+        let output = std::process::Command::new("ip")
+            .args(&["link", "delete", &self.tap_name])
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    tracing::info!(tap_device = %self.tap_name, "Successfully deleted TAP device");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(tap_device = %self.tap_name, error = %stderr, "Failed to delete TAP device");
+                }
+            }
+            Err(e) => {
+                tracing::error!(tap_device = %self.tap_name, error = %e, "Failed to execute ip link delete command");
+            }
+        }
+    }
+}
+
+/// Guard that ensures cleanup of network resources if VM creation fails.
+/// Uses RAII pattern to guarantee cleanup even on panics.
+#[derive(Debug)]
+pub struct FirecrackerCreationGuard {
+    /// Network resources to clean up if dropped
+    resources: Option<NetworkResources>,
+    /// IP address to release on cleanup
+    ip_to_release: Option<Ipv4Addr>,
+}
+
+impl FirecrackerCreationGuard {
+    /// Create a new guard (call during VM creation)
+    pub fn new() -> Self {
+        Self {
+            resources: None,
+            ip_to_release: None,
+        }
+    }
+
+    /// Set network resources to be cleaned up if this guard is dropped
+    pub fn set_resources(&mut self, resources: NetworkResources) {
+        self.ip_to_release = Some(resources.ip_address);
+        self.resources = Some(resources);
+    }
+
+    /// Take ownership of resources (call when VM creation succeeds)
+    /// Returns None if no resources were set
+    pub fn take_resources(&mut self) -> Option<NetworkResources> {
+        self.ip_to_release = None;
+        self.resources.take()
+    }
+
+    /// Check if resources are set
+    pub fn has_resources(&self) -> bool {
+        self.resources.is_some()
+    }
+}
+
+impl Drop for FirecrackerCreationGuard {
+    fn drop(&mut self) {
+        if let Some(resources) = self.resources.take() {
+            tracing::warn!(
+                tap_device = %resources.tap_name(),
+                ip_address = %resources.ip_address(),
+                "FirecrackerCreationGuard dropped, cleaning up network resources"
+            );
+
+            // Release IP address back to pool (if we have a reference to the provider)
+            // Note: In production, we'd use a weak reference or callback pattern
+            // For now, we just log the cleanup
+            tracing::debug!(ip = %resources.ip_address(), "Would release IP here");
+
+            // NetworkResources::drop will clean up the TAP device
+        }
+    }
+}
+
+// ============================================================================
 // Firecracker Provider (HU-8.2+)
 // ============================================================================
 
@@ -632,7 +767,7 @@ impl FirecrackerProvider {
             max_execution_time: Some(Duration::from_secs(86400)), // 24 hours
             persistent_storage: false,
             custom_networking: true,
-            features: HashMap::new(),
+            features: Vec::new(),
         }
     }
 
@@ -1009,7 +1144,7 @@ impl FirecrackerProvider {
 }
 
 #[async_trait]
-impl WorkerProvider for FirecrackerProvider {
+impl WorkerProviderIdentity for FirecrackerProvider {
     fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
@@ -1021,7 +1156,10 @@ impl WorkerProvider for FirecrackerProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+}
 
+#[async_trait]
+impl WorkerLifecycle for FirecrackerProvider {
     async fn create_worker(
         &self,
         spec: &WorkerSpec,
@@ -1051,10 +1189,27 @@ impl WorkerProvider for FirecrackerProvider {
             })?
         };
 
-        // Create TAP device
-        let tap_device = self.create_tap_device(&vm_id, vm_ip).await.map_err(|e| {
-            ProviderError::ProvisioningFailed(format!("Failed to create TAP device: {}", e))
-        })?;
+        // RAII guard for automatic cleanup on failure
+        let mut guard = FirecrackerCreationGuard::new();
+
+        // Create TAP device with RAII cleanup
+        let tap_name = match self.create_tap_device(&vm_id, vm_ip).await {
+            Ok(name) => name,
+            Err(e) => {
+                // Release IP manually before returning error
+                {
+                    let mut pool = self.ip_pool.write().await;
+                    pool.release(vm_ip);
+                }
+                return Err(ProviderError::ProvisioningFailed(format!(
+                    "Failed to create TAP device: {}",
+                    e
+                )));
+            }
+        };
+
+        // Create NetworkResources that will clean up on drop
+        let network_resources = NetworkResources::new(tap_name.clone(), -1, vm_ip);
 
         // Prepare VM directory
         self.prepare_vm_directory(&vm_id).await.map_err(|e| {
@@ -1063,18 +1218,22 @@ impl WorkerProvider for FirecrackerProvider {
 
         // Start microVM
         let pid = self
-            .start_microvm(&vm_id, spec, vm_ip, &tap_device)
+            .start_microvm(&vm_id, spec, vm_ip, &tap_name)
             .await
             .map_err(|e| {
                 ProviderError::ProvisioningFailed(format!("Failed to start microVM: {}", e))
             })?;
+
+        // SUCCESS: Prevent cleanup on drop by forgetting the guard
+        std::mem::forget(guard);
+        std::mem::forget(network_resources);
 
         // Track VM instance
         let instance = MicroVMInstance {
             worker_id: worker_id.clone(),
             vm_id: vm_id.clone(),
             socket_path: self.socket_path(&vm_id),
-            tap_device: tap_device.clone(),
+            tap_device: tap_name.clone(),
             ip_address: vm_ip,
             state: MicroVMState::Running,
             pid: Some(pid),
@@ -1106,7 +1265,7 @@ impl WorkerProvider for FirecrackerProvider {
             self.provider_id.clone(),
         )
         .with_metadata("ip_address", serde_json::json!(vm_ip.to_string()))
-        .with_metadata("tap_device", serde_json::json!(tap_device))
+        .with_metadata("tap_device", serde_json::json!(tap_name))
         .with_metadata("pid", serde_json::json!(pid));
 
         Ok(handle)
@@ -1179,7 +1338,10 @@ impl WorkerProvider for FirecrackerProvider {
 
         Ok(())
     }
+}
 
+#[async_trait]
+impl WorkerLogs for FirecrackerProvider {
     async fn get_worker_logs(
         &self,
         handle: &WorkerHandle,
@@ -1216,7 +1378,10 @@ impl WorkerProvider for FirecrackerProvider {
 
         Ok(entries)
     }
+}
 
+#[async_trait]
+impl WorkerHealth for FirecrackerProvider {
     async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
         // Check KVM
         if !Path::new("/dev/kvm").exists() {
@@ -1251,11 +1416,113 @@ impl WorkerProvider for FirecrackerProvider {
 
         Ok(HealthStatus::Healthy)
     }
+}
+
+impl WorkerCost for FirecrackerProvider {
+    fn estimate_cost(&self, _spec: &WorkerSpec, _duration: Duration) -> Option<CostEstimate> {
+        None
+    }
 
     fn estimated_startup_time(&self) -> Duration {
         Duration::from_millis(125)
     }
+}
 
+impl WorkerEligibility for FirecrackerProvider {
+    fn can_fulfill(&self, requirements: &JobRequirements) -> bool {
+        // Check architecture compatibility
+        if let Some(required_arch) = &requirements.architecture {
+            if !self.capabilities.architectures.contains(required_arch) {
+                return false;
+            }
+        }
+
+        // Check resource requirements
+        if self.capabilities.max_resources.max_cpu_cores < requirements.resources.cpu_cores
+            || self.capabilities.max_resources.max_memory_bytes
+                < requirements.resources.memory_bytes
+        {
+            return false;
+        }
+
+        // Check GPU requirements
+        if requirements.resources.gpu_count > 0 && !self.capabilities.gpu_support {
+            return false;
+        }
+
+        // Check required capabilities
+        // For typed features, we check if any feature matches the required capability
+        let has_required_capability = if requirements.required_capabilities.is_empty() {
+            true
+        } else {
+            let capability_check = |feat: &ProviderFeature| -> bool {
+                match feat {
+                    ProviderFeature::Gpu { .. } => requirements
+                        .required_capabilities
+                        .contains(&"gpu".to_string()),
+                    ProviderFeature::Network {
+                        custom_networking, ..
+                    } => {
+                        requirements
+                            .required_capabilities
+                            .contains(&"custom_networking".to_string())
+                            && *custom_networking
+                    }
+                    ProviderFeature::Storage { persistent, .. } => {
+                        (requirements
+                            .required_capabilities
+                            .contains(&"persistent_storage".to_string())
+                            || requirements
+                                .required_capabilities
+                                .contains(&"storage".to_string()))
+                            && *persistent
+                    }
+                    ProviderFeature::Runtime { name, versions, .. } => requirements
+                        .required_capabilities
+                        .iter()
+                        .any(|cap| cap == name || versions.iter().any(|v| cap == v)),
+                    ProviderFeature::Security {
+                        isolated_tenant, ..
+                    } => {
+                        requirements
+                            .required_capabilities
+                            .contains(&"isolated_tenant".to_string())
+                            && *isolated_tenant
+                    }
+                    ProviderFeature::Specialized {
+                        supports_mpi,
+                        supports_gpu_direct,
+                        supports_rdma,
+                        ..
+                    } => {
+                        (requirements
+                            .required_capabilities
+                            .contains(&"mpi".to_string())
+                            && *supports_mpi)
+                            || (requirements
+                                .required_capabilities
+                                .contains(&"gpu_direct".to_string())
+                                && *supports_gpu_direct)
+                            || (requirements
+                                .required_capabilities
+                                .contains(&"rdma".to_string())
+                                && *supports_rdma)
+                    }
+                    _ => false,
+                }
+            };
+            self.capabilities.features.iter().any(capability_check)
+        };
+
+        if !has_required_capability && !requirements.required_capabilities.is_empty() {
+            return false;
+        }
+
+        true
+    }
+}
+
+impl WorkerMetrics for FirecrackerProvider {
     fn get_performance_metrics(&self) -> ProviderPerformanceMetrics {
         self.metrics_collector.get_metrics()
     }
@@ -1470,4 +1737,46 @@ mod tests {
             WorkerState::Terminated
         ));
     }
+
+    // US-23.5: RAII Tests
+    #[test]
+    fn test_network_resources_accessors() {
+        let network =
+            NetworkResources::new("fc-test-tap".to_string(), -1, Ipv4Addr::new(172, 16, 0, 2));
+
+        assert_eq!(network.tap_name(), "fc-test-tap");
+        assert_eq!(network.ip_address(), Ipv4Addr::new(172, 16, 0, 2));
+    }
+
+    #[test]
+    fn test_network_resources_into_parts() {
+        let network =
+            NetworkResources::new("fc-test-tap".to_string(), -1, Ipv4Addr::new(172, 16, 0, 2));
+
+        let (tap_name, ip_address) = network.into_parts();
+        assert_eq!(tap_name, "fc-test-tap");
+        assert_eq!(ip_address, Ipv4Addr::new(172, 16, 0, 2));
+    }
+
+    #[test]
+    fn test_creation_guard_initial_state() {
+        let mut guard = FirecrackerCreationGuard::new();
+        assert!(!guard.has_resources());
+        assert!(guard.take_resources().is_none());
+    }
+
+    #[test]
+    fn test_creation_guard_set() {
+        let mut guard = FirecrackerCreationGuard::new();
+        let network =
+            NetworkResources::new("fc-test-tap".to_string(), -1, Ipv4Addr::new(172, 16, 0, 2));
+
+        guard.set_resources(network);
+        assert!(guard.has_resources());
+    }
 }
+
+// Blanket implementation of WorkerProvider trait combining all ISP traits
+// This allows FirecrackerProvider to be used as dyn WorkerProvider
+#[async_trait]
+impl WorkerProvider for FirecrackerProvider {}

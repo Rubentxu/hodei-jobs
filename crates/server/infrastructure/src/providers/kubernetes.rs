@@ -20,12 +20,54 @@ use tracing::{debug, info, warn};
 use crate::providers::metrics_collector::ProviderMetricsCollector;
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
-    workers::{Architecture, ProviderType, VolumeSpec, WorkerHandle, WorkerSpec},
     workers::{
-        HealthStatus, LogEntry, LogLevel, ProviderCapabilities, ProviderError, ResourceLimits,
-        WorkerProvider,
+        Architecture, CostEstimate, GpuModel, GpuVendor, HealthStatus, JobRequirements, LogEntry,
+        LogLevel, ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics,
+        ProviderType, ResourceLimits, VolumeSpec, WorkerCost, WorkerEligibility, WorkerHandle,
+        WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProvider,
+        WorkerProviderIdentity, WorkerSpec,
     },
 };
+
+// ============================================================================
+// Helper function for getting Kubernetes config with backwards compatibility
+// ============================================================================
+
+/// Get Kubernetes configuration from WorkerSpec.
+///
+/// This function provides backwards compatibility by checking `provider_config`
+/// first (new Extension Objects pattern), then falling back to `spec.kubernetes`
+/// (deprecated field) for migration support.
+///
+/// Returns a tuple of (custom_labels, annotations, node_selector, service_account)
+fn get_k8s_config_labels<'a>(
+    spec: &'a WorkerSpec,
+) -> (
+    &'a HashMap<String, String>,
+    &'a HashMap<String, String>,
+    &'a HashMap<String, String>,
+    &'a Option<String>,
+) {
+    // Try new Extension Objects pattern first
+    if let Some(ref config) = spec.provider_config {
+        if let Some(k8s_config) = config.as_kubernetes() {
+            return (
+                &k8s_config.custom_labels,
+                &k8s_config.annotations,
+                &k8s_config.node_selector,
+                &k8s_config.service_account,
+            );
+        }
+    }
+
+    // Fall back to deprecated field for backwards compatibility
+    (
+        &spec.kubernetes.custom_labels,
+        &spec.kubernetes.annotations,
+        &spec.kubernetes.node_selector,
+        &spec.kubernetes.service_account,
+    )
+}
 
 // ============================================================================
 // Configuration Types (HU-7.1)
@@ -674,6 +716,19 @@ impl KubernetesProvider {
     }
 
     fn default_capabilities() -> ProviderCapabilities {
+        // Create typed GPU feature if supported
+        let gpu_feature = if true {
+            Some(ProviderFeature::Gpu {
+                vendor: GpuVendor::Nvidia,
+                models: vec![GpuModel::TeslaV100, GpuModel::TeslaT4],
+                max_count: 8,
+                cuda_support: true,
+                rocm_support: false,
+            })
+        } else {
+            None
+        };
+
         ProviderCapabilities {
             max_resources: ResourceLimits {
                 max_cpu_cores: 64.0,
@@ -696,7 +751,7 @@ impl KubernetesProvider {
             max_execution_time: Some(Duration::from_secs(86400)), // 24 hours
             persistent_storage: true,
             custom_networking: true,
-            features: HashMap::new(),
+            features: gpu_feature.into_iter().collect(),
         }
     }
 
@@ -718,6 +773,10 @@ impl KubernetesProvider {
     ) -> Pod {
         let pod_name = Self::pod_name(&spec.worker_id);
 
+        // Get K8s config (supports both new Extension Objects pattern and deprecated field)
+        let (custom_labels, annotations, _node_selector, _service_account) =
+            get_k8s_config_labels(spec);
+
         // Build labels
         let mut labels: BTreeMap<String, String> = self
             .config
@@ -737,12 +796,12 @@ impl KubernetesProvider {
         }
 
         // Add custom labels from Kubernetes config
-        for (k, v) in &spec.kubernetes.custom_labels {
+        for (k, v) in custom_labels {
             labels.insert(k.clone(), v.clone());
         }
 
         // Build annotations
-        let mut annotations: BTreeMap<String, String> = self
+        let mut annotations_map: BTreeMap<String, String> = self
             .config
             .base_annotations
             .iter()
@@ -750,8 +809,8 @@ impl KubernetesProvider {
             .collect();
 
         // Add custom annotations from Kubernetes config
-        for (k, v) in &spec.kubernetes.annotations {
-            annotations.insert(k.clone(), v.clone());
+        for (k, v) in annotations {
+            annotations_map.insert(k.clone(), v.clone());
         }
 
         // Build environment variables
@@ -889,13 +948,16 @@ impl KubernetesProvider {
         let sidecar_containers = self.build_sidecar_containers(spec);
 
         // Apply TTL annotation for cleanup - clone annotations before moving
-        let final_annotations = if let Some(ttl) = self.config.ttl_seconds_after_finished {
-            let mut ttl_annotations = annotations.clone();
-            ttl_annotations.insert("hodei.io/ttl-after-finished".to_string(), ttl.to_string());
-            ttl_annotations
-        } else {
-            annotations
-        };
+        let final_annotations: std::collections::BTreeMap<String, String> =
+            if let Some(ttl) = self.config.ttl_seconds_after_finished {
+                let mut ttl_annotations = annotations.clone();
+                ttl_annotations.insert("hodei.io/ttl-after-finished".to_string(), ttl.to_string());
+                ttl_annotations
+            } else {
+                annotations.clone()
+            }
+            .into_iter()
+            .collect();
 
         // Build Pod with TTL for cleanup
         let metadata = k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
@@ -1026,6 +1088,8 @@ impl KubernetesProvider {
         &self,
         spec: &WorkerSpec,
     ) -> Option<BTreeMap<String, String>> {
+        let (_custom_labels, _annotations, node_selector, _service_account) =
+            get_k8s_config_labels(spec);
         let mut selector = BTreeMap::new();
 
         // Add base node selector from config
@@ -1034,7 +1098,7 @@ impl KubernetesProvider {
         }
 
         // Add Kubernetes-specific node selector
-        for (k, v) in &spec.kubernetes.node_selector {
+        for (k, v) in node_selector {
             selector.insert(k.clone(), v.clone());
         }
 
@@ -1605,7 +1669,7 @@ impl KubernetesProvider {
 }
 
 #[async_trait]
-impl WorkerProvider for KubernetesProvider {
+impl WorkerProviderIdentity for KubernetesProvider {
     fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
@@ -1617,7 +1681,10 @@ impl WorkerProvider for KubernetesProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+}
 
+#[async_trait]
+impl WorkerLifecycle for KubernetesProvider {
     async fn create_worker(
         &self,
         spec: &WorkerSpec,
@@ -1751,7 +1818,10 @@ impl WorkerProvider for KubernetesProvider {
             ))),
         }
     }
+}
 
+#[async_trait]
+impl WorkerLogs for KubernetesProvider {
     async fn get_worker_logs(
         &self,
         handle: &WorkerHandle,
@@ -1785,7 +1855,10 @@ impl WorkerProvider for KubernetesProvider {
 
         Ok(entries)
     }
+}
 
+#[async_trait]
+impl WorkerHealth for KubernetesProvider {
     async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
         // Try to list pods in the namespace to verify connectivity
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
@@ -1803,16 +1876,114 @@ impl WorkerProvider for KubernetesProvider {
             }),
         }
     }
+}
+
+impl WorkerCost for KubernetesProvider {
+    fn estimate_cost(&self, _spec: &WorkerSpec, _duration: Duration) -> Option<CostEstimate> {
+        None
+    }
 
     fn estimated_startup_time(&self) -> Duration {
         Duration::from_secs(15)
     }
+}
 
-    // ========================================
-    // MÉTRICAS REALES (nuevo)
-    // ========================================
+impl WorkerEligibility for KubernetesProvider {
+    fn can_fulfill(&self, requirements: &JobRequirements) -> bool {
+        // Check architecture compatibility
+        if let Some(required_arch) = &requirements.architecture {
+            if !self.capabilities.architectures.contains(required_arch) {
+                return false;
+            }
+        }
 
-    fn get_performance_metrics(&self) -> hodei_server_domain::workers::ProviderPerformanceMetrics {
+        // Check resource requirements
+        if self.capabilities.max_resources.max_cpu_cores < requirements.resources.cpu_cores
+            || self.capabilities.max_resources.max_memory_bytes
+                < requirements.resources.memory_bytes
+        {
+            return false;
+        }
+
+        // Check GPU requirements
+        if requirements.resources.gpu_count > 0 && !self.capabilities.gpu_support {
+            return false;
+        }
+
+        // Check required capabilities
+        // For typed features, we check if any feature matches the required capability
+        let has_required_capability = if requirements.required_capabilities.is_empty() {
+            true
+        } else {
+            let capability_check = |feat: &ProviderFeature| -> bool {
+                match feat {
+                    ProviderFeature::Gpu { .. } => requirements
+                        .required_capabilities
+                        .contains(&"gpu".to_string()),
+                    ProviderFeature::Network {
+                        custom_networking, ..
+                    } => {
+                        requirements
+                            .required_capabilities
+                            .contains(&"custom_networking".to_string())
+                            && *custom_networking
+                    }
+                    ProviderFeature::Storage { persistent, .. } => {
+                        (requirements
+                            .required_capabilities
+                            .contains(&"persistent_storage".to_string())
+                            || requirements
+                                .required_capabilities
+                                .contains(&"storage".to_string()))
+                            && *persistent
+                    }
+                    ProviderFeature::Runtime { name, versions, .. } => requirements
+                        .required_capabilities
+                        .iter()
+                        .any(|cap| cap == name || versions.iter().any(|v| cap == v)),
+                    ProviderFeature::Security {
+                        isolated_tenant, ..
+                    } => {
+                        requirements
+                            .required_capabilities
+                            .contains(&"isolated_tenant".to_string())
+                            && *isolated_tenant
+                    }
+                    ProviderFeature::Specialized {
+                        supports_mpi,
+                        supports_gpu_direct,
+                        supports_rdma,
+                        ..
+                    } => {
+                        (requirements
+                            .required_capabilities
+                            .contains(&"mpi".to_string())
+                            && *supports_mpi)
+                            || (requirements
+                                .required_capabilities
+                                .contains(&"gpu_direct".to_string())
+                                && *supports_gpu_direct)
+                            || (requirements
+                                .required_capabilities
+                                .contains(&"rdma".to_string())
+                                && *supports_rdma)
+                    }
+                    _ => false,
+                }
+            };
+            self.capabilities.features.iter().any(capability_check)
+        };
+
+        if !has_required_capability && !requirements.required_capabilities.is_empty() {
+            return false;
+        }
+
+        true
+    }
+}
+
+impl WorkerMetrics for KubernetesProvider {
+    fn get_performance_metrics(&self) -> ProviderPerformanceMetrics {
         self.metrics_collector.get_metrics()
     }
 
@@ -2406,3 +2577,8 @@ mod tests {
         assert_eq!(pod_spec.containers[1].name, "worker");
     }
 }
+
+// Blanket implementation of WorkerProvider trait combining all ISP traits
+// This allows KubernetesProvider to be used as dyn WorkerProvider
+#[async_trait]
+impl WorkerProvider for KubernetesProvider {}

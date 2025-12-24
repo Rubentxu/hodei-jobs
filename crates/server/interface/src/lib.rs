@@ -1,6 +1,8 @@
 pub mod grpc;
-pub mod http; // Asumiendo que 'api' se renombró o se mantiene como legado
+pub mod http;
+pub mod log_buffer;
 pub mod log_persistence;
+pub mod mappers;
 
 // Re-exports
 pub use axum;

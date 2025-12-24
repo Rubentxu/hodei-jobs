@@ -153,3 +153,7 @@ scripts/maven_job_with_logs.sh
 web-stich/
 *.txt
 *.csv
+
+AGENTS.md
+CLAUDE.md
+.claude/

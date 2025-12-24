@@ -9,6 +9,10 @@
 //! 3. Prepare kernel and rootfs images
 //! 4. Run tests: HODEI_FC_TEST=1 cargo test --test firecracker_integration
 
+use hodei_server_domain::workers::provider_api::{
+    WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
+    WorkerProviderIdentity,
+};
 use hodei_server_domain::{
     shared_kernel::{WorkerId, WorkerState},
     workers::{HealthStatus, WorkerHandle, WorkerProvider},

@@ -9,6 +9,10 @@
 //! - Kubernetes tests: HODEI_K8S_TEST=1 cargo test --test multi_provider_integration test_kubernetes_provider
 //! - Both providers: HODEI_K8S_TEST=1 cargo test --test multi_provider_integration
 
+use hodei_server_domain::workers::provider_api::{
+    WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
+    WorkerProviderIdentity,
+};
 use hodei_server_domain::{
     jobs::Job,
     jobs::JobSpec,
