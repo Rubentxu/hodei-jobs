@@ -726,29 +726,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_utilization() {
+        // Test utilization calculation without triggering eviction loops
         let config = GlobalLogBufferConfig {
             max_bytes: 1000,
-            backpressure_timeout: Duration::ZERO, // Disable long wait in tests
+            eviction_threshold_percent: 100, // Never trigger eviction in test
             ..Default::default()
         };
         let buffer = GlobalLogBuffer::new(config, None);
 
-        // Push entries until we reach capacity
-        let mut pushed = 0;
-        while let Ok(_) = buffer
-            .push(
-                "job-1",
-                LogBufferEntry::new("x".repeat(100), false, None, pushed as u64),
-            )
-            .await
-        {
-            pushed += 1;
-            if pushed > 100 {
-                break; // Safety limit
-            }
+        // Push a few entries to different jobs
+        for i in 0..3 {
+            let entry = LogBufferEntry::new(
+                format!("Test line {}", i),
+                false,
+                Some(chrono::Utc::now().timestamp()),
+                i as u64,
+            );
+            buffer.push(&format!("job-{}", i), entry).await.unwrap();
         }
 
+        // Verify utilization is calculated correctly
         let utilization = buffer.utilization_percent();
-        assert!(utilization >= 0.0 && utilization <= 100.0);
+        assert!(
+            utilization >= 0.0,
+            "utilization should be >= 0, got {}",
+            utilization
+        );
+        assert!(
+            utilization <= 100.0,
+            "utilization should be <= 100, got {}",
+            utilization
+        );
+
+        // Utilization should be small with few entries
+        assert!(
+            utilization < 10.0,
+            "utilization should be small with few entries, got {}",
+            utilization
+        );
     }
 }
