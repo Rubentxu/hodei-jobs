@@ -737,17 +737,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ gRPC-Web support enabled");
     info!("  ✓ Context interceptor enabled");
 
-    // Start HTTP API server (Background)
-    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "3000".to_string());
-    let http_addr: SocketAddr = format!("0.0.0.0:{}", http_port).parse()?;
-
-    tokio::spawn(async move {
-        info!("Starting HTTP API server on {}", http_addr);
-        if let Err(e) = hodei_server_interface::http::start_server(http_addr).await {
-            tracing::error!("HTTP server failed: {}", e);
-        }
-    });
-
     // Build and start gRPC server
     Server::builder()
         .accept_http1(true)
