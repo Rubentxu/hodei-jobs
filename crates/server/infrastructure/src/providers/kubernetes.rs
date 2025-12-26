@@ -1092,102 +1092,120 @@ impl KubernetesProvider {
         }
     }
 
-    /// Build Kubernetes volumes from VolumeSpec
+    /// Build Kubernetes volumes from WorkerSpec.
+    /// Always includes a default emptyDir tmpfs volume for worker execution
+    /// (needed for /tmp, secrets, and other writable areas when rootfs is read-only).
     fn build_volumes(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Volume>> {
-        if spec.volumes.is_empty() {
-            return None;
-        }
+        // Always include a default emptyDir tmpfs volume for worker execution
+        let mut volumes = vec![k8s_openapi::api::core::v1::Volume {
+            name: "hodei-tmp".to_string(),
+            empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
+                medium: Some("Memory".to_string()), // tmpfs for better performance
+                size_limit: Some(k8s_openapi::apimachinery::pkg::api::resource::Quantity(
+                    "512Mi".to_string(),
+                )),
+            }),
+            ..Default::default()
+        }];
 
-        let volumes: Vec<k8s_openapi::api::core::v1::Volume> = spec
-            .volumes
-            .iter()
-            .map(|vol_spec| match vol_spec {
+        // Add volumes from spec
+        for vol_spec in &spec.volumes {
+            match vol_spec {
                 VolumeSpec::Persistent {
                     name,
                     claim_name,
                     read_only: _,
-                } => k8s_openapi::api::core::v1::Volume {
-                    name: name.clone(),
-                    persistent_volume_claim: Some(
-                        k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
-                            claim_name: claim_name.clone(),
-                            read_only: None,
-                        },
-                    ),
-                    ..Default::default()
-                },
-                VolumeSpec::Ephemeral { name, size_limit } => k8s_openapi::api::core::v1::Volume {
-                    name: name.clone(),
-                    empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
-                        medium: None,
-                        size_limit: size_limit.map(|s| {
-                            k8s_openapi::apimachinery::pkg::api::resource::Quantity(format!(
-                                "{}Mi",
-                                s / (1024 * 1024)
-                            ))
+                } => {
+                    volumes.push(k8s_openapi::api::core::v1::Volume {
+                        name: name.clone(),
+                        persistent_volume_claim: Some(
+                            k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
+                                claim_name: claim_name.clone(),
+                                read_only: None,
+                            },
+                        ),
+                        ..Default::default()
+                    });
+                }
+                VolumeSpec::Ephemeral { name, size_limit } => {
+                    volumes.push(k8s_openapi::api::core::v1::Volume {
+                        name: name.clone(),
+                        empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
+                            medium: None,
+                            size_limit: size_limit.map(|s| {
+                                k8s_openapi::apimachinery::pkg::api::resource::Quantity(format!(
+                                    "{}Mi",
+                                    s / (1024 * 1024)
+                                ))
+                            }),
                         }),
-                    }),
-                    ..Default::default()
-                },
+                        ..Default::default()
+                    });
+                }
                 VolumeSpec::HostPath {
                     name,
                     path,
                     read_only: _,
-                } => k8s_openapi::api::core::v1::Volume {
-                    name: name.clone(),
-                    host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
-                        path: path.clone(),
-                        type_: None,
-                    }),
-                    ..Default::default()
-                },
-            })
-            .collect();
+                } => {
+                    volumes.push(k8s_openapi::api::core::v1::Volume {
+                        name: name.clone(),
+                        host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
+                            path: path.clone(),
+                            type_: None,
+                        }),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
 
         Some(volumes)
     }
 
-    /// Build Kubernetes volume mounts from VolumeSpec
+    /// Build Kubernetes volume mounts from WorkerSpec.
+    /// Always includes a mount for the default hodei-tmp volume.
     fn build_volume_mounts(
         &self,
         spec: &WorkerSpec,
     ) -> Option<Vec<k8s_openapi::api::core::v1::VolumeMount>> {
-        if spec.volumes.is_empty() {
-            return None;
+        // Always include mount for default tmp volume
+        let mut mounts = vec![k8s_openapi::api::core::v1::VolumeMount {
+            name: "hodei-tmp".to_string(),
+            mount_path: "/tmp/hodei".to_string(),
+            read_only: Some(false),
+            ..Default::default()
+        }];
+
+        // Add mounts for spec volumes
+        for vol_spec in &spec.volumes {
+            let (name, read_only) = match vol_spec {
+                VolumeSpec::Persistent {
+                    name,
+                    claim_name: _,
+                    read_only,
+                } => (name.clone(), *read_only),
+                VolumeSpec::Ephemeral {
+                    name,
+                    size_limit: _,
+                } => (name.clone(), false),
+                VolumeSpec::HostPath {
+                    name,
+                    path: _,
+                    read_only,
+                } => (name.clone(), *read_only),
+            };
+
+            let mount_name = name.clone();
+            mounts.push(k8s_openapi::api::core::v1::VolumeMount {
+                name,
+                mount_path: format!("/volumes/{}", mount_name),
+                read_only: Some(read_only),
+                sub_path: None,
+                sub_path_expr: None,
+                mount_propagation: None,
+                recursive_read_only: None,
+            });
         }
-
-        let mounts: Vec<k8s_openapi::api::core::v1::VolumeMount> = spec
-            .volumes
-            .iter()
-            .map(|vol_spec| {
-                let (name, read_only) = match vol_spec {
-                    VolumeSpec::Persistent {
-                        name,
-                        claim_name: _,
-                        read_only,
-                    } => (name.clone(), *read_only),
-                    VolumeSpec::Ephemeral {
-                        name,
-                        size_limit: _,
-                    } => (name.clone(), false),
-                    VolumeSpec::HostPath {
-                        name,
-                        path: _,
-                        read_only,
-                    } => (name.clone(), *read_only),
-                };
-
-                k8s_openapi::api::core::v1::VolumeMount {
-                    name: name.clone(),
-                    mount_path: format!("/volumes/{}", name),
-                    read_only: Some(read_only),
-                    sub_path: None,
-                    sub_path_expr: None,
-                    mount_propagation: None,
-                    recursive_read_only: None,
-                }
-            })
-            .collect();
 
         Some(mounts)
     }
