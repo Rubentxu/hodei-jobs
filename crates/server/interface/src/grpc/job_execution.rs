@@ -399,6 +399,27 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 cpu_cores,
                 memory_bytes,
                 disk_bytes,
+                // Extract scheduling preferences (BUG FIX: provider selection)
+                preferred_provider: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.preferred_provider.clone())
+                    .filter(|p| !p.is_empty()),
+                preferred_region: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.preferred_region.clone())
+                    .filter(|r| !r.is_empty()),
+                required_labels: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.required_labels.clone())
+                    .filter(|m| !m.is_empty()),
+                required_annotations: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.required_annotations.clone())
+                    .filter(|m| !m.is_empty()),
             },
             correlation_id,
             actor,

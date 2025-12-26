@@ -972,11 +972,29 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 // Or should we only publish Registered for clean starts?
                 // The requirements imply we want to track "Recovery Failed" distinct from "Registered".
                 // Let's keep publishing Registered so systems relying on it to know a worker is UP still work.
+
+                // Get provider_id from registry to ensure correct provider_id in event
+                let provider_id = if let Some(registry) = self.worker_registry() {
+                    if let Ok(Some(worker)) = registry
+                        .get(&WorkerId(
+                            uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
+                        ))
+                        .await
+                    {
+                        Some(worker.handle().provider_id.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 let event = DomainEvent::WorkerRegistered {
                     worker_id: hodei_server_domain::shared_kernel::WorkerId(
                         uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
                     ),
-                    provider_id: hodei_server_domain::shared_kernel::ProviderId::new(),
+                    provider_id: provider_id
+                        .unwrap_or_else(|| hodei_server_domain::shared_kernel::ProviderId::new()),
                     occurred_at: Utc::now(),
                     correlation_id: ctx.correlation_id_owned(),
                     actor: ctx.actor_owned(),

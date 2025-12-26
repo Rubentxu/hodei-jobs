@@ -256,6 +256,27 @@ impl SchedulerService for SchedulerServiceImpl {
                 cpu_cores: None,
                 memory_bytes: None,
                 disk_bytes: None,
+                // Scheduling preferences (may be None for internal scheduling)
+                preferred_provider: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.preferred_provider.clone())
+                    .filter(|p| !p.is_empty()),
+                preferred_region: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.preferred_region.clone())
+                    .filter(|r| !r.is_empty()),
+                required_labels: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.required_labels.clone())
+                    .filter(|m| !m.is_empty()),
+                required_annotations: definition
+                    .scheduling
+                    .as_ref()
+                    .map(|s| s.required_annotations.clone())
+                    .filter(|m| !m.is_empty()),
             },
             correlation_id: None,
             actor: None,
