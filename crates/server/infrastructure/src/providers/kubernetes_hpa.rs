@@ -2,12 +2,10 @@
 ///
 /// This module provides automatic scaling of worker deployments based on queue depth
 /// and custom metrics.
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use tracing::info;
 
-use hodei_server_domain::shared_kernel::{ProviderId, Result};
+use hodei_server_domain::shared_kernel::ProviderId;
 
 /// HPA Configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

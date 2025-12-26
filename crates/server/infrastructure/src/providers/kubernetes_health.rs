@@ -7,8 +7,6 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::{Api, Client};
 
 const DEFAULT_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-const READINESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
-const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Health check result
 #[derive(Debug, Clone)]
@@ -29,7 +27,7 @@ pub enum HealthStatus {
 
 /// Extended health checks for Kubernetes provider
 pub struct KubernetesHealthChecker {
-    provider_id: ProviderId,
+    _provider_id: ProviderId,
     client: Client,
     namespace: String,
 }
@@ -38,7 +36,7 @@ impl KubernetesHealthChecker {
     /// Create a new health checker
     pub fn new(provider_id: ProviderId, client: Client, namespace: String) -> Self {
         Self {
-            provider_id,
+            _provider_id: provider_id,
             client,
             namespace,
         }

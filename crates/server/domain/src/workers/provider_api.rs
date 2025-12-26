@@ -465,7 +465,7 @@ impl<T: AsRef<str>> StateMapper<T> for DockerStateMapper {
     }
 
     fn from_worker_state(&self, state: WorkerState) -> T {
-        let s: &str = match state {
+        let _s: &str = match state {
             WorkerState::Creating | WorkerState::Connecting | WorkerState::Busy => "created",
             WorkerState::Ready => "running",
             WorkerState::Draining => "paused",

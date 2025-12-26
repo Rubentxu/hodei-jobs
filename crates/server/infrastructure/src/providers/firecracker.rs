@@ -674,7 +674,6 @@ impl FirecrackerProvider {
         provider_id: ProviderId,
         config: FirecrackerConfig,
     ) -> Result<Self> {
-        let config_clone = config.clone();
         let ip_pool = IpPool::from_cidr(&config.network.subnet)?;
         let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
 
@@ -1190,7 +1189,7 @@ impl WorkerLifecycle for FirecrackerProvider {
         };
 
         // RAII guard for automatic cleanup on failure
-        let mut guard = FirecrackerCreationGuard::new();
+        let guard = FirecrackerCreationGuard::new();
 
         // Create TAP device with RAII cleanup
         let tap_name = match self.create_tap_device(&vm_id, vm_ip).await {

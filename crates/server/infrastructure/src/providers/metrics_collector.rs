@@ -32,8 +32,6 @@ struct ProviderMetrics {
     pub last_update: Instant,
     /// Costos calculados por hora
     pub cost_per_hour: f64,
-    /// Throughput (workers/min)
-    pub workers_per_minute: f64,
     /// Errores por minuto
     pub errors_per_minute: f64,
     /// Uso promedio de recursos
@@ -48,7 +46,6 @@ impl ProviderMetrics {
             failed_creations: 0,
             last_update: Instant::now(),
             cost_per_hour: 0.0,
-            workers_per_minute: 0.0,
             errors_per_minute: 0.0,
             avg_resource_usage: ResourceUsageStats::default(),
         }

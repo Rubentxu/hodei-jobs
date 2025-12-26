@@ -592,7 +592,6 @@ pub struct KubernetesProvider {
     client: Client,
     config: KubernetesConfig,
     capabilities: ProviderCapabilities,
-    hpa_manager: Option<super::kubernetes_hpa::KubernetesHPAManager>,
     /// Metrics collector for performance tracking
     metrics_collector: ProviderMetricsCollector,
 }
@@ -610,22 +609,12 @@ impl KubernetesProvider {
         let capabilities = Self::default_capabilities();
         let provider_id = ProviderId::new();
         let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
-        let temp_provider = Self {
-            provider_id: provider_id.clone(),
-            client: client.clone(),
-            config: config.clone(),
-            capabilities: capabilities.clone(),
-            hpa_manager: None,
-            metrics_collector: metrics_collector.clone(),
-        };
-        let hpa_manager = temp_provider.create_hpa_manager();
 
         Ok(Self {
             provider_id,
             client,
             config,
             capabilities,
-            hpa_manager,
             metrics_collector,
         })
     }
@@ -638,22 +627,12 @@ impl KubernetesProvider {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
         let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
-        let temp_provider = Self {
-            provider_id: provider_id.clone(),
-            client: client.clone(),
-            config: config.clone(),
-            capabilities: capabilities.clone(),
-            hpa_manager: None,
-            metrics_collector: metrics_collector.clone(),
-        };
-        let hpa_manager = temp_provider.create_hpa_manager();
 
         Ok(Self {
             provider_id,
             client,
             config,
             capabilities,
-            hpa_manager,
             metrics_collector,
         })
     }
@@ -704,17 +683,6 @@ impl KubernetesProvider {
         })
     }
 
-    fn create_hpa_manager(&self) -> Option<super::kubernetes_hpa::KubernetesHPAManager> {
-        if self.config.enable_hpa {
-            Some(super::kubernetes_hpa::KubernetesHPAManager::new(
-                self.provider_id.clone(),
-                self.config.hpa_config.clone(),
-            ))
-        } else {
-            None
-        }
-    }
-
     fn default_capabilities() -> ProviderCapabilities {
         // Create typed GPU feature if supported
         let gpu_feature = if true {
@@ -758,11 +726,6 @@ impl KubernetesProvider {
     /// Generate Pod name from worker ID
     fn pod_name(worker_id: &WorkerId) -> String {
         format!("hodei-worker-{}", worker_id)
-    }
-
-    /// Create Pod spec from WorkerSpec
-    fn create_pod_spec(&self, spec: &WorkerSpec, otp_token: Option<&str>) -> Pod {
-        self.create_pod_spec_with_namespace(spec, otp_token, &self.config.namespace)
     }
 
     fn create_pod_spec_with_namespace(
@@ -1034,52 +997,6 @@ impl KubernetesProvider {
             Some("intel-xe") => "intel.com/xe".to_string(),
             // Default to nvidia.com/gpu for unknown types
             _ => "nvidia.com/gpu".to_string(),
-        }
-    }
-
-    /// Build node selector with GPU requirements
-    fn build_node_selector(&self, spec: &WorkerSpec) -> Option<BTreeMap<String, String>> {
-        let mut selector = BTreeMap::new();
-
-        // Add base node selector from config
-        for (k, v) in &self.config.node_selector {
-            selector.insert(k.clone(), v.clone());
-        }
-
-        // Add GPU-specific node selector
-        if spec.resources.gpu_count > 0 {
-            match spec.resources.gpu_type.as_deref() {
-                Some("nvidia-tesla-v100") => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-v100".to_string());
-                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
-                }
-                Some("nvidia-tesla-t4") => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
-                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
-                }
-                Some("nvidia-tesla-a100") => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-a100".to_string());
-                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
-                }
-                Some("amd-mi100") => {
-                    selector.insert("accelerator".to_string(), "amd-mi100".to_string());
-                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
-                }
-                Some("amd-mi200") => {
-                    selector.insert("accelerator".to_string(), "amd-mi200".to_string());
-                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
-                }
-                // Fallback for unknown GPU types
-                _ => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
-                }
-            }
-        }
-
-        if selector.is_empty() {
-            None
-        } else {
-            Some(selector)
         }
     }
 
