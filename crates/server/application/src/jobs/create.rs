@@ -27,6 +27,11 @@ pub struct JobSpecRequest {
     pub cpu_cores: Option<f64>,
     pub memory_bytes: Option<i64>,
     pub disk_bytes: Option<i64>,
+    /// Scheduling preferences for provider selection
+    pub preferred_provider: Option<String>,
+    pub preferred_region: Option<String>,
+    pub required_labels: Option<std::collections::HashMap<String, String>>,
+    pub required_annotations: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +312,31 @@ impl CreateJobUseCase {
             }
         }
 
+        // Configurar preferencias de scheduling (BUG FIX: provider selection)
+        if let Some(provider) = request.preferred_provider {
+            if !provider.is_empty() {
+                spec.preferences.preferred_provider = Some(provider);
+            }
+        }
+
+        if let Some(region) = request.preferred_region {
+            if !region.is_empty() {
+                spec.preferences.preferred_region = Some(region);
+            }
+        }
+
+        if let Some(labels) = request.required_labels {
+            if !labels.is_empty() {
+                spec.preferences.required_labels = labels;
+            }
+        }
+
+        if let Some(annotations) = request.required_annotations {
+            if !annotations.is_empty() {
+                spec.preferences.required_annotations = annotations;
+            }
+        }
+
         Ok(spec)
     }
 }
@@ -529,6 +559,10 @@ mod tests {
             cpu_cores: Some(0.5),
             memory_bytes: Some(512 * 1024 * 1024),
             disk_bytes: Some(1024 * 1024 * 1024),
+            preferred_provider: None,
+            preferred_region: None,
+            required_labels: None,
+            required_annotations: None,
         };
 
         let request = CreateJobRequest {
@@ -731,5 +765,128 @@ mod tests {
             Some("system-correlation".to_string())
         );
         assert_eq!(metadata.actor, Some("system:worker_monitor".to_string()));
+    }
+
+    // ========================================================================
+    // Provider Selection Bug Fix Tests (Issue: --provider kubernetes ignored)
+    // ========================================================================
+
+    #[test]
+    fn test_scheduling_preferences_propagation_to_job_spec() {
+        // Test that preferred_provider from JobSpecRequest is correctly
+        // propagated to JobSpec during conversion
+        let spec_request = JobSpecRequest {
+            command: vec!["echo".to_string()],
+            image: None,
+            env: None,
+            timeout_ms: None,
+            working_dir: None,
+            cpu_cores: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            preferred_provider: Some("kubernetes".to_string()),
+            preferred_region: Some("us-east-1".to_string()),
+            required_labels: Some(std::collections::HashMap::from([(
+                "env".to_string(),
+                "prod".to_string(),
+            )])),
+            required_annotations: Some(std::collections::HashMap::from([(
+                "team".to_string(),
+                "platform".to_string(),
+            )])),
+        };
+
+        // Create a mock use case to test convert_to_job_spec
+        let use_case = CreateJobUseCase::new(
+            Arc::new(MockJobRepository),
+            Arc::new(MockJobQueue),
+            Arc::new(MockEventBus::new()),
+        );
+
+        let job_spec = use_case.convert_to_job_spec(spec_request).unwrap();
+
+        // Verify scheduling preferences were propagated
+        assert_eq!(
+            job_spec.preferences.preferred_provider,
+            Some("kubernetes".to_string())
+        );
+        assert_eq!(
+            job_spec.preferences.preferred_region,
+            Some("us-east-1".to_string())
+        );
+        assert_eq!(
+            job_spec.preferences.required_labels.get("env"),
+            Some(&"prod".to_string())
+        );
+        assert_eq!(
+            job_spec.preferences.required_annotations.get("team"),
+            Some(&"platform".to_string())
+        );
+    }
+
+    #[test]
+    fn test_empty_preferred_provider_is_ignored() {
+        // Test that empty strings are filtered out
+        let spec_request = JobSpecRequest {
+            command: vec!["echo".to_string()],
+            image: None,
+            env: None,
+            timeout_ms: None,
+            working_dir: None,
+            cpu_cores: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            preferred_provider: Some("".to_string()),
+            preferred_region: Some("".to_string()),
+            required_labels: Some(std::collections::HashMap::new()),
+            required_annotations: Some(std::collections::HashMap::new()),
+        };
+
+        let use_case = CreateJobUseCase::new(
+            Arc::new(MockJobRepository),
+            Arc::new(MockJobQueue),
+            Arc::new(MockEventBus::new()),
+        );
+
+        let job_spec = use_case.convert_to_job_spec(spec_request).unwrap();
+
+        // Empty strings should be ignored (None)
+        assert_eq!(job_spec.preferences.preferred_provider, None);
+        assert_eq!(job_spec.preferences.preferred_region, None);
+        assert!(job_spec.preferences.required_labels.is_empty());
+        assert!(job_spec.preferences.required_annotations.is_empty());
+    }
+
+    #[test]
+    fn test_none_preferences_are_ignored() {
+        // Test that None values don't override defaults
+        let spec_request = JobSpecRequest {
+            command: vec!["echo".to_string()],
+            image: None,
+            env: None,
+            timeout_ms: None,
+            working_dir: None,
+            cpu_cores: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            preferred_provider: None,
+            preferred_region: None,
+            required_labels: None,
+            required_annotations: None,
+        };
+
+        let use_case = CreateJobUseCase::new(
+            Arc::new(MockJobRepository),
+            Arc::new(MockJobQueue),
+            Arc::new(MockEventBus::new()),
+        );
+
+        let job_spec = use_case.convert_to_job_spec(spec_request).unwrap();
+
+        // None values should not set anything
+        assert_eq!(job_spec.preferences.preferred_provider, None);
+        assert_eq!(job_spec.preferences.preferred_region, None);
+        assert!(job_spec.preferences.required_labels.is_empty());
+        assert!(job_spec.preferences.required_annotations.is_empty());
     }
 }
