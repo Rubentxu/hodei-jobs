@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// Importar tipos de error de hodei_shared
+use hodei_shared::states::{
+    DispatchFailureReason, JobFailureReason, ProviderErrorType, ProvisioningFailureReason,
+    SchedulingFailureReason,
+};
+
 /// Representa un evento de dominio que ha ocurrido en el sistema.
 /// Los eventos son hechos inmutables.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -282,6 +288,85 @@ pub enum DomainEvent {
         worker_id: WorkerId,
         provider_id: ProviderId,
         idle_since: DateTime<Utc>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Un job ha fallado durante la ejecución con información detallada del error
+    ///
+    /// Este evento se publica cuando un job falla y proporciona información
+    /// estructurada sobre la causa del fallo, facilitando el diagnóstico.
+    JobExecutionError {
+        /// ID del job que falló
+        job_id: JobId,
+        /// ID del worker que ejecutaba el job
+        worker_id: WorkerId,
+        /// Razón categorizada del fallo
+        failure_reason: JobFailureReason,
+        /// Código de salida del proceso
+        exit_code: i32,
+        /// Comando que se intentaba ejecutar
+        command: String,
+        /// Argumentos del comando
+        arguments: Vec<String>,
+        /// Directorio de trabajo
+        working_dir: Option<String>,
+        /// Tiempo de ejecución en milisegundos
+        execution_time_ms: u64,
+        /// Acciones sugeridas para resolver el error
+        suggested_actions: Vec<String>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// El dispatch de un job al worker ha fallado
+    JobDispatchFailed {
+        /// ID del job que no pudo ser despachado
+        job_id: JobId,
+        /// ID del worker destino
+        worker_id: WorkerId,
+        /// Razón del fallo de dispatch
+        failure_reason: DispatchFailureReason,
+        /// Número de reintentos realizados
+        retry_count: u32,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// El provisioning de un worker ha fallado
+    WorkerProvisioningError {
+        /// ID del worker que no pudo ser provisionado
+        worker_id: WorkerId,
+        /// ID del provider donde falló el provisioning
+        provider_id: ProviderId,
+        /// Razón del fallo de provisioning
+        failure_reason: ProvisioningFailureReason,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// El scheduler no pudo tomar una decisión para un job
+    SchedulingDecisionFailed {
+        /// ID del job que no pudo ser programado
+        job_id: JobId,
+        /// Razón del fallo de scheduling
+        failure_reason: SchedulingFailureReason,
+        /// Providers que se intentaron
+        attempted_providers: Vec<ProviderId>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// Error de provider durante la ejecución
+    ProviderExecutionError {
+        /// ID del provider donde ocurrió el error
+        provider_id: ProviderId,
+        /// ID del worker afectado
+        worker_id: WorkerId,
+        /// Tipo de error de provider
+        error_type: ProviderErrorType,
+        /// Mensaje descriptivo del error
+        message: String,
         occurred_at: DateTime<Utc>,
         correlation_id: Option<String>,
         actor: Option<String>,
@@ -676,7 +761,12 @@ impl DomainEvent {
             | DomainEvent::WorkerEphemeralCleanedUp { correlation_id, .. }
             | DomainEvent::OrphanWorkerDetected { correlation_id, .. }
             | DomainEvent::GarbageCollectionCompleted { correlation_id, .. }
-            | DomainEvent::WorkerEphemeralIdle { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::WorkerEphemeralIdle { correlation_id, .. }
+            | DomainEvent::JobExecutionError { correlation_id, .. }
+            | DomainEvent::JobDispatchFailed { correlation_id, .. }
+            | DomainEvent::WorkerProvisioningError { correlation_id, .. }
+            | DomainEvent::SchedulingDecisionFailed { correlation_id, .. }
+            | DomainEvent::ProviderExecutionError { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -713,7 +803,12 @@ impl DomainEvent {
             | DomainEvent::WorkerEphemeralCleanedUp { actor, .. }
             | DomainEvent::OrphanWorkerDetected { actor, .. }
             | DomainEvent::GarbageCollectionCompleted { actor, .. }
-            | DomainEvent::WorkerEphemeralIdle { actor, .. } => actor.clone(),
+            | DomainEvent::WorkerEphemeralIdle { actor, .. }
+            | DomainEvent::JobExecutionError { actor, .. }
+            | DomainEvent::JobDispatchFailed { actor, .. }
+            | DomainEvent::WorkerProvisioningError { actor, .. }
+            | DomainEvent::SchedulingDecisionFailed { actor, .. }
+            | DomainEvent::ProviderExecutionError { actor, .. } => actor.clone(),
         }
     }
 
@@ -749,7 +844,12 @@ impl DomainEvent {
             | DomainEvent::WorkerEphemeralCleanedUp { occurred_at, .. }
             | DomainEvent::OrphanWorkerDetected { occurred_at, .. }
             | DomainEvent::GarbageCollectionCompleted { occurred_at, .. }
-            | DomainEvent::WorkerEphemeralIdle { occurred_at, .. } => *occurred_at,
+            | DomainEvent::WorkerEphemeralIdle { occurred_at, .. }
+            | DomainEvent::JobExecutionError { occurred_at, .. }
+            | DomainEvent::JobDispatchFailed { occurred_at, .. }
+            | DomainEvent::WorkerProvisioningError { occurred_at, .. }
+            | DomainEvent::SchedulingDecisionFailed { occurred_at, .. }
+            | DomainEvent::ProviderExecutionError { occurred_at, .. } => *occurred_at,
 
             DomainEvent::RunJobReceived { received_at, .. } => *received_at,
             DomainEvent::WorkerReady { ready_at, .. } => *ready_at,
@@ -792,6 +892,11 @@ impl DomainEvent {
             DomainEvent::OrphanWorkerDetected { .. } => "OrphanWorkerDetected",
             DomainEvent::GarbageCollectionCompleted { .. } => "GarbageCollectionCompleted",
             DomainEvent::WorkerEphemeralIdle { .. } => "WorkerEphemeralIdle",
+            DomainEvent::JobExecutionError { .. } => "JobExecutionError",
+            DomainEvent::JobDispatchFailed { .. } => "JobDispatchFailed",
+            DomainEvent::WorkerProvisioningError { .. } => "WorkerProvisioningError",
+            DomainEvent::SchedulingDecisionFailed { .. } => "SchedulingDecisionFailed",
+            DomainEvent::ProviderExecutionError { .. } => "ProviderExecutionError",
         }
     }
 
@@ -834,6 +939,13 @@ impl DomainEvent {
 
             // Para eventos globales o de sistema sin ID específico claro, usamos "SYSTEM" o el valor más relevante
             DomainEvent::JobQueueDepthChanged { .. } => "SYSTEM_QUEUE".to_string(),
+
+            // Nuevos eventos de error
+            DomainEvent::JobExecutionError { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobDispatchFailed { job_id, .. } => job_id.to_string(),
+            DomainEvent::WorkerProvisioningError { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::SchedulingDecisionFailed { job_id, .. } => job_id.to_string(),
+            DomainEvent::ProviderExecutionError { provider_id, .. } => provider_id.to_string(),
         }
     }
 }

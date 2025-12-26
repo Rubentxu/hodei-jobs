@@ -1,3 +1,4 @@
+pub mod error_categorizer;
 pub mod executor;
 pub mod logging;
 pub mod metrics;

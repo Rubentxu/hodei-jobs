@@ -453,6 +453,527 @@ impl fmt::Display for JobResult {
     }
 }
 
+/// Categorías de fallo para jobs execution errors.
+///
+/// Este enum proporciona categorización estructurada de errores de ejecución,
+/// permitiendo a los clientes entender rápidamente qué falló y cómo resolverlo.
+/// Reduce Connascence of Position transformando mensajes de error string
+/// en tipos estructurados con contexto.
+///
+/// # Ejemplo de uso
+///
+/// ```
+/// use hodei_shared::states::JobFailureReason;
+///
+/// let reason = JobFailureReason::PermissionDenied {
+///     path: "/app/scripts/run.sh".to_string(),
+///     operation: "execute".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum JobFailureReason {
+    /// El comando no fue encontrado en el PATH
+    CommandNotFound {
+        /// El comando que no se encontró
+        command: String,
+    },
+    /// Permiso denegado al acceder a un recurso
+    PermissionDenied {
+        /// Path del recurso al que no se pudo acceder
+        path: String,
+        /// Operación que se intentó (execute, read, write)
+        operation: String,
+    },
+    /// Archivo o directorio no encontrado
+    FileNotFound {
+        /// Path que no existe
+        path: String,
+    },
+    /// Error al hacer spawn del proceso
+    ProcessSpawnFailed {
+        /// Mensaje descriptivo del error
+        message: String,
+    },
+    /// Timeout de ejecución excedido
+    ExecutionTimeout {
+        /// Límite de timeout en segundos
+        limit_secs: u64,
+    },
+    /// El proceso recibió una señal (SIGTERM, SIGKILL, etc.)
+    SignalReceived {
+        /// Número de la señal recibida
+        signal: i32,
+    },
+    /// El proceso exited con código de salida no cero (error de aplicación)
+    NonZeroExitCode {
+        /// Código de salida del proceso
+        exit_code: i32,
+    },
+    /// Error de infraestructura (conexión perdida, provider error, etc.)
+    InfrastructureError {
+        /// Mensaje descriptivo del error de infraestructura
+        message: String,
+    },
+    /// Error de validación de los parámetros del job
+    ValidationError {
+        /// Campo que falló la validación
+        field: String,
+        /// Razón de la validación fallida
+        reason: String,
+    },
+    /// Error de configuración del job
+    ConfigurationError {
+        /// Clave de configuración que falló
+        key: String,
+        /// Mensaje descriptivo
+        message: String,
+    },
+    /// Error de secret injection
+    SecretInjectionError {
+        /// Nombre del secret que falló
+        secret_name: String,
+        /// Mensaje descriptivo
+        message: String,
+    },
+    /// Error de I/O durante la ejecución
+    IoError {
+        /// Operación de I/O que falló
+        operation: String,
+        /// Path involucrado
+        path: Option<String>,
+        /// Mensaje del sistema
+        message: String,
+    },
+    /// Error desconocido/no categorizado (fallback)
+    Unknown {
+        /// Mensaje de error original
+        message: String,
+    },
+}
+
+impl fmt::Display for JobFailureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JobFailureReason::CommandNotFound { command } => {
+                write!(f, "COMMAND_NOT_FOUND: {}", command)
+            }
+            JobFailureReason::PermissionDenied { path, operation } => {
+                write!(f, "PERMISSION_DENIED: {} on {}", operation, path)
+            }
+            JobFailureReason::FileNotFound { path } => {
+                write!(f, "FILE_NOT_FOUND: {}", path)
+            }
+            JobFailureReason::ProcessSpawnFailed { message } => {
+                write!(f, "PROCESS_SPAWN_FAILED: {}", message)
+            }
+            JobFailureReason::ExecutionTimeout { limit_secs } => {
+                write!(f, "EXECUTION_TIMEOUT: exceeded {} seconds", limit_secs)
+            }
+            JobFailureReason::SignalReceived { signal } => {
+                write!(f, "SIGNAL_RECEIVED: signal {}", signal)
+            }
+            JobFailureReason::NonZeroExitCode { exit_code } => {
+                write!(f, "NON_ZERO_EXIT_CODE: exit code {}", exit_code)
+            }
+            JobFailureReason::InfrastructureError { message } => {
+                write!(f, "INFRASTRUCTURE_ERROR: {}", message)
+            }
+            JobFailureReason::ValidationError { field, reason } => {
+                write!(f, "VALIDATION_ERROR: {} - {}", field, reason)
+            }
+            JobFailureReason::ConfigurationError { key, message } => {
+                write!(f, "CONFIGURATION_ERROR: {} - {}", key, message)
+            }
+            JobFailureReason::SecretInjectionError {
+                secret_name,
+                message,
+            } => {
+                write!(f, "SECRET_INJECTION_ERROR: {} - {}", secret_name, message)
+            }
+            JobFailureReason::IoError {
+                operation,
+                path,
+                message,
+            } => {
+                if let Some(p) = path {
+                    write!(f, "IO_ERROR: {} on {} - {}", operation, p, message)
+                } else {
+                    write!(f, "IO_ERROR: {} - {}", operation, message)
+                }
+            }
+            JobFailureReason::Unknown { message } => {
+                write!(f, "UNKNOWN_ERROR: {}", message)
+            }
+        }
+    }
+}
+
+impl JobFailureReason {
+    /// Genera acciones sugeridas para resolver el error.
+    ///
+    /// Cada tipo de error tiene acciones específicas que el usuario
+    /// puede tomar para resolver el problema.
+    pub fn suggested_actions(&self) -> Vec<String> {
+        match self {
+            JobFailureReason::CommandNotFound { command } => vec![
+                format!("Verify that '{}' is installed and in PATH", command),
+                "Install the required package or dependency".to_string(),
+                "Use the full path to the command instead".to_string(),
+            ],
+            JobFailureReason::PermissionDenied { path, operation } => vec![
+                format!("Check permissions for: {}", path),
+                format!(
+                    "Run: chmod +{} {}",
+                    operation
+                        .chars()
+                        .next()
+                        .map(|c| match c {
+                            'e' => 'x',
+                            'r' => 'r',
+                            'w' => 'w',
+                            _ => 'x',
+                        })
+                        .unwrap_or('x'),
+                    path
+                ),
+                "Verify the user running the job has appropriate permissions".to_string(),
+            ],
+            JobFailureReason::FileNotFound { path } => vec![
+                format!("Verify the file exists: {}", path),
+                "Check the working directory configuration".to_string(),
+                "Create the missing file or fix the path".to_string(),
+            ],
+            JobFailureReason::ProcessSpawnFailed { .. } => vec![
+                "Check system resources (memory, file descriptors)".to_string(),
+                "Review the command syntax and arguments".to_string(),
+                "Check for conflicting processes".to_string(),
+            ],
+            JobFailureReason::ExecutionTimeout { limit_secs } => vec![
+                format!("Increase timeout limit (current: {}s)", limit_secs),
+                "Optimize the job script to run faster".to_string(),
+                "Break the job into smaller chunks".to_string(),
+            ],
+            JobFailureReason::SignalReceived { signal } => match signal {
+                9 | 15 => vec![
+                    "The process was terminated (SIGTERM/SIGKILL)".to_string(),
+                    "Check if there's a timeout or resource limit configured".to_string(),
+                    "Review external systems that might be killing the process".to_string(),
+                ],
+                11 => vec![
+                    "Segmentation fault - the program crashed".to_string(),
+                    "Check for memory issues in the application".to_string(),
+                    "Verify the application is compatible with the environment".to_string(),
+                ],
+                _ => vec![
+                    format!("Process received signal: {}", signal),
+                    "Check system logs for more details".to_string(),
+                    "Review the application for potential crashes".to_string(),
+                ],
+            },
+            JobFailureReason::NonZeroExitCode { .. } => vec![
+                "Check the application logs for specific error messages".to_string(),
+                "Verify all required inputs and configurations are correct".to_string(),
+                "Review the application documentation for exit code meanings".to_string(),
+            ],
+            JobFailureReason::InfrastructureError { .. } => vec![
+                "Check the provider status and connectivity".to_string(),
+                "Verify resource availability (CPU, memory, disk)".to_string(),
+                "Contact support if the issue persists".to_string(),
+            ],
+            JobFailureReason::ValidationError { field, reason } => vec![
+                format!("Fix the '{}' field: {}", field, reason),
+                "Review the job specification for required fields".to_string(),
+                "Update the configuration with valid values".to_string(),
+            ],
+            JobFailureReason::ConfigurationError { key, message } => vec![
+                format!("Fix configuration key '{}': {}", key, message),
+                "Check environment variables and configuration files".to_string(),
+                "Verify all required secrets and keys are set".to_string(),
+            ],
+            JobFailureReason::SecretInjectionError {
+                secret_name,
+                message,
+            } => vec![
+                format!("Verify secret '{}' exists and is accessible", secret_name),
+                format!("Secret injection error: {}", message),
+                "Check IAM/permissions for secret access".to_string(),
+            ],
+            JobFailureReason::IoError {
+                operation,
+                path: _,
+                message: _,
+            } => vec![
+                format!("Retry the '{}' operation", operation),
+                "Check disk space and file system health".to_string(),
+                "Verify the path is accessible and not corrupted".to_string(),
+            ],
+            JobFailureReason::Unknown { .. } => vec![
+                "Review the full error message and logs".to_string(),
+                "Try running the job with more verbose logging".to_string(),
+                "Contact support with the error details".to_string(),
+            ],
+        }
+    }
+
+    /// Returns true if this is an infrastructure error (not user's fault)
+    pub fn is_infrastructure_error(&self) -> bool {
+        matches!(
+            self,
+            JobFailureReason::InfrastructureError { .. }
+                | JobFailureReason::ProcessSpawnFailed { .. }
+                | JobFailureReason::IoError { .. }
+        )
+    }
+
+    /// Returns true if this is a user error (configuration, permissions, etc.)
+    pub fn is_user_error(&self) -> bool {
+        matches!(
+            self,
+            JobFailureReason::CommandNotFound { .. }
+                | JobFailureReason::PermissionDenied { .. }
+                | JobFailureReason::FileNotFound { .. }
+                | JobFailureReason::ValidationError { .. }
+                | JobFailureReason::ConfigurationError { .. }
+                | JobFailureReason::SecretInjectionError { .. }
+                | JobFailureReason::ExecutionTimeout { .. }
+        )
+    }
+}
+
+/// Razón de fallo para dispatch de job al worker
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DispatchFailureReason {
+    /// Worker no estaba en estado Ready para recibir jobs
+    WorkerNotReady {
+        /// Estado actual del worker
+        current_state: String,
+    },
+    /// Timeout esperando respuesta del worker
+    CommunicationTimeout {
+        /// Tiempo esperado en milisegundos
+        timeout_ms: u64,
+    },
+    /// Worker crasheó durante el dispatch
+    WorkerCrashed,
+    /// El canal de comunicación se cerró inesperadamente
+    ChannelClosed,
+    /// Error de protocolo (mensaje malformado, etc.)
+    ProtocolError {
+        /// Mensaje descriptivo
+        message: String,
+    },
+    /// Error de red
+    NetworkError {
+        /// Mensaje descriptivo
+        message: String,
+    },
+}
+
+impl fmt::Display for DispatchFailureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DispatchFailureReason::WorkerNotReady { current_state } => {
+                write!(f, "WORKER_NOT_READY: worker in state {}", current_state)
+            }
+            DispatchFailureReason::CommunicationTimeout { timeout_ms } => {
+                write!(f, "COMMUNICATION_TIMEOUT: exceeded {}ms", timeout_ms)
+            }
+            DispatchFailureReason::WorkerCrashed => {
+                write!(f, "WORKER_CRASHED")
+            }
+            DispatchFailureReason::ChannelClosed => {
+                write!(f, "CHANNEL_CLOSED")
+            }
+            DispatchFailureReason::ProtocolError { message } => {
+                write!(f, "PROTOCOL_ERROR: {}", message)
+            }
+            DispatchFailureReason::NetworkError { message } => {
+                write!(f, "NETWORK_ERROR: {}", message)
+            }
+        }
+    }
+}
+
+/// Razón de fallo para provisioning de worker
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ProvisioningFailureReason {
+    /// Fallo al descargar la imagen del worker
+    ImagePullFailed {
+        /// Nombre de la imagen
+        image: String,
+        /// Mensaje de error
+        message: String,
+    },
+    /// Fallo al asignar recursos (CPU, memoria, etc.)
+    ResourceAllocationFailed {
+        /// Recurso que no se pudo asignar
+        resource: String,
+        /// Mensaje de error
+        message: String,
+    },
+    /// Fallo al configurar la red del worker
+    NetworkSetupFailed {
+        /// Mensaje de error
+        message: String,
+    },
+    /// Fallo de autenticación con el provider
+    AuthenticationFailed {
+        /// Mensaje de error
+        message: String,
+    },
+    /// Timeout durante el provisioning
+    Timeout,
+    /// Provider no disponible
+    ProviderUnavailable,
+    /// Error interno del provider
+    InternalError {
+        /// Mensaje de error
+        message: String,
+    },
+    /// Configuración inválida del worker
+    InvalidConfiguration {
+        /// Campo de configuración inválido
+        field: String,
+        /// Razón
+        reason: String,
+    },
+}
+
+impl fmt::Display for ProvisioningFailureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProvisioningFailureReason::ImagePullFailed { image, message } => {
+                write!(f, "IMAGE_PULL_FAILED: {} - {}", image, message)
+            }
+            ProvisioningFailureReason::ResourceAllocationFailed { resource, message } => {
+                write!(f, "RESOURCE_ALLOCATION_FAILED: {} - {}", resource, message)
+            }
+            ProvisioningFailureReason::NetworkSetupFailed { message } => {
+                write!(f, "NETWORK_SETUP_FAILED: {}", message)
+            }
+            ProvisioningFailureReason::AuthenticationFailed { message } => {
+                write!(f, "AUTHENTICATION_FAILED: {}", message)
+            }
+            ProvisioningFailureReason::Timeout => {
+                write!(f, "PROVISIONING_TIMEOUT")
+            }
+            ProvisioningFailureReason::ProviderUnavailable => {
+                write!(f, "PROVIDER_UNAVAILABLE")
+            }
+            ProvisioningFailureReason::InternalError { message } => {
+                write!(f, "INTERNAL_ERROR: {}", message)
+            }
+            ProvisioningFailureReason::InvalidConfiguration { field, reason } => {
+                write!(f, "INVALID_CONFIGURATION: {} - {}", field, reason)
+            }
+        }
+    }
+}
+
+/// Razón de fallo para decisión de scheduling
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SchedulingFailureReason {
+    /// No hay providers disponibles en el sistema
+    NoProvidersAvailable,
+    /// Ningún provider coincide con los requisitos del job
+    NoMatchingProviders {
+        /// Requisito que no se pudo cumplir
+        requirement: String,
+    },
+    /// Todos los providers están sobrecargados
+    ProviderOverloaded,
+    /// Provider no está saludable
+    ProviderUnhealthy {
+        /// ID del provider
+        provider_id: String,
+    },
+    /// No se cumplieron las restricciones de recursos
+    ResourceConstraintsNotMet {
+        /// Recurso que falta
+        resource: String,
+        /// Cantidad requerida
+        required: String,
+        /// Cantidad disponible
+        available: String,
+    },
+    /// Error interno del scheduler
+    InternalError {
+        /// Mensaje de error
+        message: String,
+    },
+    /// Job fue cancelado antes de que el scheduler tomara decisión
+    JobCancelled,
+    /// Job expiró en la cola
+    JobExpired,
+}
+
+impl fmt::Display for SchedulingFailureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SchedulingFailureReason::NoProvidersAvailable => {
+                write!(f, "NO_PROVIDERS_AVAILABLE")
+            }
+            SchedulingFailureReason::NoMatchingProviders { requirement } => {
+                write!(f, "NO_MATCHING_PROVIDERS: {}", requirement)
+            }
+            SchedulingFailureReason::ProviderOverloaded => {
+                write!(f, "PROVIDER_OVERLOADED")
+            }
+            SchedulingFailureReason::ProviderUnhealthy { provider_id } => {
+                write!(f, "PROVIDER_UNHEALTHY: {}", provider_id)
+            }
+            SchedulingFailureReason::ResourceConstraintsNotMet {
+                resource,
+                required,
+                available,
+            } => {
+                write!(
+                    f,
+                    "RESOURCE_CONSTRAINTS_NOT_MET: {} required={}, available={}",
+                    resource, required, available
+                )
+            }
+            SchedulingFailureReason::InternalError { message } => {
+                write!(f, "INTERNAL_ERROR: {}", message)
+            }
+            SchedulingFailureReason::JobCancelled => {
+                write!(f, "JOB_CANCELLED")
+            }
+            SchedulingFailureReason::JobExpired => {
+                write!(f, "JOB_EXPIRED")
+            }
+        }
+    }
+}
+
+/// Tipo de error de provider
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ProviderErrorType {
+    ConnectionLost,
+    AuthenticationFailed,
+    ResourceLimitExceeded,
+    WorkerNotFound,
+    ProvisioningFailed,
+    Timeout,
+    ConfigurationError,
+    Internal,
+}
+
+impl fmt::Display for ProviderErrorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProviderErrorType::ConnectionLost => write!(f, "CONNECTION_LOST"),
+            ProviderErrorType::AuthenticationFailed => write!(f, "AUTHENTICATION_FAILED"),
+            ProviderErrorType::ResourceLimitExceeded => write!(f, "RESOURCE_LIMIT_EXCEEDED"),
+            ProviderErrorType::WorkerNotFound => write!(f, "WORKER_NOT_FOUND"),
+            ProviderErrorType::ProvisioningFailed => write!(f, "PROVISIONING_FAILED"),
+            ProviderErrorType::Timeout => write!(f, "TIMEOUT"),
+            ProviderErrorType::ConfigurationError => write!(f, "CONFIGURATION_ERROR"),
+            ProviderErrorType::Internal => write!(f, "INTERNAL_ERROR"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,5 +1308,508 @@ mod tests {
         assert_eq!(i32::from(&ExecutionStatus::Failed), 4);
         assert_eq!(i32::from(&ExecutionStatus::Cancelled), 5);
         assert_eq!(i32::from(&ExecutionStatus::TimedOut), 6);
+    }
+
+    // =========================================================================
+    // JobFailureReason tests
+    // =========================================================================
+
+    #[test]
+    fn test_job_failure_reason_command_not_found() {
+        let reason = JobFailureReason::CommandNotFound {
+            command: "python3".to_string(),
+        };
+        assert_eq!(reason.to_string(), "COMMAND_NOT_FOUND: python3");
+        // CommandNotFound is classified as user error (command not installed)
+        assert!(reason.is_user_error());
+        assert!(!reason.is_infrastructure_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_permission_denied() {
+        let reason = JobFailureReason::PermissionDenied {
+            path: "/app/script.sh".to_string(),
+            operation: "execute".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "PERMISSION_DENIED: execute on /app/script.sh"
+        );
+        let actions = reason.suggested_actions();
+        assert!(!actions.is_empty());
+        assert!(actions[0].contains("/app/script.sh"));
+        assert!(reason.is_user_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_file_not_found() {
+        let reason = JobFailureReason::FileNotFound {
+            path: "/data/input.csv".to_string(),
+        };
+        assert_eq!(reason.to_string(), "FILE_NOT_FOUND: /data/input.csv");
+        let actions = reason.suggested_actions();
+        assert!(!actions.is_empty());
+        assert!(reason.is_user_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_execution_timeout() {
+        let reason = JobFailureReason::ExecutionTimeout { limit_secs: 3600 };
+        assert_eq!(
+            reason.to_string(),
+            "EXECUTION_TIMEOUT: exceeded 3600 seconds"
+        );
+        let actions = reason.suggested_actions();
+        assert!(!actions.is_empty());
+        // ExecutionTimeout is a user configuration issue
+        assert!(reason.is_user_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_signal_received() {
+        let reason = JobFailureReason::SignalReceived { signal: 15 };
+        assert_eq!(reason.to_string(), "SIGNAL_RECEIVED: signal 15");
+        let actions = reason.suggested_actions();
+        assert!(!actions.is_empty());
+        assert!(actions[0].contains("SIGTERM"));
+    }
+
+    #[test]
+    fn test_job_failure_reason_signal_segfault() {
+        let reason = JobFailureReason::SignalReceived { signal: 11 };
+        let actions = reason.suggested_actions();
+        assert!(actions[0].contains("Segmentation fault"));
+    }
+
+    #[test]
+    fn test_job_failure_reason_non_zero_exit_code() {
+        let reason = JobFailureReason::NonZeroExitCode { exit_code: 1 };
+        assert_eq!(reason.to_string(), "NON_ZERO_EXIT_CODE: exit code 1");
+    }
+
+    #[test]
+    fn test_job_failure_reason_infrastructure_error() {
+        let reason = JobFailureReason::InfrastructureError {
+            message: "Connection lost".to_string(),
+        };
+        assert_eq!(reason.to_string(), "INFRASTRUCTURE_ERROR: Connection lost");
+        assert!(reason.is_infrastructure_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_validation_error() {
+        let reason = JobFailureReason::ValidationError {
+            field: "command".to_string(),
+            reason: "must not be empty".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "VALIDATION_ERROR: command - must not be empty"
+        );
+        assert!(reason.is_user_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_configuration_error() {
+        let reason = JobFailureReason::ConfigurationError {
+            key: "timeout_ms".to_string(),
+            message: "invalid value".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "CONFIGURATION_ERROR: timeout_ms - invalid value"
+        );
+        assert!(reason.is_user_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_secret_injection_error() {
+        let reason = JobFailureReason::SecretInjectionError {
+            secret_name: "API_KEY".to_string(),
+            message: "permission denied".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "SECRET_INJECTION_ERROR: API_KEY - permission denied"
+        );
+        assert!(reason.is_user_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_io_error() {
+        let reason = JobFailureReason::IoError {
+            operation: "read".to_string(),
+            path: Some("/data/file.txt".to_string()),
+            message: "Input/output error".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "IO_ERROR: read on /data/file.txt - Input/output error"
+        );
+        assert!(reason.is_infrastructure_error());
+    }
+
+    #[test]
+    fn test_job_failure_reason_io_error_no_path() {
+        let reason = JobFailureReason::IoError {
+            operation: "write".to_string(),
+            path: None,
+            message: "Disk full".to_string(),
+        };
+        assert_eq!(reason.to_string(), "IO_ERROR: write - Disk full");
+    }
+
+    #[test]
+    fn test_job_failure_reason_unknown() {
+        let reason = JobFailureReason::Unknown {
+            message: "Something unexpected happened".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "UNKNOWN_ERROR: Something unexpected happened"
+        );
+    }
+
+    #[test]
+    fn test_job_failure_reason_suggested_actions_not_empty() {
+        let reasons = vec![
+            JobFailureReason::CommandNotFound {
+                command: "test".to_string(),
+            },
+            JobFailureReason::PermissionDenied {
+                path: "/test".to_string(),
+                operation: "read".to_string(),
+            },
+            JobFailureReason::FileNotFound {
+                path: "/test".to_string(),
+            },
+            JobFailureReason::ProcessSpawnFailed {
+                message: "test".to_string(),
+            },
+            JobFailureReason::ExecutionTimeout { limit_secs: 100 },
+            JobFailureReason::SignalReceived { signal: 9 },
+            JobFailureReason::NonZeroExitCode { exit_code: 1 },
+            JobFailureReason::InfrastructureError {
+                message: "test".to_string(),
+            },
+            JobFailureReason::ValidationError {
+                field: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            JobFailureReason::ConfigurationError {
+                key: "test".to_string(),
+                message: "test".to_string(),
+            },
+            JobFailureReason::SecretInjectionError {
+                secret_name: "test".to_string(),
+                message: "test".to_string(),
+            },
+            JobFailureReason::IoError {
+                operation: "test".to_string(),
+                path: None,
+                message: "test".to_string(),
+            },
+            JobFailureReason::Unknown {
+                message: "test".to_string(),
+            },
+        ];
+
+        for reason in reasons {
+            let actions = reason.suggested_actions();
+            assert!(
+                !actions.is_empty(),
+                "Expected non-empty actions for {:?}",
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn test_job_failure_reason_serialization() {
+        let reason = JobFailureReason::PermissionDenied {
+            path: "/app/script.sh".to_string(),
+            operation: "execute".to_string(),
+        };
+
+        let serialized = serde_json::to_string(&reason).expect("Failed to serialize");
+        let deserialized: JobFailureReason =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(reason, deserialized);
+    }
+
+    // =========================================================================
+    // DispatchFailureReason tests
+    // =========================================================================
+
+    #[test]
+    fn test_dispatch_failure_reason_worker_not_ready() {
+        let reason = DispatchFailureReason::WorkerNotReady {
+            current_state: "Busy".to_string(),
+        };
+        assert_eq!(reason.to_string(), "WORKER_NOT_READY: worker in state Busy");
+    }
+
+    #[test]
+    fn test_dispatch_failure_reason_communication_timeout() {
+        let reason = DispatchFailureReason::CommunicationTimeout { timeout_ms: 5000 };
+        assert_eq!(reason.to_string(), "COMMUNICATION_TIMEOUT: exceeded 5000ms");
+    }
+
+    #[test]
+    fn test_dispatch_failure_reason_worker_crashed() {
+        let reason = DispatchFailureReason::WorkerCrashed;
+        assert_eq!(reason.to_string(), "WORKER_CRASHED");
+    }
+
+    #[test]
+    fn test_dispatch_failure_reason_channel_closed() {
+        let reason = DispatchFailureReason::ChannelClosed;
+        assert_eq!(reason.to_string(), "CHANNEL_CLOSED");
+    }
+
+    #[test]
+    fn test_dispatch_failure_reason_protocol_error() {
+        let reason = DispatchFailureReason::ProtocolError {
+            message: "Malformed message".to_string(),
+        };
+        assert_eq!(reason.to_string(), "PROTOCOL_ERROR: Malformed message");
+    }
+
+    #[test]
+    fn test_dispatch_failure_reason_network_error() {
+        let reason = DispatchFailureReason::NetworkError {
+            message: "Connection reset".to_string(),
+        };
+        assert_eq!(reason.to_string(), "NETWORK_ERROR: Connection reset");
+    }
+
+    #[test]
+    fn test_dispatch_failure_reason_serialization() {
+        let reason = DispatchFailureReason::WorkerNotReady {
+            current_state: "Terminating".to_string(),
+        };
+
+        let serialized = serde_json::to_string(&reason).expect("Failed to serialize");
+        let deserialized: DispatchFailureReason =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(reason, deserialized);
+    }
+
+    // =========================================================================
+    // ProvisioningFailureReason tests
+    // =========================================================================
+
+    #[test]
+    fn test_provisioning_failure_reason_image_pull_failed() {
+        let reason = ProvisioningFailureReason::ImagePullFailed {
+            image: "hodei-worker:latest".to_string(),
+            message: "not found".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "IMAGE_PULL_FAILED: hodei-worker:latest - not found"
+        );
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_resource_allocation_failed() {
+        let reason = ProvisioningFailureReason::ResourceAllocationFailed {
+            resource: "memory".to_string(),
+            message: "insufficient".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "RESOURCE_ALLOCATION_FAILED: memory - insufficient"
+        );
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_network_setup_failed() {
+        let reason = ProvisioningFailureReason::NetworkSetupFailed {
+            message: "timeout".to_string(),
+        };
+        assert_eq!(reason.to_string(), "NETWORK_SETUP_FAILED: timeout");
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_authentication_failed() {
+        let reason = ProvisioningFailureReason::AuthenticationFailed {
+            message: "invalid credentials".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "AUTHENTICATION_FAILED: invalid credentials"
+        );
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_timeout() {
+        let reason = ProvisioningFailureReason::Timeout;
+        assert_eq!(reason.to_string(), "PROVISIONING_TIMEOUT");
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_provider_unavailable() {
+        let reason = ProvisioningFailureReason::ProviderUnavailable;
+        assert_eq!(reason.to_string(), "PROVIDER_UNAVAILABLE");
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_internal_error() {
+        let reason = ProvisioningFailureReason::InternalError {
+            message: "panic in provider".to_string(),
+        };
+        assert_eq!(reason.to_string(), "INTERNAL_ERROR: panic in provider");
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_invalid_configuration() {
+        let reason = ProvisioningFailureReason::InvalidConfiguration {
+            field: "cpu_cores".to_string(),
+            reason: "must be positive".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "INVALID_CONFIGURATION: cpu_cores - must be positive"
+        );
+    }
+
+    #[test]
+    fn test_provisioning_failure_reason_serialization() {
+        let reason = ProvisioningFailureReason::ImagePullFailed {
+            image: "test:latest".to_string(),
+            message: "error".to_string(),
+        };
+
+        let serialized = serde_json::to_string(&reason).expect("Failed to serialize");
+        let deserialized: ProvisioningFailureReason =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(reason, deserialized);
+    }
+
+    // =========================================================================
+    // SchedulingFailureReason tests
+    // =========================================================================
+
+    #[test]
+    fn test_scheduling_failure_reason_no_providers_available() {
+        let reason = SchedulingFailureReason::NoProvidersAvailable;
+        assert_eq!(reason.to_string(), "NO_PROVIDERS_AVAILABLE");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_no_matching_providers() {
+        let reason = SchedulingFailureReason::NoMatchingProviders {
+            requirement: "gpu: true".to_string(),
+        };
+        assert_eq!(reason.to_string(), "NO_MATCHING_PROVIDERS: gpu: true");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_provider_overloaded() {
+        let reason = SchedulingFailureReason::ProviderOverloaded;
+        assert_eq!(reason.to_string(), "PROVIDER_OVERLOADED");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_provider_unhealthy() {
+        let reason = SchedulingFailureReason::ProviderUnhealthy {
+            provider_id: "provider-123".to_string(),
+        };
+        assert_eq!(reason.to_string(), "PROVIDER_UNHEALTHY: provider-123");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_resource_constraints_not_met() {
+        let reason = SchedulingFailureReason::ResourceConstraintsNotMet {
+            resource: "memory".to_string(),
+            required: "16GB".to_string(),
+            available: "8GB".to_string(),
+        };
+        assert_eq!(
+            reason.to_string(),
+            "RESOURCE_CONSTRAINTS_NOT_MET: memory required=16GB, available=8GB"
+        );
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_internal_error() {
+        let reason = SchedulingFailureReason::InternalError {
+            message: "scheduler panic".to_string(),
+        };
+        assert_eq!(reason.to_string(), "INTERNAL_ERROR: scheduler panic");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_job_cancelled() {
+        let reason = SchedulingFailureReason::JobCancelled;
+        assert_eq!(reason.to_string(), "JOB_CANCELLED");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_job_expired() {
+        let reason = SchedulingFailureReason::JobExpired;
+        assert_eq!(reason.to_string(), "JOB_EXPIRED");
+    }
+
+    #[test]
+    fn test_scheduling_failure_reason_serialization() {
+        let reason = SchedulingFailureReason::NoMatchingProviders {
+            requirement: "label: gpu".to_string(),
+        };
+
+        let serialized = serde_json::to_string(&reason).expect("Failed to serialize");
+        let deserialized: SchedulingFailureReason =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(reason, deserialized);
+    }
+
+    // =========================================================================
+    // ProviderErrorType tests
+    // =========================================================================
+
+    #[test]
+    fn test_provider_error_type_display() {
+        assert_eq!(
+            ProviderErrorType::ConnectionLost.to_string(),
+            "CONNECTION_LOST"
+        );
+        assert_eq!(
+            ProviderErrorType::AuthenticationFailed.to_string(),
+            "AUTHENTICATION_FAILED"
+        );
+        assert_eq!(
+            ProviderErrorType::ResourceLimitExceeded.to_string(),
+            "RESOURCE_LIMIT_EXCEEDED"
+        );
+        assert_eq!(
+            ProviderErrorType::WorkerNotFound.to_string(),
+            "WORKER_NOT_FOUND"
+        );
+        assert_eq!(
+            ProviderErrorType::ProvisioningFailed.to_string(),
+            "PROVISIONING_FAILED"
+        );
+        assert_eq!(ProviderErrorType::Timeout.to_string(), "TIMEOUT");
+        assert_eq!(
+            ProviderErrorType::ConfigurationError.to_string(),
+            "CONFIGURATION_ERROR"
+        );
+        assert_eq!(ProviderErrorType::Internal.to_string(), "INTERNAL_ERROR");
+    }
+
+    #[test]
+    fn test_provider_error_type_serialization() {
+        let error_type = ProviderErrorType::ResourceLimitExceeded;
+
+        let serialized = serde_json::to_string(&error_type).expect("Failed to serialize");
+        let deserialized: ProviderErrorType =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert_eq!(error_type, deserialized);
     }
 }

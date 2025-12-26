@@ -10,3 +10,6 @@ serde = { workspace = true, features = ["derive"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
