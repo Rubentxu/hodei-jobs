@@ -13,11 +13,8 @@ hodei-server-infrastructure = { path = "../infrastructure" }
 hodei-shared = { path = "../../shared" }
 hodei-jobs = { workspace = true } # Proto definitions
 
-# Web
-axum = { workspace = true, features = ["macros"] }
-tower = { workspace = true, features = ["util"] }
-tower-http = { workspace = true, features = ["cors", "trace", "fs"] }
-hyper = { workspace = true, features = ["full"] }
+# Web (CORS for gRPC-Web only)
+tower-http = { workspace = true, features = ["cors"] }
 futures = { workspace = true }
 http-body-util = { workspace = true }
 
