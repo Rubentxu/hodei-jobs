@@ -316,7 +316,7 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
     let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
     let updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
 
-    let provider_type = match provider_type_str.as_str() {
+    let provider_type = match provider_type_str.to_uppercase().as_str() {
         "DOCKER" => hodei_server_domain::workers::ProviderType::Docker,
         "KUBERNETES" => hodei_server_domain::workers::ProviderType::Kubernetes,
         "FARGATE" => hodei_server_domain::workers::ProviderType::Fargate,

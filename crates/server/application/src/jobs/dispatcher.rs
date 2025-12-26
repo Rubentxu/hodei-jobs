@@ -125,19 +125,7 @@ impl JobDispatcher {
     pub async fn dispatch_once(&self) -> anyhow::Result<usize> {
         info!("🔄 JobDispatcher: Starting dispatch cycle");
 
-        // Step 1: Query and filter available workers (delegado a SchedulingService)
-        let available_workers = self.query_healthy_workers().await?;
-
-        info!(
-            "📊 JobDispatcher: Found {} available workers",
-            available_workers.len()
-        );
-
-        if available_workers.is_empty() {
-            return self.handle_no_available_workers().await;
-        }
-
-        // Step 2: Dequeue a job from the queue
+        // Step 1: Dequeue a job from the queue first (needed for provider selection)
         let Some(mut job) = self.job_queue.dequeue().await? else {
             info!("ℹ️ JobDispatcher: No jobs in queue");
             return Ok(0);
@@ -145,15 +133,39 @@ impl JobDispatcher {
 
         info!("📦 JobDispatcher: Dequeued job {} from queue", job.id);
 
-        // Step 3: Get scheduling decision (delegado a SchedulingService)
+        // Step 2: Query and filter available workers (delegado a SchedulingService)
+        let available_workers = self.query_healthy_workers().await?;
+
+        info!(
+            "📊 JobDispatcher: Found {} available workers",
+            available_workers.len()
+        );
+
+        // Step 3: If no workers available, trigger provisioning with job preferences
+        if available_workers.is_empty() {
+            return self.handle_no_available_workers(&job).await;
+        }
+
+        // Step 4: Get scheduling decision (delegado a SchedulingService)
         let decision = self
             .make_scheduling_decision(&job, &available_workers)
             .await?;
 
-        // Step 4: Execute scheduling decision
+        // Step 5: Execute scheduling decision
         match decision {
             SchedulingDecision::AssignToWorker { worker_id, .. } => {
                 self.dispatch_job_to_worker(&mut job, &worker_id).await
+            }
+            SchedulingDecision::ProvisionWorker { provider_id, .. } => {
+                // Save selected provider_id in job before re-enqueueing
+                job.spec.preferences.preferred_provider = Some(provider_id.to_string());
+                debug!(
+                    job_id = %job.id,
+                    provider_id = %provider_id,
+                    "JobDispatcher: Saving selected_provider_id for provisioning"
+                );
+                self.job_queue.enqueue(job).await?;
+                Ok(0)
             }
             decision => {
                 debug!(
@@ -190,12 +202,12 @@ impl JobDispatcher {
     }
 
     /// Handle case when no workers are available
-    async fn handle_no_available_workers(&self) -> anyhow::Result<usize> {
+    async fn handle_no_available_workers(&self, job: &Job) -> anyhow::Result<usize> {
         info!("⚠️ JobDispatcher: No available workers");
 
         // Delegar al método trigger_provisioning que maneja internamente
         // el caso de no disponibilidad del servicio
-        match self.trigger_provisioning().await {
+        match self.trigger_provisioning(job).await {
             Ok(()) => {
                 info!("✅ JobDispatcher: Provisioning triggered successfully");
                 Ok(0)
@@ -620,7 +632,7 @@ impl JobDispatcher {
     ///
     /// ## Responsabilidad Delegada: Provisioning
     /// Delega la lógica de selección de provider y spec al WorkerProvisioningService.
-    async fn trigger_provisioning(&self) -> anyhow::Result<()> {
+    async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
         let provisioning =
             self.provisioning_service
                 .as_ref()
@@ -636,8 +648,10 @@ impl JobDispatcher {
             return Ok(());
         }
 
-        // Select best provider using scheduler
-        let provider_id = self.select_provider_for_provisioning(&providers).await?;
+        // Select best provider using scheduler with job preferences
+        let provider_id = self
+            .select_provider_for_provisioning(job, &providers)
+            .await?;
 
         // Get default spec and provision
         let spec = provisioning
@@ -659,6 +673,7 @@ impl JobDispatcher {
     /// Select provider for provisioning using scheduling strategy
     async fn select_provider_for_provisioning(
         &self,
+        job: &Job,
         providers: &[hodei_server_domain::providers::ProviderConfig],
     ) -> anyhow::Result<ProviderId> {
         // Use scheduler to select best provider
@@ -686,13 +701,9 @@ impl JobDispatcher {
             })
             .collect();
 
-        let dummy_job = hodei_server_domain::jobs::Job::new(
-            hodei_server_domain::shared_kernel::JobId::new(),
-            hodei_server_domain::jobs::JobSpec::new(vec!["echo".to_string()]),
-        );
-
+        // Use the actual job with its preferences (not a dummy job)
         self.scheduler
-            .select_provider_with_preferences(&dummy_job, &providers_info)
+            .select_provider_with_preferences(job, &providers_info)
             .ok_or_else(|| anyhow::anyhow!("No provider found"))
     }
 

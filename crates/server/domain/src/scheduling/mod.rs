@@ -255,8 +255,53 @@ impl JobScheduler for SmartScheduler {
         }
 
         // Step 1: Try to assign to an existing available worker
+        // Only assign if worker matches job's preferred provider (if specified)
         if !context.available_workers.is_empty() {
-            if let Some(worker_id) = self.select_worker(&context.job, &context.available_workers) {
+            // If job has a preferred provider, filter workers to only those from that provider
+            let workers: Vec<Worker> = if context.job.spec.preferences.preferred_provider.is_some()
+            {
+                let pref = context
+                    .job
+                    .spec
+                    .preferences
+                    .preferred_provider
+                    .as_ref()
+                    .and_then(|p| crate::scheduling::ProviderPreference::new(p).ok());
+
+                let filtered: Vec<Worker> = context
+                    .available_workers
+                    .iter()
+                    .filter(|w| {
+                        let matches = pref
+                            .as_ref()
+                            .map(|p_ref| p_ref.matches_provider_type(w.provider_type()))
+                            .unwrap_or(true);
+                        tracing::debug!(
+                            job_id = %context.job.id,
+                            worker_id = %w.id(),
+                            worker_provider_type = %w.provider_type(),
+                            preferred_provider = %context.job.spec.preferences.preferred_provider.clone().unwrap_or_default(),
+                            matches = matches,
+                            "Worker filtering check"
+                        );
+                        matches
+                    })
+                    .cloned()
+                    .collect();
+
+                tracing::debug!(
+                    job_id = %context.job.id,
+                    original_workers = context.available_workers.len(),
+                    filtered_workers = filtered.len(),
+                    "Worker filtering result"
+                );
+
+                filtered
+            } else {
+                context.available_workers.clone()
+            };
+
+            if let Some(worker_id) = self.select_worker(&context.job, &workers) {
                 return Ok(SchedulingDecision::AssignToWorker { job_id, worker_id });
             }
         }
@@ -328,6 +373,13 @@ impl SmartScheduler {
             // Use ProviderPreference for efficient provider matching
             let pref = ProviderPreference::new(preferred).ok();
 
+            tracing::debug!(
+                job_id = %job.id,
+                preferred_provider = preferred,
+                providers_count = filtered_providers.len(),
+                "Checking preferred provider"
+            );
+
             // Try to find provider by name or type
             let preferred_provider = filtered_providers.iter().find(|p| {
                 // Match using ProviderPreference if available
@@ -347,11 +399,35 @@ impl SmartScheduler {
                     })
                     .unwrap_or(false);
 
-                (type_matches || id_matches) && p.can_accept_workers()
+                let can_accept = p.can_accept_workers();
+
+                tracing::debug!(
+                    job_id = %job.id,
+                    provider_id = %p.provider_id,
+                    provider_type = %p.provider_type,
+                    type_matches = type_matches,
+                    id_matches = id_matches,
+                    can_accept_workers = can_accept,
+                    "Provider matching check"
+                );
+
+                (type_matches || id_matches) && can_accept
             });
 
             if let Some(provider) = preferred_provider {
+                tracing::debug!(
+                    job_id = %job.id,
+                    selected_provider_id = %provider.provider_id,
+                    selected_provider_type = %provider.provider_type,
+                    "Selected provider by preferred_provider"
+                );
                 return Some(provider.provider_id.clone());
+            } else {
+                tracing::debug!(
+                    job_id = %job.id,
+                    preferred_provider = preferred,
+                    "No provider matched preferred_provider, falling back to strategy"
+                );
             }
         }
 
