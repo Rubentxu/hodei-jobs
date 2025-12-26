@@ -216,6 +216,26 @@ pub struct SchedulingInfo {
     #[prost(string, tag = "8")]
     pub preferred_region: ::prost::alloc::string::String,
 }
+/// Información detallada de error para respuestas
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ErrorDetails {
+    #[prost(enumeration = "JobFailureReason", tag = "1")]
+    pub reason: i32,
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+    /// Acción sugerida para resolver el problema
+    #[prost(string, tag = "3")]
+    pub suggested_action: ::prost::alloc::string::String,
+    /// Código de error estructurado
+    #[prost(string, tag = "4")]
+    pub error_code: ::prost::alloc::string::String,
+    /// Contexto adicional del error
+    #[prost(map = "string, string", tag = "5")]
+    pub error_context: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+}
 /// Estados del sistema
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -374,6 +394,68 @@ impl PriorityLevel {
             "PRIORITY_HIGH" => Some(Self::PriorityHigh),
             "PRIORITY_CRITICAL" => Some(Self::PriorityCritical),
             "PRIORITY_SYSTEM" => Some(Self::PrioritySystem),
+            _ => None,
+        }
+    }
+}
+/// Tipos de fallo de job - Error Transparency
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum JobFailureReason {
+    Unknown = 0,
+    CommandNotFound = 1,
+    PermissionDenied = 2,
+    FileNotFound = 3,
+    ProcessSpawnFailed = 4,
+    ExecutionTimeout = 5,
+    SignalReceived = 6,
+    NonZeroExitCode = 7,
+    InfrastructureError = 8,
+    ValidationError = 9,
+    ConfigurationError = 10,
+    SecretInjectionError = 11,
+    IoError = 12,
+}
+impl JobFailureReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unknown => "JOB_FAILURE_REASON_UNKNOWN",
+            Self::CommandNotFound => "JOB_FAILURE_REASON_COMMAND_NOT_FOUND",
+            Self::PermissionDenied => "JOB_FAILURE_REASON_PERMISSION_DENIED",
+            Self::FileNotFound => "JOB_FAILURE_REASON_FILE_NOT_FOUND",
+            Self::ProcessSpawnFailed => "JOB_FAILURE_REASON_PROCESS_SPAWN_FAILED",
+            Self::ExecutionTimeout => "JOB_FAILURE_REASON_EXECUTION_TIMEOUT",
+            Self::SignalReceived => "JOB_FAILURE_REASON_SIGNAL_RECEIVED",
+            Self::NonZeroExitCode => "JOB_FAILURE_REASON_NON_ZERO_EXIT_CODE",
+            Self::InfrastructureError => "JOB_FAILURE_REASON_INFRASTRUCTURE_ERROR",
+            Self::ValidationError => "JOB_FAILURE_REASON_VALIDATION_ERROR",
+            Self::ConfigurationError => "JOB_FAILURE_REASON_CONFIGURATION_ERROR",
+            Self::SecretInjectionError => "JOB_FAILURE_REASON_SECRET_INJECTION_ERROR",
+            Self::IoError => "JOB_FAILURE_REASON_IO_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "JOB_FAILURE_REASON_UNKNOWN" => Some(Self::Unknown),
+            "JOB_FAILURE_REASON_COMMAND_NOT_FOUND" => Some(Self::CommandNotFound),
+            "JOB_FAILURE_REASON_PERMISSION_DENIED" => Some(Self::PermissionDenied),
+            "JOB_FAILURE_REASON_FILE_NOT_FOUND" => Some(Self::FileNotFound),
+            "JOB_FAILURE_REASON_PROCESS_SPAWN_FAILED" => Some(Self::ProcessSpawnFailed),
+            "JOB_FAILURE_REASON_EXECUTION_TIMEOUT" => Some(Self::ExecutionTimeout),
+            "JOB_FAILURE_REASON_SIGNAL_RECEIVED" => Some(Self::SignalReceived),
+            "JOB_FAILURE_REASON_NON_ZERO_EXIT_CODE" => Some(Self::NonZeroExitCode),
+            "JOB_FAILURE_REASON_INFRASTRUCTURE_ERROR" => Some(Self::InfrastructureError),
+            "JOB_FAILURE_REASON_VALIDATION_ERROR" => Some(Self::ValidationError),
+            "JOB_FAILURE_REASON_CONFIGURATION_ERROR" => Some(Self::ConfigurationError),
+            "JOB_FAILURE_REASON_SECRET_INJECTION_ERROR" => {
+                Some(Self::SecretInjectionError)
+            }
+            "JOB_FAILURE_REASON_IO_ERROR" => Some(Self::IoError),
             _ => None,
         }
     }
