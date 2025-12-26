@@ -18,12 +18,25 @@ pub enum JobState {
 impl JobState {
     /// Valida si una transición de estado es válida según el State Machine del dominio
     ///
-    /// Transiciones válidas:
+    /// Transiciones válidas según la máquina de estados simplificada:
     /// - Pending → Assigned, Scheduled, Failed, Cancelled, Timeout
     /// - Assigned → Running, Failed, Timeout, Cancelled
     /// - Scheduled → Running, Failed, Timeout, Cancelled
     /// - Running → Succeeded, Failed, Cancelled, Timeout
     /// - Succeeded, Failed, Cancelled, Timeout → (terminal, no transiciones salientes)
+    ///
+    /// # Nota sobre Simplificación de Estados
+    ///
+    /// Para reducir ambigüedad, se establecen las siguientes semánticas claras:
+    ///
+    /// - **Pending**: Job recién creado, en cola global esperando selección del scheduler
+    /// - **Assigned**: Scheduler seleccionó provider Y worker, recursos reservados (ALTA CONFIANZA)
+    /// - **Scheduled**: Scheduler seleccionó provider, esperando provisioning worker (CONFIANZA MEDIA)
+    /// - **Running**: Worker ejecutando activamente el job
+    /// - **Terminal**: Succeeded, Failed, Cancelled, Timeout (no más transiciones)
+    ///
+    /// **Recomendación**: Usar Assigned para indicar alta confianza de ejecución,
+    /// Scheduled cuando el worker aún no está listo.
     pub fn can_transition_to(&self, new_state: &JobState) -> bool {
         match (self, new_state) {
             // Mismo estado - no es una transición válida
@@ -36,13 +49,13 @@ impl JobState {
             (JobState::Pending, JobState::Cancelled) => true,
             (JobState::Pending, JobState::Timeout) => true,
 
-            // Transiciones válidas desde Assigned
+            // Transiciones válidas desde Assigned (ALTA CONFIANZA)
             (JobState::Assigned, JobState::Running) => true,
             (JobState::Assigned, JobState::Failed) => true,
             (JobState::Assigned, JobState::Timeout) => true,
             (JobState::Assigned, JobState::Cancelled) => true,
 
-            // Transiciones válidas desde Scheduled
+            // Transiciones válidas desde Scheduled (CONFIANZA MEDIA)
             (JobState::Scheduled, JobState::Running) => true,
             (JobState::Scheduled, JobState::Failed) => true,
             (JobState::Scheduled, JobState::Timeout) => true,
@@ -55,11 +68,6 @@ impl JobState {
             (JobState::Running, JobState::Timeout) => true,
 
             // Todas las demás transiciones son inválidas
-            // Esto incluye:
-            // - Estados terminales que intentan transicionar
-            // - Transiciones hacia Pending (no se puede volver atrás)
-            // - Transiciones hacia Assigned desde cualquier estado excepto Pending
-            // - Transiciones hacia Scheduled desde cualquier estado excepto Pending
             _ => false,
         }
     }
@@ -78,6 +86,26 @@ impl JobState {
             self,
             JobState::Pending | JobState::Assigned | JobState::Scheduled | JobState::Running
         )
+    }
+
+    /// Retorna true si el job está listo para ejecutar (Assigned o Scheduled)
+    /// Indica que el scheduler ya tomó una decisión
+    pub fn is_scheduled(&self) -> bool {
+        matches!(self, JobState::Assigned | JobState::Scheduled)
+    }
+
+    /// Retorna la categoría simplificada del estado para reporting
+    pub fn category(&self) -> &'static str {
+        match self {
+            JobState::Pending => "pending",
+            JobState::Assigned => "assigned",
+            JobState::Scheduled => "scheduled",
+            JobState::Running => "running",
+            JobState::Succeeded => "completed",
+            JobState::Failed => "failed",
+            JobState::Cancelled => "cancelled",
+            JobState::Timeout => "timeout",
+        }
     }
 }
 
@@ -477,6 +505,87 @@ mod tests {
         assert_eq!(i32::from(&JobState::Failed), 5);
         assert_eq!(i32::from(&JobState::Cancelled), 6);
         assert_eq!(i32::from(&JobState::Timeout), 7);
+    }
+
+    #[test]
+    fn test_job_state_transitions() {
+        // Valid transitions from Pending
+        assert!(JobState::Pending.can_transition_to(&JobState::Assigned));
+        assert!(JobState::Pending.can_transition_to(&JobState::Scheduled));
+        assert!(JobState::Pending.can_transition_to(&JobState::Failed));
+        assert!(JobState::Pending.can_transition_to(&JobState::Cancelled));
+        assert!(JobState::Pending.can_transition_to(&JobState::Timeout));
+
+        // Valid transitions from Assigned
+        assert!(JobState::Assigned.can_transition_to(&JobState::Running));
+        assert!(JobState::Assigned.can_transition_to(&JobState::Failed));
+        assert!(JobState::Assigned.can_transition_to(&JobState::Cancelled));
+        assert!(JobState::Assigned.can_transition_to(&JobState::Timeout));
+
+        // Valid transitions from Scheduled
+        assert!(JobState::Scheduled.can_transition_to(&JobState::Running));
+        assert!(JobState::Scheduled.can_transition_to(&JobState::Failed));
+        assert!(JobState::Scheduled.can_transition_to(&JobState::Cancelled));
+        assert!(JobState::Scheduled.can_transition_to(&JobState::Timeout));
+
+        // Valid transitions from Running
+        assert!(JobState::Running.can_transition_to(&JobState::Succeeded));
+        assert!(JobState::Running.can_transition_to(&JobState::Failed));
+        assert!(JobState::Running.can_transition_to(&JobState::Cancelled));
+        assert!(JobState::Running.can_transition_to(&JobState::Timeout));
+
+        // Invalid transitions
+        assert!(!JobState::Pending.can_transition_to(&JobState::Running)); // Skip intermediate
+        assert!(!JobState::Running.can_transition_to(&JobState::Pending)); // No backwards
+        assert!(!JobState::Succeeded.can_transition_to(&JobState::Running)); // Terminal
+    }
+
+    #[test]
+    fn test_job_state_terminal() {
+        assert!(!JobState::Pending.is_terminal());
+        assert!(!JobState::Assigned.is_terminal());
+        assert!(!JobState::Scheduled.is_terminal());
+        assert!(!JobState::Running.is_terminal());
+        assert!(JobState::Succeeded.is_terminal());
+        assert!(JobState::Failed.is_terminal());
+        assert!(JobState::Cancelled.is_terminal());
+        assert!(JobState::Timeout.is_terminal());
+    }
+
+    #[test]
+    fn test_job_state_in_progress() {
+        assert!(JobState::Pending.is_in_progress());
+        assert!(JobState::Assigned.is_in_progress());
+        assert!(JobState::Scheduled.is_in_progress());
+        assert!(JobState::Running.is_in_progress());
+        assert!(!JobState::Succeeded.is_in_progress());
+        assert!(!JobState::Failed.is_in_progress());
+        assert!(!JobState::Cancelled.is_in_progress());
+        assert!(!JobState::Timeout.is_in_progress());
+    }
+
+    #[test]
+    fn test_job_state_is_scheduled() {
+        assert!(!JobState::Pending.is_scheduled());
+        assert!(JobState::Assigned.is_scheduled());
+        assert!(JobState::Scheduled.is_scheduled());
+        assert!(!JobState::Running.is_scheduled());
+        assert!(!JobState::Succeeded.is_scheduled());
+        assert!(!JobState::Failed.is_scheduled());
+        assert!(!JobState::Cancelled.is_scheduled());
+        assert!(!JobState::Timeout.is_scheduled());
+    }
+
+    #[test]
+    fn test_job_state_category() {
+        assert_eq!(JobState::Pending.category(), "pending");
+        assert_eq!(JobState::Assigned.category(), "assigned");
+        assert_eq!(JobState::Scheduled.category(), "scheduled");
+        assert_eq!(JobState::Running.category(), "running");
+        assert_eq!(JobState::Succeeded.category(), "completed");
+        assert_eq!(JobState::Failed.category(), "failed");
+        assert_eq!(JobState::Cancelled.category(), "cancelled");
+        assert_eq!(JobState::Timeout.category(), "timeout");
     }
 
     // WorkerState tests

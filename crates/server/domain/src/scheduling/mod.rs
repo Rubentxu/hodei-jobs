@@ -80,15 +80,13 @@ impl Default for SchedulerConfig {
 /// ## Domain Purity (EPIC-022)
 /// This implementation achieves purity by:
 /// - Emitting `SchedulingEvent` instead of using tracing
-/// - Using `ProviderPreference` and `ProviderTypeMapping` for provider matching
+/// - Using `ProviderPreference` for provider matching (eliminates code duplication)
 /// - Using `WorkerRequirements` for worker filtering
 /// - All observability is handled through domain events
 pub struct SmartScheduler {
     config: SchedulerConfig,
     round_robin_worker_index: AtomicUsize,
     round_robin_provider_index: AtomicUsize,
-    /// Cached provider type mapping for efficient lookups
-    provider_type_mapping: ProviderTypeMapping,
 }
 
 impl SmartScheduler {
@@ -98,7 +96,6 @@ impl SmartScheduler {
             config,
             round_robin_worker_index: AtomicUsize::new(0),
             round_robin_provider_index: AtomicUsize::new(0),
-            provider_type_mapping: ProviderTypeMapping::new(),
         }
     }
 
@@ -128,16 +125,7 @@ impl SmartScheduler {
                     let provider_matches = pref
                         .as_ref()
                         .map(|p| p.matches_provider_type(w.provider_type()))
-                        .unwrap_or_else(|| {
-                            // Fallback to case-insensitive match if ProviderPreference fails
-                            let preferred_lower = preferred.to_lowercase();
-                            let provider_type_str = w.provider_type().to_string().to_lowercase();
-                            provider_type_str == preferred_lower
-                                || provider_type_str.contains(&preferred_lower)
-                                || preferred_lower.contains(&provider_type_str)
-                                || (preferred_lower == "k8s" && provider_type_str == "kubernetes")
-                                || (preferred_lower == "kube" && provider_type_str == "kubernetes")
-                        });
+                        .unwrap_or(false);
 
                     provider_matches && w.state().can_accept_jobs()
                 })
@@ -312,26 +300,27 @@ impl SmartScheduler {
     ) -> Option<ProviderId> {
         // Step 1: Check if job has a preferred provider
         if let Some(preferred) = &job.spec.preferences.preferred_provider {
-            // Use ProviderTypeMapping for efficient provider matching
+            // Use ProviderPreference for efficient provider matching
             let pref = ProviderPreference::new(preferred).ok();
 
             // Try to find provider by name or type
-            let preferred_lower = preferred.to_lowercase();
             let preferred_provider = providers.iter().find(|p| {
                 // Match using ProviderPreference if available
                 let type_matches = pref
                     .as_ref()
                     .map(|p_ref| p_ref.matches_provider_type(&p.provider_type))
-                    .unwrap_or_else(|| {
-                        let provider_type_str = p.provider_type.to_string().to_lowercase();
-                        provider_type_str == preferred_lower
-                            || provider_type_str.contains(&preferred_lower)
-                            || preferred_lower.contains(&provider_type_str)
-                            || (preferred_lower == "k8s" && provider_type_str == "kubernetes")
-                            || (preferred_lower == "kube" && provider_type_str == "kubernetes")
-                    });
+                    .unwrap_or(false);
 
-                let id_matches = format!("{}", p.provider_id).to_lowercase() == preferred_lower;
+                let id_matches: bool = pref
+                    .as_ref()
+                    .map(|p_pref| {
+                        if p_pref.is_specific_provider() {
+                            p_pref.matches_provider_id(&p.provider_id)
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
 
                 (type_matches || id_matches) && p.can_accept_workers()
             });
@@ -739,10 +728,11 @@ mod tests {
     }
 
     #[test]
-    fn test_smart_scheduler_new_uses_default_provider_mapping() {
+    fn test_smart_scheduler_with_provider_preference_matching() {
+        // Test that ProviderPreference is used for matching
         let scheduler = SmartScheduler::new(SchedulerConfig::default());
-        // Should have default provider type mapping initialized
-        let mapping = scheduler.provider_type_mapping;
-        assert!(mapping.match_provider("k8s").is_some());
+        // ProviderPreference handles the matching logic
+        let pref = ProviderPreference::new("k8s").unwrap();
+        assert!(pref.matches_provider_type(&ProviderType::Kubernetes));
     }
 }

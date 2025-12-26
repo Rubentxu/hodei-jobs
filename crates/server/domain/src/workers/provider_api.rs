@@ -332,6 +332,36 @@ pub trait WorkerLifecycle: Send + Sync {
     async fn create_worker(&self, spec: &WorkerSpec) -> Result<WorkerHandle, ProviderError>;
     async fn get_worker_status(&self, handle: &WorkerHandle) -> Result<WorkerState, ProviderError>;
     async fn destroy_worker(&self, handle: &WorkerHandle) -> Result<(), ProviderError>;
+
+    // EPIC-26 US-26.6: Orphan worker detection support
+    /// List all workers known to this provider
+    async fn list_workers(&self) -> Result<Vec<ProviderWorkerInfo>, ProviderError> {
+        // Default implementation returns empty list
+        Ok(Vec::new())
+    }
+
+    /// Destroy a worker by its provider-specific resource ID
+    async fn destroy_worker_by_id(&self, _resource_id: &str) -> Result<(), ProviderError> {
+        // Default implementation returns error - override in providers that support this
+        Err(ProviderError::OperationNotSupported {
+            operation: "destroy_worker_by_id".to_string(),
+            reason: "Provider does not support orphan detection".to_string(),
+        })
+    }
+}
+
+/// Information about a worker from the provider's perspective
+/// Used for orphan worker detection (EPIC-26 US-26.6)
+#[derive(Debug, Clone)]
+pub struct ProviderWorkerInfo {
+    /// Provider-specific resource identifier (container_id, pod_name, etc.)
+    pub resource_id: String,
+    /// Current state of the worker in the provider
+    pub state: WorkerState,
+    /// When the worker was last seen/updated in the provider
+    pub last_seen: Option<DateTime<Utc>>,
+    /// Optional job ID if worker is currently running a job
+    pub current_job_id: Option<String>,
 }
 
 /// Trait para gestión de logs del worker (ISP - Logs)
@@ -1038,6 +1068,9 @@ pub enum ProviderError {
 
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+
+    #[error("Operation not supported: {operation}, reason: {reason}")]
+    OperationNotSupported { operation: String, reason: String },
 
     #[error("Configuration error: {0}")]
     ConfigurationError(String),

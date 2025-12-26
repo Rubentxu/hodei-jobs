@@ -7,7 +7,7 @@ use crate::persistence::outbox::PostgresOutboxRepository;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
-use hodei_server_domain::events::{DomainEvent, TerminationReason};
+use hodei_server_domain::events::{CleanupReason, DomainEvent, TerminationReason};
 use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventView};
 use hodei_server_domain::shared_kernel::DomainError;
@@ -881,7 +881,813 @@ impl OutboxRelay {
                 })
             }
 
-            // Add more event types as needed
+            // =====================================================
+            // US-26.1: JobDispatchAcknowledged
+            // =====================================================
+            "JobDispatchAcknowledged" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in JobDispatchAcknowledged event".to_string(),
+                        }
+                    })?;
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in JobDispatchAcknowledged event".to_string(),
+                    })?;
+
+                let acknowledged_at = serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
+                    payload["acknowledged_at"].clone(),
+                )
+                .map_err(|_| DomainError::InfrastructureError {
+                    message: "Invalid acknowledged_at in JobDispatchAcknowledged event".to_string(),
+                })?;
+
+                Ok(DomainEvent::JobDispatchAcknowledged {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    acknowledged_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.2: RunJobReceived
+            // =====================================================
+            "RunJobReceived" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in RunJobReceived event".to_string(),
+                        }
+                    })?;
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in RunJobReceived event".to_string(),
+                    })?;
+
+                let received_at = serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
+                    payload["received_at"].clone(),
+                )
+                .map_err(|_| DomainError::InfrastructureError {
+                    message: "Invalid received_at in RunJobReceived event".to_string(),
+                })?;
+
+                Ok(DomainEvent::RunJobReceived {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    received_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: JobRetried
+            // =====================================================
+            "JobRetried" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in JobRetried event".to_string(),
+                        }
+                    })?;
+
+                Ok(DomainEvent::JobRetried {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    attempt: serde_json::from_value(payload["attempt"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid attempt in JobRetried event".to_string(),
+                        }
+                    })?,
+                    max_attempts: serde_json::from_value(payload["max_attempts"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid max_attempts in JobRetried event".to_string(),
+                        },
+                    )?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: JobCancelled
+            // =====================================================
+            "JobCancelled" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in JobCancelled event".to_string(),
+                        }
+                    })?;
+
+                Ok(DomainEvent::JobCancelled {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    reason: payload
+                        .get("reason")
+                        .and_then(|r| r.as_str().map(|s| s.to_string())),
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: ProviderHealthChanged
+            // =====================================================
+            "ProviderHealthChanged" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in ProviderHealthChanged event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::ProviderHealthChanged {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    old_status: serde_json::from_value(payload["old_status"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid old_status in ProviderHealthChanged event"
+                                .to_string(),
+                        },
+                    )?,
+                    new_status: serde_json::from_value(payload["new_status"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid new_status in ProviderHealthChanged event"
+                                .to_string(),
+                        },
+                    )?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerReconnected
+            // =====================================================
+            "WorkerReconnected" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerReconnected event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerReconnected {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    session_id: serde_json::from_value(payload["session_id"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid session_id in WorkerReconnected event".to_string(),
+                        },
+                    )?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerRecoveryFailed
+            // =====================================================
+            "WorkerRecoveryFailed" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerRecoveryFailed event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerRecoveryFailed {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    invalid_session_id: serde_json::from_value(
+                        payload["invalid_session_id"].clone(),
+                    )
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid invalid_session_id in WorkerRecoveryFailed event"
+                            .to_string(),
+                    })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: ProviderRecovered
+            // =====================================================
+            "ProviderRecovered" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in ProviderRecovered event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::ProviderRecovered {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    previous_status: serde_json::from_value(payload["previous_status"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid previous_status in ProviderRecovered event"
+                                .to_string(),
+                        })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerEphemeralCreated
+            // =====================================================
+            "WorkerEphemeralCreated" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerEphemeralCreated event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerEphemeralCreated event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerEphemeralCreated {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    max_lifetime_secs: serde_json::from_value(payload["max_lifetime_secs"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid max_lifetime_secs in WorkerEphemeralCreated event"
+                                .to_string(),
+                        })?,
+                    ttl_after_completion_secs: payload
+                        .get("ttl_after_completion_secs")
+                        .and_then(|v| v.as_u64())
+                        .map(Some)
+                        .unwrap_or(None),
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerEphemeralReady
+            // =====================================================
+            "WorkerEphemeralReady" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerEphemeralReady event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerEphemeralReady event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerEphemeralReady {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.8: WorkerStateUpdated
+            // =====================================================
+            "WorkerStateUpdated" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerStateUpdated event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerStateUpdated event".to_string(),
+                    })?;
+
+                let current_job_id = payload
+                    .get("current_job_id")
+                    .map(|v| {
+                        serde_json::from_value::<Uuid>(v.clone())
+                            .map(|id| hodei_server_domain::shared_kernel::JobId(id))
+                    })
+                    .transpose()
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid current_job_id in WorkerStateUpdated event".to_string(),
+                    })?;
+
+                let last_heartbeat = payload
+                    .get("last_heartbeat")
+                    .map(|v| {
+                        serde_json::from_value::<Option<chrono::DateTime<chrono::Utc>>>(v.clone())
+                    })
+                    .transpose()
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid last_heartbeat in WorkerStateUpdated event".to_string(),
+                    })?
+                    .flatten();
+
+                let capabilities = payload
+                    .get("capabilities")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let metadata = payload
+                    .get("metadata")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Ok(DomainEvent::WorkerStateUpdated {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    old_state: serde_json::from_value(payload["old_state"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid old_state in WorkerStateUpdated event".to_string(),
+                        },
+                    )?,
+                    new_state: serde_json::from_value(payload["new_state"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid new_state in WorkerStateUpdated event".to_string(),
+                        },
+                    )?,
+                    current_job_id,
+                    last_heartbeat,
+                    capabilities,
+                    metadata,
+                    transition_reason: serde_json::from_value(payload["transition_reason"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid transition_reason in WorkerStateUpdated event"
+                                .to_string(),
+                        })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerEphemeralTerminating
+            // =====================================================
+            "WorkerEphemeralTerminating" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerEphemeralTerminating event"
+                            .to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerEphemeralTerminating event"
+                            .to_string(),
+                    })?;
+                let reason = serde_json::from_value::<TerminationReason>(payload["reason"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid reason in WorkerEphemeralTerminating event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerEphemeralTerminating {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    reason,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerEphemeralTerminated
+            // =====================================================
+            "WorkerEphemeralTerminated" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerEphemeralTerminated event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerEphemeralTerminated event"
+                            .to_string(),
+                    })?;
+
+                let ttl_expires_at = payload
+                    .get("ttl_expires_at")
+                    .map(|v| serde_json::from_value::<chrono::DateTime<chrono::Utc>>(v.clone()))
+                    .transpose()
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid ttl_expires_at in WorkerEphemeralTerminated event"
+                            .to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerEphemeralTerminated {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    cleanup_scheduled: payload["cleanup_scheduled"].as_bool().unwrap_or(false),
+                    ttl_expires_at,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerEphemeralCleanedUp
+            // =====================================================
+            "WorkerEphemeralCleanedUp" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerEphemeralCleanedUp event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerEphemeralCleanedUp event"
+                            .to_string(),
+                    })?;
+
+                let cleanup_reason =
+                    serde_json::from_value::<CleanupReason>(payload["cleanup_reason"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid cleanup_reason in WorkerEphemeralCleanedUp event"
+                                .to_string(),
+                        })?;
+
+                Ok(DomainEvent::WorkerEphemeralCleanedUp {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    cleanup_reason,
+                    cleanup_duration_ms: serde_json::from_value(
+                        payload["cleanup_duration_ms"].clone(),
+                    )
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid cleanup_duration_ms in WorkerEphemeralCleanedUp event"
+                            .to_string(),
+                    })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: OrphanWorkerDetected
+            // =====================================================
+            "OrphanWorkerDetected" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in OrphanWorkerDetected event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in OrphanWorkerDetected event".to_string(),
+                    })?;
+
+                let last_seen = serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
+                    payload["last_seen"].clone(),
+                )
+                .map_err(|_| DomainError::InfrastructureError {
+                    message: "Invalid last_seen in OrphanWorkerDetected event".to_string(),
+                })?;
+
+                Ok(DomainEvent::OrphanWorkerDetected {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    last_seen,
+                    orphaned_duration_secs: serde_json::from_value(
+                        payload["orphaned_duration_secs"].clone(),
+                    )
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid orphaned_duration_secs in OrphanWorkerDetected event"
+                            .to_string(),
+                    })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: GarbageCollectionCompleted
+            // =====================================================
+            "GarbageCollectionCompleted" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in GarbageCollectionCompleted event"
+                            .to_string(),
+                    })?;
+
+                Ok(DomainEvent::GarbageCollectionCompleted {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    workers_cleaned: serde_json::from_value(payload["workers_cleaned"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid workers_cleaned in GarbageCollectionCompleted event"
+                                .to_string(),
+                        })?,
+                    orphans_detected: serde_json::from_value(payload["orphans_detected"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid orphans_detected in GarbageCollectionCompleted event"
+                            .to_string(),
+                    })?,
+                    errors: serde_json::from_value(payload["errors"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid errors in GarbageCollectionCompleted event"
+                                .to_string(),
+                        }
+                    })?,
+                    duration_ms: serde_json::from_value(payload["duration_ms"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid duration_ms in GarbageCollectionCompleted event"
+                                .to_string(),
+                        },
+                    )?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.3: WorkerEphemeralIdle
+            // =====================================================
+            "WorkerEphemeralIdle" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerEphemeralIdle event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerEphemeralIdle event".to_string(),
+                    })?;
+
+                let idle_since = serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
+                    payload["idle_since"].clone(),
+                )
+                .map_err(|_| DomainError::InfrastructureError {
+                    message: "Invalid idle_since in WorkerEphemeralIdle event".to_string(),
+                })?;
+
+                Ok(DomainEvent::WorkerEphemeralIdle {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    idle_since,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // US-26.4: ProviderError (TerminationReason::ProviderError)
+            // =====================================================
+            "ProviderError" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in ProviderError event".to_string(),
+                    })?;
+
+                let message = payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown provider error")
+                    .to_string();
+
+                Ok(DomainEvent::WorkerTerminated {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(
+                        payload
+                            .get("worker_id")
+                            .and_then(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                            .unwrap_or_else(Uuid::new_v4),
+                    ),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    reason: TerminationReason::ProviderError { message },
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // Additional events: ProviderRegistered, ProviderUpdated
+            // =====================================================
+            "ProviderRegistered" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in ProviderRegistered event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::ProviderRegistered {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    provider_type: serde_json::from_value(payload["provider_type"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid provider_type in ProviderRegistered event"
+                                .to_string(),
+                        })?,
+                    config_summary: serde_json::from_value(payload["config_summary"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                            message: "Invalid config_summary in ProviderRegistered event"
+                                .to_string(),
+                        })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            "ProviderUpdated" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in ProviderUpdated event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::ProviderUpdated {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    changes: payload
+                        .get("changes")
+                        .and_then(|v| v.as_str().map(|s| s.to_string())),
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            "AutoScalingTriggered" => {
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in AutoScalingTriggered event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::AutoScalingTriggered {
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    reason: serde_json::from_value(payload["reason"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid reason in AutoScalingTriggered event".to_string(),
+                        }
+                    })?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            "WorkerProvisioned" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerProvisioned event".to_string(),
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerProvisioned event".to_string(),
+                    })?;
+
+                Ok(DomainEvent::WorkerProvisioned {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    spec_summary: serde_json::from_value(payload["spec_summary"].clone()).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid spec_summary in WorkerProvisioned event".to_string(),
+                        },
+                    )?,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // Unknown event type
+            // =====================================================
             _ => {
                 warn!(
                     event_type = %event.event_type,

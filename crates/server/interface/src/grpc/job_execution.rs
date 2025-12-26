@@ -4,11 +4,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{debug, info, warn};
 
+use crate::mappers::{
+    error_to_status, map_job_state, map_job_to_definition, map_job_to_summary, now_timestamp,
+    parse_grpc_job_id, to_timestamp,
+};
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
-use hodei_server_domain::shared_kernel::JobId;
+use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId};
+use hodei_server_domain::workers::WorkerRegistry;
 use uuid::Uuid;
 
 use hodei_jobs::{
@@ -21,22 +26,12 @@ use hodei_jobs::{
 };
 
 use chrono::Utc;
+use hodei_server_domain::events::{DomainEvent, TerminationReason};
+use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
+use hodei_server_domain::workers::WorkerProvider;
 use prost_types;
-
-/// Convert anyhow::Error to tonic::Status
-fn error_to_status(err: impl std::fmt::Display) -> Status {
-    let err_str = err.to_string();
-    // Try to parse as DomainError for specific status mapping
-    if err_str.contains("not found") || err_str.contains("NotFound") {
-        Status::not_found(err_str)
-    } else if err_str.contains("not available") || err_str.contains("NotAvailable") {
-        Status::failed_precondition(err_str)
-    } else if err_str.contains("invalid") || err_str.contains("Invalid") {
-        Status::invalid_argument(err_str)
-    } else {
-        Status::internal(err_str)
-    }
-}
+use std::collections::HashMap;
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct JobExecutionServiceImpl {
@@ -44,6 +39,16 @@ pub struct JobExecutionServiceImpl {
     cancel_job_usecase: Arc<CancelJobUseCase>,
     job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
     worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
+    /// Providers map for immediate worker cleanup (EPIC-26 US-26.5)
+    providers: Arc<
+        RwLock<HashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
+    >,
+    /// Outbox repository for emitting events (EPIC-26)
+    outbox_repository: Option<
+        Arc<dyn hodei_server_domain::outbox::OutboxRepository<Error = OutboxError> + Send + Sync>,
+    >,
+    /// Event bus for publishing domain events
+    event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
 }
 
 impl JobExecutionServiceImpl {
@@ -58,123 +63,260 @@ impl JobExecutionServiceImpl {
             cancel_job_usecase,
             job_repository,
             worker_registry,
+            providers: Arc::new(RwLock::new(HashMap::new())),
+            outbox_repository: None,
+            event_bus: None,
         }
     }
 
-    fn parse_job_id(job_id: Option<GrpcJobId>) -> Result<JobId, Status> {
-        let value = job_id
-            .map(|id| id.value)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| Status::invalid_argument("job_id is required"))?;
-
-        let uuid = Uuid::parse_str(&value)
-            .map_err(|_| Status::invalid_argument("job_id must be a UUID"))?;
-        Ok(JobId(uuid))
-    }
-
-    fn now_timestamp() -> prost_types::Timestamp {
-        let now = chrono::Utc::now();
-        prost_types::Timestamp {
-            seconds: now.timestamp(),
-            nanos: now.timestamp_subsec_nanos() as i32,
+    /// Create with providers for worker cleanup (EPIC-26 US-26.5)
+    pub fn with_cleanup_support(
+        create_job_usecase: Arc<CreateJobUseCase>,
+        cancel_job_usecase: Arc<CancelJobUseCase>,
+        job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
+        worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
+        providers: Arc<
+            RwLock<
+                HashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>,
+            >,
+        >,
+        outbox_repository: Option<
+            Arc<
+                dyn hodei_server_domain::outbox::OutboxRepository<Error = OutboxError>
+                    + Send
+                    + Sync,
+            >,
+        >,
+        event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
+    ) -> Self {
+        Self {
+            create_job_usecase,
+            cancel_job_usecase,
+            job_repository,
+            worker_registry,
+            providers,
+            outbox_repository,
+            event_bus,
         }
     }
 
-    fn to_timestamp(dt: chrono::DateTime<chrono::Utc>) -> prost_types::Timestamp {
-        prost_types::Timestamp {
-            seconds: dt.timestamp(),
-            nanos: dt.timestamp_subsec_nanos() as i32,
-        }
+    /// Set outbox repository after construction (EPIC-26)
+    pub fn set_outbox_repository(
+        &mut self,
+        outbox_repository: Arc<
+            dyn hodei_server_domain::outbox::OutboxRepository<Error = OutboxError> + Send + Sync,
+        >,
+    ) {
+        self.outbox_repository = Some(outbox_repository);
     }
 
-    fn map_job_state(state: &hodei_server_domain::shared_kernel::JobState) -> JobStatus {
-        match state {
-            hodei_server_domain::shared_kernel::JobState::Pending => JobStatus::Pending,
-            hodei_server_domain::shared_kernel::JobState::Assigned => JobStatus::Assigned,
-            hodei_server_domain::shared_kernel::JobState::Scheduled => JobStatus::Queued,
-            hodei_server_domain::shared_kernel::JobState::Running => JobStatus::Running,
-            hodei_server_domain::shared_kernel::JobState::Succeeded => JobStatus::Completed,
-            hodei_server_domain::shared_kernel::JobState::Failed => JobStatus::Failed,
-            hodei_server_domain::shared_kernel::JobState::Cancelled => JobStatus::Cancelled,
-            hodei_server_domain::shared_kernel::JobState::Timeout => JobStatus::Timeout,
-        }
+    /// Set event bus after construction (EPIC-26)
+    pub fn set_event_bus(&mut self, event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>) {
+        self.event_bus = Some(event_bus);
     }
 
-    fn map_job_to_summary(job: hodei_server_domain::jobs::Job) -> JobSummary {
-        let duration = job.execution_duration().map(|d| prost_types::Duration {
-            seconds: d.as_secs() as i64,
-            nanos: d.subsec_nanos() as i32,
-        });
-
-        let progress = job
-            .metadata()
-            .get("progress_percentage")
-            .and_then(|p| p.parse::<i32>().ok())
-            .unwrap_or(0);
-
-        JobSummary {
-            job_id: Some(GrpcJobId {
-                value: job.id.to_string(),
-            }),
-            name: format!("Job {}", &job.id.to_string()[..8]),
-            status: Self::map_job_state(job.state()) as i32,
-            created_at: Some(Self::to_timestamp(*job.created_at())),
-            started_at: job.started_at().copied().map(Self::to_timestamp),
-            completed_at: job.completed_at().copied().map(Self::to_timestamp),
-            duration,
-            progress_percentage: progress,
-        }
+    /// Register a provider for worker cleanup
+    pub async fn register_provider(&self, provider: Arc<dyn WorkerProvider>) {
+        let provider_id = provider.provider_id().clone();
+        self.providers.write().await.insert(provider_id, provider);
     }
 
-    fn map_job_to_definition(job: &hodei_server_domain::jobs::Job) -> JobDefinition {
-        let cmd_vec = job.spec.command_vec();
-        let command = cmd_vec.first().cloned().unwrap_or_default();
-        let arguments = if cmd_vec.len() > 1 {
-            cmd_vec[1..].to_vec()
-        } else {
-            vec![]
+    /// Trigger immediate worker cleanup after job completion (EPIC-26 US-26.5)
+    async fn trigger_worker_cleanup(
+        &self,
+        worker_id: &WorkerId,
+        job_id: &JobId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Get worker info
+        let worker = match self.worker_registry.get(worker_id).await {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                warn!("Worker {} not found for cleanup", worker_id);
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("Failed to get worker {}: {}", worker_id, e);
+                return Err(e.into());
+            }
         };
 
-        JobDefinition {
-            job_id: Some(GrpcJobId {
-                value: job.id.to_string(),
-            }),
-            name: format!("Job {}", &job.id.to_string()[..8]),
-            description: "".to_string(),
-            command,
-            arguments,
-            environment: job.spec.env.clone(),
-            requirements: Some(ResourceRequirements {
-                cpu_cores: job.spec.resources.cpu_cores as f64,
-                memory_bytes: (job.spec.resources.memory_mb * 1024 * 1024) as i64,
-                disk_bytes: (job.spec.resources.storage_mb * 1024 * 1024) as i64,
-                gpu_count: if job.spec.resources.gpu_required {
-                    1
-                } else {
-                    0
-                },
-                custom_required: Default::default(),
-            }),
-            scheduling: Some(SchedulingInfo {
-                priority: 1, // Normal
-                scheduler_name: "default".to_string(),
-                deadline: None,
-                preemption_allowed: false,
-                preferred_provider: String::new(),
-                required_labels: std::collections::HashMap::new(),
-            }),
-            selector: None,
-            tolerations: vec![],
-            timeout: Some(TimeoutConfig {
-                execution_timeout: Some(prost_types::Duration {
-                    seconds: (job.spec.timeout_ms / 1000) as i64,
-                    nanos: ((job.spec.timeout_ms % 1000) * 1_000_000) as i32,
-                }),
-                heartbeat_timeout: None,
-                cleanup_timeout: None,
-            }),
-            tags: vec![],
+        let worker_state = worker.state().clone();
+        let provider_id = worker.handle().provider_id.clone();
+
+        // Skip cleanup if worker is already terminating/terminated
+        if matches!(
+            worker_state,
+            hodei_server_domain::shared_kernel::WorkerState::Terminated
+                | hodei_server_domain::shared_kernel::WorkerState::Terminating
+        ) {
+            debug!(
+                "Worker {} already terminating/terminated, skipping cleanup",
+                worker_id
+            );
+            return Ok(());
         }
+
+        // Emit WorkerEphemeralTerminating event (EPIC-26 US-26.3)
+        let now = Utc::now();
+        let event = OutboxEventInsert::for_worker(
+            worker_id.0,
+            "WorkerEphemeralTerminating".to_string(),
+            serde_json::json!({
+                "worker_id": worker_id.0.to_string(),
+                "provider_id": provider_id.0.to_string(),
+                "reason": "JOB_COMPLETED",
+                "job_id": job_id.0.to_string()
+            }),
+            Some(serde_json::json!({
+                "source": "JobExecutionService",
+                "cleanup_type": "immediate",
+                "event": "job_completion"
+            })),
+            Some(format!(
+                "ephemeral-terminating-{}-{}",
+                worker_id.0,
+                now.timestamp()
+            )),
+        );
+
+        // Emit the event
+        if let Some(ref outbox_repo) = self.outbox_repository {
+            if let Err(e) = outbox_repo.insert_events(&[event]).await {
+                warn!("Failed to insert WorkerEphemeralTerminating event: {:?}", e);
+            }
+        }
+
+        // Also emit to event bus if available
+        if let Some(ref event_bus) = self.event_bus {
+            let domain_event = DomainEvent::WorkerEphemeralTerminating {
+                worker_id: worker_id.clone(),
+                provider_id: provider_id.clone(),
+                reason: TerminationReason::Unregistered,
+                occurred_at: now,
+                correlation_id: Some(job_id.to_string()),
+                actor: Some("job-execution-service".to_string()),
+            };
+            if let Err(e) = event_bus.publish(&domain_event).await {
+                warn!("Failed to publish WorkerEphemeralTerminating event: {}", e);
+            }
+        }
+
+        // Update worker state to Terminating
+        if let Err(e) = self
+            .worker_registry
+            .update_state(
+                worker_id,
+                hodei_server_domain::shared_kernel::WorkerState::Terminating,
+            )
+            .await
+        {
+            warn!("Failed to update worker {} state: {}", worker_id, e);
+        }
+
+        // Emit WorkerStateUpdated event (EPIC-26 US-26.8)
+        let state_change_event = OutboxEventInsert::for_worker(
+            worker_id.0,
+            "WorkerStateUpdated".to_string(),
+            serde_json::json!({
+                "worker_id": worker_id.0.to_string(),
+                "provider_id": provider_id.0.to_string(),
+                "old_state": format!("{:?}", worker_state),
+                "new_state": "Terminating",
+                "current_job_id": job_id.0.to_string(),
+                "last_heartbeat": now.to_rfc3339(),
+                "transition_reason": "job_completion"
+            }),
+            Some(serde_json::json!({
+                "source": "JobExecutionService",
+                "event": "job_completion_cleanup"
+            })),
+            Some(format!(
+                "worker-state-updated-{}-{}",
+                worker_id.0,
+                now.timestamp()
+            )),
+        );
+
+        if let Some(ref outbox_repo) = self.outbox_repository {
+            if let Err(e) = outbox_repo.insert_events(&[state_change_event]).await {
+                warn!("Failed to insert WorkerStateUpdated event: {:?}", e);
+            }
+        }
+
+        // Destroy worker via provider immediately
+        let providers = self.providers.read().await;
+        if let Some(provider) = providers.get(&provider_id) {
+            if let Err(e) = provider.destroy_worker(worker.handle()).await {
+                warn!(
+                    "Failed to destroy worker {} via provider {}: {}",
+                    worker_id, provider_id, e
+                );
+                // Emit ProviderError event
+                let error_event = OutboxEventInsert::for_worker(
+                    worker_id.0,
+                    "ProviderError".to_string(),
+                    serde_json::json!({
+                        "worker_id": worker_id.0.to_string(),
+                        "provider_id": provider_id.0.to_string(),
+                        "message": e.to_string()
+                    }),
+                    None,
+                    Some(format!(
+                        "provider-error-{}-{}",
+                        worker_id.0,
+                        now.timestamp()
+                    )),
+                );
+                if let Some(ref outbox_repo) = self.outbox_repository {
+                    let _ = outbox_repo.insert_events(&[error_event]).await;
+                }
+            } else {
+                info!(
+                    "Worker {} destroyed immediately after job {} completion",
+                    worker_id, job_id
+                );
+            }
+        } else {
+            warn!(
+                "Provider {} not found for worker {} cleanup",
+                provider_id, worker_id
+            );
+        }
+
+        // Unregister worker
+        if let Err(e) = self.worker_registry.unregister(worker_id).await {
+            warn!("Failed to unregister worker {}: {}", worker_id, e);
+        }
+
+        // Emit WorkerEphemeralTerminated event (EPIC-26 US-26.3)
+        let terminated_event = OutboxEventInsert::for_worker(
+            worker_id.0,
+            "WorkerEphemeralTerminated".to_string(),
+            serde_json::json!({
+                "worker_id": worker_id.0.to_string(),
+                "provider_id": provider_id.0.to_string(),
+                "cleanup_scheduled": false,
+                "job_id": job_id.0.to_string()
+            }),
+            Some(serde_json::json!({
+                "source": "JobExecutionService",
+                "cleanup_type": "immediate",
+                "event": "job_completion_complete"
+            })),
+            Some(format!(
+                "ephemeral-terminated-{}-{}",
+                worker_id.0,
+                now.timestamp()
+            )),
+        );
+
+        if let Some(ref outbox_repo) = self.outbox_repository {
+            if let Err(e) = outbox_repo.insert_events(&[terminated_event]).await {
+                warn!("Failed to insert WorkerEphemeralTerminated event: {:?}", e);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -274,7 +416,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         Ok(Response::new(QueueJobResponse {
             success: true,
             message: format!("Job queued successfully"),
-            queued_at: Some(Self::now_timestamp()),
+            queued_at: Some(now_timestamp()),
             job_id: Some(GrpcJobId {
                 value: result.job_id.to_string(),
             }),
@@ -287,7 +429,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
     ) -> Result<Response<AssignJobResponse>, Status> {
         let req = request.into_inner();
 
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
         let worker_uuid = req
             .worker_id
             .map(|w| w.value)
@@ -339,7 +481,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
             execution_id: Some(ExecutionId {
                 value: provider_execution_id,
             }),
-            assigned_at: Some(Self::now_timestamp()),
+            assigned_at: Some(now_timestamp()),
         }))
     }
 
@@ -349,7 +491,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
     ) -> Result<Response<StartJobResponse>, Status> {
         let req = request.into_inner();
 
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
         let execution_id = req
             .execution_id
             .map(|e| e.value)
@@ -383,7 +525,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         Ok(Response::new(StartJobResponse {
             success: true,
             message: "Started".to_string(),
-            started_at: Some(Self::now_timestamp()),
+            started_at: Some(now_timestamp()),
         }))
     }
 
@@ -392,7 +534,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         request: Request<UpdateProgressRequest>,
     ) -> Result<Response<UpdateProgressResponse>, Status> {
         let req = request.into_inner();
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
         let execution_id = req
             .execution_id
             .map(|e| e.value)
@@ -438,7 +580,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         Ok(Response::new(UpdateProgressResponse {
             success: true,
             message: "Updated".to_string(),
-            updated_at: Some(Self::now_timestamp()),
+            updated_at: Some(now_timestamp()),
         }))
     }
 
@@ -447,7 +589,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         request: Request<CompleteJobRequest>,
     ) -> Result<Response<CompleteJobResponse>, Status> {
         let req = request.into_inner();
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
         let execution_id = req
             .execution_id
             .map(|e| e.value)
@@ -485,10 +627,53 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .await
             .map_err(error_to_status)?;
 
+        // Trigger immediate worker cleanup (EPIC-26 US-26.5)
+        // Find the worker that was running this job and clean it up
+        let job_id_clone = job_id.clone();
+        let cleanup_spawned = if let Ok(workers) = self
+            .worker_registry
+            .find(&hodei_server_domain::workers::WorkerFilter::new())
+            .await
+        {
+            let worker = workers
+                .into_iter()
+                .find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id_clone));
+
+            if let Some(worker) = worker {
+                let worker_id_clone = worker.id().clone();
+                let job_id_for_cleanup = job_id_clone.clone();
+                let service = self.clone();
+
+                // Spawn cleanup task (don't block the response)
+                tokio::spawn(async move {
+                    if let Err(e) = service
+                        .trigger_worker_cleanup(&worker_id_clone, &job_id_for_cleanup)
+                        .await
+                    {
+                        warn!(
+                            "Failed to cleanup worker {} after job {} completion: {}",
+                            worker_id_clone, job_id_for_cleanup, e
+                        );
+                    }
+                });
+                true
+            } else {
+                debug!("No worker found for job {} during cleanup", job_id_clone);
+                false
+            }
+        } else {
+            debug!("Failed to query workers for job {} cleanup", job_id_clone);
+            false
+        };
+
+        if !cleanup_spawned {
+            debug!("No worker cleanup triggered for job {}", job_id_clone);
+        }
+
         Ok(Response::new(CompleteJobResponse {
             success: true,
             message: "Completed".to_string(),
-            completed_at: Some(Self::now_timestamp()),
+            completed_at: Some(now_timestamp()),
         }))
     }
 
@@ -497,7 +682,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         request: Request<FailJobRequest>,
     ) -> Result<Response<FailJobResponse>, Status> {
         let req = request.into_inner();
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
         let execution_id = req
             .execution_id
             .map(|e| e.value)
@@ -528,10 +713,53 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .await
             .map_err(error_to_status)?;
 
+        // Trigger immediate worker cleanup on job failure (EPIC-26 US-26.5)
+        // Find the worker that was running this job and clean it up
+        let job_id_clone = job_id.clone();
+        let cleanup_spawned = if let Ok(workers) = self
+            .worker_registry
+            .find(&hodei_server_domain::workers::WorkerFilter::new())
+            .await
+        {
+            let worker = workers
+                .into_iter()
+                .find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id_clone));
+
+            if let Some(worker) = worker {
+                let worker_id_clone = worker.id().clone();
+                let job_id_for_cleanup = job_id_clone.clone();
+                let service = self.clone();
+
+                // Spawn cleanup task (don't block the response)
+                tokio::spawn(async move {
+                    if let Err(e) = service
+                        .trigger_worker_cleanup(&worker_id_clone, &job_id_for_cleanup)
+                        .await
+                    {
+                        warn!(
+                            "Failed to cleanup worker {} after job {} failure: {}",
+                            worker_id_clone, job_id_for_cleanup, e
+                        );
+                    }
+                });
+                true
+            } else {
+                debug!("No worker found for job {} during cleanup", job_id_clone);
+                false
+            }
+        } else {
+            debug!("Failed to query workers for job {} cleanup", job_id_clone);
+            false
+        };
+
+        if !cleanup_spawned {
+            debug!("No worker cleanup triggered for job {}", job_id_clone);
+        }
+
         Ok(Response::new(FailJobResponse {
             success: true,
             message: "Failed".to_string(),
-            failed_at: Some(Self::now_timestamp()),
+            failed_at: Some(now_timestamp()),
         }))
     }
 
@@ -540,7 +768,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         request: Request<CancelJobRequest>,
     ) -> Result<Response<CancelJobResponse>, Status> {
         let req = request.into_inner();
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
 
         let result = self
             .cancel_job_usecase
@@ -551,7 +779,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         Ok(Response::new(CancelJobResponse {
             success: true,
             message: result.message,
-            cancelled_at: Some(Self::now_timestamp()),
+            cancelled_at: Some(now_timestamp()),
         }))
     }
 
@@ -560,7 +788,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
         request: Request<GetJobRequest>,
     ) -> Result<Response<GetJobResponse>, Status> {
         let req = request.into_inner();
-        let job_id = Self::parse_job_id(req.job_id)?;
+        let job_id = parse_grpc_job_id(req.job_id)?;
 
         let job = self
             .job_repository
@@ -569,8 +797,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .map_err(error_to_status)?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
-        let definition = Self::map_job_to_definition(&job);
-        let status = Self::map_job_state(job.state());
+        let definition = map_job_to_definition(&job);
+        let status = map_job_state(job.state());
 
         // Create execution if exists
         let mut executions = Vec::new();
@@ -585,8 +813,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 worker_id: None, // We don't have worker_id in execution context easily available here without lookup
                 state: 0,        // Map execution state if needed
                 job_status: status as i32,
-                start_time: ctx.started_at.map(Self::to_timestamp),
-                end_time: ctx.completed_at.map(Self::to_timestamp),
+                start_time: ctx.started_at.map(to_timestamp),
+                end_time: ctx.completed_at.map(to_timestamp),
                 retry_count: job.attempts() as i32,
                 exit_code: job
                     .result()
@@ -637,7 +865,10 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .await
             .map_err(error_to_status)?;
 
-        let job_summaries = jobs.into_iter().map(Self::map_job_to_summary).collect();
+        let job_summaries = jobs
+            .into_iter()
+            .map(|job| map_job_to_summary(&job))
+            .collect();
 
         Ok(Response::new(ListJobsResponse {
             jobs: job_summaries,
@@ -670,7 +901,7 @@ impl JobExecutionService for JobExecutionServiceImpl {
 
                 match job_repository.find_by_execution_id(&exec_id_clone).await {
                     Ok(Some(job)) => {
-                        let status = Self::map_job_state(job.state()) as i32;
+                        let status = map_job_state(job.state()) as i32;
 
                         // Check if we should send an update (simple change detection)
                         // In a real implementation, we might want to check more fields or use a proper event bus
@@ -684,8 +915,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
                                     worker_id: None,
                                     state: 0,
                                     job_status: status,
-                                    start_time: ctx.started_at.map(Self::to_timestamp),
-                                    end_time: ctx.completed_at.map(Self::to_timestamp),
+                                    start_time: ctx.started_at.map(to_timestamp),
+                                    end_time: ctx.completed_at.map(to_timestamp),
                                     retry_count: job.attempts() as i32,
                                     exit_code: job.result().as_ref().map(|r| match r {
                                         hodei_server_domain::shared_kernel::JobResult::Success { exit_code, .. } => exit_code.to_string(),

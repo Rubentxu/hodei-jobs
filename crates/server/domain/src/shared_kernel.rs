@@ -1,5 +1,7 @@
 pub use hodei_shared::*;
 
+pub mod error_values;
+
 /// Errores del dominio
 #[derive(thiserror::Error, Debug)]
 pub enum DomainError {
@@ -18,6 +20,9 @@ pub enum DomainError {
 
     #[error("Invalid job spec field {field}: {reason}")]
     InvalidJobSpec { field: String, reason: String },
+
+    #[error("Invalid max attempts value: {value} - {reason}")]
+    InvalidMaxAttempts { value: u32, reason: String },
 
     #[error("Provider {provider_id} is not healthy")]
     ProviderUnhealthy { provider_id: ProviderId },

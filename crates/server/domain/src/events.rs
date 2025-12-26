@@ -333,6 +333,8 @@ pub enum TerminationReason {
     ManualTermination,
     /// Terminación por error del provider
     ProviderError { message: String },
+    /// EPIC-26 US-26.7: Terminación por TTL after completion excedido
+    JobCompleted,
 }
 
 impl std::fmt::Display for TerminationReason {
@@ -346,6 +348,7 @@ impl std::fmt::Display for TerminationReason {
             TerminationReason::ProviderError { message } => {
                 write!(f, "PROVIDER_ERROR: {}", message)
             }
+            TerminationReason::JobCompleted => write!(f, "JOB_COMPLETED"),
         }
     }
 }

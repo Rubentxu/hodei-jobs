@@ -340,6 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
 
                                             let handle = tokio::spawn(async move {
+                                                #[allow(deprecated)]
                                                 // Execute job - logs are streamed via the worker_stream channel
                                                 // but results go through the PERSISTENT result channel
                                                 let result = exec.execute_from_command(
@@ -351,7 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     Some(timeout_ms / 1000),
                                                     run_job.stdin,
                                                     run_job.secrets_json,
-                                                    InjectionStrategy::EnvVars,
+                                                    InjectionStrategy::TmpfsFile,
                                                 ).await;
 
                                                 // Remove from registry when done

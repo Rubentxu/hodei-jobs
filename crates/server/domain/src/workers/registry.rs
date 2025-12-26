@@ -131,6 +131,15 @@ pub trait WorkerRegistry: Send + Sync {
     /// Obtener workers que deberían terminarse (idle timeout o lifetime exceeded)
     async fn find_for_termination(&self) -> Result<Vec<Worker>>;
 
+    /// EPIC-26 US-26.7: Obtener workers que han excedido idle timeout
+    async fn find_idle_timed_out(&self) -> Result<Vec<Worker>>;
+
+    /// EPIC-26 US-26.7: Obtener workers que han excedido max_lifetime
+    async fn find_lifetime_exceeded(&self) -> Result<Vec<Worker>>;
+
+    /// EPIC-26 US-26.7: Obtener workers que han completado job y esperan TTL
+    async fn find_ttl_after_completion_exceeded(&self) -> Result<Vec<Worker>>;
+
     /// Obtener estadísticas del registro
     async fn stats(&self) -> Result<WorkerRegistryStats>;
 

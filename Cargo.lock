@@ -1450,6 +1450,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "criterion",
+ "dashmap",
  "futures",
  "hodei-shared",
  "serde",
@@ -1596,6 +1597,8 @@ dependencies = [
 name = "hodei-worker-infrastructure"
 version = "0.6.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "hodei-jobs",
  "hodei-shared",
  "hodei-worker-application",

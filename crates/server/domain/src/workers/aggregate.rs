@@ -1,5 +1,6 @@
 // Worker Domain - Entidades para workers on-demand
 
+use crate::events::TerminationReason;
 use crate::shared_kernel::{
     Aggregate, DomainError, JobId, ProviderId, Result, WorkerId, WorkerState,
 };
@@ -209,6 +210,11 @@ pub struct WorkerSpec {
     pub max_lifetime: Duration,
     /// Timeout de idle (sin jobs)
     pub idle_timeout: Duration,
+    /// Tiempo de gracia tras completar job antes de terminate (EPIC-26 US-26.7)
+    /// Si es None, el worker se destruye inmediatamente tras completar job
+    /// Si es Some(duration), el worker espera ese tiempo antes de destruirse
+    #[serde(default)]
+    pub ttl_after_completion: Option<Duration>,
     /// Arquitectura requerida
     pub architecture: Architecture,
     /// Capabilities requeridas
@@ -482,11 +488,21 @@ impl WorkerSpec {
             server_address,
             max_lifetime: Duration::from_secs(3600), // 1 hora default
             idle_timeout: Duration::from_secs(300),  // 5 minutos default
+            ttl_after_completion: None,              // EPIC-26 US-26.7: inmediato por defecto
             architecture: Architecture::default(),
             required_capabilities: vec![],
             provider_config: None,
             kubernetes: KubernetesWorkerConfig::default(),
         }
+    }
+
+    /// Set TTL after job completion (EPIC-26 US-26.7)
+    ///
+    /// El worker esperará este tiempo tras completar un job antes de destruirse.
+    /// Si es None, el worker se destruye inmediatamente.
+    pub fn with_ttl_after_completion(mut self, ttl: Duration) -> Self {
+        self.ttl_after_completion = Some(ttl);
+        self
     }
 
     /// Set provider-specific configuration using Extension Objects pattern
@@ -643,6 +659,8 @@ pub struct Worker {
     current_job_id: Option<JobId>,
     /// Jobs ejecutados por este worker
     jobs_executed: u32,
+    /// Timestamp del último job completado (EPIC-26 US-26.7)
+    job_completed_at: Option<DateTime<Utc>>,
     /// Última vez que se recibió heartbeat
     last_heartbeat: DateTime<Utc>,
     /// Fecha de creación
@@ -662,6 +680,7 @@ impl Worker {
             spec,
             current_job_id: None,
             jobs_executed: 0,
+            job_completed_at: None, // EPIC-26 US-26.7
             last_heartbeat: now,
             created_at: now,
             updated_at: now,
@@ -687,7 +706,8 @@ impl Worker {
             state,
             spec,
             current_job_id,
-            jobs_executed: 0, // Could be stored in DB if needed
+            jobs_executed: 0,       // Could be stored in DB if needed
+            job_completed_at: None, // EPIC-26 US-26.7: nuevo campo, por defecto None
             last_heartbeat: heartbeat,
             created_at,
             updated_at,
@@ -796,6 +816,8 @@ impl Worker {
             WorkerState::Busy | WorkerState::Draining => {
                 self.current_job_id = None;
                 self.jobs_executed += 1;
+                // EPIC-26 US-26.7: Track completion time para TTL after completion
+                self.job_completed_at = Some(Utc::now());
                 self.state = WorkerState::Terminated;
                 self.updated_at = Utc::now();
                 Ok(())
@@ -863,7 +885,7 @@ impl Worker {
         idle_duration > self.spec.idle_timeout
     }
 
-    /// Verificar si el worker ha excedido max lifetime
+    /// Verificar si el worker ha excedido max lifetime (EPIC-26 US-26.7)
     pub fn is_lifetime_exceeded(&self) -> bool {
         let lifetime = Utc::now()
             .signed_duration_since(self.created_at)
@@ -871,6 +893,51 @@ impl Worker {
             .unwrap_or(Duration::ZERO);
 
         lifetime > self.spec.max_lifetime
+    }
+
+    /// Verificar si el TTL after completion ha sido excedido (EPIC-26 US-26.7)
+    ///
+    /// Returns true si:
+    /// - El worker tiene un `ttl_after_completion` configurado
+    /// - Y ha pasado ese tiempo desde que el job fue completado
+    pub fn is_ttl_after_completion_exceeded(&self) -> bool {
+        let Some(completed_at) = self.job_completed_at else {
+            return false; // No hay job completado, no aplica
+        };
+
+        let Some(ttl) = self.spec.ttl_after_completion else {
+            return false; // No hay TTL configurado, destrucción inmediata
+        };
+
+        let elapsed = Utc::now()
+            .signed_duration_since(completed_at)
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+
+        elapsed > ttl
+    }
+
+    /// Determinar la razón de terminación basada en el estado del worker (EPIC-26 US-26.7)
+    pub fn termination_reason(&self) -> TerminationReason {
+        if self.is_lifetime_exceeded() {
+            TerminationReason::LifetimeExceeded
+        } else if self.is_idle_timeout() {
+            TerminationReason::IdleTimeout
+        } else if self.is_ttl_after_completion_exceeded() {
+            TerminationReason::JobCompleted
+        } else {
+            TerminationReason::Unregistered
+        }
+    }
+
+    /// Obtener el timestamp de job completado (EPIC-26 US-26.7)
+    pub fn job_completed_at(&self) -> Option<DateTime<Utc>> {
+        self.job_completed_at
+    }
+
+    /// Obtener idle timeout en segundos (EPIC-26 US-26.7)
+    pub fn idle_timeout_secs(&self) -> u64 {
+        self.spec.idle_timeout.as_secs()
     }
 
     /// Verificar si el worker está sano (heartbeat reciente)

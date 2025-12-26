@@ -500,6 +500,20 @@ mod tests {
         async fn find_for_termination(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
+        // EPIC-26 US-26.7: TTL-related methods
+        async fn find_idle_timed_out(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
+        async fn find_lifetime_exceeded(
+            &self,
+        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
+        async fn find_ttl_after_completion_exceeded(
+            &self,
+        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
         async fn stats(&self) -> Result<WorkerRegistryStats> {
             Ok(WorkerRegistryStats::default())
         }

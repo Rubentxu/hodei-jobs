@@ -19,6 +19,7 @@ pub mod audit;
 pub mod credentials;
 pub mod iam;
 pub mod jobs;
+pub mod logging;
 pub mod providers;
 pub mod scheduling;
 pub mod workers;
@@ -33,6 +34,7 @@ mod tests;
 // Re-exports para facilitar el uso de los bounded contexts
 pub use event_bus::*;
 pub use events::*;
+pub use logging::*;
 pub use request_context::*;
 pub use shared_kernel::*;
 
@@ -41,6 +43,7 @@ pub use audit::*;
 pub use credentials::*;
 pub use iam::*;
 pub use jobs::*;
+pub use logging::prelude::*;
 pub use providers::*;
 pub use scheduling::*;
 pub use workers::*;

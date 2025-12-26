@@ -447,6 +447,35 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         })
     }
 
+    // EPIC-26 US-26.7: TTL-related methods - these use in-memory filtering
+    // since the Worker aggregate methods perform the actual TTL checks
+    async fn find_idle_timed_out(&self) -> Result<Vec<Worker>> {
+        // Get all workers and filter in memory using Worker::is_idle_timeout()
+        let all_workers = self.find(&WorkerFilter::new()).await?;
+        Ok(all_workers
+            .into_iter()
+            .filter(|w| w.is_idle_timeout())
+            .collect())
+    }
+
+    async fn find_lifetime_exceeded(&self) -> Result<Vec<Worker>> {
+        // Get all workers and filter in memory using Worker::is_lifetime_exceeded()
+        let all_workers = self.find(&WorkerFilter::new()).await?;
+        Ok(all_workers
+            .into_iter()
+            .filter(|w| w.is_lifetime_exceeded())
+            .collect())
+    }
+
+    async fn find_ttl_after_completion_exceeded(&self) -> Result<Vec<Worker>> {
+        // Get all workers and filter in memory using Worker::is_ttl_after_completion_exceeded()
+        let all_workers = self.find(&WorkerFilter::new()).await?;
+        Ok(all_workers
+            .into_iter()
+            .filter(|w| w.is_ttl_after_completion_exceeded())
+            .collect())
+    }
+
     async fn count(&self) -> Result<usize> {
         let row = sqlx::query("SELECT COUNT(*) as count FROM workers")
             .fetch_one(&self.pool)

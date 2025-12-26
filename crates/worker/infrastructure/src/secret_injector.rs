@@ -56,6 +56,12 @@ pub enum InjectionStrategy {
     /// Inject secrets as environment variables with SECRET_ prefix (legacy)
     ///
     /// **Security Warning**: Visible in /proc/PID/environ
+    /// **Deprecated**: Use [`InjectionStrategy::TmpfsFile`] or [`InjectionStrategy::Stdin`] instead.
+    /// This strategy will be removed in a future version.
+    #[deprecated(
+        note = "Use TmpfsFile or Stdin instead. EnvVars exposes secrets in /proc/PID/environ",
+        since = "0.6.0"
+    )]
     #[default]
     EnvVars,
 

@@ -21,9 +21,11 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = "0.3.31"
 tracing = { workspace = true }
+dashmap = { workspace = true }
 
 # Outbox Pattern
 sqlx = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

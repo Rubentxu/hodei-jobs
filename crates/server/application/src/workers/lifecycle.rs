@@ -6,7 +6,7 @@
 //! - Terminación de workers idle/unhealthy
 //! - Job reassignment for failed workers (via Transactional Outbox)
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use hodei_server_domain::{
     event_bus::EventBus,
     events::{DomainEvent, TerminationReason},
@@ -18,7 +18,7 @@ use hodei_server_domain::{
         WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
         WorkerProviderIdentity,
     },
-    workers::{Worker, WorkerSpec},
+    workers::{Worker, WorkerFilter, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -448,73 +448,131 @@ impl WorkerLifecycleManager {
     ///
     /// EPIC-21: Workers are ephemeral - ALL Ready workers are terminated
     /// to eliminate persistent pool behavior
+    ///
+    /// EPIC-26 US-26.7: Uses TTL policies from WorkerSpec:
+    /// - max_lifetime: Maximum lifetime for any worker
+    /// - idle_timeout: Time a worker can be idle before termination
+    /// - ttl_after_completion: Grace period after job completion
     pub async fn cleanup_workers(&self) -> Result<CleanupResult> {
         let mut result = CleanupResult::default();
 
-        // Find potential candidates for termination
-        // (This includes ALL Ready workers AND workers with very old heartbeats)
-        let candidates = self.registry.find_for_termination().await?;
+        // Find potential candidates for termination using TTL policies (EPIC-26 US-26.7)
+        let all_workers = self.registry.find(&WorkerFilter::new()).await?;
 
-        // EPIC-21: Eliminate persistent pool - terminate ALL Ready workers
-        // No separation needed - all candidates go to termination
-        let workers_to_terminate = candidates;
+        let workers_to_terminate: Vec<_> = all_workers
+            .iter()
+            .filter(|w| {
+                // Workers que deben terminarse:
+                // 1. En estado Busy/Draining (ephemeral mode - terminación inmediata)
+                // 2. Listos y en idle timeout
+                // 3. Lifetime excedido
+                // 4. TTL after completion excedido
+                matches!(*w.state(), WorkerState::Busy | WorkerState::Draining)
+                    || w.is_idle_timeout()
+                    || w.is_lifetime_exceeded()
+                    || w.is_ttl_after_completion_exceeded()
+            })
+            .collect();
 
         info!(
-            "EPIC-21 Cleanup: Terminating {} workers (ephemeral mode - no pool persistence)",
+            "EPIC-21/26 Cleanup: Terminating {} workers (using TTL policies)",
             workers_to_terminate.len()
         );
 
+        for worker in &workers_to_terminate {
+            // EPIC-26 US-26.7: Emit WorkerEphemeralIdle event when idle timeout detected
+            if worker.is_idle_timeout() {
+                self.emit_worker_idle_event(worker).await;
+            }
+        }
+
         for worker in workers_to_terminate {
-            info!(
-                "Terminating worker {} (idle/lifetime exceeded)",
-                worker.id()
-            );
+            let worker_id = worker.id().clone();
+            // EPIC-26 US-26.7: Get correct termination reason from worker
+            let reason = worker.termination_reason();
+
+            info!("Terminating worker {} (reason: {:?})", worker_id, reason);
 
             // Mark as terminating (skip if already terminating)
             if !matches!(*worker.state(), WorkerState::Terminating) {
                 if let Err(e) = self
                     .registry
-                    .update_state(worker.id(), WorkerState::Terminating)
+                    .update_state(&worker_id, WorkerState::Terminating)
                     .await
                 {
-                    error!(
-                        "Failed to mark worker {} as terminating: {}",
-                        worker.id(),
-                        e
-                    );
+                    error!("Failed to mark worker {} as terminating: {}", worker_id, e);
                     continue;
                 }
             }
 
             // Destroy via provider
-            if let Err(e) = self.destroy_worker_via_provider(&worker).await {
-                error!("Failed to destroy worker {}: {}", worker.id(), e);
-                result.failed.push(worker.id().clone());
+            if let Err(e) = self.destroy_worker_via_provider(worker).await {
+                error!("Failed to destroy worker {}: {}", worker_id, e);
+                result.failed.push(worker_id.clone());
                 continue;
             }
 
             // Unregister
-            if let Err(e) = self.registry.unregister(worker.id()).await {
-                warn!("Failed to unregister worker {}: {}", worker.id(), e);
+            if let Err(e) = self.registry.unregister(&worker_id).await {
+                warn!("Failed to unregister worker {}: {}", worker_id, e);
             }
 
-            // Publish WorkerTerminated event
-            let event = DomainEvent::WorkerTerminated {
-                worker_id: worker.id().clone(),
+            // EPIC-26 US-26.7: Emit WorkerEphemeralTerminating event with correct reason
+            let event = DomainEvent::WorkerEphemeralTerminating {
+                worker_id: worker_id.clone(),
                 provider_id: worker.provider_id().clone(),
-                reason: TerminationReason::IdleTimeout,
+                reason: reason.clone(), // Clone for first use
                 occurred_at: Utc::now(),
                 correlation_id: None,
                 actor: Some("lifecycle-manager".to_string()),
             };
             if let Err(e) = self.event_bus.publish(&event).await {
+                warn!("Failed to publish WorkerEphemeralTerminating event: {}", e);
+            }
+
+            // Also emit WorkerTerminated for backwards compatibility
+            let terminated_event = DomainEvent::WorkerTerminated {
+                worker_id: worker_id.clone(),
+                provider_id: worker.provider_id().clone(),
+                reason,
+                occurred_at: Utc::now(),
+                correlation_id: None,
+                actor: Some("lifecycle-manager".to_string()),
+            };
+            if let Err(e) = self.event_bus.publish(&terminated_event).await {
                 warn!("Failed to publish WorkerTerminated event: {}", e);
             }
 
-            result.terminated.push(worker.id().clone());
+            result.terminated.push(worker_id);
         }
 
         Ok(result)
+    }
+
+    /// Emit WorkerEphemeralIdle event when worker exceeds idle timeout (EPIC-26 US-26.7)
+    async fn emit_worker_idle_event(&self, worker: &Worker) {
+        if let Some(outbox_repo) = &self.outbox_repository {
+            let event = OutboxEventInsert::for_worker(
+                worker.id().0,
+                "WorkerEphemeralIdle".to_string(),
+                serde_json::json!({
+                    "worker_id": worker.id().0.to_string(),
+                    "provider_id": worker.provider_id().0.to_string(),
+                    "idle_since": worker.last_heartbeat().to_rfc3339(),
+                    "idle_timeout_secs": worker.idle_timeout_secs(),
+                    "current_job_id": worker.current_job_id().map(|j| j.0.to_string())
+                }),
+                Some(serde_json::json!({
+                    "source": "WorkerLifecycleManager",
+                    "event": "idle_timeout_detected"
+                })),
+                Some(format!("worker-idle-{}", worker.id().0)),
+            );
+
+            if let Err(e) = outbox_repo.insert_events(&[event]).await {
+                warn!("Failed to insert WorkerEphemeralIdle event: {:?}", e);
+            }
+        }
     }
 
     /// Provision a new worker using the specified provider
@@ -622,6 +680,225 @@ impl WorkerLifecycleManager {
         stats.idle_workers > self.config.scale_down_threshold
             && stats.ready_workers > self.config.min_ready_workers
     }
+
+    // ============================================================
+    // US-26.6: Orphan Worker Detection and Cleanup
+    // ============================================================
+
+    /// Detect and cleanup orphan workers (EPIC-26 US-26.6)
+    ///
+    /// Orphan workers are workers that exist in the provider but are not
+    /// registered in our registry. This can happen if:
+    /// - Worker registration failed after provider creation
+    /// - Database was restored from backup
+    /// - Manual provider operations
+    ///
+    /// This method:
+    /// 1. Gets all workers from all providers
+    /// 2. Filters out workers that are registered in our registry
+    /// 3. Marks orphans in the database
+    /// 4. Destroys orphan workers via providers
+    pub async fn detect_and_cleanup_orphans(&self) -> Result<OrphanCleanupResult> {
+        let mut result = OrphanCleanupResult::default();
+        let start_time = Utc::now();
+
+        info!("🔍 Starting orphan worker detection...");
+
+        let providers = self.providers.read().await;
+        let provider_ids: Vec<ProviderId> = providers.keys().cloned().collect();
+
+        for provider_id in provider_ids {
+            if let Some(provider) = providers.get(&provider_id) {
+                match self
+                    .detect_orphans_for_provider(provider, provider_id.clone())
+                    .await
+                {
+                    Ok(orphans) => {
+                        result.providers_scanned += 1;
+                        result.orphans_detected += orphans.len();
+
+                        // Destroy each orphan
+                        for orphan in orphans {
+                            info!(
+                                "🗑️ Destroying orphan worker {} from provider {}",
+                                orphan.provider_resource_id, provider_id
+                            );
+
+                            // Emit OrphanWorkerDetected event
+                            self.emit_orphan_detected(&orphan, &provider_id).await;
+
+                            if let Err(e) = provider
+                                .destroy_worker_by_id(&orphan.provider_resource_id)
+                                .await
+                            {
+                                warn!(
+                                    "Failed to destroy orphan {} from provider {}: {}",
+                                    orphan.provider_resource_id, provider_id, e
+                                );
+                                result.errors += 1;
+                            } else {
+                                result.orphans_cleaned += 1;
+                                info!(
+                                    "✅ Orphan worker {} destroyed from provider {}",
+                                    orphan.provider_resource_id, provider_id
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to detect orphans for provider {}: {}",
+                            provider_id, e
+                        );
+                        result.errors += 1;
+                    }
+                }
+            }
+        }
+
+        result.duration_ms = Utc::now()
+            .signed_duration_since(start_time)
+            .to_std()
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Emit GarbageCollectionCompleted event
+        self.emit_garbage_collection_completed(&result).await;
+
+        if result.orphans_cleaned > 0 {
+            info!(
+                "🧹 Orphan cleanup complete: {} cleaned, {} detected, {} errors in {}ms",
+                result.orphans_cleaned, result.orphans_detected, result.errors, result.duration_ms
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Detect orphan workers for a specific provider
+    async fn detect_orphans_for_provider(
+        &self,
+        provider: &Arc<dyn WorkerProvider>,
+        provider_id: ProviderId,
+    ) -> Result<Vec<OrphanWorkerInfo>> {
+        let mut orphans = Vec::new();
+
+        // Get all workers from provider
+        let provider_workers =
+            provider
+                .list_workers()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!(
+                        "Failed to list workers from provider {}: {}",
+                        provider_id, e
+                    ),
+                })?;
+
+        // Get all registered workers for this provider
+        let registered_workers = self.registry.find_by_provider(&provider_id).await?;
+
+        // Create a set of registered worker IDs
+        let registered_ids: std::collections::HashSet<String> = registered_workers
+            .iter()
+            .map(|w| w.handle().provider_resource_id.clone())
+            .collect();
+
+        // Find workers that exist in provider but not in registry
+        for pw in provider_workers {
+            if !registered_ids.contains(&pw.resource_id) {
+                // This is an orphan
+                let orphan = OrphanWorkerInfo {
+                    worker_id: WorkerId::new(), // Generate new ID for orphan
+                    provider_resource_id: pw.resource_id,
+                    last_seen: pw.last_seen.unwrap_or_else(Utc::now),
+                };
+                orphans.push(orphan);
+            }
+        }
+
+        Ok(orphans)
+    }
+
+    /// Emit OrphanWorkerDetected event
+    async fn emit_orphan_detected(&self, orphan: &OrphanWorkerInfo, provider_id: &ProviderId) {
+        let now = Utc::now();
+        let orphaned_duration = now
+            .signed_duration_since(orphan.last_seen)
+            .to_std()
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if let Some(outbox_repo) = &self.outbox_repository {
+            let event = OutboxEventInsert::for_worker(
+                orphan.worker_id.0,
+                "OrphanWorkerDetected".to_string(),
+                serde_json::json!({
+                    "worker_id": orphan.worker_id.0.to_string(),
+                    "provider_id": provider_id.0.to_string(),
+                    "last_seen": orphan.last_seen.to_rfc3339(),
+                    "orphaned_duration_secs": orphaned_duration,
+                    "detection_method": "reconciliation"
+                }),
+                Some(serde_json::json!({
+                    "source": "WorkerLifecycleManager",
+                    "provider_resource_id": orphan.provider_resource_id
+                })),
+                Some(format!(
+                    "orphan-detected-{}-{}",
+                    provider_id.0,
+                    now.timestamp()
+                )),
+            );
+
+            if let Err(e) = outbox_repo.insert_events(&[event]).await {
+                warn!("Failed to insert OrphanWorkerDetected event: {:?}", e);
+            }
+        }
+    }
+
+    /// Emit GarbageCollectionCompleted event
+    async fn emit_garbage_collection_completed(&self, result: &OrphanCleanupResult) {
+        let now = Utc::now();
+
+        if let Some(outbox_repo) = &self.outbox_repository {
+            // Get provider IDs scanned
+            let provider_ids: Vec<String> = self
+                .providers
+                .read()
+                .await
+                .keys()
+                .map(|p| p.0.to_string())
+                .collect();
+
+            // Generate a unique ID for this GC event
+            let gc_event_id = provider_ids
+                .first()
+                .map(|p| uuid::Uuid::parse_str(p).unwrap_or_else(|_| uuid::Uuid::new_v4()))
+                .unwrap_or_else(uuid::Uuid::new_v4);
+
+            let event = OutboxEventInsert::for_worker(
+                gc_event_id,
+                "GarbageCollectionCompleted".to_string(),
+                serde_json::json!({
+                    "scanned_providers": provider_ids,
+                    "orphaned_workers_found": result.orphans_detected,
+                    "orphaned_workers_cleaned": result.orphans_cleaned,
+                    "errors": result.errors,
+                    "duration_ms": result.duration_ms
+                }),
+                Some(serde_json::json!({
+                    "source": "WorkerLifecycleManager",
+                    "event": "orphan_gc"
+                })),
+                Some(format!("gc-completed-{}", now.timestamp())),
+            );
+
+            if let Err(e) = outbox_repo.insert_events(&[event]).await {
+                warn!("Failed to insert GarbageCollectionCompleted event: {:?}", e);
+            }
+        }
+    }
 }
 
 /// Result of a health check run
@@ -665,6 +942,44 @@ impl ReconciliationResult {
     }
 }
 
+/// Orphan worker info detected from provider (EPIC-26 US-26.6)
+struct OrphanWorkerInfo {
+    worker_id: WorkerId,
+    provider_resource_id: String,
+    last_seen: DateTime<Utc>,
+}
+
+/// Result of orphan worker detection and cleanup (EPIC-26 US-26.6)
+#[derive(Debug, Default)]
+pub struct OrphanCleanupResult {
+    /// Providers scanned for orphans
+    pub providers_scanned: usize,
+    /// Orphan workers detected
+    pub orphans_detected: usize,
+    /// Orphan workers successfully cleaned up
+    pub orphans_cleaned: usize,
+    /// Errors during cleanup
+    pub errors: usize,
+    /// Duration of the cleanup in milliseconds
+    pub duration_ms: u64,
+}
+
+impl OrphanCleanupResult {
+    /// Check if any orphans were found
+    pub fn has_orphans(&self) -> bool {
+        self.orphans_detected > 0
+    }
+
+    /// Get success rate
+    pub fn success_rate(&self) -> f64 {
+        if self.orphans_detected == 0 {
+            100.0
+        } else {
+            (self.orphans_cleaned as f64 / self.orphans_detected as f64) * 100.0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,10 +1007,28 @@ mod tests {
     fn create_test_worker_with_provider(
         provider_id: hodei_server_domain::shared_kernel::ProviderId,
     ) -> Worker {
-        let spec = WorkerSpec::new(
+        // Use default idle_timeout of 300 seconds (5 minutes)
+        create_test_worker_with_provider_and_ttl(provider_id, None, Duration::from_secs(300), None)
+    }
+
+    fn create_test_worker_with_provider_and_ttl(
+        provider_id: hodei_server_domain::shared_kernel::ProviderId,
+        max_lifetime: Option<Duration>,
+        idle_timeout: Duration, // Changed from Option<Duration> to Duration
+        ttl_after_completion: Option<Duration>,
+    ) -> Worker {
+        let mut spec = WorkerSpec::new(
             "hodei-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
+        // EPIC-26 US-26.7: Configure TTL policies for test workers
+        if let Some(lifetime) = max_lifetime {
+            spec.max_lifetime = lifetime;
+        }
+        spec.idle_timeout = idle_timeout;
+        if let Some(ttl) = ttl_after_completion {
+            spec.ttl_after_completion = Some(ttl);
+        }
         let handle = WorkerHandle::new(
             spec.worker_id.clone(),
             format!("container-{}", spec.worker_id.0),
@@ -1021,6 +1354,40 @@ mod tests {
         async fn count(&self) -> Result<usize> {
             Ok(self.workers.read().await.len())
         }
+
+        // EPIC-26 US-26.7: TTL-related methods
+        async fn find_idle_timed_out(&self) -> Result<Vec<Worker>> {
+            Ok(self
+                .workers
+                .read()
+                .await
+                .values()
+                .filter(|w| w.is_idle_timeout())
+                .cloned()
+                .collect())
+        }
+
+        async fn find_lifetime_exceeded(&self) -> Result<Vec<Worker>> {
+            Ok(self
+                .workers
+                .read()
+                .await
+                .values()
+                .filter(|w| w.is_lifetime_exceeded())
+                .cloned()
+                .collect())
+        }
+
+        async fn find_ttl_after_completion_exceeded(&self) -> Result<Vec<Worker>> {
+            Ok(self
+                .workers
+                .read()
+                .await
+                .values()
+                .filter(|w| w.is_ttl_after_completion_exceeded())
+                .cloned()
+                .collect())
+        }
     }
 
     #[tokio::test]
@@ -1072,8 +1439,16 @@ mod tests {
         let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
 
         // Crear workers en diferentes estados (todos con el mismo provider_id que el mock)
-        let ready_worker = create_test_worker_with_provider(provider_id.clone());
+        // EPIC-26 US-26.7: Ready worker con idle_timeout=0 para que se termine inmediatamente
+        let ready_worker = create_test_worker_with_provider_and_ttl(
+            provider_id.clone(),
+            None,
+            Duration::ZERO, // Idle timeout inmediato (no Some)
+            None,
+        );
+        // Terminating worker (ya está en estado de terminación)
         let terminating_worker = create_test_worker_with_provider(provider_id.clone());
+        // Busy worker (no debe terminarse)
         let busy_worker = create_test_worker_with_provider(provider_id.clone());
 
         // Registrar workers
@@ -1162,16 +1537,16 @@ mod tests {
         let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
 
         // Crear 5 workers Ready con el mismo provider_id
+        // EPIC-26 US-26.7: idle_timeout=0 para que se terminen inmediatamente
         for _i in 0..5 {
+            let worker_spec = create_test_worker_with_provider_and_ttl(
+                provider_id.clone(),
+                None,
+                Duration::ZERO, // Idle timeout inmediato (no Some)
+                None,
+            );
             let worker = registry
-                .register(
-                    create_test_worker_with_provider(provider_id.clone())
-                        .handle()
-                        .clone(),
-                    create_test_worker_with_provider(provider_id.clone())
-                        .spec()
-                        .clone(),
-                )
+                .register(worker_spec.handle().clone(), worker_spec.spec().clone())
                 .await
                 .unwrap();
             // Set state to Connecting then Ready (proper state transitions)
@@ -1223,16 +1598,16 @@ mod tests {
         let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
 
         // Crear workers en estado Ready con el mismo provider_id
+        // EPIC-26 US-26.7: idle_timeout=0 para que se terminen inmediatamente
         for _i in 0..3 {
+            let worker_spec = create_test_worker_with_provider_and_ttl(
+                provider_id.clone(),
+                None,
+                Duration::ZERO, // Idle timeout inmediato (no Some)
+                None,
+            );
             let worker = registry
-                .register(
-                    create_test_worker_with_provider(provider_id.clone())
-                        .handle()
-                        .clone(),
-                    create_test_worker_with_provider(provider_id.clone())
-                        .spec()
-                        .clone(),
-                )
+                .register(worker_spec.handle().clone(), worker_spec.spec().clone())
                 .await
                 .unwrap();
             // Set state to Connecting then Ready (proper state transitions)
