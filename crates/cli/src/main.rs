@@ -226,10 +226,23 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
             required_annotations,
             preferred_region,
         } => {
-            let cmd = resolve_command(command, script)?;
+            let (cmd, args) = if let Some(c) = command {
+                if script.is_some() {
+                    return Err("Cannot specify both --command and --script".into());
+                }
+                ("sh".to_string(), vec!["-c".to_string(), c])
+            } else if let Some(s) = script {
+                let content = std::fs::read_to_string(&s)
+                    .map_err(|e| format!("Failed to read script '{}': {}", s, e))?;
+                (content, vec![])
+            } else {
+                return Err("Either --command or --script must be provided".into());
+            };
+
             let job_definition = create_job_definition(
                 name,
                 cmd,
+                args,
                 cpu,
                 memory,
                 timeout,
@@ -270,10 +283,23 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
             required_annotations,
             preferred_region,
         } => {
-            let cmd = resolve_command(command, script.clone())?;
+            let (cmd, args) = if let Some(c) = command {
+                if script.is_some() {
+                    return Err("Cannot specify both --command and --script".into());
+                }
+                ("sh".to_string(), vec!["-c".to_string(), c])
+            } else if let Some(s) = &script {
+                let content = std::fs::read_to_string(&s)
+                    .map_err(|e| format!("Failed to read script '{}': {}", s, e))?;
+                (content, vec![])
+            } else {
+                return Err("Either --command or --script must be provided".into());
+            };
+
             let job_definition = create_job_definition(
                 name.clone(),
                 cmd.clone(),
+                args,
                 cpu,
                 memory,
                 timeout,
@@ -479,8 +505,18 @@ async fn handle_scheduler(
             }
         }
         SchedulerAction::Schedule { name, command } => {
-            let job_definition =
-                create_job_definition(name, command, 1.0, 1073741824, 600, None, &[], &[], None);
+            let job_definition = create_job_definition(
+                name,
+                "sh".to_string(),
+                vec!["-c".to_string(), command],
+                1.0,
+                1073741824,
+                600,
+                None,
+                &[],
+                &[],
+                None,
+            );
             let request = ScheduleJobRequest {
                 job_definition: Some(job_definition),
                 requested_by: "cli".to_string(),
@@ -618,6 +654,7 @@ fn resolve_command(
 fn create_job_definition(
     name: String,
     command: String,
+    arguments: Vec<String>,
     cpu: f64,
     memory: i64,
     timeout_secs: i64,
@@ -646,7 +683,7 @@ fn create_job_definition(
         name,
         description: String::new(),
         command,
-        arguments: vec![],
+        arguments,
         environment: std::collections::HashMap::new(),
         requirements: Some(hodei_jobs::ResourceRequirements {
             cpu_cores: cpu,
@@ -733,7 +770,8 @@ mod tests {
     fn test_create_job_definition_with_labels_and_annotations() {
         let job_def = create_job_definition(
             "test-job".to_string(),
-            "echo hello".to_string(),
+            "echo".to_string(),
+            vec!["hello".to_string()],
             1.0,
             1024,
             600,
@@ -761,7 +799,8 @@ mod tests {
     fn test_create_job_definition_empty_scheduling() {
         let job_def = create_job_definition(
             "test-job".to_string(),
-            "echo hello".to_string(),
+            "echo".to_string(),
+            vec!["hello".to_string()],
             1.0,
             1024,
             600,

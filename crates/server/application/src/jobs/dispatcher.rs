@@ -162,8 +162,15 @@ impl JobDispatcher {
                 debug!(
                     job_id = %job.id,
                     provider_id = %provider_id,
-                    "JobDispatcher: Saving selected_provider_id for provisioning"
+                    "JobDispatcher: Saving selected_provider_id and triggering provisioning"
                 );
+
+                // CRITICAL FIX: Actually trigger provisioning!
+                if let Err(e) = self.trigger_provisioning(&job).await {
+                    error!("❌ JobDispatcher: Failed to provision worker: {}", e);
+                    // We continue to enqueue, hoping it might work later or another worker frees up
+                }
+
                 self.job_queue.enqueue(job).await?;
                 Ok(0)
             }
@@ -527,19 +534,42 @@ impl JobDispatcher {
             job_id = %job.id,
             "📡 JobDispatcher: Sending RUN_JOB command to worker"
         );
-        if let Err(e) = self
-            .worker_command_sender
-            .send_run_job(&worker_id, job)
-            .await
-        {
+
+        // Add timeout to prevent hanging indefinitely
+        let dispatch_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.worker_command_sender.send_run_job(&worker_id, job),
+        )
+        .await;
+
+        let result = match dispatch_result {
+            Ok(inner_result) => inner_result.map_err(|e| anyhow::Error::new(e)),
+            Err(_) => Err(anyhow::anyhow!("Timeout waiting for RUN_JOB response")),
+        };
+
+        if let Err(e) = result {
             error!(
                 error = %e,
                 worker_id = %worker_id,
                 job_id = %job.id,
                 "❌ JobDispatcher: Failed to send RUN_JOB"
             );
-            // Note: Job is already persisted as ASSIGNED.
-            // It will eventually timeout if worker doesn't pick it up, which is acceptable.
+
+            // CRITICAL FIX: Rollback job state to FAILED to prevent it from being stuck in ASSIGNED
+            // preventing the queue from processing it again (or requiring manual timeout).
+            // Ideally we would set it back to PENDING, but failing is safer to indicate system error.
+            if let Err(state_err) =
+                job.fail(format!("Failed to dispatch to worker {}: {}", worker_id, e))
+            {
+                error!(error = %state_err, job_id = %job.id, "Failed to transition job to Failed state");
+            } else {
+                if let Err(db_err) = self.job_repository.update(job).await {
+                    error!(error = %db_err, job_id = %job.id, "Failed to persist Failed state to DB");
+                } else {
+                    info!(job_id = %job.id, "b↺ Job state rolled back to FAILED due to dispatch error");
+                }
+            }
+
             return Err(anyhow::anyhow!(
                 "Failed to dispatch job to worker {}: {}",
                 worker_id,

@@ -1171,7 +1171,7 @@ impl KubernetesProvider {
         // Always include mount for default tmp volume
         let mut mounts = vec![k8s_openapi::api::core::v1::VolumeMount {
             name: "hodei-tmp".to_string(),
-            mount_path: "/tmp/hodei".to_string(),
+            mount_path: "/tmp".to_string(),
             read_only: Some(false),
             ..Default::default()
         }];

@@ -718,7 +718,7 @@ prod-build:
         exit 1; \
     fi
     docker build -t hodei-server:latest -f Dockerfile .
-    docker build -t hodei-worker:latest -f Dockerfile.worker .
+    docker build -t hodei-jobs-worker:latest -f Dockerfile.worker .
     @echo "✅ Production images built"
 
 # Start production
