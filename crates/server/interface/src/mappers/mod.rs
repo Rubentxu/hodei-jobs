@@ -133,6 +133,12 @@ pub fn map_spec_to_definition(spec: &JobSpec, job_id: &str) -> JobDefinition {
             .clone()
             .unwrap_or_default(),
         required_labels: spec.preferences.required_labels.clone(),
+        required_annotations: spec.preferences.required_annotations.clone(),
+        preferred_region: spec
+            .preferences
+            .preferred_region
+            .clone()
+            .unwrap_or_default(),
     };
 
     let timeout = TimeoutConfig {
@@ -158,6 +164,7 @@ pub fn map_spec_to_definition(spec: &JobSpec, job_id: &str) -> JobDefinition {
             memory_bytes: (spec.resources.memory_mb * 1024 * 1024) as i64,
             disk_bytes: (spec.resources.storage_mb * 1024 * 1024) as i64,
             gpu_count: if spec.resources.gpu_required { 1 } else { 0 },
+            gpu_types: vec![],
             custom_required: std::collections::HashMap::new(),
         }),
         scheduling: Some(scheduling),

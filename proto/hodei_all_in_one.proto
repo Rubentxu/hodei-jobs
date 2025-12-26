@@ -90,7 +90,8 @@ message ResourceRequirements {
     int64 memory_bytes = 2;      // Memoria RAM requerida
     int64 disk_bytes = 3;        // Almacenamiento requerido
     int32 gpu_count = 4;         // GPUs requeridas
-    map<string, int64> custom_required = 5;  // Recursos custom requeridos
+    repeated string gpu_types = 5; // Tipos de GPU requeridos
+    map<string, int64> custom_required = 6;  // Recursos custom requeridos
 }
 
 // Asignación de recursos
@@ -170,6 +171,8 @@ message SchedulingInfo {
     bool preemption_allowed = 4;
     string preferred_provider = 5;  // Provider preferido (docker, kubernetes)
     map<string, string> required_labels = 6;  // Labels requeridos en el worker
+    map<string, string> required_annotations = 7;  // Annotations requeridos en el worker
+    string preferred_region = 8;  // Región preferida para el worker
 }
 
 // =============================================================================

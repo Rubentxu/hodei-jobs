@@ -206,6 +206,15 @@ pub struct SchedulingInfo {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
+    /// Annotations requeridos en el worker
+    #[prost(map = "string, string", tag = "7")]
+    pub required_annotations: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    /// Región preferida para el worker
+    #[prost(string, tag = "8")]
+    pub preferred_region: ::prost::alloc::string::String,
 }
 /// Estados del sistema
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

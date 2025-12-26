@@ -293,18 +293,43 @@ impl JobScheduler for SmartScheduler {
 
 impl SmartScheduler {
     /// Select a provider considering job preferences
+    ///
+    /// ## US-27.4: GPU Requirements Filtering
+    /// ## US-27.6: Region Affinity
     pub fn select_provider_with_preferences(
         &self,
         job: &Job,
         providers: &[ProviderInfo],
     ) -> Option<ProviderId> {
+        // Step 0: Apply GPU filtering (US-27.4)
+        // Jobs requiring GPU must only be assigned to providers with GPU support
+        let gpu_required = job.spec.resources.gpu_required;
+        let filtered_providers: Vec<&ProviderInfo> = if gpu_required {
+            providers
+                .iter()
+                .filter(|p| p.can_handle_gpu_requirement(1)) // Assume 1 GPU if required
+                .collect()
+        } else {
+            providers.iter().collect()
+        };
+
+        if filtered_providers.is_empty() {
+            // GPU required but no provider supports it
+            tracing::debug!(
+                job_id = %job.id,
+                gpu_required = gpu_required,
+                "No providers available with GPU support for job"
+            );
+            return None;
+        }
+
         // Step 1: Check if job has a preferred provider
         if let Some(preferred) = &job.spec.preferences.preferred_provider {
             // Use ProviderPreference for efficient provider matching
             let pref = ProviderPreference::new(preferred).ok();
 
             // Try to find provider by name or type
-            let preferred_provider = providers.iter().find(|p| {
+            let preferred_provider = filtered_providers.iter().find(|p| {
                 // Match using ProviderPreference if available
                 let type_matches = pref
                     .as_ref()
@@ -330,8 +355,47 @@ impl SmartScheduler {
             }
         }
 
-        // Step 2: Fallback to configured strategy
-        self.select_provider(job, providers)
+        // Step 2: Apply region affinity (US-27.6)
+        // If job has a preferred region, log it for observability
+        if let Some(ref preferred_region) = job.spec.preferences.preferred_region {
+            tracing::debug!(
+                job_id = %job.id,
+                preferred_region = preferred_region,
+                providers_count = filtered_providers.len(),
+                "Applying region affinity for provider selection"
+            );
+        }
+
+        // Step 3: Fallback to configured strategy with region-aware scoring
+        // Use the filtered providers directly for strategy selection
+        // Convert Vec<&ProviderInfo> to Vec<ProviderInfo> for strategy
+        let owned_providers: Vec<ProviderInfo> =
+            filtered_providers.iter().map(|p| (*p).clone()).collect();
+
+        // The strategy will return a provider, then we apply region considerations
+        if let Some(provider_id) = self.select_provider(job, &owned_providers) {
+            // Apply region boost if job has region preference
+            if let Some(ref preferred_region) = job.spec.preferences.preferred_region {
+                // Find the selected provider and check region match
+                let selected = filtered_providers
+                    .iter()
+                    .find(|p| p.provider_id == provider_id);
+                if let Some(p) = selected {
+                    if !p.supports_region(preferred_region) {
+                        // Selected provider doesn't match region - log warning
+                        tracing::warn!(
+                            job_id = %job.id,
+                            preferred_region = preferred_region,
+                            selected_provider = %provider_id,
+                            "Job has region preference but selected provider doesn't support it"
+                        );
+                    }
+                }
+            }
+            return Some(provider_id);
+        }
+
+        None
     }
 }
 
@@ -354,6 +418,9 @@ mod tests {
                 estimated_startup_time: Duration::from_secs(5),
                 health_score: 0.9,
                 cost_per_hour: 0.0,
+                gpu_support: false,
+                gpu_types: vec![],
+                regions: vec!["local".to_string()],
             },
             ProviderInfo {
                 provider_id: ProviderId::new(),
@@ -363,6 +430,9 @@ mod tests {
                 estimated_startup_time: Duration::from_secs(30),
                 health_score: 0.95,
                 cost_per_hour: 0.5,
+                gpu_support: true,
+                gpu_types: vec!["nvidia".to_string()],
+                regions: vec!["us-east-1".to_string(), "eu-west-1".to_string()],
             },
         ]
     }

@@ -5,7 +5,8 @@
 //! - LogStreamService: Subscribe to logs, get historical logs
 //! - SchedulerService: Schedule jobs, get queue status
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use std::collections::HashMap;
 use std::io::Write;
 use tonic::transport::Channel;
 use tracing::info;
@@ -54,7 +55,7 @@ enum Commands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum JobAction {
     /// Queue a new job (without log streaming)
     Queue {
@@ -75,6 +76,15 @@ enum JobAction {
         memory: i64,
         #[arg(short, long, default_value = "600")]
         timeout: i64,
+        /// Required labels for worker (key=value pairs, repeatable)
+        #[arg(short = 'l', long = "label", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        required_labels: Vec<String>,
+        /// Required annotations for worker (key=value pairs, repeatable)
+        #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        required_annotations: Vec<String>,
+        /// Preferred region for worker
+        #[arg(long = "region")]
+        preferred_region: Option<String>,
     },
     /// Run a job and stream logs in real-time (queue + subscribe)
     Run {
@@ -95,6 +105,15 @@ enum JobAction {
         memory: i64,
         #[arg(short, long, default_value = "600")]
         timeout: i64,
+        /// Required labels for worker (key=value pairs, repeatable)
+        #[arg(short = 'l', long = "label", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        required_labels: Vec<String>,
+        /// Required annotations for worker (key=value pairs, repeatable)
+        #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        required_annotations: Vec<String>,
+        /// Preferred region for worker
+        #[arg(long = "region")]
+        preferred_region: Option<String>,
     },
     /// Get job details
     Get {
@@ -152,6 +171,24 @@ enum LogsAction {
     },
 }
 
+/// Parse a key=value string into a tuple
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let parts: Vec<&str> = s.split('=').collect();
+    if parts.len() == 2 {
+        Ok((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        Err("Formato esperado: key=value".to_string())
+    }
+}
+
+/// Convert vector of key=value strings to HashMap
+fn parse_key_value_map(pairs: &[String]) -> HashMap<String, String> {
+    pairs
+        .iter()
+        .filter_map(|kv| parse_key_value(kv).ok())
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only init tracing if RUST_LOG is set
@@ -185,9 +222,22 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
             cpu,
             memory,
             timeout,
+            required_labels,
+            required_annotations,
+            preferred_region,
         } => {
             let cmd = resolve_command(command, script)?;
-            let job_definition = create_job_definition(name, cmd, cpu, memory, timeout, provider);
+            let job_definition = create_job_definition(
+                name,
+                cmd,
+                cpu,
+                memory,
+                timeout,
+                provider,
+                &required_labels,
+                &required_annotations,
+                preferred_region.as_deref(),
+            );
             let request = QueueJobRequest {
                 job_definition: Some(job_definition),
                 queued_by: "cli".to_string(),
@@ -216,10 +266,22 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
             cpu,
             memory,
             timeout,
+            required_labels,
+            required_annotations,
+            preferred_region,
         } => {
             let cmd = resolve_command(command, script.clone())?;
-            let job_definition =
-                create_job_definition(name.clone(), cmd.clone(), cpu, memory, timeout, provider);
+            let job_definition = create_job_definition(
+                name.clone(),
+                cmd.clone(),
+                cpu,
+                memory,
+                timeout,
+                provider,
+                &required_labels,
+                &required_annotations,
+                preferred_region.as_deref(),
+            );
             let request = QueueJobRequest {
                 job_definition: Some(job_definition),
                 queued_by: "cli".to_string(),
@@ -236,6 +298,17 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
                 println!("   Command: {}", cmd);
             }
             println!("   CPU: {} cores, Memory: {} bytes", cpu, memory);
+
+            // Print scheduling info if provided
+            if !required_labels.is_empty() {
+                println!("   Required labels: {:?}", required_labels);
+            }
+            if !required_annotations.is_empty() {
+                println!("   Required annotations: {:?}", required_annotations);
+            }
+            if let Some(ref region) = preferred_region {
+                println!("   Preferred region: {}", region);
+            }
             println!();
 
             let response = client.queue_job(request).await?;
@@ -406,7 +479,8 @@ async fn handle_scheduler(
             }
         }
         SchedulerAction::Schedule { name, command } => {
-            let job_definition = create_job_definition(name, command, 1.0, 1073741824, 600, None);
+            let job_definition =
+                create_job_definition(name, command, 1.0, 1073741824, 600, None, &[], &[], None);
             let request = ScheduleJobRequest {
                 job_definition: Some(job_definition),
                 requested_by: "cli".to_string(),
@@ -536,6 +610,11 @@ fn resolve_command(
     }
 }
 
+/// Create a JobDefinition with scheduling preferences
+///
+/// ## US-27.2: CLI with --required-labels
+/// ## US-27.3: CLI with --required-annotations
+/// ## US-27.6: Region Affinity (MVP)
 fn create_job_definition(
     name: String,
     command: String,
@@ -543,15 +622,23 @@ fn create_job_definition(
     memory: i64,
     timeout_secs: i64,
     provider: Option<String>,
+    required_labels: &[String],
+    required_annotations: &[String],
+    preferred_region: Option<&str>,
 ) -> JobDefinition {
-    // EPIC-21: Set preferred_provider in SchedulingInfo
+    // Parse key=value pairs into HashMap
+    let labels_map: HashMap<String, String> = parse_key_value_map(required_labels);
+    let annotations_map: HashMap<String, String> = parse_key_value_map(required_annotations);
+
     let scheduling = Some(SchedulingInfo {
         priority: 0, // Default priority
         scheduler_name: String::new(),
         deadline: None,
         preemption_allowed: false,
         preferred_provider: provider.unwrap_or_default(),
-        required_labels: std::collections::HashMap::new(),
+        required_labels: labels_map,
+        required_annotations: annotations_map,
+        preferred_region: preferred_region.unwrap_or_default().to_string(),
     });
 
     JobDefinition {
@@ -566,6 +653,7 @@ fn create_job_definition(
             memory_bytes: memory,
             disk_bytes: 0,
             gpu_count: 0,
+            gpu_types: vec![],
             custom_required: std::collections::HashMap::new(),
         }),
         scheduling,
@@ -586,5 +674,108 @@ fn create_job_definition(
                 nanos: 0,
             }),
         }),
+    }
+}
+
+/// Parse key=value string to tuple
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_key_value_valid() {
+        let result = parse_key_value("key=value");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), ("key".to_string(), "value".to_string()));
+    }
+
+    #[test]
+    fn test_parse_key_value_invalid() {
+        let result = parse_key_value("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_key_value_multiple_equals() {
+        let result = parse_key_value("key=value=extra");
+        // This should work, taking first = as delimiter
+        assert!(result.is_ok());
+        let (key, value) = result.unwrap();
+        assert_eq!(key, "key");
+        assert_eq!(value, "value=extra");
+    }
+
+    #[test]
+    fn test_parse_key_value_map() {
+        let pairs = vec!["env=production".to_string(), "team=platform".to_string()];
+        let map = parse_key_value_map(&pairs);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("env"), Some(&"production".to_string()));
+        assert_eq!(map.get("team"), Some(&"platform".to_string()));
+    }
+
+    #[test]
+    fn test_parse_key_value_map_ignores_invalid() {
+        let pairs = vec![
+            "valid=key".to_string(),
+            "invalid".to_string(),
+            "another=valid".to_string(),
+        ];
+        let map = parse_key_value_map(&pairs);
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("valid"));
+        assert!(map.contains_key("another"));
+    }
+
+    #[test]
+    fn test_create_job_definition_with_labels_and_annotations() {
+        let job_def = create_job_definition(
+            "test-job".to_string(),
+            "echo hello".to_string(),
+            1.0,
+            1024,
+            600,
+            Some("kubernetes".to_string()),
+            &["environment=production".to_string()],
+            &["team=ml".to_string()],
+            Some("us-east-1"),
+        );
+
+        let scheduling = job_def.scheduling.unwrap();
+
+        assert_eq!(scheduling.preferred_provider, "kubernetes");
+        assert_eq!(
+            scheduling.required_labels.get("environment"),
+            Some(&"production".to_string())
+        );
+        assert_eq!(
+            scheduling.required_annotations.get("team"),
+            Some(&"ml".to_string())
+        );
+        assert_eq!(scheduling.preferred_region, "us-east-1");
+    }
+
+    #[test]
+    fn test_create_job_definition_empty_scheduling() {
+        let job_def = create_job_definition(
+            "test-job".to_string(),
+            "echo hello".to_string(),
+            1.0,
+            1024,
+            600,
+            None,
+            &[],
+            &[],
+            None,
+        );
+
+        let scheduling = job_def.scheduling.unwrap();
+
+        assert!(scheduling.preferred_provider.is_empty());
+        assert!(scheduling.required_labels.is_empty());
+        assert!(scheduling.required_annotations.is_empty());
+        assert!(scheduling.preferred_region.is_empty());
     }
 }

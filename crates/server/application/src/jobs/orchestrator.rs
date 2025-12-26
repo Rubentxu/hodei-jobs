@@ -142,6 +142,11 @@ impl JobOrchestrator {
                 estimated_startup_time: caps.max_execution_time.unwrap_or(Duration::from_secs(30)),
                 health_score: real_health_score,
                 cost_per_hour: real_cost_per_hour,
+                // US-27.4: GPU support from capabilities
+                gpu_support: caps.gpu_support,
+                gpu_types: caps.gpu_types.clone(),
+                // US-27.6: Region from capabilities
+                regions: caps.regions.clone(),
             });
         }
 

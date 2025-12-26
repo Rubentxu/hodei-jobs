@@ -155,4 +155,6 @@ message SchedulingInfo {
     bool preemption_allowed = 4;
     string preferred_provider = 5;  // Provider preferido (docker, kubernetes)
     map<string, string> required_labels = 6;  // Labels requeridos en el worker
+    map<string, string> required_annotations = 7;  // Annotations requeridos en el worker
+    string preferred_region = 8;  // Región preferida para el worker
 }

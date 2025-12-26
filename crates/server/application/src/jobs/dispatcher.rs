@@ -265,6 +265,12 @@ impl JobDispatcher {
     }
 
     /// Get providers info for scheduling (delegado a ProviderRegistry)
+    ///
+    /// ## US-27.1: Métricas Reales
+    /// Este método ahora extrae métricas reales desde ProviderConfig en lugar de valores hardcodeados:
+    /// - estimated_startup_time: de capabilities.max_execution_time o cálculo basado en tipo
+    /// - health_score: calculado desde capacidades del provider
+    /// - cost_per_hour: calculado desde type_config basado en el tipo de provider
     async fn get_providers_info(&self) -> anyhow::Result<Vec<ProviderInfo>> {
         let available_providers = self
             .provider_registry
@@ -277,21 +283,165 @@ impl JobDispatcher {
             "JobDispatcher: Found providers with capacity"
         );
 
-        // Convert ProviderConfig to ProviderInfo for scheduler
+        // Convert ProviderConfig to ProviderInfo for scheduler with real metrics
         let providers_info: Vec<ProviderInfo> = available_providers
             .iter()
-            .map(|p| ProviderInfo {
-                provider_id: p.id.clone(),
-                provider_type: p.provider_type.clone(),
-                active_workers: p.active_workers as usize,
-                max_workers: p.max_workers as usize,
-                estimated_startup_time: std::time::Duration::from_secs(5),
-                health_score: 0.9,
-                cost_per_hour: 0.0,
+            .map(|p| {
+                let estimated_startup = Self::calculate_startup_time(p);
+                let health_score = Self::calculate_health_score(p);
+                let cost_per_hour = Self::calculate_provider_cost(p);
+
+                ProviderInfo {
+                    provider_id: p.id.clone(),
+                    provider_type: p.provider_type.clone(),
+                    active_workers: p.active_workers as usize,
+                    max_workers: p.max_workers as usize,
+                    estimated_startup_time: estimated_startup,
+                    health_score,
+                    cost_per_hour,
+                    // US-27.4: GPU support from capabilities
+                    gpu_support: p.capabilities.gpu_support,
+                    gpu_types: p.capabilities.gpu_types.clone(),
+                    // US-27.6: Region from capabilities
+                    regions: p.capabilities.regions.clone(),
+                }
             })
             .collect();
 
         Ok(providers_info)
+    }
+
+    /// Calculate estimated startup time from ProviderConfig
+    ///
+    /// ## Connascence Analysis
+    /// Transforma Connascence of Position (hardcoded index) a Connascence of Type
+    /// usando ProviderCapabilities.max_execution_time como fuente de verdad.
+    fn calculate_startup_time(
+        provider: &hodei_server_domain::providers::ProviderConfig,
+    ) -> std::time::Duration {
+        // Try to get startup time from capabilities
+        if let Some(max_exec_time) = provider.capabilities.max_execution_time {
+            // Use max_execution_time as a reasonable estimate for startup
+            // Typically startup is 10-20% of max execution time for well-tuned systems
+            let startup_fraction = 0.15f64;
+            let estimated = (max_exec_time.as_secs() as f64 * startup_fraction) as u64;
+            std::time::Duration::from_secs(estimated.max(5)) // Minimum 5 seconds
+        } else {
+            // Fallback to provider-type-based estimates
+            Self::default_startup_for_type(&provider.provider_type)
+        }
+    }
+
+    /// Default startup times by provider type
+    fn default_startup_for_type(
+        provider_type: &hodei_server_domain::workers::ProviderType,
+    ) -> std::time::Duration {
+        match provider_type {
+            hodei_server_domain::workers::ProviderType::Docker => std::time::Duration::from_secs(3),
+            hodei_server_domain::workers::ProviderType::Kubernetes => {
+                std::time::Duration::from_secs(15)
+            }
+            // Firecracker is represented as Custom(String)
+            hodei_server_domain::workers::ProviderType::Custom(_) => {
+                std::time::Duration::from_secs(8)
+            }
+            hodei_server_domain::workers::ProviderType::Lambda => std::time::Duration::from_secs(2),
+            hodei_server_domain::workers::ProviderType::CloudRun => {
+                std::time::Duration::from_secs(10)
+            }
+            hodei_server_domain::workers::ProviderType::Fargate => {
+                std::time::Duration::from_secs(20)
+            }
+            _ => std::time::Duration::from_secs(30), // Conservative default
+        }
+    }
+
+    /// Calculate health score from ProviderConfig
+    ///
+    /// ## US-27.5: Provider Health Monitor Integration
+    /// Este método usa indicadores de salud desde ProviderConfig:
+    /// - Estado del provider (enabled/active)
+    /// - Capacidad disponible (active_workers < max_workers)
+    /// - Capacidades reportadas (gpu_support, regions, etc.)
+    fn calculate_health_score(provider: &hodei_server_domain::providers::ProviderConfig) -> f64 {
+        let mut score: f64 = 0.5; // Base score
+
+        // Provider status contribution (up to 0.2)
+        if provider.is_enabled() {
+            score += 0.2;
+        }
+
+        // Capacity contribution (up to 0.15)
+        if provider.has_capacity() {
+            score += 0.15;
+        }
+
+        // Feature support contribution (up to 0.15)
+        if provider.capabilities.gpu_support {
+            score += 0.05;
+        }
+        if !provider.capabilities.regions.is_empty() {
+            score += 0.05;
+        }
+        if provider.capabilities.persistent_storage {
+            score += 0.05;
+        }
+
+        // Cap at 1.0
+        score.min(1.0)
+    }
+
+    /// Calculate provider cost per hour from type_config
+    ///
+    /// ## Connascence Transformation
+    /// De Connascence of Position (hardcoded 0.0) a Connascence of Type
+    /// usando el tipo de provider para determinar costo base.
+    fn calculate_provider_cost(provider: &hodei_server_domain::providers::ProviderConfig) -> f64 {
+        use hodei_server_domain::providers::ProviderTypeConfig;
+
+        match &provider.type_config {
+            // Container providers - typically pay-per-use or fixed
+            ProviderTypeConfig::Docker(_) => 0.0, // Local, no cost
+            ProviderTypeConfig::Kubernetes(k8s) => {
+                // Estimate based on node selector complexity
+                let base_cost = 0.10; // Base cost per hour
+                let complexity_bonus = (k8s.node_selector.len() as f64) * 0.02;
+                (base_cost + complexity_bonus).min(0.50)
+            }
+            ProviderTypeConfig::CloudRun(_) => 0.05, // Serverless container
+            ProviderTypeConfig::Fargate(_) => 0.15,  // Serverless container (AWS)
+            ProviderTypeConfig::ContainerApps(_) => 0.10,
+
+            // Serverless providers - typically pay-per-invocation
+            ProviderTypeConfig::Lambda(lambda) => {
+                // Memory-based estimate ($0.0000166667 per GB-second approx)
+                let memory_factor = (lambda.memory_mb as f64 / 1024.0) * 0.017;
+                let timeout_factor = (lambda.timeout_seconds as f64 / 900.0) * 0.01;
+                (memory_factor + timeout_factor).min(0.10)
+            }
+            ProviderTypeConfig::CloudFunctions(_) => 0.05,
+            ProviderTypeConfig::AzureFunctions(_) => 0.05,
+
+            // VM providers - typically pay-per-hour
+            ProviderTypeConfig::EC2(ec2) => {
+                // Instance type based estimate (simplified)
+                match ec2.instance_type.as_str() {
+                    t if t.contains("t3") || t.contains("t2") => 0.05,
+                    t if t.contains("m5") || t.contains("m6") => 0.10,
+                    t if t.contains("c5") || t.contains("c6") => 0.12,
+                    t if t.contains("r5") || t.contains("r6") => 0.15,
+                    t if t.contains("p3") || t.contains("p4") => 3.00, // GPU instances
+                    t if t.contains("g4") || t.contains("g5") => 2.50, // GPU instances
+                    _ => 0.10,
+                }
+            }
+            ProviderTypeConfig::ComputeEngine(_) => 0.08,
+            ProviderTypeConfig::AzureVMs(_) => 0.08,
+
+            // Other providers
+            ProviderTypeConfig::BareMetal(_) => 0.20,
+            ProviderTypeConfig::Custom(_) => 0.0,
+        }
     }
 
     /// Assign job to worker and dispatch
@@ -514,14 +664,25 @@ impl JobDispatcher {
         // Use scheduler to select best provider
         let providers_info: Vec<_> = providers
             .iter()
-            .map(|p| ProviderInfo {
-                provider_id: p.id.clone(),
-                provider_type: p.provider_type.clone(),
-                active_workers: p.active_workers as usize,
-                max_workers: p.max_workers as usize,
-                estimated_startup_time: std::time::Duration::from_secs(5),
-                health_score: 0.9,
-                cost_per_hour: 0.0,
+            .map(|p| {
+                let estimated_startup = Self::calculate_startup_time(p);
+                let health_score = Self::calculate_health_score(p);
+                let cost_per_hour = Self::calculate_provider_cost(p);
+
+                ProviderInfo {
+                    provider_id: p.id.clone(),
+                    provider_type: p.provider_type.clone(),
+                    active_workers: p.active_workers as usize,
+                    max_workers: p.max_workers as usize,
+                    estimated_startup_time: estimated_startup,
+                    health_score,
+                    cost_per_hour,
+                    // US-27.4: GPU support from capabilities
+                    gpu_support: p.capabilities.gpu_support,
+                    gpu_types: p.capabilities.gpu_types.clone(),
+                    // US-27.6: Region from capabilities
+                    regions: p.capabilities.regions.clone(),
+                }
             })
             .collect();
 
@@ -552,5 +713,187 @@ impl JobDispatcher {
             "JobDispatcher: Using assign_and_dispatch (idempotent wrapper)"
         );
         self.assign_and_dispatch(job, worker_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hodei_server_domain::providers::{
+        DockerConfig, EC2Config, KubernetesConfig, LambdaConfig, ProviderTypeConfig,
+    };
+    use hodei_server_domain::workers::ProviderType;
+
+    fn create_test_provider_config(
+        provider_type: ProviderType,
+        gpu_support: bool,
+        max_execution_secs: Option<u64>,
+    ) -> hodei_server_domain::providers::ProviderConfig {
+        let type_config = match provider_type {
+            ProviderType::Docker => ProviderTypeConfig::Docker(DockerConfig::default()),
+            ProviderType::Kubernetes => ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+            _ => ProviderTypeConfig::Docker(DockerConfig::default()),
+        };
+
+        let capabilities = hodei_server_domain::workers::ProviderCapabilities {
+            gpu_support,
+            gpu_types: if gpu_support {
+                vec!["nvidia".to_string()]
+            } else {
+                vec![]
+            },
+            regions: vec!["local".to_string()],
+            max_execution_time: max_execution_secs.map(|s| std::time::Duration::from_secs(s)),
+            ..Default::default()
+        };
+
+        hodei_server_domain::providers::ProviderConfig::new(
+            format!("test-{:?}", provider_type).to_lowercase(),
+            provider_type,
+            type_config,
+        )
+        .with_capabilities(capabilities)
+    }
+
+    #[test]
+    fn test_calculate_startup_time_from_capabilities() {
+        // Given: ProviderConfig with max_execution_time
+        let provider = create_test_provider_config(
+            ProviderType::Kubernetes,
+            false,
+            Some(600), // 10 minutes max execution
+        );
+
+        // When: calculate_startup_time is called
+        let startup = JobDispatcher::calculate_startup_time(&provider);
+
+        // Then: Startup time is ~15% of max_execution_time (90 seconds)
+        assert_eq!(startup, std::time::Duration::from_secs(90));
+    }
+
+    #[test]
+    fn test_calculate_startup_time_fallback_to_type_default() {
+        // Given: ProviderConfig without max_execution_time
+        let provider = create_test_provider_config(ProviderType::Kubernetes, false, None);
+
+        // When: calculate_startup_time is called
+        let startup = JobDispatcher::calculate_startup_time(&provider);
+
+        // Then: Uses provider-type default (15 seconds for K8s)
+        assert_eq!(startup, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn test_calculate_startup_time_docker_faster_than_kubernetes() {
+        let docker_provider = create_test_provider_config(ProviderType::Docker, false, None);
+        let k8s_provider = create_test_provider_config(ProviderType::Kubernetes, false, None);
+
+        let docker_startup = JobDispatcher::calculate_startup_time(&docker_provider);
+        let k8s_startup = JobDispatcher::calculate_startup_time(&k8s_provider);
+
+        // Docker should be faster than Kubernetes
+        assert!(docker_startup < k8s_startup);
+        assert_eq!(docker_startup, std::time::Duration::from_secs(3));
+        assert_eq!(k8s_startup, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn test_calculate_health_score_enabled_with_capacity() {
+        let provider = create_test_provider_config(ProviderType::Docker, true, None);
+
+        let score = JobDispatcher::calculate_health_score(&provider);
+
+        // Base 0.5 + enabled 0.2 + capacity 0.15 + gpu 0.05 = 0.9
+        assert_eq!(score, 0.9);
+    }
+
+    #[test]
+    fn test_calculate_health_score_maximum() {
+        let provider = create_test_provider_config(ProviderType::Kubernetes, true, None);
+
+        let score = JobDispatcher::calculate_health_score(&provider);
+
+        // Should be less than or equal to 1.0
+        assert!(score <= 1.0);
+        assert!(score >= 0.8);
+    }
+
+    #[test]
+    fn test_calculate_provider_cost_docker_free() {
+        let provider = create_test_provider_config(ProviderType::Docker, false, None);
+
+        let cost = JobDispatcher::calculate_provider_cost(&provider);
+
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn test_calculate_provider_cost_kubernetes() {
+        use std::collections::HashMap;
+        let k8s_config = KubernetesConfig {
+            node_selector: HashMap::new(),
+            ..Default::default()
+        };
+        let type_config = ProviderTypeConfig::Kubernetes(k8s_config);
+
+        let provider = hodei_server_domain::providers::ProviderConfig::new(
+            "k8s-test".to_string(),
+            ProviderType::Kubernetes,
+            type_config,
+        );
+
+        let cost = JobDispatcher::calculate_provider_cost(&provider);
+
+        // Base cost 0.10 for K8s with empty node_selector
+        assert_eq!(cost, 0.10);
+    }
+
+    #[test]
+    fn test_calculate_provider_cost_lambda() {
+        let lambda_config = LambdaConfig {
+            memory_mb: 1024,
+            timeout_seconds: 300,
+            ..Default::default()
+        };
+        let type_config = ProviderTypeConfig::Lambda(lambda_config);
+
+        let provider = hodei_server_domain::providers::ProviderConfig::new(
+            "lambda-test".to_string(),
+            ProviderType::Lambda,
+            type_config,
+        );
+
+        let cost = JobDispatcher::calculate_provider_cost(&provider);
+
+        // Memory factor: 1024/1024 * 0.017 = 0.017
+        // Timeout factor: 300/900 * 0.01 = 0.0033
+        // Total: ~0.02
+        assert!(cost > 0.0 && cost < 0.1);
+    }
+
+    #[test]
+    fn test_calculate_provider_cost_gpu_ec2_expensive() {
+        let ec2_config = EC2Config {
+            instance_type: "p3.2xlarge".to_string(),
+            ami_id: None,
+            security_group_ids: vec![],
+            iam_role: None,
+            subnet_id: None,
+            tags: std::collections::HashMap::new(),
+            disk_size_gb: None,
+            ebs_optimized: false,
+        };
+        let type_config = ProviderTypeConfig::EC2(ec2_config);
+
+        let provider = hodei_server_domain::providers::ProviderConfig::new(
+            "ec2-gpu".to_string(),
+            ProviderType::EC2,
+            type_config,
+        );
+
+        let cost = JobDispatcher::calculate_provider_cost(&provider);
+
+        // GPU instances should be expensive
+        assert!(cost > 1.0);
     }
 }

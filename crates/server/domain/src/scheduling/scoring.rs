@@ -822,6 +822,9 @@ mod scoring_cache_tests {
             estimated_startup_time: Duration::from_millis(startup_ms),
             health_score,
             cost_per_hour: cost,
+            gpu_support: false,
+            gpu_types: vec![],
+            regions: vec![],
         }
     }
 

@@ -76,8 +76,11 @@ pub struct ResourceRequirements {
     /// GPUs requeridas
     #[prost(int32, tag = "4")]
     pub gpu_count: i32,
+    /// Tipos de GPU requeridos
+    #[prost(string, repeated, tag = "5")]
+    pub gpu_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Recursos custom requeridos
-    #[prost(map = "string, int64", tag = "5")]
+    #[prost(map = "string, int64", tag = "6")]
     pub custom_required: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         i64,
@@ -222,6 +225,15 @@ pub struct SchedulingInfo {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
+    /// Annotations requeridos en el worker
+    #[prost(map = "string, string", tag = "7")]
+    pub required_annotations: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    /// Región preferida para el worker
+    #[prost(string, tag = "8")]
+    pub preferred_region: ::prost::alloc::string::String,
 }
 /// Información del worker agent
 #[derive(Clone, PartialEq, ::prost::Message)]

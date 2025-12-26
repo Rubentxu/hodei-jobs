@@ -73,6 +73,9 @@ pub struct SchedulingContext {
 }
 
 /// Información de un provider para scheduling
+///
+/// ## US-27.4: GPU Requirements Filtering
+/// ## US-27.6: Region Affinity
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderInfo {
     pub provider_id: ProviderId,
@@ -82,6 +85,12 @@ pub struct ProviderInfo {
     pub estimated_startup_time: Duration,
     pub health_score: f64,
     pub cost_per_hour: f64,
+    /// GPU support capability (US-27.4)
+    pub gpu_support: bool,
+    /// Available GPU types (US-27.4)
+    pub gpu_types: Vec<String>,
+    /// Supported regions (US-27.6)
+    pub regions: Vec<String>,
 }
 
 impl ProviderInfo {
@@ -96,6 +105,54 @@ impl ProviderInfo {
     /// Puede aceptar más workers
     pub fn can_accept_workers(&self) -> bool {
         self.active_workers < self.max_workers
+    }
+
+    /// ## US-27.4: GPU Requirements Filtering
+    /// Check if this provider can satisfy GPU requirements
+    pub fn can_handle_gpu_requirement(&self, required_gpu_count: u32) -> bool {
+        if required_gpu_count == 0 {
+            // No GPU required, any provider can handle
+            true
+        } else if self.gpu_support {
+            // GPU required and provider supports it
+            // Check if we have capacity (simplified - could check against max_resources)
+            true
+        } else {
+            // GPU required but provider doesn't support it
+            false
+        }
+    }
+
+    /// ## US-27.4: GPU Requirements Filtering
+    /// Check if this provider has a specific GPU type
+    pub fn has_gpu_type(&self, gpu_type: &str) -> bool {
+        self.gpu_types.contains(&gpu_type.to_string())
+    }
+
+    /// ## US-27.6: Region Affinity
+    /// Check if this provider supports a specific region
+    pub fn supports_region(&self, region: &str) -> bool {
+        self.regions.contains(&region.to_string())
+    }
+
+    /// ## US-27.6: Region Affinity
+    /// Calculate region match score for affinity-based selection
+    /// Returns 1.0 for exact match, 0.5 for partial match, 0.0 for no match
+    pub fn region_match_score(&self, preferred_region: &str) -> f64 {
+        if preferred_region.is_empty() {
+            return 0.5; // No preference, neutral score
+        }
+        if self.supports_region(preferred_region) {
+            1.0 // Exact match
+        } else if self
+            .regions
+            .iter()
+            .any(|r| r.contains(preferred_region) || preferred_region.contains(r))
+        {
+            0.5 // Partial match
+        } else {
+            0.0 // No match
+        }
     }
 }
 
@@ -483,6 +540,9 @@ mod tests {
                 estimated_startup_time: Duration::from_secs(5),
                 health_score: 0.9,
                 cost_per_hour: 0.0,
+                gpu_support: false,
+                gpu_types: vec![],
+                regions: vec![],
             },
             ProviderInfo {
                 provider_id: ProviderId::new(),
@@ -492,6 +552,9 @@ mod tests {
                 estimated_startup_time: Duration::from_secs(30),
                 health_score: 0.95,
                 cost_per_hour: 0.5,
+                gpu_support: false,
+                gpu_types: vec![],
+                regions: vec![],
             },
         ]
     }
@@ -506,6 +569,9 @@ mod tests {
             estimated_startup_time: Duration::from_secs(5),
             health_score: 0.9,
             cost_per_hour: 0.0,
+            gpu_support: false,
+            gpu_types: vec![],
+            regions: vec![],
         };
 
         assert!((info.available_capacity() - 0.5).abs() < 0.01);
