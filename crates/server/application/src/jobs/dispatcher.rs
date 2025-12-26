@@ -814,8 +814,8 @@ mod tests {
 
         let score = JobDispatcher::calculate_health_score(&provider);
 
-        // Base 0.5 + enabled 0.2 + capacity 0.15 + gpu 0.05 = 0.9
-        assert_eq!(score, 0.9);
+        // Base 0.5 + enabled 0.2 + capacity 0.15 + gpu 0.05 + regions 0.05 = 0.95
+        assert!((score - 0.95).abs() < 0.001);
     }
 
     #[test]
@@ -885,14 +885,14 @@ mod tests {
     #[test]
     fn test_calculate_provider_cost_gpu_ec2_expensive() {
         let ec2_config = EC2Config {
+            region: "us-east-1".to_string(),
+            ami_id: "ami-12345678".to_string(),
             instance_type: "p3.2xlarge".to_string(),
-            ami_id: None,
+            key_name: None,
             security_group_ids: vec![],
-            iam_role: None,
             subnet_id: None,
-            tags: std::collections::HashMap::new(),
-            disk_size_gb: None,
-            ebs_optimized: false,
+            iam_instance_profile: None,
+            user_data_template: None,
         };
         let type_config = ProviderTypeConfig::EC2(ec2_config);
 
