@@ -158,3 +158,29 @@ message SchedulingInfo {
     map<string, string> required_annotations = 7;  // Annotations requeridos en el worker
     string preferred_region = 8;  // Región preferida para el worker
 }
+
+// Tipos de fallo de job - Error Transparency
+enum JobFailureReason {
+    JOB_FAILURE_REASON_UNKNOWN = 0;
+    JOB_FAILURE_REASON_COMMAND_NOT_FOUND = 1;
+    JOB_FAILURE_REASON_PERMISSION_DENIED = 2;
+    JOB_FAILURE_REASON_FILE_NOT_FOUND = 3;
+    JOB_FAILURE_REASON_PROCESS_SPAWN_FAILED = 4;
+    JOB_FAILURE_REASON_EXECUTION_TIMEOUT = 5;
+    JOB_FAILURE_REASON_SIGNAL_RECEIVED = 6;
+    JOB_FAILURE_REASON_NON_ZERO_EXIT_CODE = 7;
+    JOB_FAILURE_REASON_INFRASTRUCTURE_ERROR = 8;
+    JOB_FAILURE_REASON_VALIDATION_ERROR = 9;
+    JOB_FAILURE_REASON_CONFIGURATION_ERROR = 10;
+    JOB_FAILURE_REASON_SECRET_INJECTION_ERROR = 11;
+    JOB_FAILURE_REASON_IO_ERROR = 12;
+}
+
+// Información detallada de error para respuestas
+message ErrorDetails {
+    JobFailureReason reason = 1;
+    string error_message = 2;
+    string suggested_action = 3;  // Acción sugerida para resolver el problema
+    string error_code = 4;        // Código de error estructurado
+    map<string, string> error_context = 5;  // Contexto adicional del error
+}

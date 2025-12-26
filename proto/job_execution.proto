@@ -100,11 +100,12 @@ message JobFailedEvent {
     hodei.common.ExecutionId execution_id = 1;
     hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp failure_time = 3;
-    string failure_reason = 4;
+    hodei.common.JobFailureReason failure_reason = 4;
     string error_message = 5;
     int32 exit_code = 6;
     bool retryable = 7;
     map<string, string> failure_metadata = 8;
+    hodei.common.ErrorDetails error_details = 9;
 }
 
 message JobCancelledEvent {
@@ -238,17 +239,21 @@ message CompleteJobResponse {
 // Request para fallar job
 message FailJobRequest {
     hodei.common.ExecutionId execution_id = 1;
-    string failure_reason = 2;
+    hodei.common.JobFailureReason failure_reason = 2;
     string error_message = 3;
     int32 exit_code = 4;
     bool retryable = 5;
     map<string, string> failure_metadata = 6;
+    repeated string suggested_actions = 7;  // Acciones sugeridas para resolver
+    string error_code = 8;                   // Código de error estructurado
+    map<string, string> error_context = 9;   // Contexto adicional
 }
 
 message FailJobResponse {
     bool success = 1;
     string message = 2;
     google.protobuf.Timestamp failed_at = 3;
+    hodei.common.ErrorDetails error_details = 4;  // Detalles del error procesados
 }
 
 // Request para cancelar job
@@ -289,14 +294,14 @@ service JobExecutionService {
     rpc GetJob(GetJobRequest) returns (GetJobResponse);
     rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
     rpc AssignJob(AssignJobRequest) returns (AssignJobResponse);
-    
+
     // Ciclo de vida de ejecución
     rpc StartJob(StartJobRequest) returns (StartJobResponse);
     rpc UpdateJobProgress(UpdateJobProgressRequest) returns (UpdateJobProgressResponse);
     rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse);
     rpc FailJob(FailJobRequest) returns (FailJobResponse);
     rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
-    
+
     // Eventos y streaming
     rpc GetExecutionEvents(GetExecutionEventsRequest) returns (GetExecutionEventsResponse);
     rpc ExecutionEventStream(stream ExecutionEventRequest) returns (stream ExecutionEventStream);
