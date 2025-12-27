@@ -6,14 +6,22 @@
 //! - WorkerMonitor: monitors worker health
 //!
 //! This is a thin orchestration layer that delegates to specialized components.
+//!
+//! ## EPIC-29: Reactive Event-Driven Architecture
+//! This component has been refactored to use event-driven reactivity instead of polling.
+//! - Subscribe to JobQueued events to trigger job processing
+//! - Subscribe to WorkerReadyForJob events to trigger dispatch
+//! - Eliminated continuous polling loop
 
 use crate::jobs::dispatcher::JobDispatcher;
 use crate::jobs::worker_monitor::WorkerMonitor;
+use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::events::DomainEvent;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Job Coordinator
 ///
@@ -24,6 +32,11 @@ use tracing::{debug, error, info};
 ///
 /// This component follows the Facade pattern, providing a simple interface
 /// to the complex subsystem of job processing.
+///
+/// ## EPIC-29: Reactive Mode
+/// Uses event-driven reactivity instead of polling:
+/// - Listens to JobQueued → triggers provisioning or dispatch
+/// - Listens to WorkerReadyForJob → triggers job dispatch
 pub struct JobCoordinator {
     event_bus: Arc<dyn EventBus>,
     job_dispatcher: Arc<JobDispatcher>,
@@ -46,47 +59,136 @@ impl JobCoordinator {
         }
     }
 
-    /// Start the coordinator
+    /// Start the coordinator in reactive mode (EPIC-29)
+    ///
     /// This will start:
-    /// 1. Event subscription (to trigger processing on events)
-    /// 2. Worker monitoring (to track worker health)
-    /// 3. Continuous job processing loop
+    /// 1. Worker monitoring (to track worker health)
+    /// 2. Event subscription for JobQueued and WorkerReadyForJob
+    /// 3. Reactive job processing (no polling loop)
     ///
     /// Returns: Result<()>
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        info!("🚀 JobCoordinator: Starting job processing system");
+        info!("🚀 JobCoordinator: Starting job processing system (EPIC-29 Reactive Mode)");
 
         // Start worker monitor and keep the shutdown signal alive
         let monitor_shutdown = self.worker_monitor.start().await?;
         self.monitor_shutdown = Some(monitor_shutdown);
         info!("👁️ JobCoordinator: Worker monitor started");
 
-        // Start continuous job processing loop
+        // EPIC-29: Start reactive event processing instead of polling loop
+        self.start_reactive_event_processing().await?;
+
+        info!("✅ JobCoordinator: Job processing system started successfully");
+
+        Ok(())
+    }
+
+    /// EPIC-29: Start reactive event processing
+    ///
+    /// Subscribes to domain events and triggers processing reactively:
+    /// - JobQueued → handle_job_queued()
+    /// - WorkerReadyForJob → dispatch_pending_job()
+    async fn start_reactive_event_processing(&mut self) -> anyhow::Result<()> {
+        let event_bus = self.event_bus.clone();
         let job_dispatcher = self.job_dispatcher.clone();
+
+        // Subscribe to JobQueued events (channel: job.queue)
+        let mut job_queue_stream = event_bus
+            .subscribe("job.queue")
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to job.queue: {}", e))?;
+
+        // Subscribe to WorkerReadyForJob events (channel: worker.ready)
+        let mut worker_ready_stream = event_bus
+            .subscribe("worker.ready")
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to worker.ready: {}", e))?;
+
+        // Get a reference to self for handling events
+        let dispatcher = self.job_dispatcher.clone();
+
+        // Spawn event processing task
         tokio::spawn(async move {
-            info!("🔄 JobCoordinator: Starting continuous job processing loop");
+            info!("🔄 JobCoordinator: Starting reactive event processing");
+
             loop {
-                // Process jobs
-                match job_dispatcher.dispatch_once().await {
-                    Ok(0) => {
-                        // No jobs processed, wait a bit before checking again
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::select! {
+                    // Process JobQueued events
+                    event_result = job_queue_stream.next() => {
+                        match event_result {
+                            Some(Ok(event)) => {
+                                if let DomainEvent::JobQueued { job_id, .. } = event {
+                                    info!("📦 JobCoordinator: Received JobQueued event for job {}", job_id);
+                                    dispatcher.handle_job_queued(&job_id).await;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                error!("❌ JobCoordinator: Error receiving JobQueued event: {}", e);
+                            }
+                            None => {
+                                warn!("⚠️ JobCoordinator: JobQueued stream ended, reconnecting...");
+                                // In production, implement reconnection logic
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                            }
+                        }
                     }
-                    Ok(count) => {
-                        debug!("✅ JobCoordinator: Processed {} jobs", count);
-                        // Small delay between batches
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                    Err(e) => {
-                        error!("❌ JobCoordinator: Error during job dispatch: {}", e);
-                        // Wait a bit before retrying on error
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    // Process WorkerReadyForJob events
+                    event_result = worker_ready_stream.next() => {
+                        match event_result {
+                            Some(Ok(event)) => {
+                                if let DomainEvent::WorkerReadyForJob { worker_id, .. } = event {
+                                    info!("👷 JobCoordinator: Received WorkerReadyForJob event for worker {}", worker_id);
+                                    dispatcher.dispatch_pending_job_to_worker(&worker_id).await;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                error!("❌ JobCoordinator: Error receiving WorkerReadyForJob event: {}", e);
+                            }
+                            None => {
+                                warn!("⚠️ JobCoordinator: WorkerReadyForJob stream ended, reconnecting...");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                            }
+                        }
                     }
                 }
             }
         });
 
-        info!("✅ JobCoordinator: Job processing system started successfully");
+        Ok(())
+    }
+
+    /// Start the coordinator in legacy polling mode (deprecated, for migration only)
+    ///
+    /// This method is kept for backwards compatibility and gradual migration.
+    /// Use `start()` for new deployments (EPIC-29 reactive mode).
+    pub async fn start_polling_mode(&mut self) -> anyhow::Result<()> {
+        info!("🚀 JobCoordinator: Starting job processing system (Legacy Polling Mode)");
+
+        // Start worker monitor
+        let monitor_shutdown = self.worker_monitor.start().await?;
+        self.monitor_shutdown = Some(monitor_shutdown);
+
+        // Start legacy polling loop
+        let job_dispatcher = self.job_dispatcher.clone();
+        tokio::spawn(async move {
+            info!("🔄 JobCoordinator: Starting legacy polling loop (DEPRECATED)");
+            loop {
+                match job_dispatcher.dispatch_once().await {
+                    Ok(0) => {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    Ok(count) => {
+                        debug!("✅ JobCoordinator: Processed {} jobs", count);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        error!("❌ JobCoordinator: Error during job dispatch: {}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
 
         Ok(())
     }

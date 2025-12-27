@@ -87,6 +87,13 @@ RUN mkdir -p /home/hodei \
 # Set working directory to /home/hodei (T2.6)
 WORKDIR /home/hodei
 
+# Create writable log directory (mounted as tmpfs in Kubernetes for read-only root fs)
+# This allows the worker to persist logs locally when filesystem is writable
+# Path: /tmp/hodei-logs (matches Kubernetes hodei-tmp volume mount at /tmp)
+RUN mkdir -p /tmp/hodei-logs \
+    && chmod 755 /tmp/hodei-logs \
+    && chown -R hodei:root /tmp/hodei-logs
+
 # Set asdf directories to writable locations
 ENV ASDF_DATA_DIR=/home/hodei/.asdf
 ENV ASDF_CONFIG_FILE=/home/hodei/.asdfrc

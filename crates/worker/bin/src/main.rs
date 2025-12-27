@@ -120,9 +120,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize components
     let metrics = Arc::new(WorkerMetrics::new());
+    let log_dir = config.log_dir.clone();
     let executor = Arc::new(JobExecutor::new(
         config.log_batch_size,
         config.log_flush_interval_ms,
+        log_dir,
         metrics.clone(),
     ));
     let running_jobs = Arc::new(Mutex::new(

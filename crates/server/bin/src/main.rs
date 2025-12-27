@@ -613,22 +613,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
     // Create SchedulerService with or without provisioning
+    // EPIC-29: Always use with_event_bus for reactive processing
     let scheduler_service = if let Some(ref prov) = provisioning_service {
-        SchedulerServiceImpl::with_provisioning(
+        SchedulerServiceImpl::with_event_bus(
             create_job_usecase.clone(),
             job_repository.clone(),
             job_queue.clone(),
             worker_registry.clone(),
             SchedulerConfig::default(),
-            prov.clone(),
+            event_bus.clone(),
         )
     } else {
-        SchedulerServiceImpl::new(
+        SchedulerServiceImpl::with_event_bus(
             create_job_usecase.clone(),
             job_repository.clone(),
             job_queue.clone(),
             worker_registry.clone(),
             SchedulerConfig::default(),
+            event_bus.clone(),
         )
     };
 
@@ -695,37 +697,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("JobController loop disabled (HODEI_JOB_CONTROLLER_ENABLED != 1)");
     }
 
-    // Provider Manager (Auto-scaling & Health)
-    if let Some(ref prov) = provisioning_service {
-        use hodei_server_application::providers::ProviderManager;
-        info!("Starting ProviderManager for auto-scaling and health monitoring");
+    // EPIC-28: ProviderManager DESHABILITADO
+    // El modelo efímero usa: 1 job = 1 worker provisioned on-demand
+    // El dispatcher (JobCoordinator) aprovisiona workers bajo demanda
+    // No se necesita auto-scaling basado en eventos de cola
+    //
+    // ProviderManager был удалён для упрощения архитектуры
+    // Auto-scaling basada en eventos ya no es necesaria
 
-        let manager = ProviderManager::new(event_bus.clone(), prov.clone(), job_queue.clone());
-
-        if let Err(e) = manager.subscribe_to_events().await {
-            tracing::error!("Failed to subscribe ProviderManager to events: {}", e);
-        }
-
-        // Worker Monitor (Heartbeats & Disconnection)
-        // Keep guard alive to prevent shutdown
-        let _worker_monitor_guard =
-            match hodei_server_application::jobs::worker_monitor::WorkerMonitor::new(
-                worker_registry.clone(),
-                event_bus.clone(),
-            )
-            .start()
-            .await
-            {
-                Ok(guard) => {
-                    info!("Started WorkerMonitor");
-                    Some(guard)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to start WorkerMonitor: {}", e);
-                    None
-                }
-            };
-    }
+    // Worker Monitor (Heartbeats & Disconnection)
+    // Keep guard alive to prevent shutdown
+    let _worker_monitor_guard =
+        match hodei_server_application::jobs::worker_monitor::WorkerMonitor::new(
+            worker_registry.clone(),
+            event_bus.clone(),
+        )
+        .start()
+        .await
+        {
+            Ok(guard) => {
+                info!("Started WorkerMonitor");
+                Some(guard)
+            }
+            Err(e) => {
+                tracing::error!("Failed to start WorkerMonitor: {}", e);
+                None
+            }
+        };
 
     // Configure CORS for gRPC-Web
     let cors = CorsLayer::new()

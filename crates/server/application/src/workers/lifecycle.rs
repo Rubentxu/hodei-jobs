@@ -52,10 +52,12 @@ impl Default for WorkerLifecycleConfig {
             heartbeat_timeout: Duration::from_secs(60),
             health_check_interval: Duration::from_secs(30),
             reconciliation_interval: Duration::from_secs(15),
-            min_ready_workers: 1,
-            max_workers: 10,
-            scale_up_threshold: 5,
-            scale_down_threshold: 3,
+            // EPIC-28: Modelo efímero - no se mantiene pool de workers
+            // Cada job crea su propio worker que se termina después
+            min_ready_workers: 0,
+            max_workers: 100,           // Límite alto solo para evitar sobrecarga
+            scale_up_threshold: 999999, // Auto-scaling deshabilitado (nunca se activa)
+            scale_down_threshold: 0,    // Limpieza inmediata de workers idle
             worker_dead_grace_period: Duration::from_secs(120),
         }
     }

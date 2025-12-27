@@ -237,28 +237,13 @@ impl CreateJobUseCase {
             );
         }
 
-        // 7. Publicar evento JobQueueDepthChanged para auto-scaling
-        // Esto permite que ProviderManager reactive workers si la cola crece
-        // Refactoring: Reuse EventMetadata from JobCreated event
-        if let Ok(queue_depth) = self.job_queue.len().await {
-            let depth_event = DomainEvent::JobQueueDepthChanged {
-                queue_depth: queue_depth as u64,
-                threshold: self.queue_depth_threshold,
-                occurred_at: Utc::now(),
-                correlation_id: metadata.correlation_id.clone(),
-                actor: metadata.actor.clone(),
-            };
-
-            if let Err(e) = self.event_bus.publish(&depth_event).await {
-                tracing::warn!("Failed to publish JobQueueDepthChanged event: {}", e);
-            } else {
-                tracing::debug!(
-                    "📊 JobQueueDepthChanged event published: depth={}, threshold={}",
-                    queue_depth,
-                    self.queue_depth_threshold
-                );
-            }
-        }
+        // EPIC-28: Auto-scaling DESHABILITADO
+        // El modelo efímero usa: 1 job = 1 worker provisioned on-demand
+        // El worker se aprovisiona solo para ejecutar el job y se termina después
+        // No se mantiene pool de workers warm (min_ready_workers = 0)
+        //
+        // JobQueueDepthChanged fue eliminado para evitar provisioning anticipado
+        // El dispatcher crea workers bajo demanda cuando dispatch_once() detecta que no hay workers disponibles
 
         Ok(CreateJobResponse {
             job_id: job_id.to_string(),

@@ -6,14 +6,16 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{error, info};
 
 use hodei_server_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
 use hodei_server_application::scheduling::{SchedulerConfig, SchedulingService};
 use hodei_server_application::workers::WorkerProvisioningService;
+use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::{ExecutionContext, JobQueue, JobRepository};
 use hodei_server_domain::scheduling::{ProviderSelectionStrategy, SchedulingContext};
-use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::{JobId, JobState, ProviderId, WorkerId, WorkerState};
 use hodei_server_domain::workers::registry::{WorkerFilter, WorkerRegistry};
 use uuid::Uuid;
 
@@ -53,6 +55,8 @@ pub struct SchedulerServiceImpl {
     /// Optional provisioning service for creating workers on-demand
     provisioning_service:
         Option<Arc<dyn hodei_server_application::workers::provisioning::WorkerProvisioningService>>,
+    /// EPIC-29: Event bus for reactive job processing
+    event_bus: Option<Arc<dyn EventBus>>,
 }
 
 impl SchedulerServiceImpl {
@@ -70,6 +74,7 @@ impl SchedulerServiceImpl {
             worker_registry,
             scheduling_service: Arc::new(RwLock::new(SchedulingService::new(scheduler_config))),
             provisioning_service: None,
+            event_bus: None,
         }
     }
 
@@ -89,6 +94,27 @@ impl SchedulerServiceImpl {
             worker_registry,
             scheduling_service: Arc::new(RwLock::new(SchedulingService::new(scheduler_config))),
             provisioning_service: Some(provisioning_service),
+            event_bus: None,
+        }
+    }
+
+    /// EPIC-29: Create a new SchedulerServiceImpl with event bus for reactive processing
+    pub fn with_event_bus(
+        create_job_usecase: Arc<CreateJobUseCase>,
+        job_repository: Arc<dyn JobRepository>,
+        job_queue: Arc<dyn JobQueue>,
+        worker_registry: Arc<dyn WorkerRegistry>,
+        scheduler_config: SchedulerConfig,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Self {
+        Self {
+            create_job_usecase,
+            job_repository,
+            job_queue,
+            worker_registry,
+            scheduling_service: Arc::new(RwLock::new(SchedulingService::new(scheduler_config))),
+            provisioning_service: None,
+            event_bus: Some(event_bus),
         }
     }
 
@@ -387,6 +413,38 @@ impl SchedulerService for SchedulerServiceImpl {
                     .await
                     .map_err(error_to_status)?;
 
+                // Encolar el job
+                self.job_queue
+                    .enqueue(job.clone())
+                    .await
+                    .map_err(error_to_status)?;
+
+                // EPIC-29: Publish JobQueued event for reactive processing
+                if let Some(ref event_bus) = self.event_bus {
+                    // Convert Option<String> to Option<ProviderId>
+                    let preferred_provider_id = job
+                        .spec
+                        .preferences
+                        .preferred_provider
+                        .as_ref()
+                        .and_then(|s| Uuid::parse_str(s).ok().map(ProviderId::from_uuid));
+
+                    let job_queued_event = DomainEvent::JobQueued {
+                        job_id: job.id.clone(),
+                        preferred_provider: preferred_provider_id,
+                        job_requirements: job.spec.clone(),
+                        queued_at: chrono::Utc::now(),
+                        correlation_id: None,
+                        actor: Some("grpc:scheduler".to_string()),
+                    };
+
+                    if let Err(e) = event_bus.publish(&job_queued_event).await {
+                        error!("Failed to publish JobQueued event: {}", e);
+                    } else {
+                        info!("Published JobQueued event for job {}", job.id);
+                    }
+                }
+
                 Ok(Response::new(ScheduleJobResponse {
                     success: true,
                     message: format!("Job enqueued: {}", reason),
@@ -432,80 +490,70 @@ impl SchedulerService for SchedulerServiceImpl {
                 provider_id,
                 ..
             } => {
-                // Check if provisioning service is configured
-                let Some(provisioning_service) = &self.provisioning_service else {
-                    let msg = "Worker provisioning is not configured in this scheduler instance";
-                    return Ok(Response::new(ScheduleJobResponse {
-                        success: false,
-                        message: msg.to_string(),
-                        decision: Some(SchedulingDecision {
-                            job_id: Some(GrpcJobId {
-                                value: create_response.job_id,
-                            }),
-                            selected_worker_id: None,
-                            execution_id: None,
-                            score: 0.0,
-                            reasons: vec![msg.to_string()],
-                            decision_time: Some(Self::now_timestamp()),
-                            allocation: None,
-                        }),
-                        scheduled_at: Some(Self::now_timestamp()),
-                    }));
-                };
-
-                // Get default worker spec for the provider
-                let spec = provisioning_service
-                    .default_worker_spec(&provider_id)
-                    .ok_or_else(|| Status::internal("No default worker spec for provider"))?;
-
-                // Provision the worker
+                // EPIC-28: No aprovisionar directamente aquí
+                // El modelo efímero usa: 1 job = 1 worker aprovisionado por el dispatcher
+                // Encolemos el job para que el dispatcher lo procese bajo demanda
                 info!(
-                    "Provisioning worker for job {} via provider {}",
+                    "Job {} requires worker provisioning via {}. Enqueuing for dispatcher.",
                     job_id, provider_id
                 );
-                let provisioning_result = provisioning_service
-                    .provision_worker(&provider_id, spec)
-                    .await
-                    .map_err(error_to_status)?;
 
-                let worker_id = provisioning_result.worker_id;
-                info!(
-                    "Worker {} provisioned with OTP, job {} enqueued for assignment",
-                    worker_id, job_id
-                );
-
-                // Enqueue the job - it will be assigned when the worker connects and becomes ready
-                job.metadata_mut().insert(
-                    "scheduler.provisioned_worker_id".to_string(),
-                    worker_id.to_string(),
-                );
-                job.metadata_mut().insert(
-                    "scheduler.provisioning_provider_id".to_string(),
-                    provider_id.to_string(),
-                );
+                // Guardar el provider preferido en el job
+                job.spec.preferences.preferred_provider = Some(provider_id.to_string());
                 self.job_repository
                     .update(&job)
                     .await
                     .map_err(error_to_status)?;
 
+                // Encolar el job
+                self.job_queue
+                    .enqueue(job.clone())
+                    .await
+                    .map_err(error_to_status)?;
+
+                // EPIC-29: Publish JobQueued event for reactive processing
+                if let Some(ref event_bus) = self.event_bus {
+                    // Convert Option<String> to Option<ProviderId>
+                    let preferred_provider_id = job
+                        .spec
+                        .preferences
+                        .preferred_provider
+                        .as_ref()
+                        .and_then(|s| Uuid::parse_str(s).ok().map(ProviderId::from_uuid));
+
+                    let job_queued_event = DomainEvent::JobQueued {
+                        job_id: job.id.clone(),
+                        preferred_provider: preferred_provider_id,
+                        job_requirements: job.spec.clone(),
+                        queued_at: chrono::Utc::now(),
+                        correlation_id: None,
+                        actor: Some("grpc:scheduler".to_string()),
+                    };
+
+                    if let Err(e) = event_bus.publish(&job_queued_event).await {
+                        error!("Failed to publish JobQueued event: {}", e);
+                        // Continue anyway - job is already enqueued
+                    } else {
+                        info!("Published JobQueued event for job {}", job.id);
+                    }
+                }
+
                 let reasons = vec![
                     format!(
-                        "Provisioned new worker {} via provider {}",
-                        worker_id, provider_id
+                        "No workers available. Job enqueued for provisioning via {}",
+                        provider_id
                     ),
-                    "Job enqueued, will be assigned when worker becomes ready".to_string(),
+                    "Dispatcher will provision worker and assign job".to_string(),
                 ];
 
                 Ok(Response::new(ScheduleJobResponse {
                     success: true,
-                    message: format!("Worker {} provisioned, job enqueued", worker_id),
+                    message: format!("Job enqueued for provisioning via {}", provider_id),
                     decision: Some(SchedulingDecision {
                         job_id: Some(GrpcJobId {
                             value: create_response.job_id,
                         }),
-                        selected_worker_id: Some(GrpcWorkerId {
-                            value: worker_id.to_string(),
-                        }),
+                        selected_worker_id: None,
                         execution_id: None,
                         score: 0.8,
                         reasons,

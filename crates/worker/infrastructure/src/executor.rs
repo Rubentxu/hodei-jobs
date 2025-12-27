@@ -9,7 +9,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::FramedRead;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::logging::{FileLogger, LogBatcher};
 use crate::metrics::WorkerMetrics;
@@ -61,6 +61,7 @@ fn current_timestamp() -> prost_types::Timestamp {
 pub struct JobExecutor {
     log_batch_size: usize,
     log_flush_interval_ms: u64,
+    log_dir: std::path::PathBuf,
     metrics: Arc<WorkerMetrics>,
 }
 
@@ -68,11 +69,13 @@ impl JobExecutor {
     pub fn new(
         log_batch_size: usize,
         log_flush_interval_ms: u64,
+        log_dir: std::path::PathBuf,
         metrics: Arc<WorkerMetrics>,
     ) -> Self {
         Self {
             log_batch_size,
             log_flush_interval_ms,
+            log_dir,
             metrics,
         }
     }
@@ -214,9 +217,17 @@ impl JobExecutor {
             .stderr(Stdio::piped())
             .stdin(Stdio::piped());
 
-        // Set working directory if provided
+        // Set working directory if provided, create if not exists
         if let Some(ref dir) = working_dir {
             if !dir.trim().is_empty() {
+                let path = std::path::Path::new(dir);
+                // Create working directory if it doesn't exist (like Jenkins workspace)
+                if !path.exists() {
+                    tokio::fs::create_dir_all(path).await.map_err(|e| {
+                        format!("Failed to create working directory '{}': {}", dir, e)
+                    })?;
+                    info!("Created working directory: {}", dir);
+                }
                 command.current_dir(dir);
             }
         }
@@ -330,7 +341,7 @@ impl JobExecutor {
         let mut stdout_reader = FramedRead::new(stdout, tokio_util::codec::LinesCodec::new());
         let mut stderr_reader = FramedRead::new(stderr, tokio_util::codec::LinesCodec::new());
 
-        let logger_instance = FileLogger::new(job_id); // Sync, no Result
+        let logger_instance = FileLogger::new(&self.log_dir); // Use configured log directory
         let logger = Arc::new(tokio::sync::Mutex::new(logger_instance));
 
         // Use updated LogBatcher::new signature
@@ -382,11 +393,18 @@ impl JobExecutor {
                                 is_stderr: false,
                             };
 
-                            // Log to file
+                            // Log to file (may fail on read-only filesystems like K8s)
+                            // Logs are still sent to server via batcher below
                             {
                                 let file_logger = logger.lock().await;
                                 if let Err(e) = file_logger.log(&entry).await {
-                                    warn!("Failed to write stdout to file: {}", e);
+                                    // Only log as debug for read-only fs (expected in K8s)
+                                    let is_readonly = e.to_string().contains("read-only") || e.to_string().contains("Read-only");
+                                    if is_readonly {
+                                        debug!("Local log file unavailable (read-only filesystem - expected in K8s)");
+                                    } else {
+                                        warn!("Failed to write stdout to local file: {}", e);
+                                    }
                                 }
                             }
 
@@ -420,11 +438,18 @@ impl JobExecutor {
                                 is_stderr: true,
                             };
 
-                            // Log to file
+                            // Log to file (may fail on read-only filesystems like K8s)
+                            // Logs are still sent to server via batcher below
                             {
                                 let file_logger = logger.lock().await;
                                 if let Err(e) = file_logger.log(&entry).await {
-                                    warn!("Failed to write stderr to file: {}", e);
+                                    // Only log as debug for read-only fs (expected in K8s)
+                                    let is_readonly = e.to_string().contains("read-only") || e.to_string().contains("Read-only");
+                                    if is_readonly {
+                                        debug!("Local log file unavailable (read-only filesystem - expected in K8s)");
+                                    } else {
+                                        warn!("Failed to write stderr to local file: {}", e);
+                                    }
                                 }
                             }
 

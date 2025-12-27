@@ -1077,6 +1077,40 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
 
                                         let _ =
                                             registry_service.on_worker_heartbeat(&wid.value).await;
+
+                                        // EPIC-29: Publish WorkerHeartbeat event
+                                        if let Some(ref event_bus) = registry_service.event_bus {
+                                            let worker_id_obj = WorkerId::from(wid.value.clone());
+
+                                            let heartbeat_event = DomainEvent::WorkerHeartbeat {
+                                                worker_id: worker_id_obj,
+                                                state: WorkerState::Ready,
+                                                load_average: None,
+                                                memory_usage_mb: None,
+                                                current_job_id: if !hb.running_job_ids.is_empty() {
+                                                    hb.running_job_ids.first().map(|id| {
+                                                        JobId(
+                                                            uuid::Uuid::parse_str(id)
+                                                                .unwrap_or_default(),
+                                                        )
+                                                    })
+                                                } else {
+                                                    None
+                                                },
+                                                occurred_at: Utc::now(),
+                                                correlation_id: None,
+                                                actor: Some("worker:heartbeat".to_string()),
+                                            };
+
+                                            if let Err(e) =
+                                                event_bus.publish(&heartbeat_event).await
+                                            {
+                                                error!(
+                                                    "Failed to publish WorkerHeartbeat event: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 WorkerPayload::Log(log) => {

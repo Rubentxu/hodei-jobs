@@ -17,6 +17,7 @@ pub struct WorkerConfig {
     pub ca_cert_path: Option<std::path::PathBuf>,
     pub log_batch_size: usize,
     pub log_flush_interval_ms: u64,
+    pub log_dir: std::path::PathBuf,
 }
 
 impl Default for WorkerConfig {
@@ -24,6 +25,9 @@ impl Default for WorkerConfig {
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
+
+        // Use tmpfs for logs if available (via Kubernetes hodei-tmp volume mount at /tmp)
+        let log_dir = std::path::PathBuf::from("/tmp/hodei-logs");
 
         Self {
             worker_id: env::var("HODEI_WORKER_ID")
@@ -55,6 +59,9 @@ impl Default for WorkerConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(250),
+            log_dir: env::var("HODEI_LOG_DIR")
+                .map(|p| std::path::PathBuf::from(p))
+                .unwrap_or(log_dir),
         }
     }
 }

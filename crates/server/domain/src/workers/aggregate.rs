@@ -898,15 +898,15 @@ impl Worker {
     /// Verificar si el TTL after completion ha sido excedido (EPIC-26 US-26.7)
     ///
     /// Returns true si:
-    /// - El worker tiene un `ttl_after_completion` configurado
-    /// - Y ha pasado ese tiempo desde que el job fue completado
+    /// - El worker tiene un `ttl_after_completion` configurado Y ha pasado ese tiempo
+    /// - O si NO hay TTL configurado (None) Y hay un job completado (destrucción inmediata)
     pub fn is_ttl_after_completion_exceeded(&self) -> bool {
         let Some(completed_at) = self.job_completed_at else {
             return false; // No hay job completado, no aplica
         };
 
         let Some(ttl) = self.spec.ttl_after_completion else {
-            return false; // No hay TTL configurado, destrucción inmediata
+            return true; // No hay TTL configurado, destrucción inmediata
         };
 
         let elapsed = Utc::now()

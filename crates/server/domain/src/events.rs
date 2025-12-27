@@ -371,6 +371,61 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// EPIC-29: Job ha sido encolado y espera dispatch reactivo
+    JobQueued {
+        /// ID del job encolado
+        job_id: JobId,
+        /// Provider preferido si fue especificado
+        preferred_provider: Option<ProviderId>,
+        /// Requisitos del job para matching
+        job_requirements: JobSpec,
+        queued_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-29: Worker está listo para recibir un job assignment
+    /// Este evento activa el dispatch reactivo
+    WorkerReadyForJob {
+        /// ID del worker listo
+        worker_id: WorkerId,
+        /// ID del provider
+        provider_id: ProviderId,
+        /// Capacidades del worker para matching
+        capabilities: Vec<String>,
+        /// Tags del worker para matching
+        tags: HashMap<String, String>,
+        ready_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-29: Request para provisioning de worker para un job específico
+    WorkerProvisioningRequested {
+        /// ID del job que necesita worker
+        job_id: JobId,
+        /// Provider donde crear el worker
+        provider_id: ProviderId,
+        /// Requisitos del job
+        job_requirements: JobSpec,
+        requested_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-29: Heartbeat del worker (reemplaza polling de monitoreo)
+    WorkerHeartbeat {
+        /// ID del worker
+        worker_id: WorkerId,
+        /// Estado actual del worker
+        state: WorkerState,
+        /// Carga del sistema
+        load_average: Option<f64>,
+        /// Uso de memoria en MB
+        memory_usage_mb: Option<u64>,
+        /// ID del job actual si está ejecutando
+        current_job_id: Option<JobId>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
 }
 
 /// Razón de limpieza de un worker efímero
@@ -766,7 +821,11 @@ impl DomainEvent {
             | DomainEvent::JobDispatchFailed { correlation_id, .. }
             | DomainEvent::WorkerProvisioningError { correlation_id, .. }
             | DomainEvent::SchedulingDecisionFailed { correlation_id, .. }
-            | DomainEvent::ProviderExecutionError { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::ProviderExecutionError { correlation_id, .. }
+            | DomainEvent::JobQueued { correlation_id, .. }
+            | DomainEvent::WorkerReadyForJob { correlation_id, .. }
+            | DomainEvent::WorkerProvisioningRequested { correlation_id, .. }
+            | DomainEvent::WorkerHeartbeat { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -808,7 +867,11 @@ impl DomainEvent {
             | DomainEvent::JobDispatchFailed { actor, .. }
             | DomainEvent::WorkerProvisioningError { actor, .. }
             | DomainEvent::SchedulingDecisionFailed { actor, .. }
-            | DomainEvent::ProviderExecutionError { actor, .. } => actor.clone(),
+            | DomainEvent::ProviderExecutionError { actor, .. }
+            | DomainEvent::JobQueued { actor, .. }
+            | DomainEvent::WorkerReadyForJob { actor, .. }
+            | DomainEvent::WorkerProvisioningRequested { actor, .. }
+            | DomainEvent::WorkerHeartbeat { actor, .. } => actor.clone(),
         }
     }
 
@@ -849,7 +912,12 @@ impl DomainEvent {
             | DomainEvent::JobDispatchFailed { occurred_at, .. }
             | DomainEvent::WorkerProvisioningError { occurred_at, .. }
             | DomainEvent::SchedulingDecisionFailed { occurred_at, .. }
-            | DomainEvent::ProviderExecutionError { occurred_at, .. } => *occurred_at,
+            | DomainEvent::ProviderExecutionError { occurred_at, .. }
+            | DomainEvent::WorkerHeartbeat { occurred_at, .. } => *occurred_at,
+
+            DomainEvent::JobQueued { queued_at, .. } => *queued_at,
+            DomainEvent::WorkerProvisioningRequested { requested_at, .. } => *requested_at,
+            DomainEvent::WorkerReadyForJob { ready_at, .. } => *ready_at,
 
             DomainEvent::RunJobReceived { received_at, .. } => *received_at,
             DomainEvent::WorkerReady { ready_at, .. } => *ready_at,
@@ -897,6 +965,11 @@ impl DomainEvent {
             DomainEvent::WorkerProvisioningError { .. } => "WorkerProvisioningError",
             DomainEvent::SchedulingDecisionFailed { .. } => "SchedulingDecisionFailed",
             DomainEvent::ProviderExecutionError { .. } => "ProviderExecutionError",
+            // EPIC-29: Reactive events
+            DomainEvent::JobQueued { .. } => "JobQueued",
+            DomainEvent::WorkerReadyForJob { .. } => "WorkerReadyForJob",
+            DomainEvent::WorkerProvisioningRequested { .. } => "WorkerProvisioningRequested",
+            DomainEvent::WorkerHeartbeat { .. } => "WorkerHeartbeat",
         }
     }
 
@@ -946,6 +1019,12 @@ impl DomainEvent {
             DomainEvent::WorkerProvisioningError { worker_id, .. } => worker_id.to_string(),
             DomainEvent::SchedulingDecisionFailed { job_id, .. } => job_id.to_string(),
             DomainEvent::ProviderExecutionError { provider_id, .. } => provider_id.to_string(),
+
+            // EPIC-29: Reactive events
+            DomainEvent::JobQueued { job_id, .. } => job_id.to_string(),
+            DomainEvent::WorkerReadyForJob { worker_id, .. } => worker_id.to_string(),
+            DomainEvent::WorkerProvisioningRequested { job_id, .. } => job_id.to_string(),
+            DomainEvent::WorkerHeartbeat { worker_id, .. } => worker_id.to_string(),
         }
     }
 }

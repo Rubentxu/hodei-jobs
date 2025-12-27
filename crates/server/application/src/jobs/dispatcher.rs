@@ -25,11 +25,13 @@ use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };
-use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::health::WorkerHealthService;
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
 use sqlx::postgres::PgPool;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -54,6 +56,11 @@ pub struct JobDispatcher {
     >,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
     worker_health_service: Arc<WorkerHealthService>,
+    /// EPIC-28: Track recently provisioned jobs to prevent duplicate provisioning
+    /// Key: JobId, Value: Instant when provisioning was triggered
+    recently_provisioned: Arc<tokio::sync::Mutex<HashMap<Uuid, Instant>>>,
+    /// EPIC-28: Time window to skip re-provisioning for same job
+    provisioning_cooldown: Duration,
 }
 
 impl JobDispatcher {
@@ -86,6 +93,8 @@ impl JobDispatcher {
             outbox_repository,
             provisioning_service,
             worker_health_service: Arc::new(WorkerHealthService::builder().build()),
+            recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
         }
     }
 
@@ -114,6 +123,8 @@ impl JobDispatcher {
             outbox_repository: Some(outbox_repository),
             provisioning_service,
             worker_health_service: Arc::new(WorkerHealthService::builder().build()),
+            recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
         }
     }
 
@@ -166,12 +177,28 @@ impl JobDispatcher {
                 );
 
                 // CRITICAL FIX: Actually trigger provisioning!
-                if let Err(e) = self.trigger_provisioning(&job).await {
-                    error!("❌ JobDispatcher: Failed to provision worker: {}", e);
-                    // We continue to enqueue, hoping it might work later or another worker frees up
+                info!(
+                    "🛠️ JobDispatcher: Triggering provisioning for job {}",
+                    job.id
+                );
+                match self.trigger_provisioning(&job).await {
+                    Ok(_) => info!(
+                        "✅ JobDispatcher: Provisioning triggered successfully for job {}",
+                        job.id
+                    ),
+                    Err(e) => error!("❌ JobDispatcher: Failed to provision worker: {}", e),
                 }
 
-                self.job_queue.enqueue(job).await?;
+                info!(
+                    "📥 JobDispatcher: Re-enqueuing job {} after provisioning decision",
+                    job.id
+                );
+                let job_id = job.id.clone();
+                if let Err(e) = self.job_queue.enqueue(job).await {
+                    error!("❌ JobDispatcher: Failed to re-enqueue job: {}", e);
+                    return Err(e.into());
+                }
+                info!("✅ JobDispatcher: Job {} re-enqueued successfully", job_id);
                 Ok(0)
             }
             decision => {
@@ -210,17 +237,87 @@ impl JobDispatcher {
 
     /// Handle case when no workers are available
     async fn handle_no_available_workers(&self, job: &Job) -> anyhow::Result<usize> {
-        info!("⚠️ JobDispatcher: No available workers");
+        info!("⚠️ JobDispatcher: No available workers for job {}", job.id);
+
+        // EPIC-28: Check if job was recently provisioned to prevent duplicate provisioning
+        let job_uuid = job.id.0;
+        let should_provision = {
+            let mut recently_provisioned = self.recently_provisioned.lock().await;
+            let now = Instant::now();
+
+            // Clean up old entries
+            recently_provisioned.retain(|_, &mut timestamp| {
+                now.duration_since(timestamp) < self.provisioning_cooldown
+            });
+
+            // Check if this job was provisioned recently
+            if let Some(&provisioned_at) = recently_provisioned.get(&job_uuid) {
+                let elapsed = now.duration_since(provisioned_at);
+                if elapsed < self.provisioning_cooldown {
+                    info!(
+                        "⏭️ JobDispatcher: Skipping provisioning for job {} - {}s since last provisioning",
+                        job.id,
+                        elapsed.as_secs()
+                    );
+                    false
+                } else {
+                    // Entry expired, allow new provisioning
+                    recently_provisioned.insert(job_uuid, now);
+                    true
+                }
+            } else {
+                // First time provisioning this job
+                recently_provisioned.insert(job_uuid, now);
+                true
+            }
+        };
+
+        if !should_provision {
+            // Just re-enqueue without provisioning
+            info!(
+                "📥 JobDispatcher: Re-enqueuing job {} (waiting for worker to connect)",
+                job.id
+            );
+            self.job_queue.enqueue(job.clone()).await.map_err(|e| {
+                error!("❌ JobDispatcher: Failed to re-enqueue job: {}", e);
+                e
+            })?;
+            return Ok(0);
+        }
 
         // Delegar al método trigger_provisioning que maneja internamente
         // el caso de no disponibilidad del servicio
         match self.trigger_provisioning(job).await {
             Ok(()) => {
                 info!("✅ JobDispatcher: Provisioning triggered successfully");
+                // IMPORTANT: Re-enqueue job so it's picked up when worker is ready
+                // Without this, the job is stuck in ASSIGNED state and removed from queue!
+                info!(
+                    "📥 JobDispatcher: Re-enqueuing job {} waiting for workers",
+                    job.id
+                );
+                self.job_queue.enqueue(job.clone()).await.map_err(|e| {
+                    error!("❌ JobDispatcher: Failed to re-enqueue job: {}", e);
+                    e
+                })?;
                 Ok(0)
             }
             Err(e) => {
                 error!("❌ JobDispatcher: Failed to provision worker: {}", e);
+                // Remove from recently_provisioned so we can retry
+                {
+                    let mut recently_provisioned = self.recently_provisioned.lock().await;
+                    recently_provisioned.remove(&job_uuid);
+                }
+                // Also re-enqueue on failure so we can retry or fail later?
+                // For now, re-enqueue to retry provisioning
+                self.job_queue.enqueue(job.clone()).await.map_err(|xe| {
+                    error!(
+                        "❌ JobDispatcher: Failed to re-enqueue job after provisioning error: {}",
+                        xe
+                    );
+                    xe
+                })?;
                 Err(e)
             }
         }
@@ -754,6 +851,250 @@ impl JobDispatcher {
             "JobDispatcher: Using assign_and_dispatch (idempotent wrapper)"
         );
         self.assign_and_dispatch(job, worker_id).await
+    }
+
+    // ========================================================================
+    // EPIC-29: Reactive Event-Driven Methods
+    // ========================================================================
+
+    /// Handle a JobQueued event (reactivo)
+    ///
+    /// Called when a job is queued for processing.
+    /// Checks for available workers and either dispatches or requests provisioning.
+    ///
+    /// ## Flujo
+    /// 1. Fetch job from repository
+    /// 2. Query healthy workers
+    /// 3. If workers available → dispatch to first matching worker
+    /// 4. If no workers → request worker provisioning
+    pub async fn handle_job_queued(&self, job_id: &hodei_server_domain::shared_kernel::JobId) {
+        info!(
+            "📦 JobDispatcher: Handling JobQueued event for job {}",
+            job_id
+        );
+
+        // Step 1: Fetch job from repository
+        let job = match self.job_repository.find_by_id(job_id).await {
+            Ok(Some(job)) => {
+                debug!("JobDispatcher: Found job {} in repository", job_id);
+                job
+            }
+            Ok(None) => {
+                warn!("⚠️ JobDispatcher: Job {} not found in repository", job_id);
+                return;
+            }
+            Err(e) => {
+                error!("❌ JobDispatcher: Failed to fetch job {}: {}", job_id, e);
+                return;
+            }
+        };
+
+        // Step 2: Query available workers
+        let workers = match self.query_healthy_workers().await {
+            Ok(workers) => {
+                debug!("JobDispatcher: Found {} healthy workers", workers.len());
+                workers
+            }
+            Err(e) => {
+                error!("❌ JobDispatcher: Failed to query workers: {}", e);
+                return;
+            }
+        };
+
+        // Step 3: Dispatch or request provisioning
+        if workers.is_empty() {
+            info!(
+                "⚠️ JobDispatcher: No workers available for job {}, requesting provisioning",
+                job_id
+            );
+            // Request provisioning - will publish WorkerProvisioningRequested event
+            self.request_worker_provisioning(&job).await;
+        } else {
+            // Dispatch to first available worker (scheduler will handle selection)
+            let decision = self.make_scheduling_decision(&job, &workers).await;
+
+            match decision {
+                Ok(SchedulingDecision::AssignToWorker { worker_id, .. }) => {
+                    info!(
+                        "🚀 JobDispatcher: Dispatching job {} to worker {}",
+                        job_id, worker_id
+                    );
+                    let mut job = self
+                        .job_repository
+                        .find_by_id(job_id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if let Err(e) = self.dispatch_job_to_worker(&mut job, &worker_id).await {
+                        error!("❌ JobDispatcher: Failed to dispatch job {}: {}", job_id, e);
+                    }
+                }
+                Ok(SchedulingDecision::ProvisionWorker { provider_id, .. }) => {
+                    info!(
+                        "🛠️ JobDispatcher: Scheduling decision requires provisioning on {}",
+                        provider_id
+                    );
+                    self.request_worker_provisioning(&job).await;
+                }
+                Ok(_) => {
+                    // Fallback to traditional dispatch
+                    info!("📤 JobDispatcher: Using legacy dispatch for job {}", job_id);
+                    let mut job = self
+                        .job_repository
+                        .find_by_id(job_id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if let Err(e) = self.dispatch_once().await {
+                        error!("❌ JobDispatcher: Legacy dispatch failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("❌ JobDispatcher: Scheduling decision failed: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Dispatch pending job to a ready worker (reactivo)
+    ///
+    /// Called when a WorkerReadyForJob event is received.
+    /// Finds a pending job that matches the worker and dispatches it.
+    pub async fn dispatch_pending_job_to_worker(&self, worker_id: &WorkerId) {
+        info!(
+            "👷 JobDispatcher: Handling WorkerReadyForJob event for worker {}",
+            worker_id
+        );
+
+        // Get worker details to know its capabilities
+        let worker = match self.worker_registry.get(worker_id).await {
+            Ok(Some(worker)) => {
+                debug!("JobDispatcher: Found worker {}", worker_id);
+                worker
+            }
+            Ok(None) => {
+                warn!("⚠️ JobDispatcher: Worker {} not found", worker_id);
+                return;
+            }
+            Err(e) => {
+                error!(
+                    "❌ JobDispatcher: Failed to fetch worker {}: {}",
+                    worker_id, e
+                );
+                return;
+            }
+        };
+
+        // Find pending job that matches worker capabilities
+        let pending_job = match self.find_pending_job_for_worker(&worker).await {
+            Ok(Some(job)) => {
+                debug!("JobDispatcher: Found pending job for worker {}", worker_id);
+                job
+            }
+            Ok(None) => {
+                info!(
+                    "ℹ️ JobDispatcher: No pending jobs match worker {} (will wait for job)",
+                    worker_id
+                );
+                return;
+            }
+            Err(e) => {
+                error!(
+                    "❌ JobDispatcher: Failed to find pending job for worker {}: {}",
+                    worker_id, e
+                );
+                return;
+            }
+        };
+
+        // Dispatch the job
+        info!(
+            "🚀 JobDispatcher: Dispatching job {} to ready worker {}",
+            pending_job.id, worker_id
+        );
+        let mut job = self
+            .job_repository
+            .find_by_id(&pending_job.id)
+            .await
+            .unwrap()
+            .unwrap();
+        if let Err(e) = self.dispatch_job_to_worker(&mut job, worker_id).await {
+            error!(
+                "❌ JobDispatcher: Failed to dispatch job {}: {}",
+                pending_job.id, e
+            );
+        }
+    }
+
+    /// Find a pending job that matches worker capabilities
+    async fn find_pending_job_for_worker(&self, _worker: &Worker) -> anyhow::Result<Option<Job>> {
+        // Try to dequeue a job for this worker
+        // If we get a job, it's assigned to this worker (we'll re-enqueue if dispatch fails)
+        let dequeued_job = self.job_queue.dequeue().await?;
+
+        if let Some(job) = dequeued_job {
+            // Return the job for dispatching
+            Ok(Some(job))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Request worker provisioning for a job (publishes event)
+    ///
+    /// Publishes WorkerProvisioningRequested event which triggers
+    /// the provider to create a new worker.
+    async fn request_worker_provisioning(&self, job: &Job) {
+        info!(
+            "🛠️ JobDispatcher: Requesting worker provisioning for job {}",
+            job.id
+        );
+
+        // Select best provider using scheduler
+        let providers = match self.provider_registry.list_enabled_providers().await {
+            Ok(providers) => providers,
+            Err(e) => {
+                error!("❌ JobDispatcher: Failed to list providers: {}", e);
+                return;
+            }
+        };
+
+        if providers.is_empty() {
+            warn!("⚠️ JobDispatcher: No enabled providers available");
+            return;
+        }
+
+        let provider_id = match self.select_provider_for_provisioning(job, &providers).await {
+            Ok(id) => id,
+            Err(e) => {
+                error!("❌ JobDispatcher: Failed to select provider: {}", e);
+                return;
+            }
+        };
+
+        // Publish WorkerProvisioningRequested event
+        let event = DomainEvent::WorkerProvisioningRequested {
+            job_id: job.id.clone(),
+            provider_id: provider_id.clone(),
+            job_requirements: job.spec.clone(),
+            requested_at: chrono::Utc::now(),
+            correlation_id: None,
+            actor: Some("job_dispatcher".to_string()),
+        };
+
+        if let Err(e) = self.event_bus.publish(&event).await {
+            error!(
+                "❌ JobDispatcher: Failed to publish WorkerProvisioningRequested: {}",
+                e
+            );
+            // Fallback: trigger provisioning directly
+            let _ = self.trigger_provisioning(job).await;
+        } else {
+            info!(
+                "✅ JobDispatcher: Published WorkerProvisioningRequested for job {} on provider {}",
+                job.id, provider_id
+            );
+        }
     }
 }
 

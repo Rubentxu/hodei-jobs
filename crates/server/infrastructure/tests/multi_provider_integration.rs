@@ -281,6 +281,9 @@ async fn test_provider_selection_by_labels() {
         estimated_startup_time: Duration::from_secs(5),
         health_score: 0.9,
         cost_per_hour: 0.10,
+        gpu_support: false,
+        gpu_types: vec![],
+        regions: vec!["local".to_string()],
     };
 
     let k8s_info = if should_run_k8s_tests() {
@@ -298,6 +301,9 @@ async fn test_provider_selection_by_labels() {
             estimated_startup_time: Duration::from_secs(30),
             health_score: 0.95,
             cost_per_hour: 0.05,
+            gpu_support: false,
+            gpu_types: vec![],
+            regions: vec!["default".to_string()],
         };
 
         Some((k8s_provider, k8s_info))
