@@ -655,6 +655,138 @@ pub struct DomainEvent {
 5. **Dead Letter Queue para Outbox** - Manejo de eventos fallidos
 6. **Circuit Breaker para Dispatch** - Protección contra cascada de fallos
 
+### 8.3 Código Deprecado para Eliminación
+
+Con la implementación de EPIC-29 (sistema reactivo) y EPIC-23 (Extension Objects pattern), existe código legacy que debería eliminarse para reducir la deuda técnica y mejorar la mantenibilidad.
+
+#### 8.3.1 Modo Polling Legacy (ELIMINAR)
+
+**Archivo:** `crates/server/application/src/jobs/coordinator.rs:165-195`
+
+```rust
+// ❌ DEPRECADO - Eliminar cuando EPIC-29 esté estabilizado
+pub async fn start_polling_mode(&mut self) -> anyhow::Result<()> {
+    info!("🚀 JobCoordinator: Starting job processing system (Legacy Polling Mode)");
+    // ... polling loop con sleep(500ms)
+}
+```
+
+**Razón:** El sistema reactivo EPIC-29 usa PostgreSQL NOTIFY/LISTEN. El polling ya no es necesario.
+
+**Impacto:** Eliminar ~30 líneas. Verificar que ningún deployment use `start_polling_mode()`.
+
+---
+
+#### 8.3.2 Campo `kubernetes` en WorkerSpec (ELIMINAR)
+
+**Archivo:** `crates/server/domain/src/workers/aggregate.rs:229-231`
+
+```rust
+// ❌ DEPRECADO - Usar provider_config en su lugar
+/// @deprecated Use `provider_config` instead. This field will be removed in a future version.
+#[serde(default)]
+pub kubernetes: KubernetesWorkerConfig,
+```
+
+**Razón:** EPIC-23 introdujo el patrón Extension Objects con `provider_config`. El campo `kubernetes` directo viola el principio de agnóstico de infraestructura.
+
+**Impacto:** 
+- Eliminar campo `kubernetes` de `WorkerSpec`
+- Eliminar struct `KubernetesWorkerConfig` (líneas 233-260)
+- Eliminar métodos deprecados (ver 8.3.3)
+- Migrar cualquier uso a `ProviderConfig::Kubernetes(KubernetesConfigExt)`
+
+---
+
+#### 8.3.3 Métodos `with_kubernetes_*` (ELIMINAR)
+
+**Archivo:** `crates/server/domain/src/workers/aggregate.rs:554-604`
+
+```rust
+// ❌ TODOS DEPRECADOS - 6 métodos a eliminar
+/// @deprecated Use `with_provider_config(KubernetesConfigExt)` instead
+pub fn with_kubernetes_annotation(...) -> Self { ... }
+pub fn with_kubernetes_label(...) -> Self { ... }
+pub fn with_kubernetes_node_selector(...) -> Self { ... }
+pub fn with_kubernetes_service_account(...) -> Self { ... }
+pub fn with_kubernetes_init_container(...) -> Self { ... }
+pub fn with_kubernetes_sidecar_container(...) -> Self { ... }
+```
+
+**Razón:** Reemplazados por `with_provider_config(ProviderConfig::Kubernetes(...))`.
+
+**Impacto:** Eliminar ~50 líneas. Buscar usos en tests y migrar.
+
+---
+
+#### 8.3.4 Legacy Exports en lib.rs (LIMPIAR)
+
+**Archivos:** 
+- `crates/server/domain/src/lib.rs:27` - "Legacy exports para retrocompatibilidad durante la migración"
+- `crates/server/application/src/lib.rs:13` - "Legacy exports para retrocompatibilidad"
+- `crates/server/infrastructure/src/lib.rs:14` - "Legacy"
+
+**Acción:** Revisar si los exports legacy aún son necesarios. Eliminar los que ya no se usen.
+
+---
+
+#### 8.3.5 Fallbacks de Event Publishing (LIMPIAR)
+
+**Archivos:**
+- `crates/server/application/src/workers/lifecycle.rs:318` - "Legacy: Direct event publishing"
+- `crates/server/application/src/workers/lifecycle.rs:368` - "Legacy: Direct event publishing"
+- `crates/server/interface/src/grpc/worker.rs:348` - "Legacy: Direct event publishing (fallback)"
+- `crates/server/interface/src/grpc/worker.rs:588` - "Legacy: Direct event publishing (fallback)"
+
+**Razón:** Con Transactional Outbox estabilizado, los fallbacks de publicación directa deberían eliminarse para garantizar consistencia.
+
+**Impacto:** Convertir fallbacks en errores cuando outbox no esté configurado, o hacer outbox obligatorio.
+
+---
+
+#### 8.3.6 TODOs Pendientes de Implementar o Eliminar
+
+| Archivo | Línea | TODO | Acción Recomendada |
+|---------|-------|------|-------------------|
+| `jobs/coordination.rs` | 320 | "Implementar limpieza de logs antiguos" | Implementar o documentar como out-of-scope |
+| `jobs/coordination.rs` | 331 | "Implementar búsqueda en logs" | Implementar con LogStreamService |
+| `jobs/aggregate.rs` | 1088 | "Implementar en job" | Revisar contexto y completar |
+| `providers/health_monitor.rs` | 282 | "Publish alert event" | Implementar alerting |
+| `grpc/worker_command_sender.rs` | 83 | "Implement secret injection" | Prioridad media - seguridad |
+| `grpc/log_stream.rs` | 426 | "Implement pagination" | Implementar para logs grandes |
+| `grpc/worker.rs` | 1173 | "Store log_ref in database" | Implementar persistencia |
+| `providers/kubernetes.rs` | 1499-1596 | Múltiples TODOs de env_from, ports, security_context | Completar para K8s production-ready |
+
+---
+
+#### 8.3.7 Endpoints gRPC Legacy
+
+**Archivo:** `proto/src/generated/hodei.worker.rs:564-748`
+
+```protobuf
+/// Legacy: Obtener workers disponibles para scheduling
+/// Legacy: Drenar worker (preparar para shutdown)  
+/// Legacy: Desregistrar worker
+/// Legacy: Stream para actualizaciones de estado de workers
+```
+
+**Acción:** Evaluar si estos endpoints siguen en uso. Si están reemplazados por nuevos endpoints en EPIC-29, marcar para deprecación y eventual eliminación.
+
+---
+
+### 8.4 Resumen de Código a Eliminar
+
+| Categoría | Archivos Afectados | Líneas Aprox. | Prioridad |
+|-----------|-------------------|---------------|-----------|
+| Polling Mode | coordinator.rs | ~30 | P1 (tras validar EPIC-29) |
+| kubernetes field | workers/aggregate.rs | ~80 | P2 |
+| Legacy exports | lib.rs (3 archivos) | ~15 | P3 |
+| Direct event fallbacks | lifecycle.rs, worker.rs | ~40 | P2 |
+| TODOs sin implementar | 8+ archivos | N/A | Evaluar |
+| gRPC Legacy | hodei.worker.rs | ~100 | P3 |
+
+**Total estimado:** ~265 líneas de código muerto/deprecado
+
 ---
 
 ## 9. Conclusiones
@@ -674,7 +806,18 @@ pub struct DomainEvent {
 3. **❌ Reconexión de EventBus**
 4. **❌ correlation_id inconsistente**
 
-### 9.3 Roadmap de Mejoras
+### 9.3 Deuda Técnica: Código a Eliminar
+
+| Categoría | Líneas | Prioridad |
+|-----------|--------|-----------|
+| Polling Mode Legacy | ~30 | P1 |
+| kubernetes field deprecado | ~80 | P2 |
+| Direct event fallbacks | ~40 | P2 |
+| Legacy exports | ~15 | P3 |
+| gRPC Legacy endpoints | ~100 | P3 |
+| **Total** | **~265** | - |
+
+### 9.4 Roadmap de Mejoras
 
 | Prioridad | Mejora | Esfuerzo | Impacto |
 |-----------|--------|----------|---------|
@@ -682,10 +825,12 @@ pub struct DomainEvent {
 | P0 | Reconexión EventBus | 1 día | Alto |
 | P1 | can_transition_to() en WorkerState | 0.5 días | Medio |
 | P1 | correlation_id automático | 1 día | Medio |
+| P1 | Eliminar polling mode legacy | 0.5 días | Bajo (limpieza) |
+| P2 | Eliminar kubernetes field deprecado | 1 día | Bajo (limpieza) |
 | P2 | Dead Letter Queue | 2 días | Medio |
 | P2 | Circuit Breaker | 1.5 días | Medio |
+| P3 | Limpiar legacy exports y fallbacks | 0.5 días | Bajo (limpieza) |
 
 ---
 
 *Documento generado automáticamente. Para más detalles, revisar el código fuente en los archivos referenciados.*
-

@@ -4,6 +4,7 @@
 //! adapters between the gRPC transport layer and the application layer.
 
 pub mod audit;
+pub mod correlation;
 pub mod interceptors;
 pub mod job_execution;
 pub mod log_stream;
@@ -14,6 +15,7 @@ pub mod worker;
 pub mod worker_command_sender;
 
 pub use audit::AuditServiceImpl;
+pub use correlation::{CORRELATION_ID_HEADER, CorrelationIdManager, RequestCorrelationExt};
 pub use interceptors::context::context_interceptor;
 pub use job_execution::JobExecutionServiceImpl;
 pub use log_stream::{LogStreamService, LogStreamServiceGrpc};

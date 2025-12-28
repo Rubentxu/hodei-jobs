@@ -21,6 +21,7 @@ use std::io::ErrorKind;
 ///
 /// ```
 /// use hodei_worker_infrastructure::error_categorizer::categorize_error;
+/// use hodei_shared::states::JobFailureReason;
 ///
 /// let reason = categorize_error(
 ///     "No such file or directory: /app/script.sh",

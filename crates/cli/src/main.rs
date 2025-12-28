@@ -173,7 +173,7 @@ enum LogsAction {
 
 /// Parse a key=value string into a tuple
 fn parse_key_value(s: &str) -> Result<(String, String), String> {
-    let parts: Vec<&str> = s.split('=').collect();
+    let parts: Vec<&str> = s.splitn(2, '=').collect();
     if parts.len() == 2 {
         Ok((parts[0].to_string(), parts[1].to_string()))
     } else {

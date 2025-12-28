@@ -94,6 +94,34 @@ impl CorrelationId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// Generates a new correlation ID (alias for new())
+    pub fn generate() -> Self {
+        Self::new()
+    }
+
+    /// Creates a CorrelationId from a string
+    pub fn from_string(s: &str) -> Option<Self> {
+        Uuid::parse_str(s).ok().map(Self)
+    }
+
+    /// Creates a CorrelationId from a String
+    pub fn from_string_owned(s: String) -> Option<Self> {
+        Self::from_string(&s)
+    }
+
+    /// Returns the correlation ID as a string slice
+    ///
+    /// Note: This allocates a new String. Prefer using `to_string_value()` if you need
+    /// to use the value multiple times or in contexts where ownership is required.
+    pub fn as_str(&self) -> String {
+        self.0.to_string()
+    }
+
+    /// Returns the correlation ID as an owned String
+    pub fn to_string_value(&self) -> String {
+        self.0.to_string()
+    }
 }
 
 impl Default for CorrelationId {
@@ -105,5 +133,11 @@ impl Default for CorrelationId {
 impl fmt::Display for CorrelationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for CorrelationId {
+    fn from(s: String) -> Self {
+        Self::from_string(&s).unwrap_or_default()
     }
 }

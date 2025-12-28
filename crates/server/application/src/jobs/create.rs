@@ -561,10 +561,10 @@ mod tests {
         assert!(result.is_ok());
 
         let events = bus.published.lock().unwrap();
-        // Ahora se publican 2 eventos: JobCreated y JobQueueDepthChanged
-        assert_eq!(events.len(), 2);
+        // Solo se publica el evento JobCreated (JobQueueDepthChanged fue eliminado)
+        assert_eq!(events.len(), 1);
 
-        // El primer evento debe ser JobCreated
+        // El evento debe ser JobCreated
         match &events[0] {
             DomainEvent::JobCreated {
                 job_id: _,

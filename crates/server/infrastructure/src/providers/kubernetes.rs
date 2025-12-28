@@ -2164,9 +2164,11 @@ mod tests {
         let volumes = provider.build_volumes(&spec);
         assert!(volumes.is_some());
         let volumes = volumes.unwrap();
-        assert_eq!(volumes.len(), 1);
-        assert_eq!(volumes[0].name, "dataset");
-        assert!(volumes[0].persistent_volume_claim.is_some());
+        // 2 volumes: default hodei-tmp + dataset
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[0].name, "hodei-tmp");
+        assert_eq!(volumes[1].name, "dataset");
+        assert!(volumes[1].persistent_volume_claim.is_some());
     }
 
     #[tokio::test]
@@ -2184,9 +2186,11 @@ mod tests {
         let volumes = provider.build_volumes(&spec);
         assert!(volumes.is_some());
         let volumes = volumes.unwrap();
-        assert_eq!(volumes.len(), 1);
-        assert_eq!(volumes[0].name, "tmp");
-        assert!(volumes[0].empty_dir.is_some());
+        // 2 volumes: default hodei-tmp + tmp
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[0].name, "hodei-tmp");
+        assert_eq!(volumes[1].name, "tmp");
+        assert!(volumes[1].empty_dir.is_some());
     }
 
     #[tokio::test]
@@ -2205,9 +2209,11 @@ mod tests {
         let volumes = provider.build_volumes(&spec);
         assert!(volumes.is_some());
         let volumes = volumes.unwrap();
-        assert_eq!(volumes.len(), 1);
-        assert_eq!(volumes[0].name, "data");
-        assert!(volumes[0].host_path.is_some());
+        // 2 volumes: default hodei-tmp + data
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[0].name, "hodei-tmp");
+        assert_eq!(volumes[1].name, "data");
+        assert!(volumes[1].host_path.is_some());
     }
 
     #[tokio::test]
@@ -2226,10 +2232,12 @@ mod tests {
         let mounts = provider.build_volume_mounts(&spec);
         assert!(mounts.is_some());
         let mounts = mounts.unwrap();
-        assert_eq!(mounts.len(), 1);
-        assert_eq!(mounts[0].name, "dataset");
-        assert_eq!(mounts[0].mount_path, "/volumes/dataset");
-        assert_eq!(mounts[0].read_only, Some(true));
+        // 2 mounts: default hodei-tmp + dataset
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].name, "hodei-tmp");
+        assert_eq!(mounts[1].name, "dataset");
+        assert_eq!(mounts[1].mount_path, "/volumes/dataset");
+        assert_eq!(mounts[1].read_only, Some(true));
     }
 
     #[tokio::test]
@@ -2247,10 +2255,12 @@ mod tests {
         let mounts = provider.build_volume_mounts(&spec);
         assert!(mounts.is_some());
         let mounts = mounts.unwrap();
-        assert_eq!(mounts.len(), 1);
-        assert_eq!(mounts[0].name, "tmp");
-        assert_eq!(mounts[0].mount_path, "/volumes/tmp");
-        assert_eq!(mounts[0].read_only, Some(false));
+        // 2 mounts: default hodei-tmp + tmp
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].name, "hodei-tmp");
+        assert_eq!(mounts[1].name, "tmp");
+        assert_eq!(mounts[1].mount_path, "/volumes/tmp");
+        assert_eq!(mounts[1].read_only, Some(false));
     }
 
     #[tokio::test]
@@ -2273,7 +2283,8 @@ mod tests {
         let mounts = provider.build_volume_mounts(&spec);
         assert!(mounts.is_some());
         let mounts = mounts.unwrap();
-        assert_eq!(mounts.len(), 2);
+        // 3 mounts: default hodei-tmp + dataset + tmp
+        assert_eq!(mounts.len(), 3);
     }
 
     #[tokio::test]
@@ -2285,10 +2296,14 @@ mod tests {
         );
 
         let volumes = provider.build_volumes(&spec);
-        assert!(volumes.is_none());
+        // 1 volume: default hodei-tmp
+        assert!(volumes.is_some());
+        assert_eq!(volumes.unwrap().len(), 1);
 
         let mounts = provider.build_volume_mounts(&spec);
-        assert!(mounts.is_none());
+        // 1 mount: default hodei-tmp
+        assert!(mounts.is_some());
+        assert_eq!(mounts.unwrap().len(), 1);
     }
 
     #[tokio::test]
