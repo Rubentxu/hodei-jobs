@@ -1,13 +1,10 @@
 use hodei_jobs::{LogEntry, WorkerMessage, worker_message::Payload as WorkerPayload};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use tracing::{error, warn};
-
-use crate::metrics::WorkerMetrics;
+use tracing::warn;
 
 /// FileLogger for local job log persistence
 #[derive(Clone)]
@@ -64,25 +61,17 @@ pub struct LogBatcher {
     flush_interval: Duration,
     /// Timestamp of last flush
     last_flush: Instant,
-    /// Metrics collector
-    metrics: Arc<WorkerMetrics>,
 }
 
 impl LogBatcher {
     /// Create a new LogBatcher
-    pub fn new(
-        tx: mpsc::Sender<WorkerMessage>,
-        capacity: usize,
-        flush_interval: Duration,
-        metrics: Arc<WorkerMetrics>,
-    ) -> Self {
+    pub fn new(tx: mpsc::Sender<WorkerMessage>, capacity: usize, flush_interval: Duration) -> Self {
         Self {
             tx,
             buffer: Vec::with_capacity(capacity),
             capacity,
             flush_interval,
             last_flush: Instant::now(),
-            metrics,
         }
     }
 

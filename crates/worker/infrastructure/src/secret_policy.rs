@@ -81,13 +81,11 @@ impl SecretPolicy {
     ) -> Result<(), SecretInjectionError> {
         // Check minimum security level
         let strategy_security_level = match strategy {
-            InjectionStrategy::EnvVars => 0,
             InjectionStrategy::Stdin => 1,
             InjectionStrategy::TmpfsFile => 2,
         };
 
         let minimum_security_level = match self.minimum_strategy {
-            InjectionStrategy::EnvVars => 0,
             InjectionStrategy::Stdin => 1,
             InjectionStrategy::TmpfsFile => 2,
         };
@@ -195,8 +193,6 @@ impl std::fmt::Debug for RuntimeSecretStore {
 
 #[async_trait::async_trait]
 trait SecretInjectorImpl: Send + Sync {
-    fn strategy(&self) -> InjectionStrategy;
-
     async fn inject(
         &self,
         job_id: &str,
@@ -220,10 +216,6 @@ impl SecretInjectorWrapper {
 
 #[async_trait::async_trait]
 impl SecretInjectorImpl for SecretInjectorWrapper {
-    fn strategy(&self) -> InjectionStrategy {
-        self.injector.strategy()
-    }
-
     async fn inject(
         &self,
         job_id: &str,
@@ -295,12 +287,6 @@ impl RuntimeSecretStore {
         let injector: &dyn SecretInjectorImpl = match strategy {
             InjectionStrategy::Stdin => &self.stdin_injector,
             InjectionStrategy::TmpfsFile => &self.tmpfs_injector,
-            InjectionStrategy::EnvVars => {
-                return Err(SecretInjectionError::InvalidKeyError {
-                    key: "EnvVars".to_string(),
-                    reason: "EnvVars strategy is not supported".to_string(),
-                });
-            }
         };
 
         // Perform the injection

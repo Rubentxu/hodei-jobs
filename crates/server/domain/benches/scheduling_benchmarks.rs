@@ -29,6 +29,9 @@ fn create_test_providers() -> Vec<scheduling::ProviderInfo> {
             estimated_startup_time: Duration::from_millis(500),
             health_score: 0.95,
             cost_per_hour: 0.1,
+            gpu_support: false,
+            gpu_types: vec![],
+            regions: vec!["local".to_string()],
         },
         scheduling::ProviderInfo {
             provider_id: ProviderId::new(),
@@ -38,6 +41,9 @@ fn create_test_providers() -> Vec<scheduling::ProviderInfo> {
             estimated_startup_time: Duration::from_millis(30000),
             health_score: 0.88,
             cost_per_hour: 0.5,
+            gpu_support: true,
+            gpu_types: vec!["nvidia-tesla-v100".to_string()],
+            regions: vec!["us-east-1".to_string(), "eu-west-1".to_string()],
         },
         scheduling::ProviderInfo {
             provider_id: ProviderId::new(),
@@ -47,6 +53,9 @@ fn create_test_providers() -> Vec<scheduling::ProviderInfo> {
             estimated_startup_time: Duration::from_millis(2000),
             health_score: 0.92,
             cost_per_hour: 0.05,
+            gpu_support: false,
+            gpu_types: vec![],
+            regions: vec!["us-east-1".to_string()],
         },
         scheduling::ProviderInfo {
             provider_id: ProviderId::new(),
@@ -56,6 +65,9 @@ fn create_test_providers() -> Vec<scheduling::ProviderInfo> {
             estimated_startup_time: Duration::from_millis(15000),
             health_score: 0.85,
             cost_per_hour: 0.3,
+            gpu_support: false,
+            gpu_types: vec![],
+            regions: vec!["us-west-2".to_string()],
         },
     ]
 }

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::metrics::WorkerMetrics;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -12,39 +14,9 @@ use tokio_util::codec::FramedRead;
 use tracing::{debug, error, info, warn};
 
 use crate::logging::{FileLogger, LogBatcher};
-use crate::metrics::WorkerMetrics;
 use crate::secret_injector::{
     InjectionConfig, InjectionStrategy, PreparedExecution, SecretInjector,
 };
-
-/// Find the absolute path for a command name
-/// Returns the absolute path if found, otherwise returns None
-fn find_command_path(cmd: &str) -> Option<String> {
-    // If it's already an absolute path, return as-is
-    if cmd.starts_with('/') {
-        return Some(cmd.to_string());
-    }
-
-    // Common command locations
-    let common_paths = [
-        "/bin",
-        "/usr/bin",
-        "/usr/local/bin",
-        "/sbin",
-        "/usr/sbin",
-        "/usr/local/sbin",
-    ];
-
-    // Check common locations
-    for path in &common_paths {
-        let full_path = format!("{}/{}", path, cmd);
-        if std::path::Path::new(&full_path).exists() {
-            return Some(full_path);
-        }
-    }
-
-    None
-}
 
 fn current_timestamp() -> prost_types::Timestamp {
     let now = std::time::SystemTime::now();
@@ -349,7 +321,6 @@ impl JobExecutor {
             log_sender.clone(),
             self.log_batch_size,
             Duration::from_millis(self.log_flush_interval_ms),
-            self.metrics.clone(),
         )));
 
         let mut stdout_buffer = String::new();

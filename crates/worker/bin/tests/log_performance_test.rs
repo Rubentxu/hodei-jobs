@@ -131,12 +131,7 @@ async fn test_log_batching_performance() {
     // Create LogBatcher with batching configuration
     let capacity = 100;
     let flush_interval = Duration::from_millis(250);
-    let mut batcher = LogBatcher::new(
-        tx,
-        capacity,
-        flush_interval,
-        Arc::new(hodei_worker_infrastructure::metrics::WorkerMetrics::new()),
-    );
+    let mut batcher = LogBatcher::new(tx, capacity, flush_interval);
 
     // Test: Send 10,000 logs rapidly and measure throughput
     let num_logs = 10_000usize;
@@ -222,7 +217,6 @@ async fn test_log_batching_under_backpressure() {
         tx,
         100,                        // High capacity
         Duration::from_millis(250), // Regular flush
-        Arc::new(hodei_worker_infrastructure::metrics::WorkerMetrics::new()),
     );
 
     // Test: Send logs faster than they can be processed
@@ -303,12 +297,7 @@ async fn test_log_batching_different_sizes() {
         });
 
         // Create batcher with specific capacity
-        let mut batcher = LogBatcher::new(
-            tx,
-            capacity,
-            Duration::from_millis(250),
-            Arc::new(hodei_worker_infrastructure::metrics::WorkerMetrics::new()),
-        );
+        let mut batcher = LogBatcher::new(tx, capacity, Duration::from_millis(250));
 
         // Send logs equal to 5x capacity
         let num_logs = capacity * 5;

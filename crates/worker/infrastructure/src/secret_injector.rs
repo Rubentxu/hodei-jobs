@@ -5,13 +5,11 @@
 //!
 //! # Strategies
 //!
-//! - `EnvVars`: Inject as environment variables (legacy, visible in /proc/*/environ)
 //! - `Stdin`: Inject as JSON via stdin (secure, not visible in process info)
 //! - `TmpfsFile`: Inject as files in tmpfs (secure, not persisted to disk)
 //!
 //! # Security Considerations
 //!
-//! - `EnvVars`: Least secure, secrets visible in /proc/PID/environ
 //! - `Stdin`: Secure, stdin is consumed once and not persisted
 //! - `TmpfsFile`: Secure, files in memory-only filesystem, deleted after use
 
@@ -19,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Errors that can occur during secret injection
 #[derive(Debug, Error)]
@@ -50,24 +48,13 @@ pub enum SecretInjectionError {
 }
 
 /// Strategy for injecting secrets into job execution
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InjectionStrategy {
-    /// Inject secrets as environment variables with SECRET_ prefix (legacy)
-    ///
-    /// **Security Warning**: Visible in /proc/PID/environ
-    /// **Deprecated**: Use [`InjectionStrategy::TmpfsFile`] or [`InjectionStrategy::Stdin`] instead.
-    /// This strategy will be removed in a future version.
-    #[deprecated(
-        note = "Use TmpfsFile or Stdin instead. EnvVars exposes secrets in /proc/PID/environ",
-        since = "0.6.0"
-    )]
-    #[default]
-    EnvVars,
-
     /// Inject secrets as JSON via stdin
     ///
     /// Script reads: `SECRETS=$(cat); API_KEY=$(echo "$SECRETS" | jq -r '.api_key')`
+    #[default]
     Stdin,
 
     /// Inject secrets as files in a tmpfs directory
@@ -80,7 +67,6 @@ pub enum InjectionStrategy {
 impl std::fmt::Display for InjectionStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EnvVars => write!(f, "env_vars"),
             Self::Stdin => write!(f, "stdin"),
             Self::TmpfsFile => write!(f, "tmpfs_file"),
         }
@@ -164,8 +150,8 @@ impl SecretInjector {
         Self { config }
     }
 
-    /// Creates an injector with default configuration (EnvVars strategy)
-    pub fn default_env_vars() -> Self {
+    /// Creates an injector with default configuration (Stdin strategy)
+    pub fn with_defaults() -> Self {
         Self::new(InjectionConfig::default())
     }
 
@@ -207,38 +193,9 @@ impl SecretInjector {
         base_env: &HashMap<String, String>,
     ) -> Result<PreparedExecution, SecretInjectionError> {
         match self.config.strategy {
-            InjectionStrategy::EnvVars => self.prepare_env_vars(secrets, base_env),
             InjectionStrategy::Stdin => self.prepare_stdin(job_id, secrets, base_env),
             InjectionStrategy::TmpfsFile => self.prepare_tmpfs(job_id, secrets, base_env),
         }
-    }
-
-    /// Prepares execution with secrets as environment variables
-    fn prepare_env_vars(
-        &self,
-        secrets: &HashMap<String, String>,
-        base_env: &HashMap<String, String>,
-    ) -> Result<PreparedExecution, SecretInjectionError> {
-        let mut env_vars = base_env.clone();
-
-        for (key, value) in secrets {
-            Self::validate_key(key)?;
-            let secret_key = format!("SECRET_{}", key.to_uppercase());
-            env_vars.insert(secret_key, value.clone());
-        }
-
-        debug!(
-            strategy = "env_vars",
-            secret_count = secrets.len(),
-            "Prepared secrets as environment variables"
-        );
-
-        Ok(PreparedExecution {
-            env_vars,
-            stdin_content: None,
-            secrets_dir: None,
-            strategy: InjectionStrategy::EnvVars,
-        })
     }
 
     /// Prepares execution with secrets as JSON via stdin
@@ -424,20 +381,19 @@ mod tests {
 
     #[test]
     fn test_injection_strategy_display() {
-        assert_eq!(InjectionStrategy::EnvVars.to_string(), "env_vars");
         assert_eq!(InjectionStrategy::Stdin.to_string(), "stdin");
         assert_eq!(InjectionStrategy::TmpfsFile.to_string(), "tmpfs_file");
     }
 
     #[test]
     fn test_injection_strategy_default() {
-        assert_eq!(InjectionStrategy::default(), InjectionStrategy::EnvVars);
+        assert_eq!(InjectionStrategy::default(), InjectionStrategy::Stdin);
     }
 
     #[test]
     fn test_injection_config_default() {
         let config = InjectionConfig::default();
-        assert_eq!(config.strategy, InjectionStrategy::EnvVars);
+        assert_eq!(config.strategy, InjectionStrategy::Stdin);
         assert_eq!(config.tmpfs_base_dir, PathBuf::from("/run/secrets"));
         assert!(config.scrub_logs);
     }
@@ -451,39 +407,6 @@ mod tests {
         assert_eq!(config.strategy, InjectionStrategy::Stdin);
         assert_eq!(config.tmpfs_base_dir, PathBuf::from("/tmp/secrets"));
         assert!(!config.scrub_logs);
-    }
-
-    #[test]
-    fn test_prepare_env_vars() {
-        let injector = SecretInjector::default_env_vars();
-
-        let mut secrets = HashMap::new();
-        secrets.insert("api_key".to_string(), "secret123".to_string());
-        secrets.insert("db_password".to_string(), "pw456".to_string());
-
-        let mut base_env = HashMap::new();
-        base_env.insert("PATH".to_string(), "/usr/bin".to_string());
-
-        let result = injector
-            .prepare_execution("job-1", &secrets, &base_env)
-            .unwrap();
-
-        assert_eq!(result.strategy, InjectionStrategy::EnvVars);
-        assert!(result.stdin_content.is_none());
-        assert!(result.secrets_dir.is_none());
-
-        // Check secrets are added with SECRET_ prefix and uppercase
-        assert_eq!(
-            result.env_vars.get("SECRET_API_KEY"),
-            Some(&"secret123".to_string())
-        );
-        assert_eq!(
-            result.env_vars.get("SECRET_DB_PASSWORD"),
-            Some(&"pw456".to_string())
-        );
-
-        // Check base env is preserved
-        assert_eq!(result.env_vars.get("PATH"), Some(&"/usr/bin".to_string()));
     }
 
     #[test]

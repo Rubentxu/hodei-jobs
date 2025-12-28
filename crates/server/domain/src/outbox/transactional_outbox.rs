@@ -2,6 +2,9 @@
 //!
 //! This module provides the TransactionalOutbox service that coordinates
 //! between the OutboxRepository and EventBus to implement the pattern.
+//!
+//! ## EPIC-31 US-31.4: DLQ Integration
+//! Failed events exceeding max_retries are moved to the Dead Letter Queue.
 
 use crate::events::DomainEvent;
 use crate::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
@@ -10,6 +13,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
+
+use super::dlq_handler::DlqHandler;
+use super::dlq_repository::DlqRepository;
 
 /// Error types for TransactionalOutbox operations
 #[derive(Debug, thiserror::Error)]
@@ -79,26 +85,19 @@ impl EventPublisher for EventBusPublisher {
 /// This struct implements the Transactional Outbox Pattern by:
 /// 1. Storing events in the outbox table within the same transaction as business operations
 /// 2. Providing a separate background poller to publish events to the event bus
-pub struct TransactionalOutbox<R, P> {
+pub struct TransactionalOutbox<R> {
     outbox_repository: Arc<R>,
-    event_publisher: Arc<P>,
     polling_interval: Duration,
 }
 
-impl<R, P> TransactionalOutbox<R, P>
+impl<R> TransactionalOutbox<R>
 where
     R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
-    P: EventPublisher + Send + Sync,
 {
     /// Create a new TransactionalOutbox
-    pub fn new(
-        outbox_repository: Arc<R>,
-        event_publisher: Arc<P>,
-        polling_interval: Duration,
-    ) -> Self {
+    pub fn new(outbox_repository: Arc<R>, polling_interval: Duration) -> Self {
         Self {
             outbox_repository,
-            event_publisher,
             polling_interval,
         }
     }
@@ -109,10 +108,9 @@ where
     }
 }
 
-impl<R, P> TransactionalOutbox<R, P>
+impl<R> TransactionalOutbox<R>
 where
     R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
-    P: EventPublisher + Send + Sync,
 {
     /// Publish a domain event using the transactional outbox pattern
     ///
@@ -171,9 +169,14 @@ where
 }
 
 /// Background poller that publishes pending outbox events
-pub struct OutboxPoller<R, P> {
+///
+/// ## EPIC-31 US-31.4: DLQ Integration
+/// Events exceeding max_retries are moved to the Dead Letter Queue.
+pub struct OutboxPoller<R, P, D = ()> {
     outbox_repository: Arc<R>,
     event_publisher: Arc<P>,
+    /// EPIC-31 US-31.4: Optional DLQ handler for moving failed events
+    dlq_handler: Option<Arc<DlqHandler<D>>>,
     polling_interval: Duration,
     batch_size: usize,
     max_retries: i32,
@@ -198,6 +201,7 @@ where
         let poller = Self {
             outbox_repository,
             event_publisher,
+            dlq_handler: None,
             polling_interval,
             batch_size,
             max_retries,
@@ -206,7 +210,14 @@ where
 
         (poller, rx)
     }
+}
 
+/// OutboxPoller without DLQ - basic implementation
+impl<R, P> OutboxPoller<R, P, ()>
+where
+    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    P: EventPublisher + Send + Sync,
+{
     /// Run the poller loop
     pub async fn run(&self) -> Result<(), TransactionalOutboxError> {
         info!(
@@ -272,8 +283,10 @@ where
                     error!(
                         event_id = event_view.id.to_string(),
                         event_type = event_view.event_type,
+                        retry_count = event_view.retry_count,
+                        max_retries = self.max_retries,
                         error = %e,
-                        "Failed to publish outbox event, will retry"
+                        "Failed to publish outbox event"
                     );
                     failed_ids.push((event_view.id, e.to_string()));
                 }
@@ -293,12 +306,156 @@ where
             );
         }
 
-        // Mark failed events
-        for (event_id, error_msg) in failed_ids {
+        // EPIC-31 US-31.4: Handle failed events - move to DLQ if max_retries exceeded
+        for (event_id, error_msg) in &failed_ids {
+            let event = pending_events.iter().find(|e| &e.id == event_id).unwrap();
+
+            // Check if event should be moved to DLQ
+            if event.retry_count >= self.max_retries {
+                // DLQ not enabled in this configuration, just mark as failed
+                self.outbox_repository
+                    .mark_failed(event_id, error_msg)
+                    .await
+                    .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+            } else {
+                // Mark as failed for retry
+                self.outbox_repository
+                    .mark_failed(event_id, error_msg)
+                    .await
+                    .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Publish a single event to the event bus
+    async fn publish_event(
+        &self,
+        event_view: &crate::outbox::OutboxEventView,
+    ) -> Result<(), TransactionalOutboxError> {
+        // Deserialize the domain event
+        let domain_event: DomainEvent = serde_json::from_value(event_view.payload.clone())
+            .map_err(|e| {
+                TransactionalOutboxError::Serialization(format!(
+                    "Failed to deserialize event {}: {}",
+                    event_view.event_type, e
+                ))
+            })?;
+
+        // Publish to event bus
+        self.event_publisher
+            .publish(&domain_event)
+            .await
+            .map_err(|e| TransactionalOutboxError::InfrastructureError {
+                message: format!("Failed to publish event: {}", e),
+            })?;
+
+        Ok(())
+    }
+}
+
+/// EPIC-31 US-31.4: OutboxPoller with DLQ integration
+impl<R, P, D> OutboxPoller<R, P, D>
+where
+    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    P: EventPublisher + Send + Sync,
+    D: DlqRepository + Send + Sync,
+{
+    /// Process a batch of pending events with DLQ support
+    pub async fn process_batch(&self) -> Result<(), TransactionalOutboxError> {
+        // Get pending events
+        let pending_events = self
+            .outbox_repository
+            .get_pending_events(self.batch_size, self.max_retries)
+            .await
+            .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+
+        if pending_events.is_empty() {
+            debug!("No pending events to process");
+            return Ok(());
+        }
+
+        info!(
+            count = pending_events.len(),
+            "Processing outbox events batch"
+        );
+
+        let mut published_ids = Vec::new();
+        let mut failed_ids = Vec::new();
+
+        // Process each event
+        for event_view in &pending_events {
+            match self.publish_event(event_view).await {
+                Ok(_) => {
+                    published_ids.push(event_view.id);
+                    debug!(
+                        event_type = event_view.event_type,
+                        "Successfully published outbox event"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        event_id = event_view.id.to_string(),
+                        event_type = event_view.event_type,
+                        retry_count = event_view.retry_count,
+                        max_retries = self.max_retries,
+                        error = %e,
+                        "Failed to publish outbox event"
+                    );
+                    failed_ids.push((event_view.id, e.to_string()));
+                }
+            }
+        }
+
+        // Mark published events
+        if !published_ids.is_empty() {
             self.outbox_repository
-                .mark_failed(&event_id, &error_msg)
+                .mark_published(&published_ids)
                 .await
                 .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+
+            info!(
+                count = published_ids.len(),
+                "Marked outbox events as published"
+            );
+        }
+
+        // EPIC-31 US-31.4: Handle failed events - move to DLQ if max_retries exceeded
+        for (event_id, error_msg) in &failed_ids {
+            let event = pending_events.iter().find(|e| &e.id == event_id).unwrap();
+
+            // Check if event should be moved to DLQ
+            if event.retry_count >= self.max_retries {
+                if let Some(ref dlq_handler) = self.dlq_handler {
+                    if let Err(e) = dlq_handler.handle_failed_event(event, error_msg).await {
+                        error!(
+                            event_id = %event_id,
+                            error = %e,
+                            "Failed to move event to DLQ"
+                        );
+                    } else {
+                        info!(
+                            event_id = %event_id,
+                            event_type = event.event_type,
+                            "Event moved to Dead Letter Queue after {} retries",
+                            event.retry_count
+                        );
+                    }
+                } else {
+                    // Just mark as failed without DLQ
+                    self.outbox_repository
+                        .mark_failed(event_id, error_msg)
+                        .await
+                        .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                }
+            } else {
+                // Mark as failed for retry
+                self.outbox_repository
+                    .mark_failed(event_id, error_msg)
+                    .await
+                    .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+            }
         }
 
         Ok(())
@@ -484,13 +641,9 @@ mod tests {
     #[tokio::test]
     async fn test_publish_with_outbox() {
         let outbox_repo = Arc::new(MockOutboxRepository::new());
-        let event_publisher = Arc::new(MockEventPublisher::new());
 
-        let outbox = TransactionalOutbox::new(
-            outbox_repo.clone(),
-            event_publisher.clone(),
-            std::time::Duration::from_millis(100),
-        );
+        let outbox =
+            TransactionalOutbox::new(outbox_repo.clone(), std::time::Duration::from_millis(100));
 
         let job_id = JobId::new();
         let event = DomainEvent::JobCreated {
@@ -515,9 +668,7 @@ mod tests {
         let pending = outbox_repo.get_pending_events(10, 3).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "JobCreated");
-
-        // Verify event was NOT immediately published (that's the poller's job)
-        assert_eq!(event_publisher.get_published_events().len(), 0);
+        // Note: Events are NOT immediately published - that's the poller's job
     }
 
     #[tokio::test]
@@ -525,11 +676,8 @@ mod tests {
         let outbox_repo = Arc::new(MockOutboxRepository::new());
         let event_publisher = Arc::new(MockEventPublisher::new());
 
-        let outbox = TransactionalOutbox::new(
-            outbox_repo.clone(),
-            event_publisher.clone(),
-            std::time::Duration::from_millis(100),
-        );
+        let outbox =
+            TransactionalOutbox::new(outbox_repo.clone(), std::time::Duration::from_millis(100));
 
         let job_id = JobId::new();
         let event = DomainEvent::JobCreated {
