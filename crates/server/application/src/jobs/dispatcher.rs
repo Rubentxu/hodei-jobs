@@ -605,7 +605,7 @@ impl JobDispatcher {
 
         debug!(worker_id = %worker_id, "JobDispatcher: Found worker");
 
-        // Step 2: EPIC-30 - Try saga-based execution (always enabled now)
+        // EPIC-30 - Use saga-based execution
         let saga_used = if let Some(ref dispatcher) = self.execution_saga_dispatcher {
             info!(job_id = %job.id, worker_id = %worker_id, "🚀 JobDispatcher: Starting ExecutionSaga");
             match dispatcher.execute_execution_saga(&job.id, worker_id).await {
@@ -614,15 +614,15 @@ impl JobDispatcher {
                     true
                 }
                 Err(e) => {
-                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed, falling back to legacy dispatch");
-                    false
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed");
+                    return Err(anyhow::anyhow!("ExecutionSaga failed: {}", e));
                 }
             }
         } else {
             false
         };
 
-        // Step 3: If saga didn't handle everything, continue with manual assignment
+        // Continue with manual assignment if saga didn't handle everything
         if !saga_used {
             // Create execution context and store provider assignment
             let provider_id = worker.handle().provider_id.clone();
@@ -794,11 +794,10 @@ impl JobDispatcher {
 
     /// Trigger worker provisioning when no workers are available
     ///
-    /// ## EPIC-30: Routing a través de Saga Pattern
-    /// 1. Si hay saga coordinator disponible, usar ProvisioningSaga
-    /// 2. Fallback al provisioning_service legacy si no hay saga
+    /// Uses saga-based provisioning when coordinator is available,
+    /// otherwise falls back to legacy provisioning.
     async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
-        // EPIC-30: Try saga-based provisioning first (always enabled)
+        // Use saga-based provisioning (always enabled when coordinator is present)
         if let Some(ref coordinator) = self.provisioning_saga_coordinator {
             info!(job_id = %job.id, "🚀 JobDispatcher: Using saga-based provisioning");
 
@@ -824,57 +823,53 @@ impl JobDispatcher {
                 .default_worker_spec(&provider_id)
                 .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
 
-            // Execute saga
+            // Execute saga provisioning
             match coordinator
                 .execute_provisioning_saga(&provider_id, &spec, Some(job.id.clone()))
                 .await
             {
                 Ok((worker_id, result)) => {
                     info!(job_id = %job.id, worker_id = %worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
-                    return Ok(());
+                    Ok(())
                 }
-                Err(e) => {
-                    // If saga fails, try legacy provisioning
-                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: Saga failed, falling back to legacy provisioning");
-                }
+                Err(e) => Err(anyhow::anyhow!("Provisioning saga failed: {}", e)),
             }
-        }
-
-        // Legacy path: use provisioning_service directly
-        let provisioning =
-            self.provisioning_service
-                .as_ref()
-                .ok_or_else(|| DomainError::InfrastructureError {
+        } else {
+            // No coordinator configured - use legacy provisioning
+            let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
+                DomainError::InfrastructureError {
                     message: "No provisioning service available".to_string(),
-                })?;
+                }
+            })?;
 
-        // Get enabled providers
-        let providers = self.provider_registry.list_enabled_providers().await?;
+            // Get enabled providers
+            let providers = self.provider_registry.list_enabled_providers().await?;
 
-        if providers.is_empty() {
-            warn!("⚠️ JobDispatcher: No providers available for provisioning");
-            return Ok(());
-        }
-
-        // Select best provider using scheduler with job preferences
-        let provider_id = self
-            .select_provider_for_provisioning(job, &providers)
-            .await?;
-
-        // Get default spec and provision
-        let spec = provisioning
-            .default_worker_spec(&provider_id)
-            .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
-
-        match provisioning.provision_worker(&provider_id, spec).await {
-            Ok(result) => {
-                info!(
-                    "✅ Worker provisioned: id={}, otp={}",
-                    result.worker_id, result.otp_token
-                );
-                Ok(())
+            if providers.is_empty() {
+                warn!("⚠️ JobDispatcher: No providers available for provisioning");
+                return Ok(());
             }
-            Err(e) => anyhow::bail!("Failed to provision worker: {}", e),
+
+            // Select best provider using scheduler with job preferences
+            let provider_id = self
+                .select_provider_for_provisioning(job, &providers)
+                .await?;
+
+            // Get default spec and provision
+            let spec = provisioning
+                .default_worker_spec(&provider_id)
+                .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
+
+            match provisioning.provision_worker(&provider_id, spec).await {
+                Ok(result) => {
+                    info!(
+                        "✅ Worker provisioned: id={}, otp={}",
+                        result.worker_id, result.otp_token
+                    );
+                    Ok(())
+                }
+                Err(e) => anyhow::bail!("Failed to provision worker: {}", e),
+            }
         }
     }
 
