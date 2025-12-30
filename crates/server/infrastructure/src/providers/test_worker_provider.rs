@@ -18,16 +18,20 @@
 
 use async_trait::async_trait;
 // Import the individual ISP traits
+use futures::Stream;
+use futures::stream;
 use hodei_server_domain::workers::provider_api::{
     HealthStatus, JobRequirements, LogEntry, ProviderCapabilities, ProviderError, ProviderFeature,
-    ProviderPerformanceMetrics, ResourceLimits, WorkerCost, WorkerEligibility, WorkerHealth,
-    WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProvider, WorkerProviderIdentity,
+    ProviderPerformanceMetrics, ResourceLimits, WorkerCost, WorkerEligibility, WorkerEventSource,
+    WorkerHealth, WorkerInfrastructureEvent, WorkerLifecycle, WorkerLogs, WorkerMetrics,
+    WorkerProvider, WorkerProviderIdentity,
 };
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerState},
     workers::{Architecture, CostEstimate, ProviderType, WorkerHandle, WorkerSpec},
 };
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -569,3 +573,23 @@ mod tests {
 // This allows TestWorkerProvider to be used as dyn WorkerProvider
 #[async_trait]
 impl WorkerProvider for TestWorkerProvider {}
+
+/// Implementation of WorkerEventSource for TestWorkerProvider
+/// Returns an empty stream since test providers don't emit real events
+#[async_trait]
+impl WorkerEventSource for TestWorkerProvider {
+    async fn subscribe(
+        &self,
+    ) -> std::result::Result<
+        Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<WorkerInfrastructureEvent, ProviderError>>
+                    + Send,
+            >,
+        >,
+        ProviderError,
+    > {
+        // Return empty stream - test providers don't emit real events
+        Ok(Box::pin(futures::stream::empty()))
+    }
+}

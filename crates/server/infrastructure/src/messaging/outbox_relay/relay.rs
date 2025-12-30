@@ -654,6 +654,54 @@ impl OutboxRelay {
                 })
             }
 
+            // EPIC-29: JobQueued event triggers reactive job processing
+            "JobQueued" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in JobQueued event".to_string(),
+                        }
+                    })?;
+                let job_id = hodei_server_domain::shared_kernel::JobId(job_id);
+
+                // Parse preferred_provider if present
+                let preferred_provider = payload
+                    .get("preferred_provider")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .map(hodei_server_domain::shared_kernel::ProviderId);
+
+                // Get job_requirements or fallback to spec
+                let job_requirements_value = payload
+                    .get("job_requirements")
+                    .or(payload.get("spec"))
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+
+                Ok(DomainEvent::JobQueued {
+                    job_id,
+                    preferred_provider,
+                    job_requirements: serde_json::from_value(job_requirements_value).map_err(
+                        |_| DomainError::InfrastructureError {
+                            message: "Invalid job_requirements in JobQueued event".to_string(),
+                        },
+                    )?,
+                    queued_at: payload
+                        .get("queued_at")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
+                        .unwrap_or(event.created_at),
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
             "JobAssigned" => {
                 let job_id =
                     serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {

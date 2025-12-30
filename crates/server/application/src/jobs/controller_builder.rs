@@ -11,6 +11,8 @@
 //! See unit tests for complete usage examples.
 
 use crate::providers::ProviderRegistry;
+use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
+use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulerConfig;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -169,6 +171,8 @@ impl JobControllerBuilder {
             worker_command_sender,
             event_bus,
             self.provisioning_service,
+            None, // execution_saga_dispatcher - can be set via builder
+            None, // provisioning_saga_coordinator - can be set via builder
         );
 
         Ok(controller)

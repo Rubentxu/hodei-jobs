@@ -83,6 +83,19 @@ pub enum DomainError {
 
     #[error("Invalid OTP token: {message}")]
     InvalidOtpToken { message: String },
+
+    // EPIC-30: Saga-related errors
+    #[error("Saga execution timeout after {duration:?}")]
+    SagaTimeout { duration: std::time::Duration },
+
+    #[error("Saga step '{step}' failed: {error}")]
+    SagaStepFailed { step: String, error: String },
+
+    #[error("Saga was compensated: {saga_id}")]
+    SagaCompensated { saga_id: String },
+
+    #[error("Saga error: {message}")]
+    SagaError { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, DomainError>;

@@ -11,6 +11,8 @@
 
 use crate::jobs::coordinator::JobCoordinator;
 use crate::providers::ProviderRegistry;
+use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
+use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulerConfig;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -40,6 +42,7 @@ pub struct JobController {
 
 impl JobController {
     /// Create a new JobController with all dependencies
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         job_queue: Arc<dyn JobQueue>,
         job_repository: Arc<dyn JobRepository>,
@@ -49,6 +52,8 @@ impl JobController {
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+        execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
+        provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     ) -> Self {
         info!("Initializing JobController with specialized components");
 
@@ -63,7 +68,8 @@ impl JobController {
             event_bus.clone(),
             None, // outbox_repository - can be configured later
             provisioning_service.clone(),
-            None, // execution_saga_dispatcher - can be configured later
+            execution_saga_dispatcher,
+            provisioning_saga_coordinator,
         ));
 
         let worker_monitor = Arc::new(crate::jobs::worker_monitor::WorkerMonitor::new(

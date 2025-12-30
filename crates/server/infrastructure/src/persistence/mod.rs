@@ -5,3 +5,4 @@ pub mod postgres;
 pub mod saga;
 
 pub use postgres::*;
+pub use saga::*;

@@ -16,6 +16,7 @@
 
 use crate::providers::ProviderRegistry;
 use crate::saga::dispatcher_saga::{DynExecutionSagaDispatcher, ExecutionSagaDispatcher};
+use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -65,6 +66,8 @@ pub struct JobDispatcher {
     provisioning_cooldown: Duration,
     /// EPIC-29: Saga orchestrator for execution saga coordination
     execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
+    /// EPIC-30: Saga coordinator for provisioning saga (US-30.2)
+    provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
 }
 
 impl JobDispatcher {
@@ -86,6 +89,7 @@ impl JobDispatcher {
         >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
+        provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     ) -> Self {
         Self {
             job_queue,
@@ -101,6 +105,7 @@ impl JobDispatcher {
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
+            provisioning_saga_coordinator,
         }
     }
 
@@ -118,6 +123,7 @@ impl JobDispatcher {
         >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
+        provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     ) -> Self {
         Self {
             job_queue,
@@ -133,6 +139,7 @@ impl JobDispatcher {
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
+            provisioning_saga_coordinator,
         }
     }
 
@@ -570,16 +577,18 @@ impl JobDispatcher {
 
     /// Assign job to worker and dispatch
     ///
-    /// ## Responsabilidad Core #2: Asignación de Jobs
-    /// Implementa el patrón de operación segura: gRPC → Events → DB
-    /// Mantiene compatibilidad con el patrón Transactional Outbox.
+    /// ## EPIC-30: Integración con ExecutionSaga
+    /// Si el ExecutionSagaDispatcher está disponible, ejecuta el saga en paralelo
+    /// para gestionar la asignación, ejecución y completación del job de forma orquestada.
+    /// El saga proporciona compensación automática en caso de fallos.
     ///
     /// ## Pasos:
     /// 1. Obtener detalles del worker
-    /// 2. Asignar provider al job
-    /// 3. Persistir estado en BD
-    /// 4. Enviar comando RUN_JOB via gRPC
-    /// 5. Publicar evento JobAssigned
+    /// 2. (Opcional) Ejecutar ExecutionSaga para asignación y ejecución
+    /// 3. Asignar provider al job (fallback/manual)
+    /// 4. Persistir estado en BD
+    /// 5. Enviar comando RUN_JOB via gRPC (si no usa saga)
+    /// 6. Publicar evento JobAssigned
     async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> anyhow::Result<()> {
         info!(
             job_id = %job.id,
@@ -596,26 +605,57 @@ impl JobDispatcher {
 
         debug!(worker_id = %worker_id, "JobDispatcher: Found worker");
 
-        // Step 2: Create execution context and store provider assignment
-        let provider_id = worker.handle().provider_id.clone();
-        let context = ExecutionContext::new(
-            job.id.clone(),
-            provider_id.clone(),
-            format!("exec-{}", Uuid::new_v4()),
-        );
+        // Step 2: EPIC-30 - Try saga-based execution if enabled
+        let saga_used = if let Some(ref dispatcher) = self.execution_saga_dispatcher {
+            if dispatcher.is_saga_enabled() {
+                info!(job_id = %job.id, worker_id = %worker_id, "🚀 JobDispatcher: Starting ExecutionSaga");
+                match dispatcher.execute_execution_saga(&job.id, worker_id).await {
+                    Ok(result) => {
+                        info!(job_id = %job.id, saga_status = ?result, "✅ JobDispatcher: ExecutionSaga completed");
+                        if !result.is_success() && !dispatcher.is_shadow_mode() {
+                            anyhow::bail!("ExecutionSaga failed: {:?}", result);
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        if dispatcher.is_shadow_mode() {
+                            warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed, falling back to legacy dispatch");
+                            false
+                        } else {
+                            anyhow::bail!("ExecutionSaga failed: {}", e);
+                        }
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
-        // Assign provider to job (for both PENDING and ASSIGNED states)
-        // ASSIGNED state comes from atomic dequeue, but provider still needs to be assigned
-        if job.selected_provider().is_none() {
-            job.assign_to_provider(provider_id.clone(), context)?;
-            info!(
-                provider_id = %provider_id,
-                job_id = %job.id,
-                "📌 JobDispatcher: Assigned provider to job"
+        // Step 3: If saga didn't handle everything, continue with manual assignment
+        if !saga_used {
+            // Create execution context and store provider assignment
+            let provider_id = worker.handle().provider_id.clone();
+            let context = ExecutionContext::new(
+                job.id.clone(),
+                provider_id.clone(),
+                format!("exec-{}", Uuid::new_v4()),
             );
+
+            // Assign provider to job (for both PENDING and ASSIGNED states)
+            // ASSIGNED state comes from atomic dequeue, but provider still needs to be assigned
+            if job.selected_provider().is_none() {
+                job.assign_to_provider(provider_id.clone(), context)?;
+                info!(
+                    provider_id = %provider_id,
+                    job_id = %job.id,
+                    "📌 JobDispatcher: Assigned provider to job"
+                );
+            }
         }
 
-        // Step 3: Update job in repository (BEFORE gRPC to avoid race condition)
+        // Step 4: Update job in repository (BEFORE gRPC to avoid race condition)
         // Persist assignment state so it's safe for worker to update to RUNNING later
         info!(
             job_id = %job.id,
@@ -633,7 +673,7 @@ impl JobDispatcher {
             ));
         }
 
-        // Step 4: Send RUN_JOB command to worker via gRPC
+        // Step 5: Send RUN_JOB command to worker via gRPC
         info!(
             worker_id = %worker_id,
             job_id = %job.id,
@@ -688,7 +728,7 @@ impl JobDispatcher {
             "✅ JobDispatcher: RUN_JOB command sent successfully"
         );
 
-        // Step 5: Publish JobAssigned event with idempotency key
+        // Step 6: Publish JobAssigned event with idempotency key
         // Refactoring: Use EventMetadata to reduce Connascence of Algorithm
         let metadata = EventMetadata::from_job_metadata(job.metadata(), &job.id);
 
@@ -765,9 +805,61 @@ impl JobDispatcher {
 
     /// Trigger worker provisioning when no workers are available
     ///
-    /// ## Responsabilidad Delegada: Provisioning
-    /// Delega la lógica de selección de provider y spec al WorkerProvisioningService.
+    /// ## EPIC-30: Routing a través de Saga Pattern
+    /// 1. Si hay saga coordinator disponible, usar ProvisioningSaga
+    /// 2. Fallback al provisioning_service legacy si no hay saga
     async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
+        // EPIC-30: Try saga-based provisioning first
+        if let Some(ref coordinator) = self.provisioning_saga_coordinator {
+            if coordinator.is_saga_enabled() {
+                info!(job_id = %job.id, "🚀 JobDispatcher: Using saga-based provisioning");
+
+                // Get enabled providers
+                let providers = self.provider_registry.list_enabled_providers().await?;
+                if providers.is_empty() {
+                    warn!("⚠️ JobDispatcher: No providers available for provisioning");
+                    return Ok(());
+                }
+
+                // Select best provider using scheduler with job preferences
+                let provider_id = self
+                    .select_provider_for_provisioning(job, &providers)
+                    .await?;
+
+                // Get spec from provisioning service
+                let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
+                    DomainError::InfrastructureError {
+                        message: "No provisioning service available".to_string(),
+                    }
+                })?;
+                let spec = provisioning
+                    .default_worker_spec(&provider_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("No default spec for provider {}", provider_id)
+                    })?;
+
+                // Execute saga
+                match coordinator
+                    .execute_provisioning_saga(&provider_id, &spec, Some(job.id.clone()))
+                    .await
+                {
+                    Ok((worker_id, result)) => {
+                        info!(job_id = %job.id, worker_id = %worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        // If saga fails but shadow mode is enabled, try legacy
+                        if coordinator.is_shadow_mode() {
+                            warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: Saga failed, falling back to legacy provisioning");
+                        } else {
+                            anyhow::bail!("Saga provisioning failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Legacy path: use provisioning_service directly
         let provisioning =
             self.provisioning_service
                 .as_ref()
@@ -1080,7 +1172,7 @@ impl JobDispatcher {
             }
         };
 
-        // Publish WorkerProvisioningRequested event
+        // Publish WorkerProvisioningRequested event (for reactive processing/saga tracking)
         let event = DomainEvent::WorkerProvisioningRequested {
             job_id: job.id.clone(),
             provider_id: provider_id.clone(),
@@ -1095,13 +1187,17 @@ impl JobDispatcher {
                 "❌ JobDispatcher: Failed to publish WorkerProvisioningRequested: {}",
                 e
             );
-            // Fallback: trigger provisioning directly
-            let _ = self.trigger_provisioning(job).await;
         } else {
             info!(
                 "✅ JobDispatcher: Published WorkerProvisioningRequested for job {} on provider {}",
                 job.id, provider_id
             );
+        }
+
+        // Trigger provisioning directly (since there's no event subscriber yet for WorkerProvisioningRequested)
+        // This ensures workers get provisioned even without the reactive infrastructure in place
+        if let Err(e) = self.trigger_provisioning(job).await {
+            error!("❌ JobDispatcher: Failed to trigger provisioning: {}", e);
         }
     }
 }

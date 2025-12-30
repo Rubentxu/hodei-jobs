@@ -4,7 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use crate::mappers::{
     error_to_status, map_job_state, map_job_to_definition, map_job_to_summary, now_timestamp,
@@ -14,7 +15,6 @@ use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
 use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
-use uuid::Uuid;
 
 use hodei_jobs::{
     AssignJobRequest, AssignJobResponse, CancelJobRequest, CancelJobResponse, CompleteJobRequest,
@@ -421,8 +421,8 @@ impl JobExecutionService for JobExecutionServiceImpl {
                     .map(|s| s.required_annotations.clone())
                     .filter(|m| !m.is_empty()),
             },
-            correlation_id,
-            actor,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
             job_id,
         };
 
@@ -433,6 +433,50 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .map_err(error_to_status)?;
 
         info!("Queued job via gRPC: {}", result.job_id);
+
+        // EPIC-29: Publish JobQueued event for reactive job processing (saga trigger)
+        // This enables the JobDispatcher to handle jobs via the event-driven architecture
+        if let Some(ref event_bus) = self.event_bus {
+            // Fetch the created job to get the full spec
+            let job_id = hodei_server_domain::shared_kernel::JobId(
+                Uuid::parse_str(&result.job_id).map_err(|_| {
+                    error_to_status(
+                        hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                            message: format!("Invalid job ID format: {}", result.job_id),
+                        },
+                    )
+                })?,
+            );
+
+            if let Ok(Some(job)) = self.job_repository.find_by_id(&job_id).await {
+                // Convert preferred_provider string to ProviderId
+                let preferred_provider_id = job
+                    .spec
+                    .preferences
+                    .preferred_provider
+                    .as_ref()
+                    .and_then(|s| {
+                        Uuid::parse_str(s)
+                            .ok()
+                            .map(hodei_server_domain::shared_kernel::ProviderId::from_uuid)
+                    });
+
+                let job_queued_event = DomainEvent::JobQueued {
+                    job_id: job.id.clone(),
+                    preferred_provider: preferred_provider_id,
+                    job_requirements: job.spec.clone(),
+                    queued_at: chrono::Utc::now(),
+                    correlation_id: correlation_id.or(Some("grpc:job_execution".to_string())),
+                    actor: actor.map(|a| format!("grpc:{}", a)),
+                };
+
+                if let Err(e) = event_bus.publish(&job_queued_event).await {
+                    error!("Failed to publish JobQueued event: {}", e);
+                } else {
+                    info!("Published JobQueued event for job {}", job.id);
+                }
+            }
+        }
 
         Ok(Response::new(QueueJobResponse {
             success: true,

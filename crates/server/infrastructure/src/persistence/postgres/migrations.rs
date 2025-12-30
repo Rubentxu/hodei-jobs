@@ -23,7 +23,7 @@
 
 use sqlx::Executor;
 use sqlx::migrate::{Migrate, MigrateError};
-use sqlx::postgres::{PgConnectOptions, PgPool};
+use sqlx::postgres::PgPool;
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -247,7 +247,7 @@ impl MigrationService {
             return Err(MigrationError::FileNotFound { name: up_path });
         }
 
-        let start = std::time::Instant();
+        let start = std::time::Instant::now();
         let sql = std::fs::read_to_string(path)
             .map_err(|e| MigrationError::FileNotFound { name: up_path })?;
 
@@ -332,7 +332,7 @@ impl MigrationService {
             success: Option<bool>,
         }
 
-        let rows = sqlx::query_as(
+        let rows: Vec<MigrationRow> = sqlx::query_as(
             r#"
             SELECT version, description, installed_on, execution_time, success
             FROM __sqlx_migrations

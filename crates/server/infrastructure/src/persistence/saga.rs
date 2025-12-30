@@ -637,7 +637,7 @@ impl SagaRepository for PostgresSagaRepository {
             rows_affected: i64,
         }
 
-        let result = sqlx::query_as(
+        let result: DeleteResult = sqlx::query_as(
             r#"
             DELETE FROM sagas
             WHERE state IN ('COMPLETED', 'FAILED', 'CANCELLED')

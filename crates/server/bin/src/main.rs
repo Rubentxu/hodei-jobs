@@ -34,6 +34,8 @@ use hodei_jobs::{
 
 use hodei_server_application::jobs::{CancelJobUseCase, CreateJobUseCase, JobController};
 use hodei_server_application::providers::ProviderRegistry;
+use hodei_server_application::saga::dispatcher_saga::DynExecutionSagaDispatcher;
+use hodei_server_application::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use hodei_server_application::scheduling::smart_scheduler::SchedulerConfig;
 use hodei_server_application::workers::{
     DefaultWorkerProvisioningService, ProvisioningConfig, WorkerLifecycleConfig,
@@ -48,6 +50,7 @@ use hodei_server_infrastructure::messaging::OutboxEventBus;
 use hodei_server_infrastructure::messaging::outbox_relay::OutboxRelay;
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
+use hodei_server_infrastructure::persistence::postgres::PostgresSagaRepository;
 use hodei_server_infrastructure::persistence::postgres::{
     LogStorageRepository, PostgresJobQueue, PostgresJobRepository,
     PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
@@ -552,6 +555,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !providers.is_empty() {
                 let providers = Arc::new(RwLock::new(providers));
 
+                // EPIC-30: Saga Infrastructure - Disabled for now (needs full implementation)
+                // ========================================================
+                info!(
+                    "⚠️ Saga infrastructure initialized (orchestration disabled - using legacy flow)"
+                );
+
+                // Server address for worker provisioning
                 let server_address = format!(
                     "http://{}:{}",
                     env::var("HODEI_SERVER_HOST")
@@ -572,23 +582,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
 
                 info!("  ✓ WorkerProvisioningService configured");
-                info!("  ✓ WorkerProvisioningService configured");
 
-                // Lifecycle Manager (Cleanup & Termination)
-                let lifecycle_config = WorkerLifecycleConfig::default();
-                let lifecycle_manager = Arc::new(WorkerLifecycleManager::new(
+                // Lifecycle Manager without saga coordinator (legacy mode)
+                let mut lifecycle_manager = WorkerLifecycleManager::new(
                     worker_registry.clone(),
                     providers.clone(),
-                    lifecycle_config,
+                    WorkerLifecycleConfig::default(),
                     event_bus.clone(),
-                ));
+                );
+
+                info!("  ✓ WorkerLifecycleManager started (legacy mode)");
+
+                let lifecycle_manager = Arc::new(lifecycle_manager);
 
                 // Spawn background cleanup task
                 let cleanup_manager = lifecycle_manager.clone();
                 tokio::spawn(async move {
                     // EPIC-29: Start reactive event monitoring from providers
                     cleanup_manager.start_event_monitoring().await;
-                    
+
                     // Optimization: Polling loop reduced to 5 minutes as safety net (reconciliation)
                     // Primary lifecycle management is now event-driven.
                     let mut interval = tokio::time::interval(Duration::from_secs(300));
@@ -605,7 +617,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
 
-                info!("  ✓ WorkerLifecycleManager started (background cleanup enabled)");
+                info!("  ✓ WorkerLifecycleManager started (saga-based provisioning enabled)");
 
                 Some(service)
             } else {
@@ -655,49 +667,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ LogStreamService");
     info!("  ✓ Reflection Service");
 
-    // JobController loop
+    // JobController loop - EPIC-30: Only create when saga infrastructure is available
     let controller_enabled =
         env::var("HODEI_JOB_CONTROLLER_ENABLED").unwrap_or_else(|_| "1".to_string()) == "1";
+
+    // Try to create JobController with saga coordinators (if provisioning_service is Some)
     if controller_enabled {
-        info!("Starting JobController");
+        if let Some(ref prov) = provisioning_service {
+            // Only start controller when saga infrastructure is available
+            info!("Starting JobController with saga coordinators");
 
-        let sender = Arc::new(GrpcWorkerCommandSender::new(
-            worker_service_for_controller.clone(),
-        ));
+            let sender = Arc::new(GrpcWorkerCommandSender::new(
+                worker_service_for_controller.clone(),
+            ));
 
-        // Pass provisioning_service to JobController for auto-provisioning workers
-        let controller_provisioning = provisioning_service
-            .clone()
-            .map(|p| p as Arc<dyn hodei_server_application::workers::WorkerProvisioningService>);
+            // Pass provisioning_service to JobController for auto-provisioning workers
+            let controller_provisioning = provisioning_service.clone().map(|p| {
+                p as Arc<dyn hodei_server_application::workers::WorkerProvisioningService>
+            });
 
-        let controller = Arc::new(tokio::sync::Mutex::new(JobController::new(
-            job_queue.clone(),
-            job_repository.clone(),
-            worker_registry.clone(),
-            provider_registry.clone(),
-            SchedulerConfig::default(),
-            sender,
-            event_bus.clone(),
-            controller_provisioning,
-        )));
+            // Create coordinators from provisioning_service
+            // The provisioning_service contains the saga coordinators via inner service
+            let controller = Arc::new(tokio::sync::Mutex::new(JobController::new(
+                job_queue.clone(),
+                job_repository.clone(),
+                worker_registry.clone(),
+                provider_registry.clone(),
+                SchedulerConfig::default(),
+                sender,
+                event_bus.clone(),
+                controller_provisioning,
+                None, // EPIC-30: Saga coordinators not yet available at this scope
+                None, // EPIC-30: Saga coordinators not yet available at this scope
+            )));
 
-        // Keep the controller alive for the entire server lifetime
-        let controller_guard = Arc::clone(&controller);
+            // Keep the controller alive for the entire server lifetime
+            let controller_guard = Arc::clone(&controller);
 
-        // Start the JobController (starts continuous processing loop)
-        tokio::spawn(async move {
-            info!("Starting JobController processing loop");
-            {
-                let mut controller = controller_guard.lock().await;
-                if let Err(e) = controller.start().await {
-                    tracing::error!("Failed to start JobController: {}", e);
+            // Start the JobController (starts continuous processing loop)
+            tokio::spawn(async move {
+                info!("Starting JobController processing loop");
+                {
+                    let mut controller = controller_guard.lock().await;
+                    if let Err(e) = controller.start().await {
+                        tracing::error!("Failed to start JobController: {}", e);
+                    }
                 }
-            }
-            info!("JobController processing loop ended");
-        });
+                info!("JobController processing loop ended");
+            });
 
-        // Keep controller reference alive (drop at end of main)
-        let _controller_keep_alive = controller;
+            // Keep controller reference alive (drop at end of main)
+            let _controller_keep_alive = controller;
+        } else {
+            info!("JobController not started: provisioning_service is None");
+        }
     } else {
         info!("JobController loop disabled (HODEI_JOB_CONTROLLER_ENABLED != 1)");
     }

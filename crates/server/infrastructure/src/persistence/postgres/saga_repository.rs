@@ -72,6 +72,24 @@ struct SagaDbRow {
     updated_at: DateTime<Utc>,
 }
 
+impl sqlx::FromRow<'_, PgRow> for SagaDbRow {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        Ok(SagaDbRow {
+            id: row.try_get("id")?,
+            saga_type: row.try_get("saga_type")?,
+            state: row.try_get("state")?,
+            correlation_id: row.try_get("correlation_id")?,
+            actor: row.try_get("actor")?,
+            started_at: row.try_get("started_at")?,
+            completed_at: row.try_get("completed_at")?,
+            error_message: row.try_get("error_message")?,
+            metadata: row.try_get("metadata")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
 /// Database row representation of a saga step
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SagaStepDbRow {
@@ -89,6 +107,27 @@ struct SagaStepDbRow {
     retry_count: i32,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+impl sqlx::FromRow<'_, PgRow> for SagaStepDbRow {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        Ok(SagaStepDbRow {
+            id: row.try_get("id")?,
+            saga_id: row.try_get("saga_id")?,
+            step_name: row.try_get("step_name")?,
+            step_order: row.try_get("step_order")?,
+            state: row.try_get("state")?,
+            input_data: row.try_get("input_data")?,
+            output_data: row.try_get("output_data")?,
+            compensation_data: row.try_get("compensation_data")?,
+            started_at: row.try_get("started_at")?,
+            completed_at: row.try_get("completed_at")?,
+            error_message: row.try_get("error_message")?,
+            retry_count: row.try_get("retry_count")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
 impl From<SagaDbRow> for SagaContext {
@@ -110,21 +149,21 @@ impl From<SagaDbRow> for SagaContext {
             _ => SagaType::Provisioning,
         };
 
-        // Reconstruct step_outputs from output_data if available
-        let step_outputs = std::collections::HashMap::new();
+        let metadata: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_value(row.metadata).unwrap_or_default();
 
-        Self {
-            saga_id: hodei_server_domain::saga::SagaId(row.id),
+        // Use from_persistence constructor
+        SagaContext::from_persistence(
+            hodei_server_domain::saga::SagaId(row.id),
             saga_type,
-            correlation_id: row.correlation_id,
-            actor: row.actor,
-            started_at: row.started_at,
-            current_step: 0, // Will be updated based on step completion
-            is_compensating: saga_state == SagaState::Compensating,
-            metadata: serde_json::from_value(row.metadata).unwrap_or_default(),
-            step_outputs,
-            error_message: row.error_message,
-        }
+            row.correlation_id,
+            row.actor,
+            row.started_at,
+            0, // current_step - will be updated based on step completion
+            saga_state == SagaState::Compensating,
+            metadata,
+            row.error_message,
+        )
     }
 }
 
@@ -161,14 +200,17 @@ impl From<SagaStepDbRow> for SagaStepData {
 
 #[async_trait::async_trait]
 impl SagaRepositoryTrait for PostgresSagaRepository {
-    type Error = PostgresSagaRepositoryError;
+    type Error = hodei_server_domain::shared_kernel::DomainError;
 
     async fn save(&self, context: &SagaContext) -> Result<(), Self::Error> {
         let saga_id = context.saga_id.0;
         let saga_type = context.saga_type.as_str();
         let state = "PENDING";
-        let metadata = serde_json::to_value(&context.metadata)
-            .map_err(|e| PostgresSagaRepositoryError::Serialization(e))?;
+        let metadata = serde_json::to_value(&context.metadata).map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Serialization error: {}", e),
+            }
+        })?;
 
         sqlx::query(
             r#"
@@ -188,7 +230,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(context.started_at)
         .bind(metadata)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(())
     }
@@ -206,7 +253,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(saga_id.0)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(row.map(|r| r.into()))
     }
@@ -223,7 +275,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(saga_type_str)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
@@ -248,7 +305,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(state_str)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
@@ -267,7 +329,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(correlation_id)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
@@ -308,7 +375,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(completed_at)
         .bind(error_message)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(())
     }
@@ -327,7 +399,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(saga_id.0)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(())
     }
@@ -339,7 +416,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         let result = sqlx::query(r#"DELETE FROM sagas WHERE id = $1"#)
             .bind(saga_id.0)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(
+                |e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Database error: {}", e),
+                },
+            )?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -377,7 +459,10 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(step.error_message.as_ref())
         .bind(step.retry_count)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+            message: format!("Database error: {}", e),
+        })?;
 
         Ok(())
     }
@@ -395,7 +480,10 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(step_id.0)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+            message: format!("Database error: {}", e),
+        })?;
 
         Ok(row.map(|r| r.into()))
     }
@@ -414,7 +502,10 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(saga_id.0)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+            message: format!("Database error: {}", e),
+        })?;
 
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
@@ -457,7 +548,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(started_at)
         .bind(completed_at)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(())
     }
@@ -478,7 +574,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(step_id.0)
         .bind(compensation_data)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(())
     }
@@ -493,7 +594,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
             "#,
         )
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(count as u64)
     }
@@ -522,7 +628,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(saga_type_str)
         .bind(state_str)
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(count as u64)
     }
@@ -536,7 +647,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
             "#,
         )
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(avg_ms.map(|ms| Duration::from_millis(ms as u64)))
     }
@@ -544,7 +660,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
     // ============ Cleanup ============
 
     async fn cleanup_completed(&self, older_than: Duration) -> Result<u64, Self::Error> {
-        let cutoff = Utc::now() - chrono::Duration::from_std(older_than)?;
+        let cutoff = Utc::now()
+            - chrono::Duration::from_std(older_than).map_err(|e| {
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Invalid duration for cleanup: {}", e),
+                }
+            })?;
 
         let result = sqlx::query(
             r#"
@@ -556,7 +677,12 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(cutoff)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
         Ok(result.rows_affected() as u64)
     }
@@ -571,6 +697,7 @@ pub fn new_saga_repository(pool: PgPool) -> PostgresSagaRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hodei_server_domain::SagaId;
     use sqlx::postgres::PgPoolOptions;
     use std::time::Duration;
 
