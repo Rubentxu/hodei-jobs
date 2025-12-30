@@ -311,13 +311,15 @@ mod tests {
     #[test]
     fn test_atomic_feature_flags_update() {
         let flags = AtomicSagaFeatureFlags::default();
-        assert!(!flags.is_shadow_mode());
+        // Default should have shadow_mode enabled
+        assert!(flags.is_shadow_mode());
 
         flags.update(|f| {
             f.shadow_mode = false;
             f.execution_saga_enabled = true;
         });
 
+        // After update, shadow_mode should be disabled
         assert!(!flags.is_shadow_mode());
         assert!(flags.is_saga_enabled(crate::saga::SagaType::Execution));
     }

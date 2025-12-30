@@ -1,15 +1,10 @@
 //! Recovery Saga
 //!
 //! Saga para la recuperación de workers fallidos y reassignación de jobs.
-//! Encapsula la lógica de:
-//! - Detección de worker fallido
-//! - Verificación de si el worker realmente se cayó
-//! - Transferencia del job a nuevo worker si es necesario
-//! - Terminación del worker viejo
 
 use crate::saga::{Saga, SagaContext, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
-
+use async_trait::async_trait;
 use chrono::Utc;
 use std::time::Duration;
 

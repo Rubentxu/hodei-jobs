@@ -3,6 +3,7 @@
 //! This module defines the fundamental types for orchestrating complex workflows
 //! with automatic compensation (rollback) capabilities.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -601,7 +602,7 @@ impl SagaExecutionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
 
     // Test helper struct implementing SagaStep
     struct TestSagaStep;

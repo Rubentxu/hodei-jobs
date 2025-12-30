@@ -4,7 +4,7 @@
 
 use crate::saga::{Saga, SagaContext, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
-
+use async_trait::async_trait;
 use chrono::Utc;
 use std::time::Duration;
 

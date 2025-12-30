@@ -5,7 +5,7 @@
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::ProviderId;
 use crate::workers::WorkerSpec;
-
+use async_trait::async_trait;
 use std::time::Duration;
 
 // ============================================================================

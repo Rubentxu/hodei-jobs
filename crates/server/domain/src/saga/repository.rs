@@ -2,6 +2,7 @@
 //!
 //! Abstraction for saga persistence operations.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
