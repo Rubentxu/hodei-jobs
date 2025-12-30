@@ -601,7 +601,7 @@ impl SagaExecutionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
+    
 
     // Test helper struct implementing SagaStep
     struct TestSagaStep;

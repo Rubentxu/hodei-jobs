@@ -1,18 +1,11 @@
 //! Provisioning Saga
 //!
 //! Saga para el aprovisionamiento de workers on-demand.
-//! Encapsula la lógica de:
-//! - Validación de capacidad del provider
-//! - Creación de infraestructura
-//! - Registro del worker
-//! - Publicación de eventos
 
-use crate::events::{DomainEvent, EventMetadata};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
-use crate::shared_kernel::{ProviderId, WorkerId};
-use crate::workers::{WorkerHandle, WorkerSpec};
-use async_trait::async_trait;
-use std::sync::Arc;
+use crate::shared_kernel::ProviderId;
+use crate::workers::WorkerSpec;
+
 use std::time::Duration;
 
 // ============================================================================

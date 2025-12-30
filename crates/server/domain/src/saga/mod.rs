@@ -32,7 +32,7 @@ pub use provisioning::{
 
 // Re-exports from execution module
 pub use execution::{
-    ExecutionSaga, ExecutionStepOutput, PublishJobAssignedStep, SendRunJobStep, ValidateJobStep,
+    AssignWorkerStep, CompleteJobStep, ExecuteJobStep, ExecutionSaga, ValidateJobStep,
 };
 
 // Re-exports from recovery module
