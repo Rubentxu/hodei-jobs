@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license = "MIT"
 authors = ["Hodei Team Platform"]
@@ -138,3 +138,11 @@ version = "0.4"
 version = "0.5"
 default-features = false
 features = ["html_reports"]
+
+
+[profile.dev]
+opt-level = 0            # Sin optimizaciones (default, pero asegúrate)
+debug = 0                # Reduce info de debug si no la necesitas (acelera mucho)
+codegen-units = 256      # ¡Aquí está la magia!
+split-debuginfo = "unpacked" # Evita empaquetar info de debug (muy rápido en Linux)
+incremental = true
