@@ -4,8 +4,11 @@
 //! for orchestrating complex, multi-step workflows with automatic
 //! compensation (rollback) capabilities.
 
+pub mod execution;
+pub mod feature_flags;
 pub mod orchestrator;
 pub mod provisioning;
+pub mod recovery;
 pub mod repository;
 pub mod types;
 
@@ -25,4 +28,20 @@ pub use orchestrator::{InMemorySagaOrchestrator, SagaOrchestratorConfig};
 pub use provisioning::{
     CreateInfrastructureStep, ProvisioningSaga, PublishProvisionedEventStep, RegisterWorkerStep,
     ValidateProviderCapacityStep,
+};
+
+// Re-exports from execution module
+pub use execution::{
+    ExecutionSaga, ExecutionStepOutput, PublishJobAssignedStep, SendRunJobStep, ValidateJobStep,
+};
+
+// Re-exports from recovery module
+pub use recovery::{
+    CancelOldWorkerStep, CheckWorkerConnectivityStep, ProvisionNewWorkerStep, RecoverySaga,
+    TerminateOldWorkerStep, TransferJobStep,
+};
+
+// Re-exports from feature_flags module
+pub use feature_flags::{
+    AtomicSagaFeatureFlags, SagaComparisonResult, SagaFeatureFlags, ShadowModeLogger,
 };
