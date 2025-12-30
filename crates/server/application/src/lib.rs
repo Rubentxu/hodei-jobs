@@ -7,6 +7,7 @@ pub mod audit;
 pub mod credentials;
 pub mod jobs;
 pub mod providers;
+pub mod saga;
 pub mod scheduling;
 pub mod workers;
 

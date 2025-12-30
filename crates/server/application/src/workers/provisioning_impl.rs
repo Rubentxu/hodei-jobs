@@ -12,9 +12,7 @@ use tracing::{info, warn};
 
 use hodei_server_domain::iam::WorkerBootstrapTokenStore;
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result};
-use hodei_server_domain::workers::WorkerProvider;
-use hodei_server_domain::workers::WorkerRegistry;
-use hodei_server_domain::workers::WorkerSpec;
+use hodei_server_domain::workers::{WorkerProvider, WorkerRegistry, WorkerSpec};
 
 use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
 
@@ -204,6 +202,33 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
     async fn list_providers(&self) -> Result<Vec<ProviderId>> {
         let providers = self.providers.read().await;
         Ok(providers.keys().cloned().collect())
+    }
+
+    async fn get_provider_config(
+        &self,
+        provider_id: &ProviderId,
+    ) -> Result<Option<hodei_server_domain::providers::ProviderConfig>> {
+        let provider = self.get_provider(provider_id).await?;
+        // Convert WorkerProvider to ProviderConfig if possible
+        // For now, return None as we need additional conversion logic
+        Ok(None)
+    }
+
+    async fn validate_spec(&self, spec: &WorkerSpec) -> Result<()> {
+        // Basic validation of worker spec
+        if spec.image.is_empty() {
+            return Err(DomainError::InvalidWorkerSpec {
+                field: "image".to_string(),
+                reason: "Worker image cannot be empty".to_string(),
+            });
+        }
+        if spec.server_address.is_empty() {
+            return Err(DomainError::InvalidWorkerSpec {
+                field: "server_address".to_string(),
+                reason: "Server address cannot be empty".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 

@@ -21,6 +21,9 @@ pub enum DomainError {
     #[error("Invalid job spec field {field}: {reason}")]
     InvalidJobSpec { field: String, reason: String },
 
+    #[error("Invalid worker spec field {field}: {reason}")]
+    InvalidWorkerSpec { field: String, reason: String },
+
     #[error("Invalid max attempts value: {value} - {reason}")]
     InvalidMaxAttempts { value: u32, reason: String },
 

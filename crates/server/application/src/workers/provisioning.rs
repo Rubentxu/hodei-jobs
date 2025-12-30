@@ -4,6 +4,7 @@
 //! This abstracts the infrastructure details of worker creation.
 
 use async_trait::async_trait;
+use hodei_server_domain::providers::ProviderConfig;
 use hodei_server_domain::shared_kernel::{ProviderId, Result, WorkerId};
 use hodei_server_domain::workers::WorkerSpec;
 
@@ -58,6 +59,13 @@ pub trait WorkerProvisioningService: Send + Sync {
 
     /// List all available providers
     async fn list_providers(&self) -> Result<Vec<ProviderId>>;
+
+    /// Get provider configuration by ID
+    async fn get_provider_config(&self, provider_id: &ProviderId)
+    -> Result<Option<ProviderConfig>>;
+
+    /// Validate a worker specification
+    async fn validate_spec(&self, spec: &WorkerSpec) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -113,6 +121,17 @@ mod tests {
         async fn list_providers(&self) -> Result<Vec<ProviderId>> {
             Ok(self.available_providers.clone())
         }
+
+        async fn get_provider_config(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<Option<ProviderConfig>> {
+            Ok(None)
+        }
+
+        async fn validate_spec(&self, _spec: &WorkerSpec) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -156,5 +175,28 @@ mod tests {
         let spec = service.default_worker_spec(&provider_id);
         assert!(spec.is_some());
         assert_eq!(spec.unwrap().image, "hodei-jobs-worker:latest");
+    }
+
+    #[tokio::test]
+    async fn test_get_provider_config() {
+        let provider_id = ProviderId::new();
+        let service = MockProvisioningService::new(vec![provider_id.clone()]);
+
+        let config = service.get_provider_config(&provider_id).await;
+        assert!(config.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_spec() {
+        let provider_id = ProviderId::new();
+        let service = MockProvisioningService::new(vec![provider_id.clone()]);
+
+        let spec = WorkerSpec::new(
+            "hodei-jobs-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        );
+
+        let result = service.validate_spec(&spec).await;
+        assert!(result.is_ok());
     }
 }

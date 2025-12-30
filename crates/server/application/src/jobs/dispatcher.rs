@@ -12,8 +12,10 @@
 //! - Filtrado de workers → SchedulingService
 //! - Selección de providers → ProviderRegistry / SchedulingService
 //! - Provisioning → WorkerProvisioningService
+//! - Orquestación de saga → ExecutionSagaDispatcher
 
 use crate::providers::ProviderRegistry;
+use crate::saga::dispatcher_saga::{DynExecutionSagaDispatcher, ExecutionSagaDispatcher};
 use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -61,6 +63,8 @@ pub struct JobDispatcher {
     recently_provisioned: Arc<tokio::sync::Mutex<HashMap<Uuid, Instant>>>,
     /// EPIC-28: Time window to skip re-provisioning for same job
     provisioning_cooldown: Duration,
+    /// EPIC-29: Saga orchestrator for execution saga coordination
+    execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
 }
 
 impl JobDispatcher {
@@ -81,6 +85,7 @@ impl JobDispatcher {
             >,
         >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+        execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
     ) -> Self {
         Self {
             job_queue,
@@ -95,6 +100,7 @@ impl JobDispatcher {
             worker_health_service: Arc::new(WorkerHealthService::builder().build()),
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
+            execution_saga_dispatcher,
         }
     }
 
@@ -111,6 +117,7 @@ impl JobDispatcher {
             dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError> + Send + Sync,
         >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+        execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
     ) -> Self {
         Self {
             job_queue,
@@ -125,6 +132,7 @@ impl JobDispatcher {
             worker_health_service: Arc::new(WorkerHealthService::builder().build()),
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
+            execution_saga_dispatcher,
         }
     }
 

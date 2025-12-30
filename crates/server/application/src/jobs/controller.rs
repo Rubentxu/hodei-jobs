@@ -63,6 +63,7 @@ impl JobController {
             event_bus.clone(),
             None, // outbox_repository - can be configured later
             provisioning_service.clone(),
+            None, // execution_saga_dispatcher - can be configured later
         ));
 
         let worker_monitor = Arc::new(crate::jobs::worker_monitor::WorkerMonitor::new(
