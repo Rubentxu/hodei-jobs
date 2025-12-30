@@ -37,23 +37,12 @@ impl PostgresWorkerBootstrapTokenStore {
     }
 
     /// Run database migrations for the token store
+    ///
+    /// DEPRECATED: Migrations are now handled by the central MigrationService.
+    /// This method is kept for backwards compatibility but does nothing.
     pub async fn run_migrations(&self) -> Result<()> {
-        // Enable pgcrypto extension for UUID generation
-        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to enable pgcrypto extension: {}", e),
-            })?;
-
-        // Create table with UUID type for worker_id
-        sqlx::query("CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token UUID PRIMARY KEY DEFAULT gen_random_uuid(), worker_id UUID NOT NULL, expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to run migrations: {}", e),
-            })?;
-
+        // Migrations are now handled by the central MigrationService
+        // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations
         Ok(())
     }
 }

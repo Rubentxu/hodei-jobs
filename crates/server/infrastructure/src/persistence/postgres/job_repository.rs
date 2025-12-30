@@ -54,84 +54,12 @@ impl PostgresJobRepository {
     }
 
     /// Run migrations to create job tables
+    ///
+    /// DEPRECATED: Migrations are now handled by the central MigrationService.
+    /// This method is kept for backwards compatibility but does nothing.
     pub async fn run_migrations(&self) -> Result<()> {
-        // Enable pgcrypto extension for gen_random_uuid()
-        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to enable pgcrypto extension: {}", e),
-            })?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS jobs (
-                id UUID PRIMARY KEY,
-                spec JSONB NOT NULL,
-                state VARCHAR(50) NOT NULL,
-                selected_provider_id UUID,
-                execution_context JSONB,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                max_attempts INTEGER NOT NULL DEFAULT 3,
-                created_at TIMESTAMPTZ NOT NULL,
-                started_at TIMESTAMPTZ,
-                completed_at TIMESTAMPTZ,
-                result JSONB,
-                error_message TEXT,
-                metadata JSONB NOT NULL DEFAULT '{}'
-            );
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create jobs table: {}", e),
-        })?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create jobs state index: {}", e),
-            })?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create jobs created_at index: {}", e),
-            })?;
-
-        // Create log storage references table for persistent log storage (storage-agnostic)
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS job_log_files (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-                storage_uri TEXT NOT NULL,
-                size_bytes BIGINT NOT NULL,
-                entry_count INTEGER NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                expires_at TIMESTAMPTZ NOT NULL,
-                UNIQUE(job_id)
-            );
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create job_log_files table: {}", e),
-        })?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_job_log_files_expires_at ON job_log_files(expires_at);",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create job_log_files expires_at index: {}", e),
-        })?;
-
+        // Migrations are now handled by the central MigrationService
+        // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations
         Ok(())
     }
 

@@ -38,58 +38,12 @@ impl PostgresWorkerRegistry {
     }
 
     /// Run database migrations for the worker registry
+    ///
+    /// DEPRECATED: Migrations are now handled by the central MigrationService.
+    /// This method is kept for backwards compatibility but does nothing.
     pub async fn run_migrations(&self) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS workers (
-                id UUID PRIMARY KEY,
-                provider_id UUID NOT NULL,
-                provider_type TEXT NOT NULL,
-                provider_resource_id TEXT NOT NULL,
-                state TEXT NOT NULL,
-                spec JSONB NOT NULL,
-                handle JSONB NOT NULL,
-                current_job_id UUID,
-                last_heartbeat TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
-                message: format!("Failed to create workers table: {}", e),
-            }
-        })?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_workers_provider_id ON workers(provider_id)
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
-                message: format!("Failed to create workers provider_id index: {}", e),
-            }
-        })?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_workers_state ON workers(state)
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
-                message: format!("Failed to create workers state index: {}", e),
-            }
-        })?;
-
+        // Migrations are now handled by the central MigrationService
+        // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations
         Ok(())
     }
 }

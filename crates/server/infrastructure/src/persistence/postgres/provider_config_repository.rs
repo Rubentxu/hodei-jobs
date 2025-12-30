@@ -36,45 +36,8 @@ impl PostgresProviderConfigRepository {
     }
 
     pub async fn run_migrations(&self) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS provider_configs (
-                id UUID PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                provider_type VARCHAR(50) NOT NULL,
-                config JSONB NOT NULL,
-                status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
-                priority INTEGER NOT NULL DEFAULT 0,
-                max_workers INTEGER NOT NULL DEFAULT 10,
-                tags JSONB NOT NULL DEFAULT '[]',
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create provider_configs table: {}", e),
-        })?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_provider_configs_name ON provider_configs(name);",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create provider_configs name index: {}", e),
-        })?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_provider_configs_type ON provider_configs(provider_type);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create provider_configs type index: {}", e),
-            })?;
-
+        // Migrations are now handled by the central MigrationService
+        // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations
         Ok(())
     }
 }

@@ -2,5 +2,6 @@
 
 pub mod outbox;
 pub mod postgres;
+pub mod saga;
 
 pub use postgres::*;

@@ -348,6 +348,33 @@ impl SagaContext {
         }
     }
 
+    /// Creates a fully initialized SagaContext from persisted data.
+    #[inline]
+    pub fn from_persistence(
+        saga_id: SagaId,
+        saga_type: SagaType,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+        started_at: DateTime<Utc>,
+        current_step: usize,
+        is_compensating: bool,
+        metadata: std::collections::HashMap<String, serde_json::Value>,
+        error_message: Option<String>,
+    ) -> Self {
+        Self {
+            saga_id,
+            saga_type,
+            correlation_id,
+            actor,
+            started_at,
+            current_step,
+            is_compensating,
+            metadata,
+            step_outputs: std::collections::HashMap::new(),
+            error_message,
+        }
+    }
+
     /// Creates a new SagaContext from event metadata.
     #[inline]
     pub fn from_event_metadata(
@@ -602,7 +629,6 @@ impl SagaExecutionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     // Test helper struct implementing SagaStep
     struct TestSagaStep;

@@ -33,37 +33,8 @@ impl PostgresJobQueue {
     }
 
     pub async fn run_migrations(&self) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS job_queue (
-                id BIGSERIAL PRIMARY KEY,
-                job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-                enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create job_queue table: {}", e),
-        })?;
-
-        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS uq_job_queue_job_id ON job_queue(job_id);")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to create job_queue unique index: {}", e),
-            })?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_job_queue_enqueued_at ON job_queue(enqueued_at);",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to create job_queue enqueued_at index: {}", e),
-        })?;
-
+        // Migrations are now handled by the central MigrationService
+        // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations
         Ok(())
     }
 }

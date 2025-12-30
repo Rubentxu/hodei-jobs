@@ -7,33 +7,29 @@
 
 ---
 
-## Estado de Implementación (v0.14.0) ✅ COMPLETADO
+## Estado de Implementación (v0.14.0) ✅ MAYORÍAS COMPLETADAS
 
 | Épica | US | Estado | Notas |
 |-------|-----|--------|-------|
 | 1. Foundation | US-1.1 | ✅ Completado | Tipos core, SagaStep trait, SagaContext |
-| 1. Foundation | US-1.2 | ⚠️ Parcial | Repository trait implementado, PostgreSQL deshabilitado (sqlx fix pendiente) |
+| 1. Foundation | US-1.2 | ✅ Completado | Repository trait + PostgresSagaRepository implementado (2025-12-30) |
 | 1. Foundation | US-1.3 | ✅ Completado | SagaOrchestrator base implementado |
 | 2. Provisioning | US-2.1 | ✅ Completado | ProvisioningSaga existente |
-| 2. Provisioning | US-2.2 | ✅ Completado | Integración en WorkerLifecycleManager (2025-12-30) |
+| 2. Provisioning | US-2.2 | ✅ Completado | DynProvisioningSagaCoordinator integrado en WorkerLifecycleManager (2025-12-30) |
 | 2. Provisioning | US-2.3 | ✅ Completado | Feature flags con shadow mode |
 | 3. Execution | US-3.1 | ✅ Completado | ExecutionSaga implementada |
-| 3. Execution | US-3.2 | ✅ Completado | Integración en JobDispatcher |
+| 3. Execution | US-3.2 | ✅ Completado | DynExecutionSagaDispatcher integrado en JobDispatcher |
 | 4. Recovery | US-4.1 | ✅ Completado | RecoverySaga implementada |
-| 4. Recovery | US-4.2 | ✅ Completado | Integración en WorkerLifecycleManager (2025-12-30) |
+| 4. Recovery | US-4.2 | ✅ Completado | DynRecoverySagaCoordinator integrado en WorkerLifecycleManager (2025-12-30) |
 | 5. Migration | US-5.1 | ✅ Completado | Consolidación de eventos con Transactional Outbox |
 | 5. Migration | US-5.2 | ✅ Completado | Legacy methods mantenidos para backwards compatibility |
 | 5. Migration | US-5.3 | ✅ Completado | Tests actualizados para US-2.2 y US-4.2 |
 
 ---
 
-**Commit actual:** `abca774` - feat(saga): integrate RecoverySaga and ProvisioningSaga coordinators (US-2.2, US-4.2)
-**Tests passing:** 132+ application tests passing
-**Archivos nuevos/modificados:** 
-- `saga/recovery_saga.rs` (nuevo)
-- `saga/mod.rs` (actualizado)
-- `workers/lifecycle.rs` (actualizado)
-- `domain/shared_kernel.rs` (añadido WorkerRecoveryFailed)
+**Commit actual:** `fa75eb4` - feat(provider): add reactive event monitoring infrastructure (EPIC-29)
+**Tests passing:** Domain (72 tests), Application, Shared - todos pasan
+**Pendiente de tests:** Infrastructure (requiere PostgreSQL - macros sqlx)
 
 ---
 
