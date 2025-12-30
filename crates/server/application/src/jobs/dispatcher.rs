@@ -605,29 +605,18 @@ impl JobDispatcher {
 
         debug!(worker_id = %worker_id, "JobDispatcher: Found worker");
 
-        // Step 2: EPIC-30 - Try saga-based execution if enabled
+        // Step 2: EPIC-30 - Try saga-based execution (always enabled now)
         let saga_used = if let Some(ref dispatcher) = self.execution_saga_dispatcher {
-            if dispatcher.is_saga_enabled() {
-                info!(job_id = %job.id, worker_id = %worker_id, "🚀 JobDispatcher: Starting ExecutionSaga");
-                match dispatcher.execute_execution_saga(&job.id, worker_id).await {
-                    Ok(result) => {
-                        info!(job_id = %job.id, saga_status = ?result, "✅ JobDispatcher: ExecutionSaga completed");
-                        if !result.is_success() && !dispatcher.is_shadow_mode() {
-                            anyhow::bail!("ExecutionSaga failed: {:?}", result);
-                        }
-                        true
-                    }
-                    Err(e) => {
-                        if dispatcher.is_shadow_mode() {
-                            warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed, falling back to legacy dispatch");
-                            false
-                        } else {
-                            anyhow::bail!("ExecutionSaga failed: {}", e);
-                        }
-                    }
+            info!(job_id = %job.id, worker_id = %worker_id, "🚀 JobDispatcher: Starting ExecutionSaga");
+            match dispatcher.execute_execution_saga(&job.id, worker_id).await {
+                Ok(result) => {
+                    info!(job_id = %job.id, saga_status = ?result, "✅ JobDispatcher: ExecutionSaga completed");
+                    true
                 }
-            } else {
-                false
+                Err(e) => {
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed, falling back to legacy dispatch");
+                    false
+                }
             }
         } else {
             false
@@ -809,52 +798,44 @@ impl JobDispatcher {
     /// 1. Si hay saga coordinator disponible, usar ProvisioningSaga
     /// 2. Fallback al provisioning_service legacy si no hay saga
     async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
-        // EPIC-30: Try saga-based provisioning first
+        // EPIC-30: Try saga-based provisioning first (always enabled)
         if let Some(ref coordinator) = self.provisioning_saga_coordinator {
-            if coordinator.is_saga_enabled() {
-                info!(job_id = %job.id, "🚀 JobDispatcher: Using saga-based provisioning");
+            info!(job_id = %job.id, "🚀 JobDispatcher: Using saga-based provisioning");
 
-                // Get enabled providers
-                let providers = self.provider_registry.list_enabled_providers().await?;
-                if providers.is_empty() {
-                    warn!("⚠️ JobDispatcher: No providers available for provisioning");
+            // Get enabled providers
+            let providers = self.provider_registry.list_enabled_providers().await?;
+            if providers.is_empty() {
+                warn!("⚠️ JobDispatcher: No providers available for provisioning");
+                return Ok(());
+            }
+
+            // Select best provider using scheduler with job preferences
+            let provider_id = self
+                .select_provider_for_provisioning(job, &providers)
+                .await?;
+
+            // Get spec from provisioning service
+            let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
+                DomainError::InfrastructureError {
+                    message: "No provisioning service available".to_string(),
+                }
+            })?;
+            let spec = provisioning
+                .default_worker_spec(&provider_id)
+                .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
+
+            // Execute saga
+            match coordinator
+                .execute_provisioning_saga(&provider_id, &spec, Some(job.id.clone()))
+                .await
+            {
+                Ok((worker_id, result)) => {
+                    info!(job_id = %job.id, worker_id = %worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
                     return Ok(());
                 }
-
-                // Select best provider using scheduler with job preferences
-                let provider_id = self
-                    .select_provider_for_provisioning(job, &providers)
-                    .await?;
-
-                // Get spec from provisioning service
-                let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
-                    DomainError::InfrastructureError {
-                        message: "No provisioning service available".to_string(),
-                    }
-                })?;
-                let spec = provisioning
-                    .default_worker_spec(&provider_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("No default spec for provider {}", provider_id)
-                    })?;
-
-                // Execute saga
-                match coordinator
-                    .execute_provisioning_saga(&provider_id, &spec, Some(job.id.clone()))
-                    .await
-                {
-                    Ok((worker_id, result)) => {
-                        info!(job_id = %job.id, worker_id = %worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        // If saga fails but shadow mode is enabled, try legacy
-                        if coordinator.is_shadow_mode() {
-                            warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: Saga failed, falling back to legacy provisioning");
-                        } else {
-                            anyhow::bail!("Saga provisioning failed: {}", e);
-                        }
-                    }
+                Err(e) => {
+                    // If saga fails, try legacy provisioning
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: Saga failed, falling back to legacy provisioning");
                 }
             }
         }

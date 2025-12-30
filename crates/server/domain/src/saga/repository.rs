@@ -226,6 +226,34 @@ impl SagaStepData {
         }
     }
 
+    /// Creates a new step data record with custom step ID
+    #[inline]
+    pub fn new_with_order(
+        saga_id: SagaId,
+        step_name: String,
+        step_order: i32,
+        input_data: Option<serde_json::Value>,
+        step_id: SagaStepId,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            step_id,
+            saga_id,
+            step_name,
+            step_order,
+            state: SagaStepState::Pending,
+            input_data,
+            output_data: None,
+            compensation_data: None,
+            started_at: None,
+            completed_at: None,
+            error_message: None,
+            retry_count: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     /// Mark step as in progress
     #[inline]
     pub fn mark_in_progress(&mut self) {

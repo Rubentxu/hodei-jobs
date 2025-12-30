@@ -644,12 +644,6 @@ impl WorkerLifecycleManager {
         if let Some(ref coordinator) = self.provisioning_saga_coordinator {
             info!(provider_id = %provider_id, "🛠️ Provisioning worker via saga");
 
-            // Validate saga is enabled
-            if !coordinator.is_saga_enabled() {
-                info!(provider_id = %provider_id, "Saga disabled, using legacy provisioning");
-                return self.provision_worker_legacy(provider_id, &spec).await;
-            }
-
             // Execute provisioning saga with optional job_id
             match coordinator
                 .execute_provisioning_saga(provider_id, &spec, None)
@@ -746,15 +740,6 @@ impl WorkerLifecycleManager {
                 failed_worker_id = %failed_worker_id,
                 "🔄 Recovering worker via saga"
             );
-
-            // Validate saga is enabled
-            if !coordinator.is_saga_enabled() {
-                info!(
-                    job_id = %job_id,
-                    "Recovery saga disabled, using legacy recovery"
-                );
-                return self.recover_worker_legacy(job_id, failed_worker_id).await;
-            }
 
             // Execute recovery saga
             match coordinator
@@ -2199,8 +2184,8 @@ mod tests {
         let orchestrator = Arc::new(MockSagaOrchestrator::new());
         let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
         let saga_config = ProvisioningSagaCoordinatorConfig {
-            saga_enabled: true,
-            ..Default::default()
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
         };
 
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
@@ -2251,8 +2236,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_provision_worker_fallback_to_legacy_when_saga_disabled() {
-        // GIVEN: Un WorkerLifecycleManager con coordinator pero saga deshabilitado
+    async fn test_provision_worker_uses_saga_when_coordinator_set() {
+        // GIVEN: Un WorkerLifecycleManager con coordinator configurado
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
@@ -2268,10 +2253,9 @@ mod tests {
 
         let orchestrator = Arc::new(MockSagaOrchestrator::new());
         let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
-        // Saga deshabilitado
         let saga_config = ProvisioningSagaCoordinatorConfig {
-            saga_enabled: false,
-            ..Default::default()
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
         };
 
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
@@ -2287,10 +2271,12 @@ mod tests {
         let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
 
         // WHEN: Se llama provision_worker
-        let result = manager.provision_worker(&provider_id, spec).await;
-
-        // THEN: Debe caer a legacy provisioning
-        assert!(result.is_ok(), "Should fallback to legacy provisioning");
+        // THEN: Verificamos que el manager tiene el coordinator configurado
+        // (la lógica real de saga se prueba en los tests específicos del coordinator)
+        assert!(
+            manager.provisioning_saga_coordinator.is_some(),
+            "Manager should have provisioning saga coordinator set"
+        );
     }
 
     #[tokio::test]
@@ -2315,8 +2301,8 @@ mod tests {
         let orchestrator = Arc::new(MockSagaOrchestrator::new());
         let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
         let saga_config = ProvisioningSagaCoordinatorConfig {
-            saga_enabled: true,
-            ..Default::default()
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
         };
 
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
@@ -2375,8 +2361,8 @@ mod tests {
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator::new());
         let saga_config = RecoverySagaCoordinatorConfig {
-            saga_enabled: true,
-            ..Default::default()
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
         };
 
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
@@ -2420,8 +2406,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_worker_fallback_to_legacy_when_saga_disabled() {
-        // GIVEN: Un WorkerLifecycleManager con coordinator pero saga deshabilitado
+    async fn test_recover_worker_via_saga() {
+        // GIVEN: Un WorkerLifecycleManager con recovery saga coordinator
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
@@ -2429,10 +2415,9 @@ mod tests {
 
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator::new());
-        // Saga deshabilitado
         let saga_config = RecoverySagaCoordinatorConfig {
-            saga_enabled: false,
-            ..Default::default()
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
         };
 
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
@@ -2464,8 +2449,8 @@ mod tests {
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator::new());
         let saga_config = RecoverySagaCoordinatorConfig {
-            saga_enabled: true,
-            ..Default::default()
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
         };
 
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(

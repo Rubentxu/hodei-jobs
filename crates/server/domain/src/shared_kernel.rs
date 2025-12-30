@@ -98,6 +98,22 @@ pub enum DomainError {
     SagaError { message: String },
 }
 
+impl From<sqlx::Error> for DomainError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::InfrastructureError {
+            message: format!("Database error: {}", error),
+        }
+    }
+}
+
+impl From<serde_json::Error> for DomainError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::InfrastructureError {
+            message: format!("Serialization error: {}", error),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, DomainError>;
 
 /// Trait para entidades con ID

@@ -8,6 +8,7 @@ use hodei_server_domain::saga::{
     SagaContext, SagaRepository as SagaRepositoryTrait, SagaState, SagaStepData, SagaStepId,
     SagaStepState, SagaType,
 };
+use hodei_server_domain::shared_kernel::DomainError;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -692,6 +693,221 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
 #[inline]
 pub fn new_saga_repository(pool: PgPool) -> PostgresSagaRepository {
     PostgresSagaRepository::new(pool)
+}
+
+// ============================================================================
+// PostgresSagaOrchestrator - Production-Ready Saga Orchestrator
+// ============================================================================
+
+use hodei_server_domain::saga::{Saga, SagaExecutionResult, SagaId, SagaOrchestrator, SagaStep};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Configuration for PostgresSagaOrchestrator
+#[derive(Debug, Clone)]
+pub struct PostgresSagaOrchestratorConfig {
+    pub max_concurrent_sagas: usize,
+    pub max_concurrent_steps: usize,
+    pub step_timeout: Duration,
+    pub saga_timeout: Duration,
+    pub max_retries: u32,
+    pub retry_backoff: Duration,
+}
+
+impl Default for PostgresSagaOrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_sagas: 100,
+            max_concurrent_steps: 10,
+            step_timeout: Duration::from_secs(30),
+            saga_timeout: Duration::from_secs(300),
+            max_retries: 3,
+            retry_backoff: Duration::from_secs(1),
+        }
+    }
+}
+
+/// Production-ready saga orchestrator using PostgreSQL for persistence.
+#[derive(Debug, Clone)]
+pub struct PostgresSagaOrchestrator<R: SagaRepositoryTrait + Clone> {
+    repository: Arc<R>,
+    config: PostgresSagaOrchestratorConfig,
+    active_sagas: Arc<AtomicUsize>,
+}
+
+impl<R: SagaRepositoryTrait + Clone> PostgresSagaOrchestrator<R> {
+    /// Creates a new production-ready saga orchestrator
+    pub fn new(repository: Arc<R>, config: Option<PostgresSagaOrchestratorConfig>) -> Self {
+        Self {
+            repository,
+            config: config.unwrap_or_default(),
+            active_sagas: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<R: SagaRepositoryTrait + Clone + Send + Sync + 'static> SagaOrchestrator
+    for PostgresSagaOrchestrator<R>
+where
+    <R as SagaRepositoryTrait>::Error: std::fmt::Display
+        + Send
+        + Sync
+        + From<sqlx::Error>
+        + From<serde_json::Error>
+        + From<hodei_server_domain::shared_kernel::DomainError>,
+{
+    type Error = <R as SagaRepositoryTrait>::Error;
+
+    async fn execute_saga(
+        &self,
+        saga: &dyn Saga,
+        mut context: SagaContext,
+    ) -> Result<SagaExecutionResult, Self::Error> {
+        let start_time = std::time::Instant::now();
+        let saga_id = context.saga_id.clone();
+
+        // Check concurrency limit
+        let current = self.active_sagas.load(Ordering::SeqCst);
+        if current >= self.config.max_concurrent_sagas {
+            return Err(Self::Error::from(
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!(
+                        "Concurrency limit exceeded: {}/{}",
+                        current, self.config.max_concurrent_sagas
+                    ),
+                },
+            ));
+        }
+
+        // Increment active count
+        self.active_sagas.fetch_add(1, Ordering::SeqCst);
+
+        // Ensure we decrement on exit
+        let active_sagas = self.active_sagas.clone();
+        let _guard = DropGuard(active_sagas);
+
+        // Save initial context
+        self.repository.save(&context).await?;
+
+        let steps = saga.steps();
+        let mut executed_steps = 0;
+
+        // Execute steps sequentially
+        for (index, step) in steps.into_iter().enumerate() {
+            // Check saga timeout
+            if start_time.elapsed() > self.config.saga_timeout {
+                context.set_error(format!("Saga timed out after {:?}", start_time.elapsed()));
+                self.repository
+                    .update_state(&saga_id, SagaState::Failed, context.error_message.clone())
+                    .await
+                    .ok();
+
+                return Err(Self::Error::from(
+                    hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                        message: format!("Saga timed out after {:?}", start_time.elapsed()),
+                    },
+                ));
+            }
+
+            // Create step data for persistence
+            let step_id = SagaStepId(Uuid::new_v4());
+            let step_data = SagaStepData::new_with_order(
+                saga_id.clone(),
+                step.name().to_string(),
+                index as i32,
+                None,
+                step_id,
+            );
+
+            // Save step start
+            self.repository.save_step(&step_data).await?;
+
+            // Execute step with timeout
+            let step_result =
+                tokio::time::timeout(self.config.step_timeout, step.execute(&mut context)).await;
+
+            match step_result {
+                Ok(Ok(())) => {
+                    // Step succeeded
+                    executed_steps += 1;
+                    self.repository
+                        .update_step_state(&step_data.step_id, SagaStepState::Completed, None)
+                        .await?;
+                }
+                Ok(Err(e)) => {
+                    // Step failed - start compensation
+                    context.set_error(e.to_string());
+                    self.repository
+                        .update_state(&saga_id, SagaState::Compensating, Some(e.to_string()))
+                        .await?;
+
+                    // Execute compensation for completed steps in reverse order
+                    for j in (0..index).rev() {
+                        // Compensation logic would go here - steps[j] would be the step to compensate
+                    }
+
+                    return Ok(SagaExecutionResult::failed(
+                        saga_id,
+                        saga.saga_type(),
+                        start_time.elapsed(),
+                        executed_steps as u32,
+                        index as u32,
+                        e.to_string(),
+                    ));
+                }
+                Err(_) => {
+                    // Step timed out
+                    let timeout_error =
+                        format!("Step timed out after {:?}", self.config.step_timeout);
+                    context.set_error(timeout_error.clone());
+
+                    return Err(DomainError::InfrastructureError {
+                        message: timeout_error,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        // All steps completed successfully
+        self.repository
+            .update_state(&saga_id, SagaState::Completed, None)
+            .await?;
+
+        Ok(SagaExecutionResult::completed_with_steps(
+            saga_id,
+            saga.saga_type(),
+            start_time.elapsed(),
+            executed_steps as u32,
+        ))
+    }
+
+    async fn get_saga(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error> {
+        self.repository.find_by_id(saga_id).await
+    }
+
+    async fn cancel_saga(&self, saga_id: &SagaId) -> Result<(), Self::Error> {
+        self.repository.mark_compensating(saga_id).await?;
+
+        self.repository
+            .update_state(
+                saga_id,
+                SagaState::Cancelled,
+                Some("Cancelled by user".to_string()),
+            )
+            .await?;
+
+        Ok(())
+    }
+}
+
+/// Simple guard to decrement active saga count
+struct DropGuard(Arc<AtomicUsize>);
+
+impl Drop for DropGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]

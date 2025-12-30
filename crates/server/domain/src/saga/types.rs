@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::Arc;
 use uuid::Uuid;
 
 // ============================================================================
@@ -301,7 +302,7 @@ pub trait SagaStep: Send + Sync {
 ///
 /// Carries metadata and state through the saga's execution,
 /// including correlation IDs, actor information, and step outputs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct SagaContext {
     /// Unique identifier for this saga instance
     pub saga_id: SagaId,
@@ -323,6 +324,9 @@ pub struct SagaContext {
     step_outputs: std::collections::HashMap<String, serde_json::Value>,
     /// Error message if saga failed
     pub error_message: Option<String>,
+    /// Runtime services injected for step execution (not persisted)
+    #[doc(hidden)]
+    pub services: Option<Arc<SagaServices>>,
 }
 
 impl SagaContext {
@@ -345,6 +349,7 @@ impl SagaContext {
             metadata: std::collections::HashMap::new(),
             step_outputs: std::collections::HashMap::new(),
             error_message: None,
+            services: None,
         }
     }
 
@@ -372,6 +377,7 @@ impl SagaContext {
             metadata,
             step_outputs: std::collections::HashMap::new(),
             error_message,
+            services: None,
         }
     }
 
@@ -384,6 +390,22 @@ impl SagaContext {
         actor: Option<String>,
     ) -> Self {
         Self::new(saga_id, saga_type, correlation_id, actor)
+    }
+
+    /// Injects runtime services for step execution.
+    /// These services are not persisted and are only available during execution.
+    #[inline]
+    pub fn with_services(self, services: Arc<SagaServices>) -> Self {
+        Self {
+            services: Some(services),
+            ..self
+        }
+    }
+
+    /// Gets the injected services, if available.
+    #[inline]
+    pub fn services(&self) -> Option<&Arc<SagaServices>> {
+        self.services.as_ref()
     }
 
     /// Stores output from a step for later retrieval.
@@ -443,6 +465,36 @@ impl SagaContext {
             serde_json::from_value(v.clone())
                 .map_err(|e| SagaError::DeserializationError(e.to_string()))
         })
+    }
+}
+
+/// Container for saga runtime services.
+///
+/// This structure holds references to the services needed by saga steps
+/// during execution. These services are injected at runtime and are not
+/// persisted with the saga context.
+pub struct SagaServices {
+    /// Provider registry for infrastructure operations
+    pub provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+    /// Event bus for publishing domain events
+    pub event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
+    /// Job repository for job operations
+    pub job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+}
+
+impl SagaServices {
+    /// Creates a new SagaServices instance.
+    #[inline]
+    pub fn new(
+        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
+        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+    ) -> Self {
+        Self {
+            provider_registry,
+            event_bus,
+            job_repository,
+        }
     }
 }
 

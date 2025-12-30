@@ -36,10 +36,15 @@ use hodei_server_application::jobs::{CancelJobUseCase, CreateJobUseCase, JobCont
 use hodei_server_application::providers::ProviderRegistry;
 use hodei_server_application::saga::dispatcher_saga::DynExecutionSagaDispatcher;
 use hodei_server_application::saga::provisioning_saga::DynProvisioningSagaCoordinator;
+use hodei_server_application::saga::recovery_saga::DynRecoverySagaCoordinator;
 use hodei_server_application::scheduling::smart_scheduler::SchedulerConfig;
 use hodei_server_application::workers::{
     DefaultWorkerProvisioningService, ProvisioningConfig, WorkerLifecycleConfig,
     WorkerLifecycleManager,
+};
+use hodei_server_domain::saga::{SagaOrchestrator, SagaOrchestratorConfig};
+use hodei_server_infrastructure::persistence::postgres::saga_repository::{
+    PostgresSagaOrchestrator, PostgresSagaOrchestratorConfig,
 };
 
 use hodei_server_domain::providers::ProviderConfigRepository;
@@ -667,7 +672,144 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ LogStreamService");
     info!("  ✓ Reflection Service");
 
-    // JobController loop - EPIC-30: Only create when saga infrastructure is available
+    // ==========================================================================
+    // EPIC-31: Saga Infrastructure Initialization
+    // ==========================================================================
+    info!("Initializing saga infrastructure...");
+
+    // Create Saga Repository with PostgreSQL persistence
+    let saga_repository_impl = PostgresSagaRepository::new(pool.clone());
+    saga_repository_impl
+        .run_migrations()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to run saga migrations: {}", e))?;
+    let saga_repository = Arc::new(saga_repository_impl);
+
+    // Create Saga Orchestrator Configuration from environment variables
+    let saga_config = PostgresSagaOrchestratorConfig {
+        max_concurrent_sagas: env::var("HODEI_SAGA_MAX_CONCURRENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100),
+        max_concurrent_steps: env::var("HODEI_SAGA_MAX_CONCURRENT_STEPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10),
+        step_timeout: Duration::from_secs(
+            env::var("HODEI_SAGA_STEP_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+        ),
+        saga_timeout: Duration::from_secs(
+            env::var("HODEI_SAGA_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+        ),
+        max_retries: env::var("HODEI_SAGA_MAX_RETRIES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3),
+        retry_backoff: Duration::from_secs(
+            env::var("HODEI_SAGA_RETRY_BACKOFF")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+        ),
+    };
+
+    // Create Production-Ready Saga Orchestrator with PostgreSQL persistence
+    let orchestrator: Arc<
+        dyn hodei_server_domain::saga::SagaOrchestrator<
+                Error = hodei_server_domain::shared_kernel::DomainError,
+            > + Send
+            + Sync,
+    > = Arc::new(PostgresSagaOrchestrator::new(
+        saga_repository.clone(),
+        Some(saga_config),
+    ));
+
+    info!("  ✓ Saga orchestrator initialized with PostgreSQL repository");
+
+    // Create Provisioning Saga Coordinator (always enabled)
+    let config =
+        hodei_server_application::saga::provisioning_saga::ProvisioningSagaCoordinatorConfig {
+            saga_timeout: Duration::from_secs(
+                env::var("HODEI_SAGA_PROVISIONING_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300),
+            ),
+            step_timeout: Duration::from_secs(
+                env::var("HODEI_SAGA_PROVISIONING_STEP_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(60),
+            ),
+        };
+
+    let provisioning_coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
+        orchestrator.clone(),
+        provisioning_service
+            .clone()
+            .expect("Provisioning service is required for saga coordinator"),
+        Some(config),
+    ));
+
+    info!("  ✓ ProvisioningSagaCoordinator initialized");
+
+    // Create Execution Saga Dispatcher (always enabled)
+    let config = hodei_server_application::saga::dispatcher_saga::ExecutionSagaDispatcherConfig {
+        saga_timeout: Duration::from_secs(
+            env::var("HODEI_SAGA_EXECUTION_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60),
+        ),
+        step_timeout: Duration::from_secs(
+            env::var("HODEI_SAGA_EXECUTION_STEP_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+        ),
+    };
+
+    let execution_dispatcher = Arc::new(DynExecutionSagaDispatcher::new(
+        orchestrator.clone(),
+        job_repository.clone(),
+        worker_registry.clone(),
+        Some(config),
+    ));
+
+    info!("  ✓ ExecutionSagaDispatcher initialized");
+
+    // Create Recovery Saga Coordinator (always enabled)
+    let config = hodei_server_application::saga::recovery_saga::RecoverySagaCoordinatorConfig {
+        saga_timeout: Duration::from_secs(
+            env::var("HODEI_SAGA_RECOVERY_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+        ),
+        step_timeout: Duration::from_secs(
+            env::var("HODEI_SAGA_RECOVERY_STEP_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60),
+        ),
+    };
+
+    let recovery_coordinator = Arc::new(DynRecoverySagaCoordinator::new(
+        orchestrator.clone(),
+        Some(config),
+    ));
+
+    info!("  ✓ RecoverySagaCoordinator initialized");
+
+    info!("Saga infrastructure ready");
+
+    // JobController loop - EPIC-31: Now with saga coordinators connected
     let controller_enabled =
         env::var("HODEI_JOB_CONTROLLER_ENABLED").unwrap_or_else(|_| "1".to_string()) == "1";
 
@@ -686,7 +828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 p as Arc<dyn hodei_server_application::workers::WorkerProvisioningService>
             });
 
-            // Create coordinators from provisioning_service
+            // Create JobController with saga coordinators
             // The provisioning_service contains the saga coordinators via inner service
             let controller = Arc::new(tokio::sync::Mutex::new(JobController::new(
                 job_queue.clone(),
@@ -697,8 +839,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sender,
                 event_bus.clone(),
                 controller_provisioning,
-                None, // EPIC-30: Saga coordinators not yet available at this scope
-                None, // EPIC-30: Saga coordinators not yet available at this scope
+                Some(execution_dispatcher), // EPIC-31: Now connected to saga dispatcher
+                Some(provisioning_coordinator), // EPIC-31: Now connected to saga coordinator
             )));
 
             // Keep the controller alive for the entire server lifetime

@@ -18,8 +18,6 @@ use tracing::{error, info, warn};
 pub struct ExecutionSagaDispatcherConfig {
     pub saga_timeout: Duration,
     pub step_timeout: Duration,
-    pub saga_enabled: bool,
-    pub shadow_mode: bool,
 }
 
 impl Default for ExecutionSagaDispatcherConfig {
@@ -27,8 +25,6 @@ impl Default for ExecutionSagaDispatcherConfig {
         Self {
             saga_timeout: Duration::from_secs(60),
             step_timeout: Duration::from_secs(30),
-            saga_enabled: true,
-            shadow_mode: false,
         }
     }
 }
@@ -77,16 +73,6 @@ impl DynExecutionSagaDispatcher {
             worker_registry,
             config: config.unwrap_or_default(),
         }
-    }
-
-    #[inline]
-    pub fn is_saga_enabled(&self) -> bool {
-        self.config.saga_enabled
-    }
-
-    #[inline]
-    pub fn is_shadow_mode(&self) -> bool {
-        self.config.shadow_mode
     }
 
     pub async fn execute_execution_saga(
@@ -231,18 +217,6 @@ impl DynExecutionSagaDispatcherBuilder {
         self
     }
 
-    pub fn with_saga_enabled(mut self, enabled: bool) -> Self {
-        self.config
-            .get_or_insert_with(Default::default)
-            .saga_enabled = enabled;
-        self
-    }
-
-    pub fn with_shadow_mode(mut self, enabled: bool) -> Self {
-        self.config.get_or_insert_with(Default::default).shadow_mode = enabled;
-        self
-    }
-
     pub fn build(
         self,
     ) -> Result<DynExecutionSagaDispatcher, DynExecutionSagaDispatcherBuilderError> {
@@ -298,16 +272,6 @@ where
             worker_registry,
             config: config.unwrap_or_default(),
         }
-    }
-
-    #[inline]
-    pub fn is_saga_enabled(&self) -> bool {
-        self.config.saga_enabled
-    }
-
-    #[inline]
-    pub fn is_shadow_mode(&self) -> bool {
-        self.config.shadow_mode
     }
 
     pub fn builder() -> ExecutionSagaDispatcherBuilder<OR> {
@@ -450,18 +414,6 @@ impl<OR: SagaOrchestrator> ExecutionSagaDispatcherBuilder<OR> {
         self
     }
 
-    pub fn with_saga_enabled(mut self, enabled: bool) -> Self {
-        self.config
-            .get_or_insert_with(Default::default)
-            .saga_enabled = enabled;
-        self
-    }
-
-    pub fn with_shadow_mode(mut self, enabled: bool) -> Self {
-        self.config.get_or_insert_with(Default::default).shadow_mode = enabled;
-        self
-    }
-
     pub fn build(self) -> Result<ExecutionSagaDispatcher<OR>, ExecutionSagaDispatcherBuilderError> {
         let orchestrator = self
             .orchestrator
@@ -567,9 +519,8 @@ mod tests {
     #[tokio::test]
     async fn test_config_defaults() {
         let config = ExecutionSagaDispatcherConfig::default();
-        assert!(config.saga_enabled);
-        assert!(!config.shadow_mode);
         assert_eq!(config.saga_timeout, Duration::from_secs(60));
+        assert_eq!(config.step_timeout, Duration::from_secs(30));
     }
 
     #[tokio::test]

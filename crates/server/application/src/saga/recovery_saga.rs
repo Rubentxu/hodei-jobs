@@ -17,8 +17,6 @@ use tracing::{error, info, warn};
 pub struct RecoverySagaCoordinatorConfig {
     pub saga_timeout: Duration,
     pub step_timeout: Duration,
-    pub saga_enabled: bool,
-    pub shadow_mode: bool,
 }
 
 impl Default for RecoverySagaCoordinatorConfig {
@@ -26,8 +24,6 @@ impl Default for RecoverySagaCoordinatorConfig {
         Self {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
-            saga_enabled: true,
-            shadow_mode: false,
         }
     }
 }
@@ -65,16 +61,6 @@ impl DynRecoverySagaCoordinator {
             orchestrator,
             config: config.unwrap_or_default(),
         }
-    }
-
-    #[inline]
-    pub fn is_saga_enabled(&self) -> bool {
-        self.config.saga_enabled
-    }
-
-    #[inline]
-    pub fn is_shadow_mode(&self) -> bool {
-        self.config.shadow_mode
     }
 
     /// Execute recovery saga for a failed worker and its job
@@ -177,18 +163,6 @@ impl DynRecoverySagaCoordinatorBuilder {
         self
     }
 
-    pub fn with_saga_enabled(mut self, enabled: bool) -> Self {
-        self.config
-            .get_or_insert_with(Default::default)
-            .saga_enabled = enabled;
-        self
-    }
-
-    pub fn with_shadow_mode(mut self, enabled: bool) -> Self {
-        self.config.get_or_insert_with(Default::default).shadow_mode = enabled;
-        self
-    }
-
     pub fn build(
         self,
     ) -> std::result::Result<DynRecoverySagaCoordinator, DynRecoverySagaCoordinatorBuilderError>
@@ -225,16 +199,6 @@ where
             orchestrator,
             config: config.unwrap_or_default(),
         }
-    }
-
-    #[inline]
-    pub fn is_saga_enabled(&self) -> bool {
-        self.config.saga_enabled
-    }
-
-    #[inline]
-    pub fn is_shadow_mode(&self) -> bool {
-        self.config.shadow_mode
     }
 
     pub fn builder() -> RecoverySagaCoordinatorBuilder<OR> {
@@ -345,18 +309,6 @@ impl<OR: SagaOrchestrator> RecoverySagaCoordinatorBuilder<OR> {
         self
     }
 
-    pub fn with_saga_enabled(mut self, enabled: bool) -> Self {
-        self.config
-            .get_or_insert_with(Default::default)
-            .saga_enabled = enabled;
-        self
-    }
-
-    pub fn with_shadow_mode(mut self, enabled: bool) -> Self {
-        self.config.get_or_insert_with(Default::default).shadow_mode = enabled;
-        self
-    }
-
     pub fn build(
         self,
     ) -> std::result::Result<RecoverySagaCoordinator<OR>, RecoverySagaCoordinatorBuilderError> {
@@ -451,9 +403,8 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_config_defaults() {
         let config = RecoverySagaCoordinatorConfig::default();
-        assert!(config.saga_enabled);
-        assert!(!config.shadow_mode);
         assert_eq!(config.saga_timeout, Duration::from_secs(300));
+        assert_eq!(config.step_timeout, Duration::from_secs(60));
     }
 
     #[tokio::test]

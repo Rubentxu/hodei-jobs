@@ -2,11 +2,14 @@
 //!
 //! Saga para el aprovisionamiento de workers on-demand.
 
+use crate::events::DomainEvent;
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
-use crate::shared_kernel::ProviderId;
+use crate::shared_kernel::{JobId, ProviderId};
 use crate::workers::WorkerSpec;
 use async_trait::async_trait;
+use std::str::FromStr;
 use std::time::Duration;
+use tracing::{debug, info};
 
 // ============================================================================
 // ProvisioningSaga
@@ -16,26 +19,43 @@ use std::time::Duration;
 ///
 /// # Pasos:
 ///
-/// 1. **ValidateProviderCapacityStep**: Verifica que el provider tenga capacidad
-/// 2. **CreateInfrastructureStep**: Crea la infraestructura del worker
-/// 3. **RegisterWorkerStep**: Registra el worker en el registry
-/// 4. **PublishProvisionedEventStep**: Publica el evento WorkerProvisioned
+/// 1. **ValidateProviderCapacityStep**: Valida que el provider tenga capacidad
+/// 2. **CreateInfrastructureStep**: Almacena metadata para creación de infraestructura
+/// 3. **RegisterWorkerStep**: Almacena metadata para registro del worker
+/// 4. **PublishProvisionedEventStep**: Almacena metadata para publicación de evento
 ///
-/// # Compensaciones:
+/// # Nota:
 ///
-/// Si algún paso falla, los pasos anteriores se compensan en orden inverso.
+/// Esta saga almacena metadatos en el contexto que son utilizados por los
+/// coordinadores en la capa de aplicación para realizar las operaciones reales.
+/// Los pasos saga themselves no realizan operaciones de infraestructura directamente.
 #[derive(Debug, Clone)]
 pub struct ProvisioningSaga {
     /// Spec del worker a aprovisionar
     spec: WorkerSpec,
     /// Provider ID seleccionado
     provider_id: ProviderId,
+    /// Job ID asociado (opcional)
+    job_id: Option<JobId>,
 }
 
 impl ProvisioningSaga {
     /// Crea una nueva ProvisioningSaga
     pub fn new(spec: WorkerSpec, provider_id: ProviderId) -> Self {
-        Self { spec, provider_id }
+        Self {
+            spec,
+            provider_id,
+            job_id: None,
+        }
+    }
+
+    /// Crea una ProvisioningSaga con job asociado
+    pub fn with_job(spec: WorkerSpec, provider_id: ProviderId, job_id: JobId) -> Self {
+        Self {
+            spec,
+            provider_id,
+            job_id: Some(job_id),
+        }
     }
 
     /// Obtiene el spec del worker
@@ -46,6 +66,11 @@ impl ProvisioningSaga {
     /// Obtiene el provider ID
     pub fn provider_id(&self) -> &ProviderId {
         &self.provider_id
+    }
+
+    /// Obtiene el job ID
+    pub fn job_id(&self) -> Option<&JobId> {
+        self.job_id.as_ref()
     }
 }
 
@@ -76,6 +101,9 @@ impl Saga for ProvisioningSaga {
 // ============================================================================
 
 /// Step que valida que el provider tenga capacidad para el worker solicitado.
+///
+/// Este step almacena el provider_id en el contexto para uso por el coordinador.
+/// La validación real de capacidad se realiza en el coordinador.
 #[derive(Debug, Clone)]
 pub struct ValidateProviderCapacityStep {
     provider_id: ProviderId,
@@ -96,18 +124,20 @@ impl SagaStep for ValidateProviderCapacityStep {
     }
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        // Guardamos el provider_id en el contexto para uso posterior
+        // Store provider_id in context for coordinator use
         context
             .set_metadata("saga_provider_id", &self.provider_id.to_string())
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
 
+        debug!(provider_id = %self.provider_id, "Provider capacity validation step completed");
+
         Ok(())
     }
 
     async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
-        // No hay compensación necesaria para validación
+        // No compensation needed for validation metadata
         Ok(())
     }
 
@@ -124,10 +154,10 @@ impl SagaStep for ValidateProviderCapacityStep {
 // CreateInfrastructureStep
 // ============================================================================
 
-/// Step que crea la infraestructura del worker via el provider.
+/// Step que almacena metadata para creación de infraestructura.
 ///
-/// Este paso crea el worker en el provider (Docker container, Firecracker VM, etc.)
-/// y guarda el handle para poder destruirlo si la saga falla.
+/// Este step no crea infraestructura directamente - almacena el spec y provider_id
+/// en el contexto para que el coordinador pueda realizar la creación.
 #[derive(Debug, Clone)]
 pub struct CreateInfrastructureStep {
     provider_id: ProviderId,
@@ -149,18 +179,34 @@ impl SagaStep for CreateInfrastructureStep {
     }
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        // El handle se obtiene del contexto vía el caller que注入 el provider
-        // Este step asume que el caller ha configurado el contexto apropiadamente
+        // Store worker spec in context for coordinator use
+        context
+            .set_metadata("worker_spec_image", &self.spec.image)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+
+        // Provider ID is already stored by ValidateProviderCapacityStep
+        debug!(
+            provider_id = %self.provider_id,
+            image = %self.spec.image,
+            "Infrastructure creation metadata stored"
+        );
+
         Ok(())
     }
 
     async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
-        // La compensación se delega al caller que tiene acceso al provider
+        // Compensation is handled by the coordinator, not the step
         Ok(())
     }
 
     fn is_idempotent(&self) -> bool {
         true
+    }
+
+    fn has_compensation(&self) -> bool {
+        false
     }
 }
 
@@ -168,7 +214,11 @@ impl SagaStep for CreateInfrastructureStep {
 // RegisterWorkerStep
 // ============================================================================
 
-/// Step que registra el worker creado en el WorkerRegistry.
+/// Step que almacena metadata para registro del worker.
+///
+/// Este step no registra el worker directamente - almacena marcadores en el
+/// contexto para que el coordinador pueda realizar el registro después de
+/// que la infraestructura sea creada.
 #[derive(Debug, Clone)]
 pub struct RegisterWorkerStep {
     provider_id: ProviderId,
@@ -189,6 +239,14 @@ impl SagaStep for RegisterWorkerStep {
     }
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        // Mark that registration should happen after infrastructure is ready
+        context
+            .set_metadata("worker_registration_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+
+        debug!("Worker registration metadata stored");
         Ok(())
     }
 
@@ -199,13 +257,20 @@ impl SagaStep for RegisterWorkerStep {
     fn is_idempotent(&self) -> bool {
         false
     }
+
+    fn has_compensation(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================================
 // PublishProvisionedEventStep
 // ============================================================================
 
-/// Step que publica el evento WorkerProvisioned.
+/// Step que almacena metadata para publicación de evento.
+///
+/// Este step no publica eventos directamente - almacena la información necesaria
+/// en el contexto para que el coordinador publique el evento DomainEvent::WorkerProvisioned.
 #[derive(Debug, Clone)]
 pub struct PublishProvisionedEventStep;
 
@@ -224,10 +289,26 @@ impl SagaStep for PublishProvisionedEventStep {
     }
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        // Mark that event publication is pending
+        context
+            .set_metadata("event_publication_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+
+        // Store occurred_at timestamp for the event
+        context
+            .set_metadata("provisioned_at", &chrono::Utc::now().to_rfc3339())
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+
+        info!("Event publication metadata stored");
         Ok(())
     }
 
     async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+        // Event publishing cannot be compensated
         Ok(())
     }
 
@@ -274,16 +355,16 @@ mod tests {
     }
 
     #[test]
-    fn create_infrastructure_step_has_compensation() {
+    fn create_infrastructure_step_has_no_compensation() {
         let step = CreateInfrastructureStep::new(ProviderId::new(), create_test_worker_spec());
-        assert!(step.has_compensation());
+        assert!(!step.has_compensation());
         assert!(step.is_idempotent());
     }
 
     #[test]
-    fn register_worker_step_has_compensation() {
+    fn register_worker_step_has_no_compensation() {
         let step = RegisterWorkerStep::new(ProviderId::new());
-        assert!(step.has_compensation());
+        assert!(!step.has_compensation());
         assert!(!step.is_idempotent());
     }
 

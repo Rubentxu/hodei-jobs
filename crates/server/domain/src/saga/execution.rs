@@ -2,17 +2,29 @@
 //!
 //! Saga para la ejecución de jobs en workers.
 
-use crate::saga::{Saga, SagaContext, SagaResult, SagaStep, SagaType};
+use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
 use async_trait::async_trait;
-use chrono::Utc;
 use std::time::Duration;
+use tracing::{debug, info};
 
 // ============================================================================
 // ExecutionSaga
 // ============================================================================
 
 /// Saga para ejecutar un job en un worker.
+///
+/// # Pasos:
+///
+/// 1. **ValidateJobStep**: Valida que el job existe y está en estado correcto
+/// 2. **AssignWorkerStep**: Almacena metadata para asignación del worker
+/// 3. **ExecuteJobStep**: Almacena metadata para ejecución del job
+/// 4. **CompleteJobStep**: Almacena metadata para completación del job
+///
+/// # Nota:
+///
+/// Esta saga almacena metadatos en el contexto que son utilizados por los
+/// coordinadores en la capa de aplicación para realizar las operaciones reales.
 #[derive(Debug, Clone)]
 pub struct ExecutionSaga {
     pub job_id: JobId,
@@ -87,9 +99,10 @@ impl SagaStep for ValidateJobStep {
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("execution_job_id", &self.job_id.to_string())
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        debug!(job_id = %self.job_id, "Job validation metadata stored");
         Ok(())
     }
 
@@ -138,9 +151,10 @@ impl SagaStep for AssignWorkerStep {
         let worker_id = self.worker_id.clone().unwrap_or_else(JobId::new);
         context
             .set_metadata("execution_worker_id", &worker_id.to_string())
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        debug!(job_id = %self.job_id, worker_id = %worker_id, "Worker assignment metadata stored");
         Ok(())
     }
 
@@ -181,10 +195,11 @@ impl SagaStep for ExecuteJobStep {
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
-            .set_metadata("job_executed_at", &Utc::now().to_rfc3339())
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .set_metadata("job_execution_started_at", &chrono::Utc::now().to_rfc3339())
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        debug!(job_id = %self.job_id, "Job execution metadata stored");
         Ok(())
     }
 
@@ -195,6 +210,11 @@ impl SagaStep for ExecuteJobStep {
     #[inline]
     fn is_idempotent(&self) -> bool {
         true
+    }
+
+    #[inline]
+    fn has_compensation(&self) -> bool {
+        false
     }
 }
 
@@ -225,10 +245,16 @@ impl SagaStep for CompleteJobStep {
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
-            .set_metadata("job_completed_at", &Utc::now().to_rfc3339())
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .set_metadata("job_completed_at", &chrono::Utc::now().to_rfc3339())
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        context
+            .set_metadata("job_execution_completed", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+        info!(job_id = %self.job_id, "Job completion metadata stored");
         Ok(())
     }
 

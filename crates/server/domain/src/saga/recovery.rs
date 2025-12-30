@@ -2,17 +2,30 @@
 //!
 //! Saga para la recuperación de workers fallidos y reassignación de jobs.
 
-use crate::saga::{Saga, SagaContext, SagaResult, SagaStep, SagaType};
+use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
 use async_trait::async_trait;
-use chrono::Utc;
 use std::time::Duration;
+use tracing::{debug, info};
 
 // ============================================================================
 // RecoverySaga
 // ============================================================================
 
 /// Saga para recuperar de fallos de workers y reassignar jobs.
+///
+/// # Pasos:
+///
+/// 1. **CheckWorkerConnectivityStep**: Almacena metadata para verificación de conectividad
+/// 2. **ProvisionNewWorkerStep**: Almacena metadata para aprovisionamiento de nuevo worker
+/// 3. **TransferJobStep**: Almacena metadata para transferencia de job
+/// 4. **TerminateOldWorkerStep**: Almacena metadata para terminación del worker viejo
+/// 5. **CancelOldWorkerStep**: Almacena metadata para cancelación del registro
+///
+/// # Nota:
+///
+/// Esta saga almacena metadatos en el contexto que son utilizados por los
+/// coordinadores en la capa de aplicación para realizar las operaciones reales.
 #[derive(Debug, Clone)]
 pub struct RecoverySaga {
     pub job_id: JobId,
@@ -82,9 +95,10 @@ impl SagaStep for CheckWorkerConnectivityStep {
                 "recovery_failed_worker_id",
                 &self.failed_worker_id.to_string(),
             )
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        debug!(worker_id = %self.failed_worker_id, "Worker connectivity check metadata stored");
         Ok(())
     }
 
@@ -132,11 +146,17 @@ impl SagaStep for ProvisionNewWorkerStep {
         context
             .set_metadata(
                 "recovery_new_worker_id",
-                &format!("new-{}", uuid::Uuid::new_v4()),
+                &format!("recovery-{}", uuid::Uuid::new_v4()),
             )
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        context
+            .set_metadata("new_worker_provisioning_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+        debug!(job_id = %self.job_id, "New worker provisioning metadata stored");
         Ok(())
     }
 
@@ -177,10 +197,16 @@ impl SagaStep for TransferJobStep {
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
-            .set_metadata("job_transferred_at", &Utc::now().to_rfc3339())
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .set_metadata("job_transferred_at", &chrono::Utc::now().to_rfc3339())
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        context
+            .set_metadata("job_transfer_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+        debug!(job_id = %self.job_id, "Job transfer metadata stored");
         Ok(())
     }
 
@@ -219,7 +245,13 @@ impl SagaStep for TerminateOldWorkerStep {
         "TerminateOldWorker"
     }
 
-    async fn execute(&self, _context: &mut SagaContext) -> SagaResult<Self::Output> {
+    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        context
+            .set_metadata("old_worker_termination_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+        debug!(worker_id = %self.worker_id, "Old worker termination metadata stored");
         Ok(())
     }
 
@@ -259,20 +291,12 @@ impl SagaStep for CancelOldWorkerStep {
     }
 
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        let is_connected = context
-            .get_metadata::<bool>("worker_reconnected")
-            .and_then(|r| r.ok())
-            .unwrap_or(false);
-
-        if !is_connected {
-            return Ok(());
-        }
-
         context
-            .set_metadata("old_worker_cancelled", &true)
-            .map_err(|e| crate::saga::SagaError::PersistenceError {
+            .set_metadata("old_worker_cancellation_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
+        debug!(worker_id = %self.worker_id, "Old worker cancellation metadata stored");
         Ok(())
     }
 
