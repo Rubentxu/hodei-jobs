@@ -572,6 +572,18 @@ pub mod tests {
         }
     }
 
+    #[async_trait]
+    impl hodei_server_domain::workers::provider_api::WorkerEventSource for MockWorkerProvider {
+        async fn subscribe(
+            &self,
+        ) -> std::result::Result<
+            std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<hodei_server_domain::workers::WorkerInfrastructureEvent, ProviderError>> + Send>>,
+            ProviderError,
+        > {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
     // Implement WorkerProvider as marker trait (combines all ISP traits)
     impl WorkerProvider for MockWorkerProvider {}
 }

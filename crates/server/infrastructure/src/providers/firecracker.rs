@@ -4,11 +4,13 @@
 //! Provides hardware-level isolation via KVM with sub-second boot times.
 
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
@@ -26,9 +28,11 @@ use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result, Worker
 use hodei_server_domain::workers::{
     Architecture, CostEstimate, HealthStatus, JobRequirements, LogEntry, LogLevel,
     ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics, ProviderType,
-    ResourceLimits, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLifecycle,
-    WorkerLogs, WorkerMetrics, WorkerProvider, WorkerProviderIdentity, WorkerSpec,
+    ResourceLimits, WorkerCost, WorkerEligibility, WorkerEventSource, WorkerHandle, WorkerHealth,
+    WorkerInfrastructureEvent, WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProvider,
+    WorkerProviderIdentity, WorkerSpec,
 };
+
 use hodei_shared::WorkerState;
 
 use super::metrics_collector::ProviderMetricsCollector;
@@ -1779,3 +1783,21 @@ mod tests {
 // This allows FirecrackerProvider to be used as dyn WorkerProvider
 #[async_trait]
 impl WorkerProvider for FirecrackerProvider {}
+
+// Stub implementation for WorkerEventSource - Firecracker doesn't support event streams
+#[async_trait]
+impl WorkerEventSource for FirecrackerProvider {
+    async fn subscribe(
+        &self,
+    ) -> std::result::Result<
+        Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<WorkerInfrastructureEvent, ProviderError>>
+                    + Send,
+            >,
+        >,
+        ProviderError,
+    > {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+}

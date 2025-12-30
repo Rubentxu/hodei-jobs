@@ -4,6 +4,7 @@
 //! Uses kube-rs for native Kubernetes API interaction.
 
 use async_trait::async_trait;
+use futures::Stream;
 use k8s_openapi::api::core::v1::{
     Container, EnvVar, Pod, PodSpec, ResourceRequirements as K8sResourceRequirements,
 };
@@ -14,6 +15,7 @@ use kube::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -23,9 +25,9 @@ use hodei_server_domain::{
     workers::{
         Architecture, CostEstimate, GpuModel, GpuVendor, HealthStatus, JobRequirements, LogEntry,
         LogLevel, ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics,
-        ProviderType, ResourceLimits, VolumeSpec, WorkerCost, WorkerEligibility, WorkerHandle,
-        WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProvider,
-        WorkerProviderIdentity, WorkerSpec,
+        ProviderType, ResourceLimits, VolumeSpec, WorkerCost, WorkerEligibility, WorkerEventSource,
+        WorkerHandle, WorkerHealth, WorkerInfrastructureEvent, WorkerLifecycle, WorkerLogs,
+        WorkerMetrics, WorkerProvider, WorkerProviderIdentity, WorkerSpec,
     },
 };
 
@@ -2532,3 +2534,21 @@ mod tests {
 // This allows KubernetesProvider to be used as dyn WorkerProvider
 #[async_trait]
 impl WorkerProvider for KubernetesProvider {}
+
+// Stub implementation for WorkerEventSource - Kubernetes events not yet connected
+#[async_trait]
+impl WorkerEventSource for KubernetesProvider {
+    async fn subscribe(
+        &self,
+    ) -> std::result::Result<
+        Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<WorkerInfrastructureEvent, ProviderError>>
+                    + Send,
+            >,
+        >,
+        ProviderError,
+    > {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+}

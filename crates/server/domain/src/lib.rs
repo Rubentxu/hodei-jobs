@@ -21,6 +21,7 @@ pub mod iam;
 pub mod jobs;
 pub mod logging;
 pub mod providers;
+pub mod saga;
 pub mod scheduling;
 pub mod workers;
 
@@ -44,5 +45,6 @@ pub use credentials::*;
 pub use iam::*;
 pub use jobs::*;
 pub use providers::*;
+pub use saga::*;
 pub use scheduling::*;
 pub use workers::*;

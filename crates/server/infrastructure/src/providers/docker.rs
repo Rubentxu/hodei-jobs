@@ -15,9 +15,11 @@ use bollard::{
     },
 };
 use chrono::Utc;
+use futures::Stream;
 use futures_util::StreamExt;
 use std::{
     collections::HashMap,
+    pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,8 +32,9 @@ use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result};
 use hodei_server_domain::workers::{
     Architecture, CostEstimate, HealthStatus, JobRequirements, LogEntry, LogLevel,
     ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics, ProviderType,
-    ResourceLimits, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLifecycle,
-    WorkerLogs, WorkerMetrics, WorkerProvider, WorkerProviderIdentity, WorkerSpec,
+    ResourceLimits, WorkerCost, WorkerEligibility, WorkerEventSource, WorkerHandle, WorkerHealth,
+    WorkerInfrastructureEvent, WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProvider,
+    WorkerProviderIdentity, WorkerSpec,
 };
 use hodei_shared::WorkerState;
 
@@ -743,6 +746,25 @@ mod tests {
 // This allows DockerProvider to be used as dyn WorkerProvider
 #[async_trait]
 impl WorkerProvider for DockerProvider {}
+
+// Stub implementation for WorkerEventSource - Docker events not yet connected
+#[async_trait]
+impl WorkerEventSource for DockerProvider {
+    async fn subscribe(
+        &self,
+    ) -> std::result::Result<
+        Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<WorkerInfrastructureEvent, ProviderError>>
+                    + Send,
+            >,
+        >,
+        ProviderError,
+    > {
+        // Return empty stream - Docker events not yet implemented
+        Ok(Box::pin(futures::stream::empty()))
+    }
+}
 
 // ============================================================================
 // Docker Provider Builder

@@ -16,7 +16,7 @@ use hodei_server_domain::{
     workers::health::WorkerHealthService,
     workers::provider_api::{
         WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
-        WorkerProviderIdentity,
+        WorkerProviderIdentity, WorkerInfrastructureEvent, HealthStatus,
     },
     workers::{Worker, WorkerFilter, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
@@ -24,6 +24,7 @@ use hodei_server_domain::{
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+use futures::StreamExt;
 
 /// Configuration for Worker Lifecycle Manager
 #[derive(Debug, Clone)]
@@ -71,6 +72,7 @@ impl Default for WorkerLifecycleConfig {
 /// - Terminate idle/unhealthy workers
 /// - Provision new workers when needed
 /// - Reconcile stale worker states and reassign jobs
+#[derive(Clone)]
 pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
     providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
@@ -687,7 +689,115 @@ impl WorkerLifecycleManager {
     // US-26.6: Orphan Worker Detection and Cleanup
     // ============================================================
 
-    /// Detect and cleanup orphan workers (EPIC-26 US-26.6)
+    // ============================================================
+    // Reactive Event Monitoring (EPIC-29)
+    // ============================================================
+
+    /// Start monitoring events from all registered providers
+    pub async fn start_event_monitoring(&self) {
+        let providers = self.providers.read().await;
+        
+        for (id, provider) in providers.iter() {
+            let provider = provider.clone();
+            let manager = self.clone();
+            let provider_id = id.clone();
+            
+            info!("Starting event monitoring for provider {}", provider_id);
+            tokio::spawn(async move {
+                manager.monitor_single_provider(provider_id, provider).await;
+            });
+        }
+    }
+    
+    async fn monitor_single_provider(&self, provider_id: ProviderId, provider: Arc<dyn WorkerProvider>) {
+        // Use subscribe_ext from WorkerProviderExt (blanket impl)
+        // But provider is Arc<dyn WorkerProvider>.
+        // Check if dyn WorkerProvider impls subscribe_ext in provider_api.rs.
+        // Yes, I added explicit impl for dyn WorkerProvider.
+        use hodei_server_domain::workers::provider_api::WorkerProviderExt;
+
+        match provider.subscribe_ext().await {
+            Ok(stream) => {
+                let mut stream = stream;
+                
+                while let Some(event_result) = stream.next().await {
+                    match event_result {
+                        Ok(event) => {
+                            if let Err(e) = self.handle_infrastructure_event(provider_id.clone(), event).await {
+                                error!("Error handling event from provider {}: {}", provider_id, e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error in event stream from provider {}: {}", provider_id, e);
+                        }
+                    }
+                }
+                warn!("Event stream ended for provider {}", provider_id);
+            }
+            Err(e) => {
+                 error!("Failed to subscribe to provider {}: {}", provider_id, e);
+            }
+        }
+    }
+
+    async fn handle_infrastructure_event(&self, provider_id: ProviderId, event: WorkerInfrastructureEvent) -> Result<()> {
+        match event {
+            WorkerInfrastructureEvent::WorkerStarted { provider_resource_id, timestamp } => {
+                info!("Event: Worker {} started at {}", provider_resource_id, timestamp);
+                // Transition worker to Ready if it was Creating/Connecting
+                // We need to find the worker by provider resource ID.
+                let workers = self.registry.find_by_provider(&provider_id).await?;
+                if let Some(worker) = workers.iter().find(|w| w.handle().provider_resource_id == provider_resource_id) {
+                     if *worker.state() == WorkerState::Creating || *worker.state() == WorkerState::Connecting {
+                         info!("Marking worker {} as Ready (started)", worker.id());
+                         self.registry.update_state(worker.id(), WorkerState::Ready).await?;
+                         
+                         // Emit WorkerStatusChanged
+                         self.emit_worker_status_changed(
+                             worker.id(), 
+                             worker.state().clone(), 
+                             WorkerState::Ready, 
+                             "provider_event_started"
+                         ).await?;
+                     }
+                }
+            }
+            WorkerInfrastructureEvent::WorkerStopped { provider_resource_id, timestamp, reason, .. } => {
+                info!("Event: Worker {} stopped at {}", provider_resource_id, timestamp);
+                let workers = self.registry.find_by_provider(&provider_id).await?;
+                if let Some(worker) = workers.iter().find(|w| w.handle().provider_resource_id == provider_resource_id) {
+                     if *worker.state() != WorkerState::Terminated {
+                         info!("Marking worker {} as Terminated (stopped)", worker.id());
+                         self.registry.update_state(worker.id(), WorkerState::Terminated).await?;
+                         
+                         // Emit WorkerStatusChanged
+                         self.emit_worker_status_changed(
+                             worker.id(), 
+                             worker.state().clone(), 
+                             WorkerState::Terminated, 
+                             &format!("provider_event_stopped: {:?}", reason)
+                         ).await?;
+                     }
+                }
+            }
+            WorkerInfrastructureEvent::WorkerHealthChanged { provider_resource_id, status, .. } => {
+                 // Logic to handle health changes
+                 // Map HealthStatus to WorkerState?
+                 // If Unhealthy -> Terminating?
+                 if matches!(status, HealthStatus::Unhealthy { .. }) {
+                    let workers = self.registry.find_by_provider(&provider_id).await?;
+                    if let Some(worker) = workers.iter().find(|w| w.handle().provider_resource_id == provider_resource_id) {
+                         warn!("Worker {} reported unhealthy via event", worker.id());
+                         // Mark logic similar to run_health_check?
+                    }
+                 }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Detect orphan workers (EPIC-26 US-26.6)
     ///
     /// Orphan workers are workers that exist in the provider but are not
     /// registered in our registry. This can happen if:
@@ -1165,6 +1275,17 @@ mod tests {
 
         fn calculate_health_score(&self) -> f64 {
             100.0
+        }
+    }
+    #[async_trait::async_trait]
+    impl hodei_server_domain::workers::provider_api::WorkerEventSource for MockWorkerProvider {
+        async fn subscribe(
+            &self,
+        ) -> std::result::Result<
+            std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<hodei_server_domain::workers::WorkerInfrastructureEvent, hodei_server_domain::workers::ProviderError>> + Send>>,
+            hodei_server_domain::workers::ProviderError,
+        > {
+            Ok(Box::pin(futures::stream::empty()))
         }
     }
 

@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
 use std::time::Duration;
+use futures::Stream;
+use std::pin::Pin;
 
 // ============================================================================
 // Extension Objects Pattern - WorkerProviderConfig
@@ -401,6 +403,47 @@ pub trait WorkerMetrics: Send + Sync {
 }
 
 // ============================================================================
+// ISP Traits - Events
+// ============================================================================
+
+/// Events emitted by the infrastructure provider
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WorkerInfrastructureEvent {
+    /// Worker has started running
+    WorkerStarted {
+        provider_resource_id: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Worker has stopped/terminated
+    WorkerStopped {
+        provider_resource_id: String,
+        timestamp: DateTime<Utc>,
+        reason: Option<String>,
+        exit_code: Option<i32>,
+    },
+    /// Worker health status has changed
+    WorkerHealthChanged {
+        provider_resource_id: String,
+        status: HealthStatus,
+        timestamp: DateTime<Utc>,
+    },
+    /// Low-level or generic event from provider
+    ProviderEvent {
+        provider_id: ProviderId,
+        event_type: String,
+        payload: serde_json::Value,
+        timestamp: DateTime<Utc>,
+    },
+}
+
+/// Trait for providers that can emit infrastructure events (ISP - Events)
+#[async_trait]
+pub trait WorkerEventSource: Send + Sync {
+    /// Subscribe to infrastructure events from this provider
+    async fn subscribe(&self) -> Result<Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>, ProviderError>;
+}
+
+// ============================================================================
 // State Adapter Pattern
 // ============================================================================
 
@@ -595,6 +638,7 @@ pub trait WorkerProvider:
     + WorkerHealth
     + WorkerEligibility
     + WorkerMetrics
+    + WorkerEventSource
     + Send
     + Sync
 {
@@ -688,6 +732,11 @@ pub trait WorkerProviderExt: WorkerProvider {
     fn calculate_health_score_ext(&self) -> f64 {
         WorkerMetrics::calculate_health_score(self)
     }
+
+    /// Wrapper for subscribe
+    async fn subscribe_ext(&self) -> Result<Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>, ProviderError> {
+        WorkerEventSource::subscribe(self).await
+    }
 }
 
 // Implementación blanket para cualquier T que implemente WorkerProvider
@@ -753,6 +802,10 @@ impl WorkerProviderExt for dyn WorkerProvider {
 
     fn calculate_health_score_ext(&self) -> f64 {
         WorkerMetrics::calculate_health_score(self)
+    }
+
+    async fn subscribe_ext(&self) -> Result<Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>, ProviderError> {
+        WorkerEventSource::subscribe(self).await
     }
 }
 
@@ -1232,6 +1285,19 @@ mod tests {
         }
         fn calculate_health_score(&self) -> f64 {
             0.95
+        }
+    }
+
+    #[async_trait]
+    impl WorkerEventSource for MockProvider {
+        async fn subscribe(
+            &self,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>,
+            ProviderError,
+        > {
+            // Return empty stream for mock
+            Ok(Box::pin(futures::stream::empty()))
         }
     }
 

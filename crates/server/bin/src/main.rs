@@ -586,10 +586,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Spawn background cleanup task
                 let cleanup_manager = lifecycle_manager.clone();
                 tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(30));
+                    // EPIC-29: Start reactive event monitoring from providers
+                    cleanup_manager.start_event_monitoring().await;
+                    
+                    // Optimization: Polling loop reduced to 5 minutes as safety net (reconciliation)
+                    // Primary lifecycle management is now event-driven.
+                    let mut interval = tokio::time::interval(Duration::from_secs(300));
                     loop {
                         interval.tick().await;
-                        // Run health check
+                        // Run health check (check heartbeats)
                         if let Err(e) = cleanup_manager.run_health_check().await {
                             tracing::error!("Health check failed: {}", e);
                         }

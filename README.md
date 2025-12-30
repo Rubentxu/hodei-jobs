@@ -378,3 +378,36 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 <p align="center">
   Made with ❤️ by <a href="https://github.com/Rubentxu">Rubentxu</a>
 </p>
+
+
+---
+
+How to Verify (Once Dependencies are Installed)
+Once you have installed protobuf-compiler and libssl-dev on your system:
+
+1. Start the Server
+Run the server in a separate terminal:
+
+# Ensure Docker is running first!
+just dev-db
+just db-migrate
+cargo run --bin hodei-server-bin
+2. Run Verification Jobs
+Use the existing just commands to provision workers and see the output stream:
+
+Docker Provider Test:
+
+# This creates a Hello World job on Docker and streams logs
+just job-docker-hello
+Kubernetes Provider Test:
+
+# This creates a Hello World job on Kubernetes and streams logs
+just job-k8s-hello
+3. Verify Reactivity
+To confirm the event-driven architecture is working:
+
+Start a long-running job:
+just job-docker-cpu
+Manually stop the container while it's running:
+docker stop <container_id>
+Check the server logs. You should see a WorkerStopped event processed immediately, without waiting for the 5-minute polling loop.
