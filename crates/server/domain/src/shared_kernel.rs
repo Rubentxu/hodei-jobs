@@ -69,6 +69,9 @@ pub enum DomainError {
     #[error("Worker provisioning timeout")]
     WorkerProvisioningTimeout,
 
+    #[error("Worker recovery failed: {message}")]
+    WorkerRecoveryFailed { message: String },
+
     #[error("No provider available for job requirements")]
     NoProviderAvailable,
 

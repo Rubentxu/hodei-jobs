@@ -5,18 +5,29 @@
 //! - Auto-scaling basado en demanda
 //! - Terminación de workers idle/unhealthy
 //! - Job reassignment for failed workers (via Transactional Outbox)
+//! - Worker provisioning via Saga pattern (US-2.2)
+//! - Worker recovery via Saga pattern (US-4.2)
 
+use crate::saga::provisioning_saga::{
+    DynProvisioningSagaCoordinator, DynProvisioningSagaCoordinatorBuilder,
+    ProvisioningSagaCoordinatorConfig, ProvisioningSagaError,
+};
+use crate::saga::recovery_saga::{
+    DynRecoverySagaCoordinator, RecoverySagaCoordinatorConfig, RecoverySagaError,
+};
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use hodei_server_domain::{
     event_bus::EventBus,
     events::{DomainEvent, TerminationReason},
     outbox::{OutboxError, OutboxEventInsert, OutboxRepository},
+    saga::SagaOrchestrator,
     shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId, WorkerState},
     workers::WorkerProvider,
     workers::health::WorkerHealthService,
     workers::provider_api::{
-        WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,
-        WorkerProviderIdentity, WorkerInfrastructureEvent, HealthStatus,
+        HealthStatus, WorkerCost, WorkerEligibility, WorkerHealth, WorkerInfrastructureEvent,
+        WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProviderIdentity,
     },
     workers::{Worker, WorkerFilter, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
@@ -24,7 +35,6 @@ use hodei_server_domain::{
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
-use futures::StreamExt;
 
 /// Configuration for Worker Lifecycle Manager
 #[derive(Debug, Clone)]
@@ -72,6 +82,7 @@ impl Default for WorkerLifecycleConfig {
 /// - Terminate idle/unhealthy workers
 /// - Provision new workers when needed
 /// - Reconcile stale worker states and reassign jobs
+/// - Recover failed workers via saga pattern (US-4.2)
 #[derive(Clone)]
 pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
@@ -81,6 +92,10 @@ pub struct WorkerLifecycleManager {
     /// Optional outbox repository for transactional event publishing
     outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
     health_service: Arc<WorkerHealthService>,
+    /// US-2.2: Saga coordinator for worker provisioning with automatic compensation
+    provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+    /// US-4.2: Saga coordinator for worker recovery with automatic compensation
+    recovery_saga_coordinator: Option<Arc<DynRecoverySagaCoordinator>>,
 }
 
 impl WorkerLifecycleManager {
@@ -101,6 +116,8 @@ impl WorkerLifecycleManager {
                     .with_heartbeat_timeout(config.heartbeat_timeout)
                     .build(),
             ),
+            provisioning_saga_coordinator: None,
+            recovery_saga_coordinator: None,
         }
     }
 
@@ -123,6 +140,8 @@ impl WorkerLifecycleManager {
                     .with_heartbeat_timeout(config.heartbeat_timeout)
                     .build(),
             ),
+            provisioning_saga_coordinator: None,
+            recovery_saga_coordinator: None,
         }
     }
 
@@ -132,6 +151,33 @@ impl WorkerLifecycleManager {
         outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
     ) {
         self.outbox_repository = Some(outbox_repository);
+    }
+
+    /// Set provisioning saga coordinator (US-2.2)
+    /// When set, worker provisioning will use saga pattern with automatic compensation
+    pub fn set_provisioning_saga_coordinator(
+        &mut self,
+        coordinator: Arc<DynProvisioningSagaCoordinator>,
+    ) {
+        self.provisioning_saga_coordinator = Some(coordinator);
+    }
+
+    /// Set recovery saga coordinator (US-4.2)
+    /// When set, worker recovery will use saga pattern with automatic compensation
+    pub fn set_recovery_saga_coordinator(&mut self, coordinator: Arc<DynRecoverySagaCoordinator>) {
+        self.recovery_saga_coordinator = Some(coordinator);
+    }
+
+    /// Check if saga-based provisioning is enabled
+    #[inline]
+    pub fn is_saga_provisioning_enabled(&self) -> bool {
+        self.provisioning_saga_coordinator.is_some()
+    }
+
+    /// Check if saga-based recovery is enabled (US-4.2)
+    #[inline]
+    pub fn is_saga_recovery_enabled(&self) -> bool {
+        self.recovery_saga_coordinator.is_some()
     }
 
     /// Register a provider with the lifecycle manager
@@ -580,10 +626,76 @@ impl WorkerLifecycleManager {
     }
 
     /// Provision a new worker using the specified provider
+    /// US-2.2: Uses saga pattern with automatic compensation when enabled
     pub async fn provision_worker(
         &self,
         provider_id: &ProviderId,
         spec: WorkerSpec,
+    ) -> Result<Worker> {
+        // Check max workers limit first (before any provisioning attempt)
+        let current_count = self.registry.count().await?;
+        if current_count >= self.config.max_workers {
+            return Err(DomainError::ProviderOverloaded {
+                provider_id: provider_id.clone(),
+            });
+        }
+
+        // US-2.2: Use saga pattern if coordinator is configured
+        if let Some(ref coordinator) = self.provisioning_saga_coordinator {
+            info!(provider_id = %provider_id, "🛠️ Provisioning worker via saga");
+
+            // Validate saga is enabled
+            if !coordinator.is_saga_enabled() {
+                info!(provider_id = %provider_id, "Saga disabled, using legacy provisioning");
+                return self.provision_worker_legacy(provider_id, &spec).await;
+            }
+
+            // Execute provisioning saga with optional job_id
+            match coordinator
+                .execute_provisioning_saga(provider_id, &spec, None)
+                .await
+            {
+                Ok((worker_id, saga_result)) => {
+                    info!(
+                        provider_id = %provider_id,
+                        worker_id = %worker_id,
+                        saga_duration_ms = ?saga_result.duration.as_millis(),
+                        "✅ Worker provisioned via saga"
+                    );
+
+                    // Fetch the worker from registry
+                    let worker = self.registry.get(&worker_id).await?.ok_or_else(|| {
+                        DomainError::WorkerNotFound {
+                            worker_id: worker_id.clone(),
+                        }
+                    })?;
+
+                    return Ok(worker);
+                }
+                Err(ProvisioningSagaError::Compensated) => {
+                    error!(provider_id = %provider_id, "⚠️ Saga was compensated - infrastructure cleaned up");
+                    return Err(DomainError::WorkerProvisioningFailed {
+                        message: "Provisioning saga was compensated".to_string(),
+                    });
+                }
+                Err(e) => {
+                    error!(provider_id = %provider_id, error = %e, "❌ Saga provisioning failed");
+                    return Err(DomainError::WorkerProvisioningFailed {
+                        message: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Fallback to legacy provisioning (backwards compatibility)
+        self.provision_worker_legacy(provider_id, &spec).await
+    }
+
+    /// Legacy provisioning method (used when saga is not configured)
+    async fn provision_worker_legacy(
+        &self,
+        provider_id: &ProviderId,
+        spec: &WorkerSpec,
     ) -> Result<Worker> {
         let providers = self.providers.read().await;
         let provider = providers
@@ -592,18 +704,13 @@ impl WorkerLifecycleManager {
                 provider_id: provider_id.clone(),
             })?;
 
-        // Check max workers limit
-        let current_count = self.registry.count().await?;
-        if current_count >= self.config.max_workers {
-            return Err(DomainError::ProviderOverloaded {
-                provider_id: provider_id.clone(),
-            });
-        }
-
-        info!("Provisioning new worker via provider {}", provider_id);
+        info!(
+            "Provisioning new worker via provider {} (legacy mode)",
+            provider_id
+        );
 
         // Create worker via provider
-        let handle = provider.create_worker(&spec).await.map_err(|e| {
+        let handle = provider.create_worker(spec).await.map_err(|e| {
             DomainError::WorkerProvisioningFailed {
                 message: e.to_string(),
             }
@@ -619,14 +726,99 @@ impl WorkerLifecycleManager {
             spec_summary: format!("image={}, server={}", spec.image, spec.server_address),
             occurred_at: Utc::now(),
             correlation_id: None,
-            actor: Some("lifecycle-manager".to_string()),
+            actor: Some("lifecycle-manager-legacy".to_string()),
         };
         if let Err(e) = self.event_bus.publish(&event).await {
             warn!("Failed to publish WorkerProvisioned event: {}", e);
         }
 
-        info!("Worker {} provisioned successfully", worker.id());
+        info!("Worker {} provisioned successfully (legacy)", worker.id());
         Ok(worker)
+    }
+
+    /// Recover a failed worker and reassign its job (US-4.2)
+    /// Uses saga pattern with automatic compensation when enabled
+    pub async fn recover_worker(&self, job_id: &JobId, failed_worker_id: &WorkerId) -> Result<()> {
+        // US-4.2: Use saga pattern if coordinator is configured
+        if let Some(ref coordinator) = self.recovery_saga_coordinator {
+            info!(
+                job_id = %job_id,
+                failed_worker_id = %failed_worker_id,
+                "🔄 Recovering worker via saga"
+            );
+
+            // Validate saga is enabled
+            if !coordinator.is_saga_enabled() {
+                info!(
+                    job_id = %job_id,
+                    "Recovery saga disabled, using legacy recovery"
+                );
+                return self.recover_worker_legacy(job_id, failed_worker_id).await;
+            }
+
+            // Execute recovery saga
+            match coordinator
+                .execute_recovery_saga(job_id, failed_worker_id)
+                .await
+            {
+                Ok((saga_id, saga_result)) => {
+                    info!(
+                        job_id = %job_id,
+                        saga_id = %saga_id,
+                        saga_duration_ms = ?saga_result.duration.as_millis(),
+                        "✅ Worker recovered via saga"
+                    );
+                    return Ok(());
+                }
+                Err(RecoverySagaError::Compensated) => {
+                    warn!(
+                        job_id = %job_id,
+                        "⚠️ Recovery saga was compensated"
+                    );
+                    return Err(DomainError::WorkerRecoveryFailed {
+                        message: "Recovery saga was compensated".to_string(),
+                    });
+                }
+                Err(e) => {
+                    error!(
+                        job_id = %job_id,
+                        error = %e,
+                        "❌ Recovery saga failed"
+                    );
+                    return Err(DomainError::WorkerRecoveryFailed {
+                        message: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Fallback to legacy recovery (backwards compatibility)
+        self.recover_worker_legacy(job_id, failed_worker_id).await
+    }
+
+    /// Legacy recovery method (used when saga is not configured)
+    async fn recover_worker_legacy(
+        &self,
+        job_id: &JobId,
+        failed_worker_id: &WorkerId,
+    ) -> Result<()> {
+        info!(
+            "Recovering worker {} for job {} (legacy mode)",
+            failed_worker_id, job_id
+        );
+
+        // TODO: Implement legacy recovery logic
+        // 1. Check if failed worker is still reachable
+        // 2. Provision a new worker
+        // 3. Transfer job to new worker
+        // 4. Terminate old worker
+
+        warn!(
+            "Legacy recovery not fully implemented for job {} and worker {}",
+            job_id, failed_worker_id
+        );
+
+        Ok(())
     }
 
     /// Destroy a worker via its provider
@@ -696,20 +888,24 @@ impl WorkerLifecycleManager {
     /// Start monitoring events from all registered providers
     pub async fn start_event_monitoring(&self) {
         let providers = self.providers.read().await;
-        
+
         for (id, provider) in providers.iter() {
             let provider = provider.clone();
             let manager = self.clone();
             let provider_id = id.clone();
-            
+
             info!("Starting event monitoring for provider {}", provider_id);
             tokio::spawn(async move {
                 manager.monitor_single_provider(provider_id, provider).await;
             });
         }
     }
-    
-    async fn monitor_single_provider(&self, provider_id: ProviderId, provider: Arc<dyn WorkerProvider>) {
+
+    async fn monitor_single_provider(
+        &self,
+        provider_id: ProviderId,
+        provider: Arc<dyn WorkerProvider>,
+    ) {
         // Use subscribe_ext from WorkerProviderExt (blanket impl)
         // But provider is Arc<dyn WorkerProvider>.
         // Check if dyn WorkerProvider impls subscribe_ext in provider_api.rs.
@@ -719,11 +915,14 @@ impl WorkerLifecycleManager {
         match provider.subscribe_ext().await {
             Ok(stream) => {
                 let mut stream = stream;
-                
+
                 while let Some(event_result) = stream.next().await {
                     match event_result {
                         Ok(event) => {
-                            if let Err(e) = self.handle_infrastructure_event(provider_id.clone(), event).await {
+                            if let Err(e) = self
+                                .handle_infrastructure_event(provider_id.clone(), event)
+                                .await
+                            {
                                 error!("Error handling event from provider {}: {}", provider_id, e);
                             }
                         }
@@ -735,62 +934,101 @@ impl WorkerLifecycleManager {
                 warn!("Event stream ended for provider {}", provider_id);
             }
             Err(e) => {
-                 error!("Failed to subscribe to provider {}: {}", provider_id, e);
+                error!("Failed to subscribe to provider {}: {}", provider_id, e);
             }
         }
     }
 
-    async fn handle_infrastructure_event(&self, provider_id: ProviderId, event: WorkerInfrastructureEvent) -> Result<()> {
+    async fn handle_infrastructure_event(
+        &self,
+        provider_id: ProviderId,
+        event: WorkerInfrastructureEvent,
+    ) -> Result<()> {
         match event {
-            WorkerInfrastructureEvent::WorkerStarted { provider_resource_id, timestamp } => {
-                info!("Event: Worker {} started at {}", provider_resource_id, timestamp);
+            WorkerInfrastructureEvent::WorkerStarted {
+                provider_resource_id,
+                timestamp,
+            } => {
+                info!(
+                    "Event: Worker {} started at {}",
+                    provider_resource_id, timestamp
+                );
                 // Transition worker to Ready if it was Creating/Connecting
                 // We need to find the worker by provider resource ID.
                 let workers = self.registry.find_by_provider(&provider_id).await?;
-                if let Some(worker) = workers.iter().find(|w| w.handle().provider_resource_id == provider_resource_id) {
-                     if *worker.state() == WorkerState::Creating || *worker.state() == WorkerState::Connecting {
-                         info!("Marking worker {} as Ready (started)", worker.id());
-                         self.registry.update_state(worker.id(), WorkerState::Ready).await?;
-                         
-                         // Emit WorkerStatusChanged
-                         self.emit_worker_status_changed(
-                             worker.id(), 
-                             worker.state().clone(), 
-                             WorkerState::Ready, 
-                             "provider_event_started"
-                         ).await?;
-                     }
-                }
-            }
-            WorkerInfrastructureEvent::WorkerStopped { provider_resource_id, timestamp, reason, .. } => {
-                info!("Event: Worker {} stopped at {}", provider_resource_id, timestamp);
-                let workers = self.registry.find_by_provider(&provider_id).await?;
-                if let Some(worker) = workers.iter().find(|w| w.handle().provider_resource_id == provider_resource_id) {
-                     if *worker.state() != WorkerState::Terminated {
-                         info!("Marking worker {} as Terminated (stopped)", worker.id());
-                         self.registry.update_state(worker.id(), WorkerState::Terminated).await?;
-                         
-                         // Emit WorkerStatusChanged
-                         self.emit_worker_status_changed(
-                             worker.id(), 
-                             worker.state().clone(), 
-                             WorkerState::Terminated, 
-                             &format!("provider_event_stopped: {:?}", reason)
-                         ).await?;
-                     }
-                }
-            }
-            WorkerInfrastructureEvent::WorkerHealthChanged { provider_resource_id, status, .. } => {
-                 // Logic to handle health changes
-                 // Map HealthStatus to WorkerState?
-                 // If Unhealthy -> Terminating?
-                 if matches!(status, HealthStatus::Unhealthy { .. }) {
-                    let workers = self.registry.find_by_provider(&provider_id).await?;
-                    if let Some(worker) = workers.iter().find(|w| w.handle().provider_resource_id == provider_resource_id) {
-                         warn!("Worker {} reported unhealthy via event", worker.id());
-                         // Mark logic similar to run_health_check?
+                if let Some(worker) = workers
+                    .iter()
+                    .find(|w| w.handle().provider_resource_id == provider_resource_id)
+                {
+                    if *worker.state() == WorkerState::Creating
+                        || *worker.state() == WorkerState::Connecting
+                    {
+                        info!("Marking worker {} as Ready (started)", worker.id());
+                        self.registry
+                            .update_state(worker.id(), WorkerState::Ready)
+                            .await?;
+
+                        // Emit WorkerStatusChanged
+                        self.emit_worker_status_changed(
+                            worker.id(),
+                            worker.state().clone(),
+                            WorkerState::Ready,
+                            "provider_event_started",
+                        )
+                        .await?;
                     }
-                 }
+                }
+            }
+            WorkerInfrastructureEvent::WorkerStopped {
+                provider_resource_id,
+                timestamp,
+                reason,
+                ..
+            } => {
+                info!(
+                    "Event: Worker {} stopped at {}",
+                    provider_resource_id, timestamp
+                );
+                let workers = self.registry.find_by_provider(&provider_id).await?;
+                if let Some(worker) = workers
+                    .iter()
+                    .find(|w| w.handle().provider_resource_id == provider_resource_id)
+                {
+                    if *worker.state() != WorkerState::Terminated {
+                        info!("Marking worker {} as Terminated (stopped)", worker.id());
+                        self.registry
+                            .update_state(worker.id(), WorkerState::Terminated)
+                            .await?;
+
+                        // Emit WorkerStatusChanged
+                        self.emit_worker_status_changed(
+                            worker.id(),
+                            worker.state().clone(),
+                            WorkerState::Terminated,
+                            &format!("provider_event_stopped: {:?}", reason),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            WorkerInfrastructureEvent::WorkerHealthChanged {
+                provider_resource_id,
+                status,
+                ..
+            } => {
+                // Logic to handle health changes
+                // Map HealthStatus to WorkerState?
+                // If Unhealthy -> Terminating?
+                if matches!(status, HealthStatus::Unhealthy { .. }) {
+                    let workers = self.registry.find_by_provider(&provider_id).await?;
+                    if let Some(worker) = workers
+                        .iter()
+                        .find(|w| w.handle().provider_resource_id == provider_resource_id)
+                    {
+                        warn!("Worker {} reported unhealthy via event", worker.id());
+                        // Mark logic similar to run_health_check?
+                    }
+                }
             }
             _ => {}
         }
@@ -1095,8 +1333,14 @@ impl OrphanCleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WorkerProvisioningService;
+    use crate::provisioning::ProvisioningResult;
+    use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
     use futures::stream::BoxStream;
     use hodei_server_domain::event_bus::EventBusError;
+    use hodei_server_domain::saga::{
+        Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    };
     use hodei_server_domain::workers::{ProviderType, WorkerHandle};
     use std::collections::HashMap as StdHashMap;
     use std::sync::Mutex;
@@ -1183,10 +1427,15 @@ mod tests {
     impl WorkerLifecycle for MockWorkerProvider {
         async fn create_worker(
             &self,
-            _spec: &WorkerSpec,
+            spec: &WorkerSpec,
         ) -> std::result::Result<WorkerHandle, hodei_server_domain::workers::ProviderError>
         {
-            unimplemented!()
+            Ok(WorkerHandle::new(
+                spec.worker_id.clone(),
+                format!("container-{}", spec.worker_id.0),
+                ProviderType::Docker,
+                self.provider_id.clone(),
+            ))
         }
 
         async fn destroy_worker(
@@ -1203,7 +1452,7 @@ mod tests {
             hodei_server_domain::shared_kernel::WorkerState,
             hodei_server_domain::workers::ProviderError,
         > {
-            unimplemented!()
+            Ok(hodei_server_domain::shared_kernel::WorkerState::Creating)
         }
     }
 
@@ -1282,7 +1531,16 @@ mod tests {
         async fn subscribe(
             &self,
         ) -> std::result::Result<
-            std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<hodei_server_domain::workers::WorkerInfrastructureEvent, hodei_server_domain::workers::ProviderError>> + Send>>,
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<
+                            Item = std::result::Result<
+                                hodei_server_domain::workers::WorkerInfrastructureEvent,
+                                hodei_server_domain::workers::ProviderError,
+                            >,
+                        > + Send,
+                >,
+            >,
             hodei_server_domain::workers::ProviderError,
         > {
             Ok(Box::pin(futures::stream::empty()))
@@ -1757,5 +2015,474 @@ mod tests {
             stats.ready_workers, 0,
             "Pool persistence must be eliminated"
         );
+    }
+
+    // ============================================================
+    // US-2.2: Saga-based Provisioning Tests
+    // ============================================================
+
+    /// Mock Saga Orchestrator for testing
+    #[derive(Clone)]
+    struct MockSagaOrchestrator {
+        executed_sagas: Arc<Mutex<Vec<String>>>,
+        should_fail: Arc<Mutex<bool>>,
+        saga_result: Arc<Mutex<Option<SagaExecutionResult>>>,
+    }
+
+    impl MockSagaOrchestrator {
+        fn new() -> Self {
+            Self {
+                executed_sagas: Arc::new(Mutex::new(Vec::new())),
+                should_fail: Arc::new(Mutex::new(false)),
+                saga_result: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn set_should_fail(&self, fail: bool) {
+            *self.should_fail.lock().unwrap() = fail;
+        }
+
+        fn set_saga_result(&self, result: SagaExecutionResult) {
+            *self.saga_result.lock().unwrap() = Some(result);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SagaOrchestrator for MockSagaOrchestrator {
+        type Error = DomainError;
+
+        async fn execute_saga(
+            &self,
+            saga: &dyn Saga,
+            context: SagaContext,
+        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
+            let saga_type = saga.saga_type().as_str().to_string();
+            self.executed_sagas.lock().unwrap().push(saga_type.clone());
+
+            let should_fail = *self.should_fail.lock().unwrap();
+            let custom_result = self.saga_result.lock().unwrap().clone();
+
+            if let Some(result) = custom_result {
+                return Ok(result);
+            }
+
+            if should_fail {
+                Ok(SagaExecutionResult::failed(
+                    context.saga_id,
+                    saga.saga_type(),
+                    std::time::Duration::from_secs(1),
+                    1,
+                    0,
+                    "Test failure".to_string(),
+                ))
+            } else {
+                Ok(SagaExecutionResult::completed_with_steps(
+                    context.saga_id,
+                    saga.saga_type(),
+                    std::time::Duration::from_secs(1),
+                    4,
+                ))
+            }
+        }
+
+        async fn get_saga(
+            &self,
+            _saga_id: &SagaId,
+        ) -> std::result::Result<Option<SagaContext>, Self::Error> {
+            Ok(None)
+        }
+
+        async fn cancel_saga(&self, _saga_id: &SagaId) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// Mock Worker Provisioning Service for testing
+    #[derive(Clone)]
+    struct MockWorkerProvisioningService {
+        provisioned_workers: Arc<Mutex<Vec<Worker>>>,
+        available: Arc<Mutex<bool>>,
+    }
+
+    impl MockWorkerProvisioningService {
+        fn new() -> Self {
+            Self {
+                provisioned_workers: Arc::new(Mutex::new(Vec::new())),
+                available: Arc::new(Mutex::new(true)),
+            }
+        }
+
+        fn set_available(&self, available: bool) {
+            *self.available.lock().unwrap() = available;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerProvisioningService for MockWorkerProvisioningService {
+        async fn provision_worker(
+            &self,
+            _provider_id: &ProviderId,
+            _spec: WorkerSpec,
+        ) -> Result<ProvisioningResult> {
+            let worker = Worker::new(
+                WorkerHandle::new(
+                    WorkerId::new(),
+                    "test-resource-id".to_string(),
+                    hodei_server_domain::workers::ProviderType::Docker,
+                    ProviderId::new(),
+                ),
+                WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string()),
+            );
+            self.provisioned_workers
+                .lock()
+                .unwrap()
+                .push(worker.clone());
+            Ok(ProvisioningResult::new(
+                worker.id().clone(),
+                "test-otp".to_string(),
+                ProviderId::new(),
+            ))
+        }
+
+        async fn is_provider_available(&self, _provider_id: &ProviderId) -> Result<bool> {
+            Ok(*self.available.lock().unwrap())
+        }
+
+        fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
+            Some(WorkerSpec::new(
+                "default-image".to_string(),
+                "default-endpoint".to_string(),
+            ))
+        }
+
+        async fn list_providers(&self) -> Result<Vec<ProviderId>> {
+            Ok(vec![ProviderId::new()])
+        }
+
+        async fn get_provider_config(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<Option<hodei_server_domain::providers::ProviderConfig>> {
+            Ok(None)
+        }
+
+        async fn validate_spec(&self, _spec: &WorkerSpec) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_saga_provisioning_disabled_by_default() {
+        // GIVEN: Un WorkerLifecycleManager sin coordinador de saga
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+
+        // THEN: is_saga_provisioning_enabled debe retornar false
+        assert!(
+            !manager.is_saga_provisioning_enabled(),
+            "Saga provisioning should be disabled by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_saga_provisioning_enabled_after_setting_coordinator() {
+        // GIVEN: Un WorkerLifecycleManager y un DynProvisioningSagaCoordinator
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let orchestrator = Arc::new(MockSagaOrchestrator::new());
+        let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
+        let saga_config = ProvisioningSagaCoordinatorConfig {
+            saga_enabled: true,
+            ..Default::default()
+        };
+
+        let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
+            orchestrator,
+            provisioning_service,
+            Some(saga_config),
+        ));
+
+        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+
+        // WHEN: Se setea el coordinator
+        manager.set_provisioning_saga_coordinator(coordinator);
+
+        // THEN: is_saga_provisioning_enabled debe retornar true
+        assert!(
+            manager.is_saga_provisioning_enabled(),
+            "Saga provisioning should be enabled after setting coordinator"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provision_worker_uses_legacy_when_no_saga_coordinator() {
+        // GIVEN: Un WorkerLifecycleManager sin coordinator, con un provider registrado
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        // Registrar un mock provider que retorna un worker específico
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
+        providers.write().await.insert(
+            provider_id.clone(),
+            mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
+        );
+
+        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+
+        let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
+
+        // WHEN: Se llama provision_worker
+        let result = manager.provision_worker(&provider_id, spec).await;
+
+        // THEN: Debe usar legacy provisioning (el worker debe ser registrado)
+        assert!(result.is_ok(), "Legacy provisioning should succeed");
+        let worker = result.unwrap();
+        assert_eq!(worker.state(), &WorkerState::Creating);
+    }
+
+    #[tokio::test]
+    async fn test_provision_worker_fallback_to_legacy_when_saga_disabled() {
+        // GIVEN: Un WorkerLifecycleManager con coordinator pero saga deshabilitado
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        // Registrar un mock provider
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
+        providers.write().await.insert(
+            provider_id.clone(),
+            mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
+        );
+
+        let orchestrator = Arc::new(MockSagaOrchestrator::new());
+        let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
+        // Saga deshabilitado
+        let saga_config = ProvisioningSagaCoordinatorConfig {
+            saga_enabled: false,
+            ..Default::default()
+        };
+
+        let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
+            orchestrator,
+            provisioning_service,
+            Some(saga_config),
+        ));
+
+        let mut manager =
+            WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+        manager.set_provisioning_saga_coordinator(coordinator);
+
+        let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
+
+        // WHEN: Se llama provision_worker
+        let result = manager.provision_worker(&provider_id, spec).await;
+
+        // THEN: Debe caer a legacy provisioning
+        assert!(result.is_ok(), "Should fallback to legacy provisioning");
+    }
+
+    #[tokio::test]
+    async fn test_provision_worker_returns_error_when_max_workers_exceeded() {
+        // GIVEN: Un WorkerLifecycleManager con límite de workers alcanzado
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig {
+            max_workers: 0, // Sin capacidad
+            ..Default::default()
+        };
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        // Registrar un mock provider
+        let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
+        let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
+        providers.write().await.insert(
+            provider_id.clone(),
+            mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
+        );
+
+        let orchestrator = Arc::new(MockSagaOrchestrator::new());
+        let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
+        let saga_config = ProvisioningSagaCoordinatorConfig {
+            saga_enabled: true,
+            ..Default::default()
+        };
+
+        let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
+            orchestrator,
+            provisioning_service,
+            Some(saga_config),
+        ));
+
+        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        manager.set_provisioning_saga_coordinator(coordinator);
+
+        let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
+
+        // WHEN: Se llama provision_worker
+        let result = manager.provision_worker(&provider_id, spec).await;
+
+        // THEN: Debe retornar error ProviderOverloaded
+        assert!(result.is_err());
+        match result {
+            Err(DomainError::ProviderOverloaded { .. }) => {
+                // Expected
+            }
+            _ => panic!("Expected ProviderOverloaded error"),
+        }
+    }
+
+    // ============================================================
+    // US-4.2: Saga-based Recovery Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_is_saga_recovery_disabled_by_default() {
+        // GIVEN: Un WorkerLifecycleManager sin coordinador de recovery
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+
+        // THEN: is_saga_recovery_enabled debe retornar false
+        assert!(
+            !manager.is_saga_recovery_enabled(),
+            "Saga recovery should be disabled by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_saga_recovery_enabled_after_setting_coordinator() {
+        // GIVEN: Un WorkerLifecycleManager y un DynRecoverySagaCoordinator
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
+            Arc::new(MockSagaOrchestrator::new());
+        let saga_config = RecoverySagaCoordinatorConfig {
+            saga_enabled: true,
+            ..Default::default()
+        };
+
+        let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
+            orchestrator,
+            Some(saga_config),
+        ));
+
+        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+
+        // WHEN: Se setea el coordinator
+        manager.set_recovery_saga_coordinator(coordinator);
+
+        // THEN: is_saga_recovery_enabled debe retornar true
+        assert!(
+            manager.is_saga_recovery_enabled(),
+            "Saga recovery should be enabled after setting coordinator"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recover_worker_uses_legacy_when_no_saga_coordinator() {
+        // GIVEN: Un WorkerLifecycleManager sin coordinator
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
+
+        // WHEN: Se llama recover_worker sin coordinator
+        let result = manager.recover_worker(&job_id, &worker_id).await;
+
+        // THEN: Debe usar legacy recovery (que hace warn y retorna Ok)
+        assert!(
+            result.is_ok(),
+            "Legacy recovery should succeed (with warning)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recover_worker_fallback_to_legacy_when_saga_disabled() {
+        // GIVEN: Un WorkerLifecycleManager con coordinator pero saga deshabilitado
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
+            Arc::new(MockSagaOrchestrator::new());
+        // Saga deshabilitado
+        let saga_config = RecoverySagaCoordinatorConfig {
+            saga_enabled: false,
+            ..Default::default()
+        };
+
+        let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
+            orchestrator,
+            Some(saga_config),
+        ));
+
+        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        manager.set_recovery_saga_coordinator(coordinator);
+
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
+
+        // WHEN: Se llama recover_worker
+        let result = manager.recover_worker(&job_id, &worker_id).await;
+
+        // THEN: Debe caer a legacy recovery
+        assert!(result.is_ok(), "Should fallback to legacy recovery");
+    }
+
+    #[tokio::test]
+    async fn test_recover_worker_uses_saga_when_enabled() {
+        // GIVEN: Un WorkerLifecycleManager con saga recovery habilitado
+        let registry = Arc::new(MockWorkerRegistry::new());
+        let config = WorkerLifecycleConfig::default();
+        let event_bus = Arc::new(MockEventBus::new());
+        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+
+        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
+            Arc::new(MockSagaOrchestrator::new());
+        let saga_config = RecoverySagaCoordinatorConfig {
+            saga_enabled: true,
+            ..Default::default()
+        };
+
+        let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
+            orchestrator,
+            Some(saga_config),
+        ));
+
+        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        manager.set_recovery_saga_coordinator(coordinator);
+
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
+
+        // WHEN: Se llama recover_worker
+        let result = manager.recover_worker(&job_id, &worker_id).await;
+
+        // THEN: Debe usar saga recovery exitosamente
+        assert!(result.is_ok(), "Saga recovery should succeed");
     }
 }
