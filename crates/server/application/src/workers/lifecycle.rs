@@ -681,11 +681,11 @@ impl WorkerLifecycleManager {
             }
         }
 
-        // Fallback to legacy provisioning (backwards compatibility)
+        // Use legacy provisioning when no saga coordinator is configured
         self.provision_worker_legacy(provider_id, &spec).await
     }
 
-    /// Legacy provisioning method (used when saga is not configured)
+    /// Legacy provisioning method (used when saga coordinator is not configured)
     async fn provision_worker_legacy(
         &self,
         provider_id: &ProviderId,
@@ -777,11 +777,11 @@ impl WorkerLifecycleManager {
             }
         }
 
-        // Fallback to legacy recovery (backwards compatibility)
+        // Use legacy recovery when no saga coordinator is configured
         self.recover_worker_legacy(job_id, failed_worker_id).await
     }
 
-    /// Legacy recovery method (used when saga is not configured)
+    /// Legacy recovery method (used when saga coordinator is not configured)
     async fn recover_worker_legacy(
         &self,
         job_id: &JobId,
