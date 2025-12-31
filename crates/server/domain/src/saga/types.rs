@@ -85,9 +85,9 @@ impl SagaType {
     #[inline]
     pub fn as_str(&self) -> &'static str {
         match self {
-            SagaType::Provisioning => "provisioning",
-            SagaType::Execution => "execution",
-            SagaType::Recovery => "recovery",
+            SagaType::Provisioning => "PROVISIONING",
+            SagaType::Execution => "EXECUTION",
+            SagaType::Recovery => "RECOVERY",
         }
     }
 

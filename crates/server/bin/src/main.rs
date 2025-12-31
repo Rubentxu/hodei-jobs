@@ -348,11 +348,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     let worker_service_for_controller = worker_service.clone();
 
-    let job_service = JobExecutionServiceImpl::new(
+    // EPIC-31: Create providers map early for shared access
+    // This is used by JobExecutionService for worker cleanup notifications
+    let providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    // EPIC-31: Use with_cleanup_support to enable JobQueued event publishing
+    // The event_bus is required for reactive job processing (JobCoordinator)
+    let job_service = JobExecutionServiceImpl::with_cleanup_support(
         create_job_usecase.clone(),
         cancel_job_usecase,
         job_repository.clone(),
         worker_registry.clone(),
+        providers.clone(), // Empty now, will be populated when providers are initialized
+        None,              // outbox_repository
+        Some(event_bus.clone()), // EPIC-31 FIX: event_bus required for JobQueued events
     );
 
     let metrics_service = MetricsServiceImpl::new();
@@ -365,8 +375,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize provisioning service (shared between SchedulerService and JobController)
     let provisioning_service: Option<Arc<DefaultWorkerProvisioningService>> =
         if provisioning_enabled {
-            // Initialize providers map
-            let mut providers: HashMap<ProviderId, Arc<dyn WorkerProvider>> = HashMap::new();
+            // Populate providers map (already created at line 353)
+            let mut providers_map: HashMap<ProviderId, Arc<dyn WorkerProvider>> = HashMap::new();
 
             // Load Docker provider config from DB or use default
             let docker_enabled =
@@ -419,7 +429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     Ok(provider) => {
                         info!("  ✓ Docker provider initialized (id: {})", provider_id);
-                        providers
+                        providers_map
                             .insert(provider_id, Arc::new(provider) as Arc<dyn WorkerProvider>);
                     }
                     Err(e) => {
@@ -548,7 +558,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match k8s_provider {
                     Ok(provider) => {
                         info!("  ✓ Kubernetes provider initialized (id: {})", provider_id);
-                        providers
+                        providers_map
                             .insert(provider_id, Arc::new(provider) as Arc<dyn WorkerProvider>);
                     }
                     Err(e) => {
@@ -557,11 +567,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            if !providers.is_empty() {
-                let providers = Arc::new(RwLock::new(providers));
+            if !providers_map.is_empty() {
+                // EPIC-31: Populate the shared providers map (already created at line 354)
+                // This map is shared between JobExecutionService and other services
+                let mut providers_write = providers.write().await;
+                *providers_write = providers_map;
+                drop(providers_write);
 
                 // EPIC-30: Saga Infrastructure - Disabled for now (needs full implementation)
-                // ========================================================
                 info!(
                     "⚠️ Saga infrastructure initialized (orchestration disabled - using legacy flow)"
                 );

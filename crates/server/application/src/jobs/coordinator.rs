@@ -92,17 +92,17 @@ impl JobCoordinator {
         let event_bus = self.event_bus.clone();
         let job_dispatcher = self.job_dispatcher.clone();
 
-        // Subscribe to JobQueued events (channel: job.queue)
+        // Subscribe to JobQueued events (EPIC-31: Use hodei_events channel for all domain events)
         let mut job_queue_stream = event_bus
-            .subscribe("job.queue")
+            .subscribe("hodei_events")
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to job.queue: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
 
-        // Subscribe to WorkerReadyForJob events (channel: worker.ready)
+        // Subscribe to WorkerReadyForJob events (EPIC-31: Use hodei_events channel)
         let mut worker_ready_stream = event_bus
-            .subscribe("worker.ready")
+            .subscribe("hodei_events")
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to worker.ready: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
 
         // Get a reference to self for handling events
         let dispatcher = self.job_dispatcher.clone();

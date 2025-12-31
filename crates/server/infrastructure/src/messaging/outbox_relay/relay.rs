@@ -8,6 +8,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::{CleanupReason, DomainEvent, TerminationReason};
+use hodei_server_domain::jobs::JobSpec;
 use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventView};
 use hodei_server_domain::shared_kernel::DomainError;
@@ -1722,6 +1723,50 @@ impl OutboxRelay {
                         },
                     )?,
                     occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // EPIC-29: WorkerProvisioningRequested event
+            // =====================================================
+            "WorkerProvisioningRequested" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in WorkerProvisioningRequested event"
+                                .to_string(),
+                        }
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in WorkerProvisioningRequested event"
+                            .to_string(),
+                    })?;
+
+                let requested_at = payload
+                    .get("requested_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Ok(DomainEvent::WorkerProvisioningRequested {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    job_requirements: serde_json::from_value(payload["job_requirements"].clone())
+                        .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid job_requirements in WorkerProvisioningRequested event"
+                            .to_string(),
+                    })?,
+                    requested_at,
                     correlation_id: event.metadata.as_ref().and_then(|m| {
                         m.get("correlation_id")
                             .and_then(|v| v.as_str().map(|s| s.to_string()))
