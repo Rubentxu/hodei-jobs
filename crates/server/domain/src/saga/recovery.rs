@@ -5,7 +5,7 @@
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 // ============================================================================
 // RecoverySaga
@@ -88,6 +88,7 @@ impl SagaStep for CheckWorkerConnectivityStep {
         "CheckWorkerConnectivity"
     }
 
+    #[instrument(skip(context), fields(step = "CheckWorkerConnectivity", worker_id = %self.failed_worker_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata(
@@ -141,6 +142,7 @@ impl SagaStep for ProvisionNewWorkerStep {
         "ProvisionNewWorker"
     }
 
+    #[instrument(skip(context), fields(step = "ProvisionNewWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata(
@@ -194,6 +196,7 @@ impl SagaStep for TransferJobStep {
         "TransferJob"
     }
 
+    #[instrument(skip(context), fields(step = "TransferJob", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("job_transferred_at", &chrono::Utc::now().to_rfc3339())
@@ -244,6 +247,7 @@ impl SagaStep for TerminateOldWorkerStep {
         "TerminateOldWorker"
     }
 
+    #[instrument(skip(context), fields(step = "TerminateOldWorker", worker_id = %self.worker_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("old_worker_termination_pending", &true)
@@ -289,6 +293,7 @@ impl SagaStep for CancelOldWorkerStep {
         "CancelOldWorker"
     }
 
+    #[instrument(skip(context), fields(step = "CancelOldWorker", worker_id = %self.worker_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("old_worker_cancellation_pending", &true)

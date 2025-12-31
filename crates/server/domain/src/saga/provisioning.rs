@@ -6,7 +6,7 @@ use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, ProviderId};
 use crate::workers::WorkerSpec;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 // ============================================================================
 // ProvisioningSaga
@@ -120,6 +120,7 @@ impl SagaStep for ValidateProviderCapacityStep {
         "ValidateProviderCapacity"
     }
 
+    #[instrument(skip(context), fields(step = "ValidateProviderCapacity", provider_id = %self.provider_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         // Store provider_id in context for coordinator use
         context
@@ -175,6 +176,7 @@ impl SagaStep for CreateInfrastructureStep {
         "CreateInfrastructure"
     }
 
+    #[instrument(skip(context), fields(step = "CreateInfrastructure", provider_id = %self.provider_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         // Store worker spec in context for coordinator use
         context
@@ -235,6 +237,7 @@ impl SagaStep for RegisterWorkerStep {
         "RegisterWorker"
     }
 
+    #[instrument(skip(context), fields(step = "RegisterWorker"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         // Mark that registration should happen after infrastructure is ready
         context
@@ -285,6 +288,7 @@ impl SagaStep for PublishProvisionedEventStep {
         "PublishProvisionedEvent"
     }
 
+    #[instrument(skip(context), fields(step = "PublishProvisionedEvent"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         // Mark that event publication is pending
         context

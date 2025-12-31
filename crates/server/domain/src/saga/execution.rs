@@ -5,7 +5,7 @@
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 // ============================================================================
 // ExecutionSaga
@@ -95,6 +95,7 @@ impl SagaStep for ValidateJobStep {
         "ValidateJob"
     }
 
+    #[instrument(skip(context), fields(step = "ValidateJob", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("execution_job_id", &self.job_id.to_string())
@@ -146,6 +147,7 @@ impl SagaStep for AssignWorkerStep {
         "AssignWorker"
     }
 
+    #[instrument(skip(context), fields(step = "AssignWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         let worker_id = self.worker_id.clone().unwrap_or_else(JobId::new);
         context
@@ -192,6 +194,7 @@ impl SagaStep for ExecuteJobStep {
         "ExecuteJob"
     }
 
+    #[instrument(skip(context), fields(step = "ExecuteJob", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("job_execution_started_at", &chrono::Utc::now().to_rfc3339())
@@ -242,6 +245,7 @@ impl SagaStep for CompleteJobStep {
         "CompleteJob"
     }
 
+    #[instrument(skip(context), fields(step = "CompleteJob", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("job_completed_at", &chrono::Utc::now().to_rfc3339())
