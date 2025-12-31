@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **NATS JetStream Integration**: Complete migration from PostgreSQL NOTIFY/LISTEN to NATS JetStream
+  - `NatsEventBus` implementation for reliable event publishing
+  - `NatsOutboxRelay` for Transactional Outbox Pattern with DLQ support
+  - `NatsSagaConsumer` generic infrastructure for saga event consumption
+
+- **Event-Driven Saga Consumers**:
+  - `ExecutionSagaConsumer`: Consumes `JobQueued` and `WorkerReady` events for job dispatch
+  - `CleanupSagaConsumer`: Consumes `JobStatusChanged` and `WorkerTerminated` events for cleanup
+  - All consumers use durable pull-based consumers with configurable concurrency
+
+- **Integration Tests**: `saga_consumer_integration_tests.rs` module for testing with embedded NATS
+
+### Changed
+
+- **Architecture**: Event-driven architecture replaces polling-based saga triggering
+- **Reliability**: At-least-once delivery via NATS durable consumers
+- **Survivability**: Events survive service restarts with durable consumers
+- **Scalability**: Work queue semantics enable parallel processing
+
+### Documentation
+
+- `docs/NATS_MIGRATION_RUNBOOK.md`: Complete guide for migration, configuration, and troubleshooting
+
 ## [v0.9.1] - 2024-12-26
 
 ### Added

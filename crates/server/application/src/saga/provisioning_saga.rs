@@ -2,7 +2,7 @@
 //!
 //! Coordinates worker provisioning using the saga pattern with automatic compensation.
 
-use crate::workers::provisioning::WorkerProvisioningService;
+use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
 use hodei_server_domain::saga::{
     ProvisioningSaga, Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
 };
@@ -103,9 +103,29 @@ impl DynProvisioningSagaCoordinator {
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
                 if result.is_success() {
-                    info!(provider_id = %provider_id, "✅ Saga completed successfully");
-                    let worker_id = WorkerId::new();
-                    Ok((worker_id, result))
+                    info!(provider_id = %provider_id, "✅ Saga orchestration completed, provisioning worker");
+
+                    // After saga completes, use provisioning_service to create the worker
+                    match self
+                        .provisioning_service
+                        .provision_worker(provider_id, spec.clone())
+                        .await
+                    {
+                        Ok(provisioning_result) => {
+                            info!(
+                                provider_id = %provider_id,
+                                worker_id = %provisioning_result.worker_id,
+                                "✅ Worker provisioned via saga"
+                            );
+                            Ok((provisioning_result.worker_id, result))
+                        }
+                        Err(e) => {
+                            error!(provider_id = %provider_id, error = %e, "❌ Failed to provision worker");
+                            Err(ProvisioningSagaError::SagaFailed {
+                                message: format!("Worker provisioning failed: {}", e),
+                            })
+                        }
+                    }
                 } else if result.is_compensated() {
                     warn!(provider_id = %provider_id, "⚠️ Saga was compensated");
                     Err(ProvisioningSagaError::Compensated)
@@ -278,9 +298,29 @@ where
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
                 if result.is_success() {
-                    info!(provider_id = %provider_id, "✅ Saga completed successfully");
-                    let worker_id = WorkerId::new();
-                    Ok((worker_id, result))
+                    info!(provider_id = %provider_id, "✅ Saga orchestration completed, provisioning worker");
+
+                    // After saga completes, use provisioning_service to create the worker
+                    match self
+                        .provisioning_service
+                        .provision_worker(provider_id, spec.clone())
+                        .await
+                    {
+                        Ok(provisioning_result) => {
+                            info!(
+                                provider_id = %provider_id,
+                                worker_id = %provisioning_result.worker_id,
+                                "✅ Worker provisioned via saga"
+                            );
+                            Ok((provisioning_result.worker_id, result))
+                        }
+                        Err(e) => {
+                            error!(provider_id = %provider_id, error = %e, "❌ Failed to provision worker");
+                            Err(ProvisioningSagaError::SagaFailed {
+                                message: format!("Worker provisioning failed: {}", e),
+                            })
+                        }
+                    }
                 } else if result.is_compensated() {
                     warn!(provider_id = %provider_id, "⚠️ Saga was compensated");
                     Err(ProvisioningSagaError::Compensated)

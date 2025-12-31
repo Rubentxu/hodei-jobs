@@ -18,7 +18,7 @@ hodei-shared = { path = "../../shared" }
 tokio = { workspace = true }
 
 # Database
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["postgres"] }
 async-trait = { workspace = true }
 
 # Data & Serialization

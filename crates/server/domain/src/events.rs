@@ -1,5 +1,6 @@
 use crate::jobs::JobSpec;
 use crate::shared_kernel::{JobId, JobState, ProviderId, ProviderStatus, WorkerId, WorkerState};
+use crate::workers::ProviderType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -407,6 +408,26 @@ pub enum DomainEvent {
         /// Requisitos del job
         job_requirements: JobSpec,
         requested_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-32: Provider seleccionado para provisioning (trazabilidad de decisiones de scheduling)
+    ProviderSelected {
+        /// ID del job
+        job_id: JobId,
+        /// Provider seleccionado
+        provider_id: ProviderId,
+        /// Tipo del provider
+        provider_type: ProviderType,
+        /// Estrategia de selección usada
+        selection_strategy: String,
+        /// Costo efectivo del provider
+        effective_cost: f64,
+        /// Tiempo de startup efectivo en ms
+        effective_startup_ms: u64,
+        /// Tiempo que tomó la selección en ms
+        elapsed_ms: u64,
+        occurred_at: DateTime<Utc>,
         correlation_id: Option<String>,
         actor: Option<String>,
     },
@@ -825,6 +846,7 @@ impl DomainEvent {
             | DomainEvent::JobQueued { correlation_id, .. }
             | DomainEvent::WorkerReadyForJob { correlation_id, .. }
             | DomainEvent::WorkerProvisioningRequested { correlation_id, .. }
+            | DomainEvent::ProviderSelected { correlation_id, .. }
             | DomainEvent::WorkerHeartbeat { correlation_id, .. } => correlation_id.clone(),
         }
     }
@@ -871,6 +893,7 @@ impl DomainEvent {
             | DomainEvent::JobQueued { actor, .. }
             | DomainEvent::WorkerReadyForJob { actor, .. }
             | DomainEvent::WorkerProvisioningRequested { actor, .. }
+            | DomainEvent::ProviderSelected { actor, .. }
             | DomainEvent::WorkerHeartbeat { actor, .. } => actor.clone(),
         }
     }
@@ -917,6 +940,7 @@ impl DomainEvent {
 
             DomainEvent::JobQueued { queued_at, .. } => *queued_at,
             DomainEvent::WorkerProvisioningRequested { requested_at, .. } => *requested_at,
+            DomainEvent::ProviderSelected { occurred_at, .. } => *occurred_at,
             DomainEvent::WorkerReadyForJob { ready_at, .. } => *ready_at,
 
             DomainEvent::RunJobReceived { received_at, .. } => *received_at,
@@ -969,6 +993,7 @@ impl DomainEvent {
             DomainEvent::JobQueued { .. } => "JobQueued",
             DomainEvent::WorkerReadyForJob { .. } => "WorkerReadyForJob",
             DomainEvent::WorkerProvisioningRequested { .. } => "WorkerProvisioningRequested",
+            DomainEvent::ProviderSelected { .. } => "ProviderSelected",
             DomainEvent::WorkerHeartbeat { .. } => "WorkerHeartbeat",
         }
     }
@@ -1024,6 +1049,7 @@ impl DomainEvent {
             DomainEvent::JobQueued { job_id, .. } => job_id.to_string(),
             DomainEvent::WorkerReadyForJob { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerProvisioningRequested { job_id, .. } => job_id.to_string(),
+            DomainEvent::ProviderSelected { job_id, .. } => job_id.to_string(),
             DomainEvent::WorkerHeartbeat { worker_id, .. } => worker_id.to_string(),
         }
     }

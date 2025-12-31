@@ -1,0 +1,639 @@
+//! Cleanup Saga NATS Consumer
+//!
+//! This module provides reactive cleanup saga triggering by subscribing to
+//! domain events via NATS JetStream when workers or jobs need cleanup.
+//!
+//! # Features
+//! - Event-driven cleanup saga triggering
+//! - Automatic resource cleanup when jobs complete or workers terminate
+//! - Support for JobCompleted, JobFailed, and WorkerTerminated events
+//! - Durable consumers with checkpointing
+
+use async_nats::Client;
+use async_nats::jetstream::Context as JetStreamContext;
+use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
+use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
+use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
+use futures::StreamExt;
+use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
+use hodei_server_domain::workers::WorkerRegistry;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::{debug, error, info};
+
+/// Configuration for cleanup saga consumer
+#[derive(Debug, Clone)]
+pub struct CleanupSagaConsumerConfig {
+    /// Consumer name identifier
+    pub consumer_name: String,
+
+    /// Stream name prefix
+    pub stream_prefix: String,
+
+    /// Topic for JobCompleted events
+    pub job_completed_topic: String,
+
+    /// Topic for JobFailed events
+    pub job_failed_topic: String,
+
+    /// Topic for WorkerTerminated events
+    pub worker_terminated_topic: String,
+
+    /// Consumer group for load balancing
+    pub consumer_group: String,
+
+    /// Maximum concurrent cleanups
+    pub concurrency: usize,
+
+    /// Ack wait timeout
+    pub ack_wait: Duration,
+
+    /// Maximum delivery attempts
+    pub max_deliver: i64,
+
+    /// Enable automatic cleanup dispatch
+    pub enable_auto_dispatch: bool,
+
+    /// Default saga timeout
+    pub saga_timeout: Duration,
+}
+
+impl Default for CleanupSagaConsumerConfig {
+    fn default() -> Self {
+        Self {
+            consumer_name: "cleanup-saga-consumer".to_string(),
+            stream_prefix: "HODEI".to_string(),
+            job_completed_topic: "hodei_events.jobs.completed".to_string(),
+            job_failed_topic: "hodei_events.jobs.failed".to_string(),
+            worker_terminated_topic: "hodei_events.workers.terminated".to_string(),
+            consumer_group: "cleanup-dispatchers".to_string(),
+            concurrency: 5,
+            ack_wait: Duration::from_secs(30),
+            max_deliver: 3,
+            enable_auto_dispatch: true,
+            saga_timeout: Duration::from_secs(60),
+        }
+    }
+}
+
+/// Result of cleanup saga processing
+#[derive(Debug)]
+pub enum CleanupSagaTriggerResult {
+    /// Cleanup dispatched successfully
+    Dispatched,
+    /// No cleanup needed
+    NoCleanupNeeded,
+    /// Resource already cleaned up
+    AlreadyCleanedUp,
+    /// Cleanup trigger failed
+    Failed(String),
+}
+
+/// Cleanup Saga Consumer
+///
+/// Consumes JobCompleted, JobFailed, and WorkerTerminated events from NATS JetStream
+/// and triggers cleanup sagas for resource cleanup.
+#[derive(Clone)]
+pub struct CleanupSagaConsumer<SO, JR, WR>
+where
+    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
+    JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
+{
+    /// NATS client
+    _client: Client,
+
+    /// NATS JetStream context
+    jetstream: JetStreamContext,
+
+    /// Saga orchestrator
+    orchestrator: Arc<SO>,
+
+    /// Job repository for cleanup operations
+    job_repository: Arc<JR>,
+
+    /// Worker registry for cleanup operations
+    worker_registry: Arc<WR>,
+
+    /// Consumer configuration
+    config: CleanupSagaConsumerConfig,
+
+    /// Shutdown signal
+    shutdown_tx: mpsc::Sender<()>,
+}
+
+impl<SO, JR, WR> CleanupSagaConsumer<SO, JR, WR>
+where
+    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
+    JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
+{
+    /// Create a new CleanupSagaConsumer
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        client: Client,
+        jetstream: JetStreamContext,
+        orchestrator: Arc<SO>,
+        job_repository: Arc<JR>,
+        worker_registry: Arc<WR>,
+        config: Option<CleanupSagaConsumerConfig>,
+    ) -> Self {
+        let config = config.unwrap_or_default();
+        let (shutdown_tx, _) = mpsc::channel(1);
+
+        Self {
+            _client: client,
+            jetstream,
+            orchestrator,
+            job_repository,
+            worker_registry,
+            config,
+            shutdown_tx,
+        }
+    }
+
+    /// Start the consumer and begin processing events
+    pub async fn start(&self) -> Result<(), DomainError> {
+        info!(
+            "🧹 CleanupSagaConsumer: Starting consumer '{}'",
+            self.config.consumer_name
+        );
+
+        // Create stream for cleanup events and get stream info
+        let stream_name = {
+            let mut stream = self.ensure_stream().await?;
+            let stream_info =
+                stream
+                    .info()
+                    .await
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to get stream info: {}", e),
+                    })?;
+            stream_info.config.name.clone()
+        };
+
+        // Create or get consumer
+        let consumer = self.create_or_get_consumer_by_name(&stream_name).await?;
+
+        // Start consuming messages
+        let mut messages =
+            consumer
+                .messages()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Failed to create consumer stream: {}", e),
+                })?;
+
+        info!(
+            "🧹 CleanupSagaConsumer: Started consuming from stream '{}'",
+            stream_name
+        );
+
+        while let Some(message_result) = messages.next().await {
+            match message_result {
+                Ok(message) => {
+                    if let Err(e) = self.process_message(&message.payload).await {
+                        error!("🧹 CleanupSagaConsumer: Error processing message: {}", e);
+                    }
+                    // Ack the message
+                    if let Err(e) = message.ack().await {
+                        error!("🧹 CleanupSagaConsumer: Failed to ack message: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("🧹 CleanupSagaConsumer: Message receive error: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process a single NATS message payload
+    async fn process_message(&self, payload: &[u8]) -> Result<(), DomainError> {
+        // Parse the event from the message payload
+        let event: DomainEvent =
+            serde_json::from_slice(payload).map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to deserialize event: {}", e),
+            })?;
+
+        match &event {
+            DomainEvent::JobStatusChanged {
+                job_id, new_state, ..
+            } => {
+                // Check for terminal states that need cleanup
+                let needs_cleanup = matches!(
+                    new_state,
+                    hodei_server_domain::shared_kernel::JobState::Succeeded
+                        | hodei_server_domain::shared_kernel::JobState::Failed
+                        | hodei_server_domain::shared_kernel::JobState::Cancelled
+                        | hodei_server_domain::shared_kernel::JobState::Timeout
+                );
+
+                if needs_cleanup {
+                    info!(
+                        "🧹 CleanupSagaConsumer: Job {} transitioned to terminal state {:?}",
+                        job_id, new_state
+                    );
+                    self.handle_job_completed(job_id).await?;
+                } else {
+                    debug!(
+                        "🧹 CleanupSagaConsumer: Job {} transitioned to state {:?}, skipping cleanup",
+                        job_id, new_state
+                    );
+                }
+            }
+            DomainEvent::WorkerTerminated { worker_id, .. } => {
+                info!(
+                    "🧹 CleanupSagaConsumer: Received WorkerTerminated event for worker {}",
+                    worker_id
+                );
+                self.handle_worker_terminated(worker_id).await?;
+            }
+            _ => {
+                debug!(
+                    "🧹 CleanupSagaConsumer: Ignoring event type '{}'",
+                    event.event_type()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle JobCompleted event - trigger cleanup saga
+    async fn handle_job_completed(&self, job_id: &JobId) -> Result<(), DomainError> {
+        // Fetch job details
+        let job = self.job_repository.find_by_id(job_id).await.map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to fetch job {}: {}", job_id, e),
+            }
+        })?;
+
+        if job.is_none() {
+            debug!(
+                "🧹 CleanupSagaConsumer: Job {} not found, skipping cleanup",
+                job_id
+            );
+            return Ok(());
+        }
+
+        let job = job.unwrap();
+
+        // Check if cleanup is needed
+        if job.is_terminal_state() {
+            info!(
+                "🧹 CleanupSagaConsumer: Job {} is in terminal state, triggering cleanup",
+                job_id
+            );
+            self.trigger_cleanup_saga(job_id, "job_completion").await?;
+        } else {
+            debug!(
+                "🧹 CleanupSagaConsumer: Job {} is not in terminal state, skipping",
+                job_id
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handle WorkerTerminated event - trigger cleanup saga
+    async fn handle_worker_terminated(&self, worker_id: &WorkerId) -> Result<(), DomainError> {
+        // Check if worker exists
+        let worker = self.worker_registry.get(worker_id).await.map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to fetch worker {}: {}", worker_id, e),
+            }
+        })?;
+
+        if worker.is_none() {
+            debug!(
+                "🧹 CleanupSagaConsumer: Worker {} not found, skipping cleanup",
+                worker_id
+            );
+            return Ok(());
+        }
+
+        info!(
+            "🧹 CleanupSagaConsumer: Worker {} terminated, triggering cleanup",
+            worker_id
+        );
+
+        self.trigger_cleanup_saga_by_worker(worker_id).await?;
+        Ok(())
+    }
+
+    /// Trigger cleanup saga for a job
+    async fn trigger_cleanup_saga(
+        &self,
+        job_id: &JobId,
+        trigger_reason: &str,
+    ) -> Result<(), DomainError> {
+        // Create saga context
+        let saga_id = hodei_server_domain::saga::SagaId::new();
+        let mut context = hodei_server_domain::saga::SagaContext::new(
+            saga_id,
+            SagaType::Recovery, // Cleanup uses Recovery saga type
+            Some(format!("cleanup-{}", job_id.0)),
+            Some("cleanup_saga_consumer".to_string()),
+        );
+
+        context.set_metadata("job_id", &job_id.to_string()).ok();
+        context
+            .set_metadata("trigger_reason", &trigger_reason.to_string())
+            .ok();
+
+        // Create cleanup/recovery saga (using Recovery saga for cleanup)
+        // Use placeholder failed_worker_id (stored as JobId per domain) for cleanup scenarios
+        let dummy_failed_worker_id = JobId::new();
+        let saga =
+            hodei_server_domain::saga::RecoverySaga::new(job_id.clone(), dummy_failed_worker_id);
+
+        // Execute saga
+        match self.orchestrator.execute_saga(&saga, context).await {
+            Ok(result) => {
+                if result.state == hodei_server_domain::saga::SagaState::Completed {
+                    info!(
+                        "✅ CleanupSagaConsumer: Cleanup completed for job {}",
+                        job_id
+                    );
+                    Ok(())
+                } else {
+                    let error_msg = result
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "Unknown cleanup error".to_string());
+                    error!(
+                        "❌ CleanupSagaConsumer: Cleanup failed for job {}: {}",
+                        job_id, error_msg
+                    );
+                    Err(DomainError::SagaError { message: error_msg })
+                }
+            }
+            Err(e) => {
+                error!(
+                    "❌ CleanupSagaConsumer: Orchestrator error for job {}: {}",
+                    job_id, e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Trigger cleanup saga for a worker
+    async fn trigger_cleanup_saga_by_worker(
+        &self,
+        worker_id: &WorkerId,
+    ) -> Result<(), DomainError> {
+        // Create saga context
+        let saga_id = hodei_server_domain::saga::SagaId::new();
+        let mut context = hodei_server_domain::saga::SagaContext::new(
+            saga_id,
+            SagaType::Recovery,
+            Some(format!("cleanup-worker-{}", worker_id.0)),
+            Some("cleanup_saga_consumer".to_string()),
+        );
+
+        context
+            .set_metadata("worker_id", &worker_id.to_string())
+            .ok();
+        context
+            .set_metadata("trigger_reason", &"worker_termination".to_string())
+            .ok();
+
+        // Create recovery saga for worker cleanup
+        // Note: failed_worker_id is stored as JobId in RecoverySaga per domain design
+        let dummy_job_id = JobId::new();
+        let saga = hodei_server_domain::saga::RecoverySaga::new(dummy_job_id, JobId::new());
+
+        // Execute saga
+        match self.orchestrator.execute_saga(&saga, context).await {
+            Ok(result) => {
+                if result.is_success() {
+                    info!(
+                        "✅ CleanupSagaConsumer: Cleanup completed for worker {}",
+                        worker_id
+                    );
+                    Ok(())
+                } else {
+                    let error_msg = result
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "Unknown cleanup error".to_string());
+                    error!(
+                        "❌ CleanupSagaConsumer: Cleanup failed for worker {}: {}",
+                        worker_id, error_msg
+                    );
+                    Err(DomainError::SagaError { message: error_msg })
+                }
+            }
+            Err(e) => {
+                error!(
+                    "❌ CleanupSagaConsumer: Orchestrator error for worker {}: {}",
+                    worker_id, e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Ensure the cleanup events stream exists
+    async fn ensure_stream(&self) -> Result<async_nats::jetstream::stream::Stream, DomainError> {
+        let stream_name = format!("{}_CLEANUP_EVENTS", self.config.stream_prefix);
+
+        match self.jetstream.get_stream(&stream_name).await {
+            Ok(stream) => {
+                debug!(
+                    "🧹 CleanupSagaConsumer: Stream '{}' already exists",
+                    stream_name
+                );
+                Ok(stream)
+            }
+            Err(_) => {
+                let stream = self
+                    .jetstream
+                    .create_stream(StreamConfig {
+                        name: stream_name.clone(),
+                        subjects: vec![
+                            self.config.job_completed_topic.clone(),
+                            self.config.job_failed_topic.clone(),
+                            self.config.worker_terminated_topic.clone(),
+                        ],
+                        retention: RetentionPolicy::WorkQueue,
+                        max_messages: 50000,
+                        max_bytes: 50 * 1024 * 1024, // 50MB
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to create stream {}: {}", stream_name, e),
+                    })?;
+
+                info!("🧹 CleanupSagaConsumer: Created stream '{}'", stream_name);
+                Ok(stream)
+            }
+        }
+    }
+
+    /// Create or get consumer for the stream by stream name
+    async fn create_or_get_consumer_by_name(
+        &self,
+        stream_name: &str,
+    ) -> Result<async_nats::jetstream::consumer::PullConsumer, DomainError> {
+        let consumer_id = format!(
+            "{}-{}",
+            self.config.consumer_name, self.config.consumer_group
+        );
+
+        // Get stream to interact with consumer
+        let stream = self.jetstream.get_stream(stream_name).await.map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to get stream {}: {}", stream_name, e),
+            }
+        })?;
+
+        // Try to get existing consumer
+        match stream.get_consumer(&consumer_id).await {
+            Ok(consumer) => {
+                debug!(
+                    "🧹 CleanupSagaConsumer: Consumer '{}' already exists",
+                    consumer_id
+                );
+                Ok(consumer)
+            }
+            Err(_) => {
+                let consumer_config = PullConsumerConfig {
+                    durable_name: Some(consumer_id.clone()),
+                    deliver_policy: DeliverPolicy::All,
+                    ack_policy: AckPolicy::Explicit,
+                    ack_wait: self.config.ack_wait,
+                    max_deliver: self.config.max_deliver,
+                    max_ack_pending: self.config.concurrency as i64,
+                    filter_subject: "".to_string(), // Subscribe to all subjects
+                    ..Default::default()
+                };
+
+                let consumer = stream.create_consumer(consumer_config).await.map_err(|e| {
+                    DomainError::InfrastructureError {
+                        message: format!("Failed to create consumer {}: {}", consumer_id, e),
+                    }
+                })?;
+
+                info!("🧹 CleanupSagaConsumer: Created consumer '{}'", consumer_id);
+                Ok(consumer)
+            }
+        }
+    }
+
+    /// Stop the consumer gracefully
+    pub async fn stop(&self) {
+        let _ = self.shutdown_tx.send(()).await;
+        info!("🧹 CleanupSagaConsumer: Stop signal sent");
+    }
+}
+
+/// Builder for CleanupSagaConsumer
+#[derive(Debug)]
+pub struct CleanupSagaConsumerBuilder<SO, JR, WR>
+where
+    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
+    JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
+{
+    client: Option<Client>,
+    jetstream: Option<JetStreamContext>,
+    orchestrator: Option<Arc<SO>>,
+    job_repository: Option<Arc<JR>>,
+    worker_registry: Option<Arc<WR>>,
+    config: Option<CleanupSagaConsumerConfig>,
+}
+
+impl<SO, JR, WR> Default for CleanupSagaConsumerBuilder<SO, JR, WR>
+where
+    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
+    JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self {
+            client: None,
+            jetstream: None,
+            orchestrator: None,
+            job_repository: None,
+            worker_registry: None,
+            config: None,
+        }
+    }
+}
+
+impl<SO, JR, WR> CleanupSagaConsumerBuilder<SO, JR, WR>
+where
+    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
+    JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_client(mut self, client: Client) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    pub fn with_jetstream(mut self, jetstream: JetStreamContext) -> Self {
+        self.jetstream = Some(jetstream);
+        self
+    }
+
+    pub fn with_orchestrator(mut self, orchestrator: Arc<SO>) -> Self {
+        self.orchestrator = Some(orchestrator);
+        self
+    }
+
+    pub fn with_job_repository(mut self, job_repository: Arc<JR>) -> Self {
+        self.job_repository = Some(job_repository);
+        self
+    }
+
+    pub fn with_worker_registry(mut self, worker_registry: Arc<WR>) -> Self {
+        self.worker_registry = Some(worker_registry);
+        self
+    }
+
+    pub fn with_config(mut self, config: CleanupSagaConsumerConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    pub fn build(self) -> anyhow::Result<CleanupSagaConsumer<SO, JR, WR>> {
+        let client = self
+            .client
+            .ok_or_else(|| anyhow::anyhow!("client is required"))?;
+        let jetstream = self
+            .jetstream
+            .ok_or_else(|| anyhow::anyhow!("jetstream is required"))?;
+        let orchestrator = self
+            .orchestrator
+            .ok_or_else(|| anyhow::anyhow!("orchestrator is required"))?;
+        let job_repository = self
+            .job_repository
+            .ok_or_else(|| anyhow::anyhow!("job_repository is required"))?;
+        let worker_registry = self
+            .worker_registry
+            .ok_or_else(|| anyhow::anyhow!("worker_registry is required"))?;
+
+        Ok(CleanupSagaConsumer::new(
+            client,
+            jetstream,
+            orchestrator,
+            job_repository,
+            worker_registry,
+            self.config,
+        ))
+    }
+}

@@ -1,20 +1,18 @@
 # =============================================================================
 # Hodei Jobs Platform - Development Docker Compose
 # =============================================================================
-# Optimized for rapid development with hot reload, debugging, and fast iteration
+# Optimized for rapid development with debugging and fast iteration
 #
 # Usage:
-#   just dev-db          # Start database only
-#   just dev             # Start full development environment
-#   just logs            # View logs
-#   just logs-backend    # View backend logs
+#   docker compose -f docker-compose.dev.yml up -d postgres
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml logs -f
 #
-# Environment variables (create .env file):
-#   POSTGRES_PASSWORD=postgres
-#   HODEI_DEV_MODE=1
+# Key fixes:
+#   - HODEI_SERVER_HOST: Correctly set for worker→server connectivity
+#   - Worker network: Separate bridge for worker communication
+#   - Health checks: Proper startup sequencing
 # =============================================================================
-
-version: "3.8"
 
 services:
   # ===========================================================================
@@ -28,133 +26,45 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: hodei_jobs
-      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     ports:
       - "5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
-      - ./scripts/sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d hodei"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hodei_jobs"]
       interval: 5s
       timeout: 3s
       retries: 5
       start_period: 10s
     networks:
-      - hodei-dev-network
+      - hodei-internal
     deploy:
       resources:
         limits:
           memory: 512M
-        reservations:
-          memory: 256M
-    command: >
-      postgres
-      -c shared_buffers=256MB
-      -c max_connections=100
-      -c log_min_duration_statement=100
-      -c log_statement=all
-      -c shared_preload_libraries=pg_stat_statements
 
   # ===========================================================================
-  # Prometheus (Development Monitoring - Optional)
+  # Redis (Cache & NATS JetStream - Development)
   # ===========================================================================
-  prometheus:
-    image: prom/prometheus:v2.48.0
-    container_name: hodei-jobs-prometheus
+  redis:
+    image: redis:7-alpine
+    container_name: hodei-jobs-redis
     restart: unless-stopped
-    profiles:
-      - monitoring
-    volumes:
-      - ./deploy/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_dev_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-      - "--web.enable-lifecycle"
-      - "--storage.tsdb.retention.time=7d"
     ports:
-      - "9090:9090"
-    networks:
-      - hodei-dev-network
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
     healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:9090/-/healthy",
-        ]
-      interval: 30s
-      timeout: 5s
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-
-  # ===========================================================================
-  # Grafana (Development Dashboards - Optional)
-  # ===========================================================================
-  grafana:
-    image: grafana/grafana:10.2.2
-    container_name: hodei-jobs-grafana
-    restart: unless-stopped
-    profiles:
-      - monitoring
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_INSTALL_PLUGINS: "grafana-piechart-panel"
-    volumes:
-      - grafana_dev_data:/var/lib/grafana
-      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
     networks:
-      - hodei-dev-network
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      - hodei-internal
     deploy:
       resources:
         limits:
-          memory: 256M
-
-  # ===========================================================================
-  # pgAdmin (PostgreSQL Admin - Optional)
-  # ===========================================================================
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: hodei-jobs-pgadmin
-    restart: unless-stopped
-    profiles:
-      - admin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@hodei.local
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_dev_data:/var/lib/pgadmin
-    depends_on:
-      - postgres
-    networks:
-      - hodei-dev-network
-    deploy:
-      resources:
-        limits:
-          memory: 256M
+          memory: 128M
 
   # ===========================================================================
   # Hodei gRPC Server (Backend API) - Development
@@ -167,101 +77,76 @@ services:
     container_name: hodei-jobs-api
     restart: unless-stopped
     environment:
+      # Database
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       SERVER_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei_jobs
+
+      # Server configuration
       HODEI_DEV_MODE: "1"
+      GRPC_PORT: "50051"
+
+      # Docker provider
       HODEI_DOCKER_ENABLED: "1"
-      HODEI_PROVISIONING_ENABLED: "1"
+      HODEI_DOCKER_NETWORK: "hodei-workers"
+
+      # Worker connectivity - CRITICAL for worker→server communication
+      # Workers use this to connect back to the server
+      # HODEI_SERVER_HOST: Used by server for provisioning config
+      # HODEI_SERVER_ADDRESS: Set by providers in worker environment
+      HODEI_SERVER_HOST: "0.0.0.0"
+      HODEI_SERVER_ADDRESS: "host.docker.internal"
+
+      # Job controller
       HODEI_JOB_CONTROLLER_ENABLED: "1"
       HODEI_JOB_CONTROLLER_INTERVAL_MS: "500"
-      HODEI_SERVER_HOST: "host.docker.internal"
-      GRPC_PORT: "50051"
+
+      # Worker image for provisioning
+      HODEI_WORKER_IMAGE: "hodei-jobs-worker:latest"
+
+      # Logging
       RUST_LOG: ${RUST_LOG:-debug}
-      HODEI_WORKER_IMAGE: "hodei-jobs-worker:v3"
     ports:
       - "50051:50051"
     volumes:
-      # Docker-in-Docker support for worker provisioning
+      # Docker socket for worker provisioning
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Source code for hot reload (optional)
-      - ./target/debug:/usr/local/bin/target/debug:ro
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
       test:
         [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:50051/health",
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:50051/health || exit 1",
         ]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     networks:
-      - hodei-dev-network
-      - hodei-jobs-workers
+      - hodei-internal
+      - hodei-workers
     deploy:
       resources:
         limits:
           memory: 1G
 
-  # ===========================================================================
-  # Hodei Web Dashboard (Frontend) - Development
-  # ===========================================================================
-  web:
-    build:
-      context: ./web
-      dockerfile: Dockerfile
-    image: hodei-jobs-web:dev
-    container_name: hodei-jobs-web
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    depends_on:
-      - api
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost/health",
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    networks:
-      - hodei-dev-network
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-
 # Named volumes for persistent development data
 volumes:
   postgres_dev_data:
     driver: local
-  prometheus_dev_data:
-    driver: local
-  grafana_dev_data:
-    driver: local
-  pgadmin_dev_data:
+  redis_dev_data:
     driver: local
 
 # Development networks
 networks:
-  hodei-dev-network:
+  hodei-internal:
     driver: bridge
-    name: hodei-dev-network
-  hodei-jobs-workers:
+    internal: true
+  hodei-workers:
     driver: bridge
-    name: hodei-jobs-workers-dev
+    name: hodei-workers-dev
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

@@ -13,6 +13,12 @@ export RUST_BACKTRACE := "1"
 export RUST_LOG := "debug"
 export DATABASE_URL := "postgres://postgres:postgres@localhost:5432/hodei_jobs"
 
+# CRITICAL: Worker→server connectivity
+# HODEI_SERVER_HOST: Used by server for provisioning config
+# HODEI_SERVER_ADDRESS: Set by providers in worker environment variables
+export HODEI_SERVER_HOST := "0.0.0.0"
+export HODEI_SERVER_ADDRESS := "host.docker.internal"
+
 # Default target
 _default:
     @echo "🚀 Hodei Job Platform v8.0"

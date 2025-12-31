@@ -64,6 +64,9 @@ futures-util = "0.3"
 async-stream.workspace = true
 futures = "0.3.31"
 
+# NATS JetStream
+async-nats = "0.35"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = "3.15"

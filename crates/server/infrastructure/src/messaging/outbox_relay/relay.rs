@@ -1779,6 +1779,146 @@ impl OutboxRelay {
             }
 
             // =====================================================
+            // EPIC-31: JobQueued event
+            // =====================================================
+            "JobQueued" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in JobQueued event".to_string(),
+                        }
+                    })?;
+
+                // Extract preferred_provider as Option<ProviderId>
+                let preferred_provider: Option<hodei_server_domain::shared_kernel::ProviderId> =
+                    payload
+                        .get("preferred_provider")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| {
+                            Uuid::parse_str(s)
+                                .ok()
+                                .map(|u| hodei_server_domain::shared_kernel::ProviderId(u))
+                        });
+
+                let job_requirements: hodei_server_domain::jobs::JobSpec =
+                    serde_json::from_value(payload["job_requirements"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_requirements in JobQueued event".to_string(),
+                        }
+                    })?;
+
+                let queued_at = payload
+                    .get("queued_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Ok(DomainEvent::JobQueued {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    preferred_provider,
+                    job_requirements,
+                    queued_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
+            // EPIC-32: ProviderSelected event (trazabilidad de scheduling)
+            // =====================================================
+            "ProviderSelected" => {
+                let job_id =
+                    serde_json::from_value::<Uuid>(payload["job_id"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid job_id in ProviderSelected event".to_string(),
+                        }
+                    })?;
+                let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid provider_id in ProviderSelected event".to_string(),
+                    })?;
+
+                let provider_type = payload
+                    .get("provider_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                // Parse provider_type string to ProviderType enum
+                let provider_type_enum = match provider_type.as_str() {
+                    "docker" => hodei_server_domain::workers::ProviderType::Docker,
+                    "kubernetes" => hodei_server_domain::workers::ProviderType::Kubernetes,
+                    "k8s" => hodei_server_domain::workers::ProviderType::Kubernetes,
+                    "fargate" => hodei_server_domain::workers::ProviderType::Fargate,
+                    "cloudrun" => hodei_server_domain::workers::ProviderType::CloudRun,
+                    "containerapps" => hodei_server_domain::workers::ProviderType::ContainerApps,
+                    "lambda" => hodei_server_domain::workers::ProviderType::Lambda,
+                    "cloudfunctions" => hodei_server_domain::workers::ProviderType::CloudFunctions,
+                    "azurefunctions" => hodei_server_domain::workers::ProviderType::AzureFunctions,
+                    "ec2" => hodei_server_domain::workers::ProviderType::EC2,
+                    "computeengine" => hodei_server_domain::workers::ProviderType::ComputeEngine,
+                    "azurevms" => hodei_server_domain::workers::ProviderType::AzureVMs,
+                    "test" => hodei_server_domain::workers::ProviderType::Test,
+                    "baremetal" => hodei_server_domain::workers::ProviderType::BareMetal,
+                    _ => hodei_server_domain::workers::ProviderType::Test,
+                };
+
+                let selection_strategy = payload
+                    .get("selection_strategy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string();
+
+                let effective_cost = payload
+                    .get("effective_cost")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+
+                let effective_startup_ms = payload
+                    .get("effective_startup_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let elapsed_ms = payload
+                    .get("elapsed_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                let occurred_at = payload
+                    .get("occurred_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Ok(DomainEvent::ProviderSelected {
+                    job_id: hodei_server_domain::shared_kernel::JobId(job_id),
+                    provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    provider_type: provider_type_enum,
+                    selection_strategy,
+                    effective_cost,
+                    effective_startup_ms,
+                    elapsed_ms,
+                    occurred_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
             // Unknown event type
             // =====================================================
             _ => {

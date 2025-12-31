@@ -20,6 +20,7 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::{JobQueue, JobRepository};
 use hodei_server_domain::shared_kernel::Result;
 use hodei_server_domain::workers::WorkerRegistry;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -54,6 +55,7 @@ impl JobController {
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        pool: PgPool,
     ) -> Self {
         info!("Initializing JobController with specialized components");
 
@@ -78,7 +80,7 @@ impl JobController {
         ));
 
         // Create coordinator that orchestrates everything
-        let coordinator = JobCoordinator::new(event_bus, job_dispatcher, worker_monitor);
+        let coordinator = JobCoordinator::new(event_bus, job_dispatcher, worker_monitor, pool);
 
         Self {
             coordinator,

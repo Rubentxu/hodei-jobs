@@ -278,6 +278,7 @@ impl DockerProvider {
             cpu_quota: Some(cpu_quota),
             network_mode: self.config.network.clone(),
             auto_remove: Some(false),
+            extra_hosts: Some(vec!["host.docker.internal:host-gateway".to_string()]),
             ..Default::default()
         };
 

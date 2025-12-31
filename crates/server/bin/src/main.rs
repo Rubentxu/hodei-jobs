@@ -854,6 +854,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 controller_provisioning,
                 Some(execution_dispatcher), // EPIC-31: Now connected to saga dispatcher
                 Some(provisioning_coordinator), // EPIC-31: Now connected to saga coordinator
+                pool.clone(),               // EPIC-32: Database pool for reactive subscriptions
             )));
 
             // Keep the controller alive for the entire server lifetime

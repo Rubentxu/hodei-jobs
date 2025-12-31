@@ -16,13 +16,14 @@ use hodei_jobs::{
     worker_message::Payload as WorkerPayload,
 };
 
-use hodei_jobs_application::{jobs::controller::JobController, smart_scheduler::SchedulerConfig};
+use hodei_jobs_application::{jobs::controller::JobController, providers::ProviderRegistry, smart_scheduler::SchedulerConfig};
 use hodei_jobs_domain::jobs::{Job, JobSpec};
 use hodei_jobs_domain::shared_kernel::ProviderId;
 use hodei_jobs_domain::workers::{ProviderType, WorkerHandle, WorkerSpec as DomainWorkerSpec};
 use hodei_jobs_infrastructure::repositories::{
     InMemoryJobQueue, InMemoryJobRepository, InMemoryWorkerRegistry,
 };
+use sqlx::PgPool;
 
 use hodei_jobs_grpc::services::WorkerAgentServiceImpl;
 use hodei_jobs_grpc::worker_command_sender::GrpcWorkerCommandSender;
@@ -182,7 +183,16 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
     job_repository.save(&job).await.unwrap();
     job_queue.enqueue(job).await.unwrap();
 
-    // Controller that dispatches via gRPC sender
+    // Create mock pool - not actually used with in-memory repos but required by signature
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy()
+        .expect("Failed to create lazy pool");
+
+    // Create ProviderRegistry with in-memory mock
+    use hodei_jobs_infrastructure::repositories::InMemoryProviderConfigRepository;
+    let provider_repo = Arc::new(InMemoryProviderConfigRepository::new()) as Arc<dyn hodei_server_domain::providers::ProviderConfigRepository>;
+    let provider_registry = ProviderRegistry::new(provider_repo);
     let sender = Arc::new(GrpcWorkerCommandSender::new(worker_service.clone()))
         as Arc<dyn hodei_jobs_application::workers::WorkerCommandSender>;
 
@@ -190,10 +200,15 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
         job_queue,
         job_repository.clone(),
         worker_registry,
+        provider_registry,
         SchedulerConfig::default(),
         sender,
         event_bus.clone(),
         None,
+        None,
+        None,
+        pool,
+        false,
     );
 
     let processed: usize = controller.run_once().await.unwrap();

@@ -149,6 +149,55 @@ pub enum ProviderTypeConfig {
     Custom(CustomConfig),
 }
 
+impl ProviderTypeConfig {
+    /// Deserialize from JSON, handling case-insensitive type field
+    /// This allows both "docker" and "Docker" in the JSON
+    pub fn deserialize_from_json(value: serde_json::Value) -> Result<Self> {
+        use crate::shared_kernel::DomainError;
+
+        // Clone the type field early to avoid borrow conflicts
+        let type_field = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| DomainError::InfrastructureError {
+                message: "Missing 'type' field in provider config".to_string(),
+            })?;
+
+        // Try direct deserialization first (case-sensitive)
+        if let Ok(config) = serde_json::from_value(value.clone()) {
+            return Ok(config);
+        }
+
+        // If that fails, try with normalized case (snake_case to PascalCase)
+        let normalized_type = match type_field.to_lowercase().as_str() {
+            "docker" => "docker",
+            "kubernetes" => "kubernetes",
+            "fargate" => "fargate",
+            "cloud_run" | "cloudrun" => "cloud_run",
+            "container_apps" | "containerapps" => "container_apps",
+            "lambda" => "lambda",
+            "cloud_functions" | "cloudfunctions" => "cloud_functions",
+            "azure_functions" | "azurefunctions" => "azure_functions",
+            "ec2" => "ec2",
+            "compute_engine" | "computeengine" => "compute_engine",
+            "azure_vms" | "azurevms" => "azure_vms",
+            "bare_metal" | "baremetal" => "bare_metal",
+            "custom" => "custom",
+            _ => type_field.as_str(),
+        };
+
+        let mut value = value;
+        if let Some(v) = value.as_object_mut() {
+            v["type"] = serde_json::Value::String(normalized_type.to_string());
+        }
+
+        serde_json::from_value(value).map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to deserialize provider config: {}", e),
+        })
+    }
+}
+
 // === CONTAINER CONFIGS ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

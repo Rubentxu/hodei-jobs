@@ -1120,10 +1120,10 @@ impl JobDispatcher {
         }
     }
 
-    /// Request worker provisioning for a job (publishes event)
+    /// Request worker provisioning for a job (publishes events)
     ///
-    /// Publishes WorkerProvisioningRequested event which triggers
-    /// the provider to create a new worker.
+    /// Publishes ProviderSelected event (EPIC-32) followed by WorkerProvisioningRequested.
+    /// This provides full traceability of scheduling decisions.
     async fn request_worker_provisioning(&self, job: &Job) {
         info!(
             "🛠️ JobDispatcher: Requesting worker provisioning for job {}",
@@ -1151,6 +1151,56 @@ impl JobDispatcher {
                 return;
             }
         };
+
+        // Get provider config for metrics
+        let provider_config = match self.provider_registry.get_provider(&provider_id).await {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                error!("❌ JobDispatcher: Provider {} not found", provider_id);
+                return;
+            }
+            Err(e) => {
+                error!(
+                    "❌ JobDispatcher: Failed to get provider {}: {}",
+                    provider_id, e
+                );
+                return;
+            }
+        };
+
+        // EPIC-32: Publish ProviderSelected event for scheduling traceability
+        let selection_start = Instant::now();
+        let selection_strategy = "smart_scheduler".to_string();
+        let effective_cost = Self::calculate_provider_cost(&provider_config);
+        let startup_duration = Self::calculate_startup_time(&provider_config);
+        let effective_startup_ms = startup_duration.as_millis() as u64;
+
+        let provider_selected_event = DomainEvent::ProviderSelected {
+            job_id: job.id.clone(),
+            provider_id: provider_id.clone(),
+            provider_type: provider_config.provider_type.clone(),
+            selection_strategy,
+            effective_cost,
+            effective_startup_ms,
+            elapsed_ms: selection_start.elapsed().as_millis() as u64,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: None,
+            actor: Some("job_dispatcher".to_string()),
+        };
+
+        if let Err(e) = self.event_bus.publish(&provider_selected_event).await {
+            error!(
+                "❌ JobDispatcher: Failed to publish ProviderSelected: {}",
+                e
+            );
+        } else {
+            info!(
+                "✅ JobDispatcher: Published ProviderSelected for job {} -> {} ({}ms)",
+                job.id,
+                provider_id,
+                selection_start.elapsed().as_millis()
+            );
+        }
 
         // Publish WorkerProvisioningRequested event (for reactive processing/saga tracking)
         let event = DomainEvent::WorkerProvisioningRequested {

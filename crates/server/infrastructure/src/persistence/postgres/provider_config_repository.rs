@@ -297,8 +297,8 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
         _ => hodei_server_domain::workers::ProviderType::Docker,
     };
 
-    let config: ProviderTypeConfig =
-        serde_json::from_value(config_json).map_err(|e| DomainError::InfrastructureError {
+    let config: ProviderTypeConfig = ProviderTypeConfig::deserialize_from_json(config_json)
+        .map_err(|e| DomainError::InfrastructureError {
             message: format!("Failed to deserialize provider config: {}", e),
         })?;
 

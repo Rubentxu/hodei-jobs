@@ -19,6 +19,7 @@ use crate::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::{JobQueue, JobRepository};
 use hodei_server_domain::workers::WorkerRegistry;
+use sqlx::PgPool;
 use std::sync::Arc;
 
 /// Builder for JobController
@@ -39,6 +40,9 @@ pub struct JobControllerBuilder {
 
     // Optional dependencies
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
+
+    // EPIC-32: Reactive system dependencies
+    pool: Option<PgPool>,
 }
 
 impl std::fmt::Debug for JobControllerBuilder {
@@ -119,6 +123,12 @@ impl JobControllerBuilder {
         self
     }
 
+    /// Set the database pool for reactive subscriptions (EPIC-32)
+    pub fn with_pool(mut self, pool: PgPool) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
     /// Build the JobController
     ///
     /// # Errors
@@ -173,6 +183,10 @@ impl JobControllerBuilder {
             self.provisioning_service,
             None, // execution_saga_dispatcher - can be set via builder
             None, // provisioning_saga_coordinator - can be set via builder
+            self.pool.clone().unwrap_or_else(||
+                // For tests, create a lazy pool that won't actually connect
+                PgPool::connect_lazy("postgresql://localhost/hodei_test").expect("Failed to create test pool")
+            ),
         );
 
         Ok(controller)
@@ -477,8 +491,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_builder_all_fields() {
+    #[tokio::test]
+    async fn test_builder_all_fields() {
         let (
             job_queue,
             job_repository,
@@ -496,13 +510,14 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            // Skip pool for unit tests since it requires async runtime
             .build();
 
         assert!(controller.is_ok());
     }
 
-    #[test]
-    fn test_builder_missing_job_queue() {
+    #[tokio::test]
+    async fn test_builder_missing_job_queue() {
         let (
             _,
             job_repository,
@@ -519,6 +534,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            // Skip pool for unit tests
             .build();
 
         // Verify that building fails when job_queue is missing
@@ -528,8 +544,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_builder_missing_job_repository() {
+    #[tokio::test]
+    async fn test_builder_missing_job_repository() {
         let (job_queue, _, worker_registry, provider_registry, worker_command_sender, event_bus) =
             create_test_components();
 
@@ -540,6 +556,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            // Skip pool for unit tests
             .build();
 
         // Verify that building fails when job_repository is missing
@@ -549,8 +566,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_builder_all_required_fields_present() {
+    #[tokio::test]
+    async fn test_builder_all_required_fields_present() {
         let (
             job_queue,
             job_repository,
@@ -568,13 +585,14 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            // Skip pool for unit tests
             .build();
 
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_builder_fluent_interface() {
+    #[tokio::test]
+    async fn test_builder_fluent_interface() {
         let (
             job_queue,
             job_repository,
@@ -593,6 +611,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            // Skip pool for unit tests
             .build();
 
         assert!(controller.is_ok());
