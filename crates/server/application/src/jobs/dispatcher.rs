@@ -35,7 +35,7 @@ use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{Level, debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 /// Job Dispatcher
@@ -148,6 +148,7 @@ impl JobDispatcher {
     ///
     /// ## Responsabilidad Core #1: Orquestación
     /// Este método solo orquesta el flujo, delegando los detalles a servicios especializados.
+    #[instrument(skip(self), fields(job_id), ret)]
     pub async fn dispatch_once(&self) -> anyhow::Result<usize> {
         info!("🔄 JobDispatcher: Starting dispatch cycle");
 
@@ -251,6 +252,7 @@ impl JobDispatcher {
     }
 
     /// Handle case when no workers are available
+    #[instrument(skip(self), fields(job_id = %job.id), ret)]
     async fn handle_no_available_workers(&self, job: &Job) -> anyhow::Result<usize> {
         info!("⚠️ JobDispatcher: No available workers for job {}", job.id);
 
@@ -360,6 +362,7 @@ impl JobDispatcher {
     }
 
     /// Dispatch job to worker (responsabilidad core #2)
+    #[instrument(skip(self), fields(job_id = %job.id, worker_id = %worker_id), ret)]
     async fn dispatch_job_to_worker(
         &self,
         job: &mut Job,
@@ -796,6 +799,7 @@ impl JobDispatcher {
     ///
     /// Uses saga-based provisioning when coordinator is available,
     /// otherwise falls back to legacy provisioning.
+    #[instrument(skip(self), fields(job_id = %job.id), ret)]
     async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
         // Use saga-based provisioning (always enabled when coordinator is present)
         if let Some(ref coordinator) = self.provisioning_saga_coordinator {

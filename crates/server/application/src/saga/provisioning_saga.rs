@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
 /// Configuration for provisioning saga coordinator
 #[derive(Debug, Clone)]
@@ -72,6 +72,7 @@ impl DynProvisioningSagaCoordinator {
         }
     }
 
+    #[instrument(skip(self), fields(provider_id = %provider_id, job_id = ?job_id), ret)]
     pub async fn execute_provisioning_saga(
         &self,
         provider_id: &ProviderId,

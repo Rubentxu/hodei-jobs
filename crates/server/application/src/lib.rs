@@ -5,6 +5,7 @@
 // Bounded Contexts
 pub mod audit;
 pub mod credentials;
+pub mod debug;
 pub mod jobs;
 pub mod providers;
 pub mod saga;
@@ -22,6 +23,7 @@ pub mod audit_test_helper;
 
 // Re-exports de bounded contexts
 pub use audit::*;
+pub use debug::*;
 pub use jobs::*;
 pub use metrics::*;
 pub use providers::*;
