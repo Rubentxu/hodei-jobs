@@ -4,9 +4,8 @@
 
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::JobId;
-use async_trait::async_trait;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::debug;
 
 // ============================================================================
 // RecoverySaga
