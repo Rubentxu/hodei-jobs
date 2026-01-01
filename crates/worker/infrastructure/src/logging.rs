@@ -76,11 +76,11 @@ impl LogBatcher {
     }
 
     /// Push a log entry to the batcher
-    /// Automatically flushes when capacity is reached
+    /// Flushes when buffer is full or interval elapsed
     pub async fn push(&mut self, entry: LogEntry) {
         self.buffer.push(entry);
 
-        // Flush if capacity reached
+        // Flush when buffer reaches capacity
         if self.buffer.len() >= self.capacity {
             self.flush().await;
         }

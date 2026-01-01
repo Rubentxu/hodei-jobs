@@ -265,7 +265,18 @@ message WorkerMessage {
         ResourceUsageMessage stats = 4;
         WorkerStatusNotification status = 5;
         AckMessage ack = 7;
+        SelfTerminateMessage self_terminate = 8;
     }
+}
+
+// Mensaje de auto-terminación del worker
+// El worker decide terminarse a sí mismo tras el timeout de cleanup
+message SelfTerminateMessage {
+    string worker_id = 1;
+    string last_job_id = 2;  // Último job completado (vacío si no hubo jobs)
+    uint64 expected_cleanup_ms = 3;  // Timeout configurado
+    uint64 actual_wait_ms = 4;  // Tiempo real esperado
+    string reason = 5;  // Razón de la autoterminación
 }
 
 message LogBatch {

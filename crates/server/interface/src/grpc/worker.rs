@@ -13,8 +13,8 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
 use hodei_jobs::{
-    AckMessage, LogEntry, RegisterWorkerRequest, RegisterWorkerResponse, ServerMessage,
-    UnregisterWorkerRequest, UnregisterWorkerResponse, UpdateWorkerStatusRequest,
+    AckMessage, LogEntry, RegisterWorkerRequest, RegisterWorkerResponse, SelfTerminateMessage,
+    ServerMessage, UnregisterWorkerRequest, UnregisterWorkerResponse, UpdateWorkerStatusRequest,
     UpdateWorkerStatusResponse, WorkerInfo, WorkerMessage,
     server_message::Payload as ServerPayload, worker_agent_service_server::WorkerAgentService,
     worker_message::Payload as WorkerPayload,
@@ -1343,6 +1343,74 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         } else {
                                             warn!("Acknowledgment received without worker_id");
                                         }
+                                    }
+                                }
+                                WorkerPayload::SelfTerminate(term) => {
+                                    info!(
+                                        "🛑 Worker {} self-terminating: last_job={}, waited={}ms (expected={}ms), reason={}",
+                                        term.worker_id,
+                                        term.last_job_id,
+                                        term.actual_wait_ms,
+                                        term.expected_cleanup_ms,
+                                        term.reason
+                                    );
+
+                                    // Parse worker_id
+                                    if let Ok(worker_uuid) = uuid::Uuid::parse_str(&term.worker_id)
+                                    {
+                                        let worker_id_obj = WorkerId(worker_uuid);
+                                        let provider_id_obj = ProviderId::new(); // Will be resolved from registry
+
+                                        // Parse last_job_id if present
+                                        let last_job_id_obj = if !term.last_job_id.is_empty() {
+                                            term.last_job_id.parse::<uuid::Uuid>().ok().map(JobId)
+                                        } else {
+                                            None
+                                        };
+
+                                        // Publish WorkerSelfTerminated event
+                                        if let Some(ref event_bus) = registry_service.event_bus {
+                                            let event = DomainEvent::WorkerSelfTerminated {
+                                                worker_id: worker_id_obj.clone(),
+                                                provider_id: provider_id_obj,
+                                                last_job_id: last_job_id_obj,
+                                                expected_cleanup_ms: term.expected_cleanup_ms,
+                                                actual_wait_ms: term.actual_wait_ms,
+                                                worker_state: WorkerState::Draining,
+                                                occurred_at: Utc::now(),
+                                                correlation_id: None,
+                                                actor: Some("worker:self_terminate".to_string()),
+                                            };
+
+                                            if let Err(e) = event_bus.publish(&event).await {
+                                                error!(
+                                                    "Failed to publish WorkerSelfTerminated event: {}",
+                                                    e
+                                                );
+                                            } else {
+                                                info!(
+                                                    "📢 WorkerSelfTerminated event published for worker {}",
+                                                    term.worker_id
+                                                );
+                                            }
+                                        }
+
+                                        // Remove from worker channels
+                                        worker_channels.write().await.remove(&term.worker_id);
+
+                                        // Note: The actual worker termination (cleanup) is handled by the provider
+                                        // when it detects the worker process has exited
+                                        warn!(
+                                            "Worker {} initiated self-termination (expected after {}ms, actual wait: {}ms)",
+                                            term.worker_id,
+                                            term.expected_cleanup_ms,
+                                            term.actual_wait_ms
+                                        );
+                                    } else {
+                                        warn!(
+                                            "Invalid worker_id in SelfTerminate message: {}",
+                                            term.worker_id
+                                        );
                                     }
                                 }
                             }

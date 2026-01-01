@@ -373,7 +373,7 @@ pub struct RegisterWorkerResponse {
 /// PRD v6.0: Mensajes del Worker al Servidor (Connect stream)
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerMessage {
-    #[prost(oneof = "worker_message::Payload", tags = "1, 2, 6, 3, 4, 5, 7")]
+    #[prost(oneof = "worker_message::Payload", tags = "1, 2, 6, 3, 4, 5, 7, 8")]
     pub payload: ::core::option::Option<worker_message::Payload>,
 }
 /// Nested message and enum types in `WorkerMessage`.
@@ -394,7 +394,28 @@ pub mod worker_message {
         Status(super::WorkerStatusNotification),
         #[prost(message, tag = "7")]
         Ack(super::AckMessage),
+        #[prost(message, tag = "8")]
+        SelfTerminate(super::SelfTerminateMessage),
     }
+}
+/// Mensaje de auto-terminación del worker
+/// El worker decide terminarse a sí mismo tras el timeout de cleanup
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SelfTerminateMessage {
+    #[prost(string, tag = "1")]
+    pub worker_id: ::prost::alloc::string::String,
+    /// Último job completado (vacío si no hubo jobs)
+    #[prost(string, tag = "2")]
+    pub last_job_id: ::prost::alloc::string::String,
+    /// Timeout configurado
+    #[prost(uint64, tag = "3")]
+    pub expected_cleanup_ms: u64,
+    /// Tiempo real esperado
+    #[prost(uint64, tag = "4")]
+    pub actual_wait_ms: u64,
+    /// Razón de la autoterminación
+    #[prost(string, tag = "5")]
+    pub reason: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogBatch {

@@ -18,6 +18,9 @@ pub struct WorkerConfig {
     pub log_batch_size: usize,
     pub log_flush_interval_ms: u64,
     pub log_dir: std::path::PathBuf,
+    /// Tiempo de espera máximo después de completar un job antes de auto-terminarse
+    /// Valor 0 deshabilita la auto-terminación
+    pub cleanup_timeout_ms: u64,
 }
 
 impl Default for WorkerConfig {
@@ -62,6 +65,10 @@ impl Default for WorkerConfig {
             log_dir: env::var("HODEI_LOG_DIR")
                 .map(|p| std::path::PathBuf::from(p))
                 .unwrap_or(log_dir),
+            cleanup_timeout_ms: env::var("HODEI_CLEANUP_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30000), // Default 30 segundos, 0 para deshabilitar
         }
     }
 }

@@ -447,6 +447,24 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// Worker decide terminarse a sí mismo tras timeout de cleanup post-job
+    WorkerSelfTerminated {
+        /// ID del worker que se autoterminó
+        worker_id: WorkerId,
+        /// ID del provider
+        provider_id: ProviderId,
+        /// Último job completado (si alguno)
+        last_job_id: Option<JobId>,
+        /// Tiempo esperado de cleanup
+        expected_cleanup_ms: u64,
+        /// Tiempo real esperando antes de autoterminarse
+        actual_wait_ms: u64,
+        /// Estado del worker al momento de autoterminarse
+        worker_state: WorkerState,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
 }
 
 /// Razón de limpieza de un worker efímero
@@ -496,6 +514,15 @@ pub enum TerminationReason {
     ProviderError { message: String },
     /// EPIC-26 US-26.7: Terminación por TTL after completion excedido
     JobCompleted,
+    /// Worker decide terminarse a sí mismo tras timeout de cleanup post-job
+    SelfInitiated {
+        /// Job que completó antes de la autoterminación
+        last_job_id: Option<JobId>,
+        /// Tiempo esperado de cleanup
+        expected_cleanup_ms: u64,
+        /// Tiempo real esperando antes de autoterminarse
+        actual_wait_ms: u64,
+    },
 }
 
 impl std::fmt::Display for TerminationReason {
@@ -510,6 +537,17 @@ impl std::fmt::Display for TerminationReason {
                 write!(f, "PROVIDER_ERROR: {}", message)
             }
             TerminationReason::JobCompleted => write!(f, "JOB_COMPLETED"),
+            TerminationReason::SelfInitiated {
+                last_job_id,
+                expected_cleanup_ms,
+                actual_wait_ms,
+            } => {
+                write!(
+                    f,
+                    "SELF_INITIATED (job={:?}, expected={}ms, waited={}ms)",
+                    last_job_id, expected_cleanup_ms, actual_wait_ms
+                )
+            }
         }
     }
 }
@@ -847,7 +885,8 @@ impl DomainEvent {
             | DomainEvent::WorkerReadyForJob { correlation_id, .. }
             | DomainEvent::WorkerProvisioningRequested { correlation_id, .. }
             | DomainEvent::ProviderSelected { correlation_id, .. }
-            | DomainEvent::WorkerHeartbeat { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::WorkerHeartbeat { correlation_id, .. }
+            | DomainEvent::WorkerSelfTerminated { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -894,7 +933,8 @@ impl DomainEvent {
             | DomainEvent::WorkerReadyForJob { actor, .. }
             | DomainEvent::WorkerProvisioningRequested { actor, .. }
             | DomainEvent::ProviderSelected { actor, .. }
-            | DomainEvent::WorkerHeartbeat { actor, .. } => actor.clone(),
+            | DomainEvent::WorkerHeartbeat { actor, .. }
+            | DomainEvent::WorkerSelfTerminated { actor, .. } => actor.clone(),
         }
     }
 
@@ -946,6 +986,7 @@ impl DomainEvent {
             DomainEvent::RunJobReceived { received_at, .. } => *received_at,
             DomainEvent::WorkerReady { ready_at, .. } => *ready_at,
             DomainEvent::WorkerStateUpdated { occurred_at, .. } => *occurred_at,
+            DomainEvent::WorkerSelfTerminated { occurred_at, .. } => *occurred_at,
         }
     }
 
@@ -995,6 +1036,8 @@ impl DomainEvent {
             DomainEvent::WorkerProvisioningRequested { .. } => "WorkerProvisioningRequested",
             DomainEvent::ProviderSelected { .. } => "ProviderSelected",
             DomainEvent::WorkerHeartbeat { .. } => "WorkerHeartbeat",
+            // Self-termination event
+            DomainEvent::WorkerSelfTerminated { .. } => "WorkerSelfTerminated",
         }
     }
 
@@ -1051,6 +1094,8 @@ impl DomainEvent {
             DomainEvent::WorkerProvisioningRequested { job_id, .. } => job_id.to_string(),
             DomainEvent::ProviderSelected { job_id, .. } => job_id.to_string(),
             DomainEvent::WorkerHeartbeat { worker_id, .. } => worker_id.to_string(),
+            // Self-termination event
+            DomainEvent::WorkerSelfTerminated { worker_id, .. } => worker_id.to_string(),
         }
     }
 }

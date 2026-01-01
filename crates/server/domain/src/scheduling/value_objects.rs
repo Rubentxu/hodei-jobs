@@ -53,7 +53,23 @@ impl ProviderPreference {
             return Err(ProviderPreferenceError::Empty);
         }
 
-        // Normalize the input using the optimized function
+        let lower = trimmed.to_lowercase();
+
+        // Check if input is a UUID (provider ID format)
+        if Self::is_uuid_format(&lower) {
+            // Parse the UUID
+            if let Ok(uuid) = uuid::Uuid::parse_str(&lower) {
+                let provider_id = ProviderId::from_uuid(uuid);
+                return Ok(Self {
+                    normalized: lower.clone(),
+                    original: trimmed.to_string(),
+                    is_provider_id: true,
+                    matched_provider_id: Some(provider_id),
+                });
+            }
+        }
+
+        // Normalize the input using the optimized function for type names
         let (normalized, _) = Self::normalize_optimized(trimmed);
 
         Ok(Self {
@@ -81,8 +97,15 @@ impl ProviderPreference {
     ///
     /// This optimized version returns a tuple with the normalized string and a flag
     /// indicating whether it's a known alias (to avoid allocations).
+    /// Also detects UUIDs for provider ID matching.
     fn normalize_optimized(input: &str) -> (String, bool) {
         let lower = input.to_lowercase();
+
+        // Check if input looks like a UUID (8-4-4-4-12 hex format)
+        // UUIDs are provider IDs, not type names
+        if Self::is_uuid_format(&lower) {
+            return (lower, false); // Return as-is, mark as not a known alias
+        }
 
         // Use static str comparisons to avoid allocations for known aliases
         let result = match lower.as_str() {
@@ -101,6 +124,36 @@ impl ProviderPreference {
         };
 
         (result.to_string(), true)
+    }
+
+    /// Check if a string looks like a UUID (provider ID format)
+    ///
+    /// UUID format: 8-4-4-4-12 hex characters with dashes
+    fn is_uuid_format(s: &str) -> bool {
+        if s.len() != 36 {
+            return false;
+        }
+        // Check UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        let mut iter = s.chars();
+        for i in 0..36 {
+            let c = match iter.next() {
+                Some(c) => c,
+                None => return false,
+            };
+            match i {
+                8 | 13 | 18 | 23 => {
+                    if c != '-' {
+                        return false;
+                    }
+                }
+                _ => {
+                    if !c.is_ascii_hexdigit() {
+                        return false;
+                    }
+                }
+            }
+        }
+        iter.next().is_none() // Ensure no more characters
     }
 
     /// Normalize provider name to standard form (legacy compatibility)
@@ -701,6 +754,108 @@ mod tests {
         let pref = ProviderPreference::from_provider_id(provider_id.clone());
         assert!(pref.is_specific_provider());
         assert!(pref.matches_provider_id(&provider_id));
+    }
+
+    // UUID detection tests - Bug fix verification
+    #[test]
+    fn test_provider_preference_uuid_format_detection() {
+        // Valid UUID (lowercase)
+        let valid_uuid = "851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a";
+        let pref = ProviderPreference::new(valid_uuid).unwrap();
+        assert!(
+            pref.is_specific_provider(),
+            "UUID should be detected as provider ID"
+        );
+        assert!(pref.matched_provider_id.is_some());
+        assert_eq!(pref.normalized(), valid_uuid);
+    }
+
+    #[test]
+    fn test_provider_preference_uuid_format_uppercase() {
+        // Valid UUID (uppercase - should be normalized to lowercase)
+        let uuid_upper = "851E29C7-5C15-4C9A-9F1F-8B8C7D6E5F4A";
+        let pref = ProviderPreference::new(uuid_upper).unwrap();
+        assert!(
+            pref.is_specific_provider(),
+            "Uppercase UUID should be detected as provider ID"
+        );
+        assert!(pref.matched_provider_id.is_some());
+        // to_lowercase() normalizes it
+        assert_eq!(pref.normalized(), "851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a");
+    }
+
+    #[test]
+    fn test_provider_preference_invalid_uuid_format_too_short() {
+        // Invalid UUID (too short)
+        let short_uuid = "851e29c7-5c15-4c9a-9f1f";
+        let result = ProviderPreference::new(short_uuid);
+        assert!(
+            result.is_ok(),
+            "Invalid UUID should be treated as provider name"
+        );
+        let pref = result.unwrap();
+        // Should NOT be treated as provider ID
+        assert!(!pref.is_specific_provider());
+    }
+
+    #[test]
+    fn test_provider_preference_invalid_uuid_format_no_dashes() {
+        // Invalid UUID (no dashes)
+        let no_dashes = "851e29c75c154c9a9f1f8b8c7d6e5f4a";
+        let result = ProviderPreference::new(no_dashes);
+        assert!(
+            result.is_ok(),
+            "Invalid UUID format should be treated as provider name"
+        );
+        let pref = result.unwrap();
+        assert!(!pref.is_specific_provider());
+    }
+
+    #[test]
+    fn test_provider_preference_matches_uuid_provider_id() {
+        // Create a UUID and test matching
+        let uuid = uuid::Uuid::parse_str("851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a").unwrap();
+        let provider_id = ProviderId::from_uuid(uuid);
+        let pref = ProviderPreference::new("851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a").unwrap();
+
+        assert!(pref.is_specific_provider());
+        assert!(pref.matches_provider_id(&provider_id));
+    }
+
+    #[test]
+    fn test_provider_preference_does_not_match_different_uuid() {
+        let provider_id = ProviderId::from_uuid(
+            uuid::Uuid::parse_str("851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a").unwrap(),
+        );
+        let pref = ProviderPreference::new("99999999-9999-9999-9999-999999999999").unwrap();
+
+        assert!(pref.is_specific_provider());
+        assert!(!pref.matches_provider_id(&provider_id));
+    }
+
+    #[test]
+    fn test_is_uuid_format_valid() {
+        assert!(ProviderPreference::is_uuid_format(
+            "851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a"
+        ));
+        assert!(ProviderPreference::is_uuid_format(
+            "00000000-0000-0000-0000-000000000000"
+        ));
+    }
+
+    #[test]
+    fn test_is_uuid_format_invalid() {
+        assert!(!ProviderPreference::is_uuid_format(""));
+        assert!(!ProviderPreference::is_uuid_format("short"));
+        assert!(!ProviderPreference::is_uuid_format(
+            "851e29c75c154c9a9f1f8b8c7d6e5f4a"
+        )); // No dashes
+        assert!(!ProviderPreference::is_uuid_format(
+            "851e29c7-5c15-4c9a-9f1f"
+        )); // Too short
+        assert!(!ProviderPreference::is_uuid_format(
+            "851e29c7-5c15-4c9a-9f1f-8b8c7d6e5f4a-extra"
+        )); // Too long
     }
 
     // ProviderTypeMapping tests

@@ -178,26 +178,29 @@ impl JobSpec {
         // (comportamiento idéntico a Jenkins sh step)
         let cmd_type = if command.is_empty() {
             // Si no hay comando, ejecutar echo vacío
-            CommandType::script("bash", "echo")
+            CommandType::shell_with_args(
+                "bash".to_string(),
+                vec!["-c".to_string(), "echo".to_string()],
+            )
+        } else if command.len() >= 2 && command[command.len() - 2] == "-c" {
+            // CLI pattern: ["sh", "-c", "command..."] or ["bash", "-c", "command..."]
+            // Preserve as Shell command to avoid double-shell invocation
+            let cmd = command[0].clone();
+            let args = command[1..].to_vec();
+            CommandType::shell_with_args(cmd, args)
+        } else if command.len() == 1 && Self::looks_like_script(&command[0]) {
+            // Un solo elemento multilinea o con shebang: tratar como script inline
+            CommandType::script("bash", command[0].clone())
+        } else if command.len() == 1 {
+            // Un solo elemento: ejecutar directamente via bash -c
+            CommandType::shell_with_args(
+                "bash".to_string(),
+                vec!["-c".to_string(), command[0].clone()],
+            )
         } else {
-            // Combinar todos los elementos del comando en un solo string
-            // Esto asegura que comandos como "echo Hello" se ejecuten correctamente
-            let content = if command.len() == 1 {
-                // Un solo elemento: puede ser comando simple o script multilinea
-                if Self::looks_like_script(&command[0]) {
-                    // Es contenido de script (multilinea o con shebang)
-                    command[0].clone()
-                } else {
-                    // Comando simple: lo ejecutamos via bash -c
-                    command[0].clone()
-                }
-            } else {
-                // Múltiples elementos: join con espacios para formar comando completo
-                command.join(" ")
-            };
-
-            // Usar bash como interprete por defecto (comportamiento Jenkins)
-            CommandType::script("bash", content)
+            // Múltiples elementos: join con espacios y ejecutar via bash -c
+            let content = command.join(" ");
+            CommandType::shell_with_args("bash".to_string(), vec!["-c".to_string(), content])
         };
         Self {
             command: cmd_type,

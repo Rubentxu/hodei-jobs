@@ -339,6 +339,7 @@ impl NatsEventBus {
             DomainEvent::WorkerProvisioningRequested { .. } => "workers",
             DomainEvent::WorkerProvisioningError { .. } => "workers",
             DomainEvent::WorkerHeartbeat { .. } => "workers",
+            DomainEvent::WorkerSelfTerminated { .. } => "workers",
 
             DomainEvent::ProviderRegistered { .. } => "providers",
             DomainEvent::ProviderUpdated { .. } => "providers",

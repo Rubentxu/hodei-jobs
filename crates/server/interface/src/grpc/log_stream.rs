@@ -24,7 +24,7 @@ use hodei_jobs::{
 };
 use prost_types;
 
-/// Buffer size for log entries per job
+/// Buffer size for log entries per job (increased to 1000 for longer jobs)
 const LOG_BUFFER_SIZE: usize = 1000;
 
 /// Log entry with metadata
@@ -135,7 +135,13 @@ impl LogStreamService {
             let subs = self.subscribers.read().await;
             if let Some(job_subs) = subs.get(&job_id) {
                 for tx in job_subs {
-                    let _ = tx.send(entry.clone()).await;
+                    if let Err(e) = tx.send(entry.clone()).await {
+                        warn!(
+                            error = %e,
+                            job_id = %job_id,
+                            "Failed to send log to subscriber, entry will be delivered on next subscribe"
+                        );
+                    }
                 }
             }
         }

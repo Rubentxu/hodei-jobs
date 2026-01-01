@@ -360,9 +360,11 @@ impl JobExecutor {
                             let entry = LogEntry {
                                 job_id: job_id.to_string(),
                                 timestamp: Some(current_timestamp()),
-                                line: text,
+                                line: text.clone(),
                                 is_stderr: false,
                             };
+
+                            debug!(job_id = %job_id, line = %text, "Received stdout line");
 
                             // Log to file (may fail on read-only filesystems like K8s)
                             // Logs are still sent to server via batcher below

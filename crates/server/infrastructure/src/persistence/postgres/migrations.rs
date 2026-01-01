@@ -9,6 +9,7 @@
 //!
 //! ```rust
 //! use hodei_server_infrastructure::persistence::postgres::migrations::MigrationService;
+//! use hodei_server_infrastructure::persistence::MigrationConfig;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), anyhow::Error> {

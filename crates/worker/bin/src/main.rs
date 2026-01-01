@@ -1,11 +1,12 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use hodei_jobs::{
-    JobResultMessage, RegisterWorkerRequest, ResourceCapacity, ServerMessage, WorkerHeartbeat,
-    WorkerId, WorkerInfo, WorkerMessage, WorkerStatus, server_message::Payload as ServerPayload,
+    JobResultMessage, RegisterWorkerRequest, ResourceCapacity, SelfTerminateMessage, ServerMessage,
+    WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage, WorkerStatus,
+    server_message::Payload as ServerPayload,
     worker_agent_service_client::WorkerAgentServiceClient,
     worker_message::Payload as WorkerPayload,
 };
@@ -23,6 +24,58 @@ struct PendingJobResult {
     exit_code: i32,
     success: bool,
     error_message: String,
+}
+
+/// State for tracking auto-termination after job completion
+#[derive(Debug, Clone)]
+struct AutoTerminateState {
+    /// Whether auto-termination is enabled
+    enabled: bool,
+    /// Last job ID that completed (if any)
+    last_job_id: Option<String>,
+    /// When the last job completed (for calculating wait time)
+    last_job_completed_at: Option<Instant>,
+    /// Expected cleanup timeout from config
+    expected_cleanup_ms: u64,
+}
+
+impl AutoTerminateState {
+    fn new(cleanup_timeout_ms: u64) -> Self {
+        Self {
+            enabled: cleanup_timeout_ms > 0,
+            last_job_id: None,
+            last_job_completed_at: None,
+            expected_cleanup_ms: cleanup_timeout_ms,
+        }
+    }
+
+    /// Called when a job completes
+    fn on_job_completed(&mut self, job_id: String) {
+        self.last_job_id = Some(job_id);
+        self.last_job_completed_at = Some(Instant::now());
+    }
+
+    /// Check if we should auto-terminate
+    /// Returns Some(actual_wait_ms) if should terminate, None otherwise
+    fn should_terminate(&self) -> Option<u64> {
+        if !self.enabled {
+            return None;
+        }
+        if let Some(completed_at) = self.last_job_completed_at {
+            let elapsed = completed_at.elapsed();
+            let expected = Duration::from_millis(self.expected_cleanup_ms);
+            if elapsed >= expected {
+                return Some(elapsed.as_millis() as u64);
+            }
+        }
+        None
+    }
+
+    /// Reset the state (e.g., when receiving a new job)
+    fn reset(&mut self) {
+        self.last_job_id = None;
+        self.last_job_completed_at = None;
+    }
 }
 
 use hodei_worker_infrastructure::{
@@ -131,6 +184,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HashMap::<String, tokio::task::JoinHandle<()>>::new(),
     ));
     let mut metrics_collector = MetricsCollector::new();
+
+    // Auto-termination state for cleanup after job completion
+    let auto_terminate_state = Arc::new(Mutex::new(AutoTerminateState::new(
+        config.cleanup_timeout_ms,
+    )));
+    info!(
+        "🔄 Auto-termination enabled: {}ms timeout",
+        config.cleanup_timeout_ms
+    );
 
     // CRITICAL: Persistent result channel that survives reconnections
     // This ensures job results are never lost even if connection drops during execution
@@ -252,6 +314,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
 
+                        // Check auto-termination timeout
+                        should_terminate = async {
+                            // Poll periodically to check if timeout expired
+                            if let Some(expected_ms) = config.cleanup_timeout_ms.checked_sub(100) {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            } else {
+                                tokio::time::sleep(Duration::from_millis(config.cleanup_timeout_ms)).await;
+                            }
+                            auto_terminate_state.lock().await.should_terminate()
+                        } => {
+                            if let Some(actual_wait_ms) = should_terminate {
+                                let last_job_id = auto_terminate_state.lock().await.last_job_id.clone();
+                                let expected_ms = auto_terminate_state.lock().await.expected_cleanup_ms;
+                                warn!("🛑 Auto-termination triggered after {}ms (expected: {}ms), last_job: {:?}",
+                                    actual_wait_ms, expected_ms, last_job_id);
+
+                                // Send self-termination message to server before exiting
+                                let term_msg = WorkerMessage {
+                                    payload: Some(WorkerPayload::SelfTerminate(SelfTerminateMessage {
+                                        worker_id: config.worker_id.clone(),
+                                        last_job_id: last_job_id.unwrap_or_default(),
+                                        expected_cleanup_ms: expected_ms,
+                                        actual_wait_ms,
+                                        reason: "Cleanup timeout expired after job completion".to_string(),
+                                    }))
+                                };
+
+                                // Try to send, but exit anyway
+                                let _ = tx.send(term_msg).await;
+
+                                shutdown_triggered = true;
+                                break;
+                            }
+                        }
+
                         // Outgoing: Heartbeats
                         _ = heartbeat_interval.tick() => {
                             let resource_usage = if let Some(cache) = &cached_metrics {
@@ -309,6 +406,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     break; // Exit inner loop to trigger reconnection
                                 } else {
                                     info!("✅ Job {} result delivered to server (exit code: {})", result.job_id, result.exit_code);
+                                    // Trigger auto-termination timer after successful result delivery
+                                    auto_terminate_state.lock().await.on_job_completed(result.job_id.clone());
+                                    info!("🔄 Auto-termination timer started ({}ms)", config.cleanup_timeout_ms);
                                 }
                             }
                         }
@@ -320,6 +420,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     match payload {
                                         ServerPayload::RunJob(run_job) => {
                                             info!("🚀 Received job: {}", run_job.job_id);
+                                            // Reset auto-termination timer when receiving new job
+                                            auto_terminate_state.lock().await.reset();
+                                            info!("🔄 Auto-termination timer reset (new job received)");
+
                                             let exec = executor.clone();
                                             let log_tx = tx.clone(); // For streaming logs only
                                             let persistent_result_tx = result_tx.clone(); // Persistent channel for results
