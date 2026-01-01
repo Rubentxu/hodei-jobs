@@ -75,12 +75,18 @@ impl JobController {
         ));
 
         let worker_monitor = Arc::new(crate::jobs::worker_monitor::WorkerMonitor::new(
-            worker_registry,
+            worker_registry.clone(),
             event_bus.clone(),
         ));
 
         // Create coordinator that orchestrates everything
-        let coordinator = JobCoordinator::new(event_bus, job_dispatcher, worker_monitor, pool);
+        let coordinator = JobCoordinator::new(
+            event_bus,
+            job_dispatcher,
+            worker_monitor,
+            pool,
+            worker_registry,
+        );
 
         Self {
             coordinator,

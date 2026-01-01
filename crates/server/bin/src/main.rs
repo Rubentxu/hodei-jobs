@@ -86,7 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get port from environment or default
     let port = env::var("GRPC_PORT").unwrap_or_else(|_| "50051".to_string());
-    let addr = format!("0.0.0.0:{}", port).parse()?;
+    // Get server bind address from environment or use default
+    let server_bind_host = env::var("HODEI_SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let addr = format!("{}:{}", server_bind_host, port).parse()?;
 
     // Check dev mode
     let dev_mode = env::var("HODEI_DEV_MODE").unwrap_or_default() == "1";
@@ -580,12 +582,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 // Server address for worker provisioning
-                let server_address = format!(
-                    "http://{}:{}",
-                    env::var("HODEI_SERVER_HOST")
-                        .unwrap_or_else(|_| "host.docker.internal".to_string()),
-                    port
-                );
+                // HODEI_SERVER_HOST: Used for binding (0.0.0.0 for all interfaces)
+                // HODEI_SERVER_ADDRESS: Used by workers to connect (host.docker.internal for Docker)
+                let server_host =
+                    env::var("HODEI_SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+                let server_address_for_workers = env::var("HODEI_SERVER_ADDRESS")
+                    .unwrap_or_else(|_| "host.docker.internal".to_string());
+                let server_address = format!("http://{}:{}", server_address_for_workers, port);
                 let provisioning_config = ProvisioningConfig::new(server_address)
                     .with_default_image(
                         env::var("HODEI_WORKER_IMAGE")

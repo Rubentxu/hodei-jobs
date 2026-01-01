@@ -16,7 +16,8 @@ use crate::jobs::dispatcher::JobDispatcher;
 use crate::jobs::worker_monitor::WorkerMonitor;
 use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, TerminationReason};
+use hodei_server_domain::workers::WorkerRegistry;
 use sqlx::PgPool;
 use std::fmt;
 use std::sync::Arc;
@@ -70,6 +71,8 @@ pub struct JobCoordinator {
     job_dispatcher: Arc<JobDispatcher>,
     worker_monitor: Arc<WorkerMonitor>,
     pool: PgPool,
+    // EPIC-32: Dependencies for worker cleanup
+    worker_registry: Arc<dyn WorkerRegistry>,
     shutdown_tx: watch::Sender<()>,
     monitor_shutdown: Option<mpsc::Receiver<()>>,
 }
@@ -88,11 +91,13 @@ impl JobCoordinator {
     /// * `job_dispatcher` - Job dispatcher for processing
     /// * `worker_monitor` - Worker health monitor
     /// * `pool` - Database pool for checkpointing and DLQ
+    /// * `worker_registry` - Worker registry for cleanup operations
     pub fn new(
         event_bus: Arc<dyn EventBus>,
         job_dispatcher: Arc<JobDispatcher>,
         worker_monitor: Arc<WorkerMonitor>,
         pool: PgPool,
+        worker_registry: Arc<dyn WorkerRegistry>,
     ) -> Self {
         let (shutdown_tx, _) = watch::channel(());
         Self {
@@ -100,6 +105,7 @@ impl JobCoordinator {
             job_dispatcher,
             worker_monitor,
             pool,
+            worker_registry,
             shutdown_tx,
             monitor_shutdown: None,
         }
@@ -198,6 +204,7 @@ impl JobCoordinator {
     /// Uses the basic EventBus subscribe method. For production with checkpointing,
     /// inject a PersistentEventSubscriber implementation.
     async fn start_reactive_event_processing(&mut self) -> anyhow::Result<()> {
+        use hodei_server_domain::shared_kernel::JobState;
         let event_bus = self.event_bus.clone();
         let job_dispatcher = self.job_dispatcher.clone();
 
@@ -213,7 +220,15 @@ impl JobCoordinator {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
 
+        // EPIC-32: Subscribe to JobStatusChanged for worker cleanup
+        let mut job_status_stream = event_bus
+            .subscribe("hodei_events")
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
+
         let dispatcher = self.job_dispatcher.clone();
+        let event_bus_for_cleanup = event_bus.clone();
+        let worker_registry = self.worker_registry.clone();
 
         // Spawn event processing task with polling fallback
         tokio::spawn(async move {
@@ -264,6 +279,72 @@ impl JobCoordinator {
                             }
                             None => {
                                 warn!("⚠️ JobCoordinator: WorkerReady stream ended, reconnecting...");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
+
+                    // EPIC-32: Process JobStatusChanged for worker cleanup
+                    event_result = job_status_stream.next() => {
+                        match event_result {
+                            Some(Ok(event)) => {
+                                if let DomainEvent::JobStatusChanged {
+                                    job_id,
+                                    new_state,
+                                    old_state,
+                                    correlation_id,
+                                    actor,
+                                    ..
+                                } = event
+                                {
+                                    // Trigger cleanup when job reaches terminal state
+                                    if new_state == JobState::Succeeded || new_state == JobState::Failed {
+                                        info!(
+                                            "🔔 JobCoordinator: Job {} transitioned to {:?} (was {:?}), triggering worker cleanup",
+                                            job_id, new_state, old_state
+                                        );
+
+                                        // Find worker for this job and emit cleanup event
+                                        if let Ok(workers) = worker_registry.find(&hodei_server_domain::workers::WorkerFilter::new()).await {
+                                            if let Some(worker) = workers.into_iter().find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id)) {
+                                                let worker_id = worker.id().clone();
+                                                let provider_id = worker.provider_id().clone();
+                                                let reason = if new_state == JobState::Succeeded {
+                                                    hodei_server_domain::events::TerminationReason::JobCompleted
+                                                } else {
+                                                    hodei_server_domain::events::TerminationReason::ProviderError {
+                                                        message: format!("Job failed with state: {:?}", new_state)
+                                                    }
+                                                };
+
+                                                // Publish WorkerEphemeralTerminating event via EventBus
+                                                let cleanup_event = DomainEvent::WorkerEphemeralTerminating {
+                                                    worker_id: worker_id.clone(),
+                                                    provider_id: provider_id.clone(),
+                                                    reason,
+                                                    correlation_id: Some(job_id.0.to_string()),
+                                                    actor: Some("JobCoordinator".to_string()),
+                                                    occurred_at: chrono::Utc::now(),
+                                                };
+
+                                                if let Err(e) = event_bus_for_cleanup.publish(&cleanup_event).await {
+                                                    error!("❌ JobCoordinator: Failed to publish WorkerEphemeralTerminating event: {}", e);
+                                                } else {
+                                                    info!(
+                                                        "📤 JobCoordinator: Published WorkerEphemeralTerminating event for worker {} (job={})",
+                                                        worker_id, job_id
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                error!("❌ JobCoordinator: Error receiving JobStatusChanged event: {}", e);
+                            }
+                            None => {
+                                warn!("⚠️ JobCoordinator: JobStatusChanged stream ended, reconnecting...");
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                             }
                         }
