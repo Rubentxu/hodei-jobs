@@ -943,7 +943,8 @@ impl WorkerLifecycleManager {
 
         info!("👂 WorkerLifecycleManager: Starting domain event monitoring");
 
-        match self.event_bus.subscribe("lifecycle_events").await {
+        // Subscribe to hodei_events topic (same as JobCoordinator publishes to)
+        match self.event_bus.subscribe("hodei_events").await {
             Ok(mut stream) => {
                 while let Some(result) = stream.next().await {
                     match result {
