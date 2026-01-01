@@ -720,65 +720,103 @@ impl JobExecutionService for JobExecutionServiceImpl {
         // WorkerEphemeralTerminating event to the outbox. The OutboxRelay
         // will convert it to a DomainEvent, and WorkerLifecycleManager
         // will consume it reactively with retry guarantees.
+        //
+        // FIX: The worker may already be TERMINATED (with current_job_id = NULL)
+        // by the time we reach here because the worker aggregate's complete_job()
+        // method was called earlier. We need to find workers that recently
+        // transitioned to TERMINATED state.
         let job_id_clone = job_id.clone();
-        if let Ok(workers) = self
+
+        // First, try to find worker with current_job_id == job_id
+        let worker_opt = if let Ok(workers) = self
             .worker_registry
             .find(&hodei_server_domain::workers::WorkerFilter::new())
             .await
         {
-            let worker = workers
+            workers
                 .into_iter()
-                .find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id_clone));
+                .find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id_clone))
+        } else {
+            None
+        };
 
-            if let Some(worker) = worker {
-                let worker_id = worker.id().clone();
-                let provider_id = worker.provider_id().clone();
-                let now = Utc::now();
+        // FIX: If no worker found with current_job_id, search for TERMINATED workers
+        // that may have just completed this job
+        let worker = if worker_opt.is_none() {
+            info!(
+                "No worker found with current_job_id={}, searching for recently terminated workers",
+                job_id_clone
+            );
 
-                // Publish WorkerEphemeralTerminating event to outbox (reactive cleanup)
-                let cleanup_event = OutboxEventInsert::for_worker(
-                    worker_id.0,
-                    "WorkerEphemeralTerminating".to_string(),
-                    serde_json::json!({
-                        "worker_id": worker_id.0.to_string(),
-                        "provider_id": provider_id.0.to_string(),
-                        "reason": "JOB_COMPLETED",
-                        "job_id": job_id.0.to_string()
-                    }),
-                    Some(serde_json::json!({
-                        "source": "JobExecutionService",
-                        "cleanup_type": "reactive_event",
-                        "event": "complete_job"
-                    })),
-                    Some(format!(
-                        "ephemeral-terminating-{}-{}",
-                        worker_id.0,
-                        now.timestamp()
-                    )),
-                );
+            // Search for workers in TERMINATED state (they may have just completed)
+            if let Ok(terminated_workers) = self
+                .worker_registry
+                .find(
+                    &hodei_server_domain::workers::WorkerFilter::new()
+                        .with_state(hodei_server_domain::shared_kernel::WorkerState::Terminated),
+                )
+                .await
+            {
+                // Find worker that executed this job by checking if termination
+                // happened around the same time as job completion
+                let job_completion_time = Utc::now(); // Approximate
 
-                if let Some(ref outbox_repo) = self.outbox_repository {
-                    if let Err(e) = outbox_repo.insert_events(&[cleanup_event]).await {
-                        warn!(
-                            "Failed to insert WorkerEphemeralTerminating event for worker {}: {}",
-                            worker_id, e
-                        );
-                    } else {
-                        info!(
-                            "📤 Published WorkerEphemeralTerminating event for reactive cleanup (worker={}, job={})",
-                            worker_id, job_id
-                        );
-                    }
-                }
+                terminated_workers.into_iter().find(|w| {
+                    // Check if worker was recently terminated (within 60 seconds)
+                    let updated_at = w.updated_at();
+                    let elapsed = job_completion_time.signed_duration_since(updated_at);
+                    elapsed.num_seconds() < 60
+                })
             } else {
-                debug!(
-                    "No worker found for job {} during cleanup event publication",
-                    job_id_clone
-                );
+                None
+            }
+        } else {
+            worker_opt
+        };
+
+        if let Some(worker) = worker {
+            let worker_id = worker.id().clone();
+            let provider_id = worker.provider_id().clone();
+            let now = Utc::now();
+
+            // Publish WorkerEphemeralTerminating event to outbox (reactive cleanup)
+            let cleanup_event = OutboxEventInsert::for_worker(
+                worker_id.0,
+                "WorkerEphemeralTerminating".to_string(),
+                serde_json::json!({
+                    "worker_id": worker_id.0.to_string(),
+                    "provider_id": provider_id.0.to_string(),
+                    "reason": "JOB_COMPLETED",
+                    "job_id": job_id.0.to_string()
+                }),
+                Some(serde_json::json!({
+                    "source": "JobExecutionService",
+                    "cleanup_type": "reactive_event",
+                    "event": "complete_job"
+                })),
+                Some(format!(
+                    "ephemeral-terminating-{}-{}",
+                    worker_id.0,
+                    now.timestamp()
+                )),
+            );
+
+            if let Some(ref outbox_repo) = self.outbox_repository {
+                if let Err(e) = outbox_repo.insert_events(&[cleanup_event]).await {
+                    warn!(
+                        "Failed to insert WorkerEphemeralTerminating event for worker {}: {}",
+                        worker_id, e
+                    );
+                } else {
+                    info!(
+                        "📤 Published WorkerEphemeralTerminating event for reactive cleanup (worker={}, job={})",
+                        worker_id, job_id
+                    );
+                }
             }
         } else {
             debug!(
-                "Failed to query workers for job {} cleanup event",
+                "No worker found for job {} during cleanup event publication",
                 job_id_clone
             );
         }
