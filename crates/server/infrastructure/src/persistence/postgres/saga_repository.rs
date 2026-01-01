@@ -5,7 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use hodei_server_domain::saga::{
-    SagaContext, SagaRepository as SagaRepositoryTrait, SagaState, SagaStepData, SagaStepId,
+    Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    SagaRepository as SagaRepositoryTrait, SagaState, SagaStep, SagaStepData, SagaStepId,
     SagaStepState, SagaType,
 };
 use hodei_server_domain::shared_kernel::DomainError;
@@ -15,6 +16,7 @@ use sqlx::postgres::{PgPool, PgRow};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tracing::{error, info};
 use uuid::Uuid;
 
 /// PostgreSQL saga repository error types
@@ -700,7 +702,6 @@ pub fn new_saga_repository(pool: PgPool) -> PostgresSagaRepository {
 // PostgresSagaOrchestrator - Production-Ready Saga Orchestrator
 // ============================================================================
 
-use hodei_server_domain::saga::{Saga, SagaExecutionResult, SagaId, SagaOrchestrator, SagaStep};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Configuration for PostgresSagaOrchestrator
@@ -823,6 +824,11 @@ where
             // Save step start
             self.repository.save_step(&step_data).await?;
 
+            // Mark step as IN_PROGRESS before execution
+            self.repository
+                .update_step_state(&step_data.step_id, SagaStepState::InProgress, None)
+                .await?;
+
             // Execute step with timeout
             let step_result =
                 tokio::time::timeout(self.config.step_timeout, step.execute(&mut context)).await;
@@ -836,7 +842,12 @@ where
                         .await?;
                 }
                 Ok(Err(e)) => {
-                    // Step failed - start compensation
+                    // Step failed - mark it as FAILED first
+                    self.repository
+                        .update_step_state(&step_data.step_id, SagaStepState::Failed, None)
+                        .await?;
+
+                    // Start compensation
                     context.set_error(e.to_string());
                     self.repository
                         .update_state(&saga_id, SagaState::Compensating, Some(e.to_string()))
@@ -909,6 +920,168 @@ impl Drop for DropGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+// ============================================================================
+// SagaPoller - Background Poller for Pending Sagas
+// ============================================================================
+
+/// Saga poller configuration
+#[derive(Debug, Clone)]
+pub struct SagaPollerConfig {
+    /// How often to poll for pending sagas
+    pub polling_interval: Duration,
+    /// Maximum concurrent sagas
+    pub max_concurrent: usize,
+}
+
+impl Default for SagaPollerConfig {
+    fn default() -> Self {
+        Self {
+            polling_interval: Duration::from_secs(5),
+            max_concurrent: 10,
+        }
+    }
+}
+
+/// SagaPoller - Background task that processes pending sagas from the database
+#[derive(Clone)]
+pub struct SagaPoller {
+    repository: Arc<PostgresSagaRepository>,
+    orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+    config: SagaPollerConfig,
+}
+
+impl SagaPoller {
+    /// Create a new SagaPoller
+    pub fn new(
+        repository: Arc<PostgresSagaRepository>,
+        orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+        config: Option<SagaPollerConfig>,
+    ) -> Self {
+        Self {
+            repository,
+            orchestrator,
+            config: config.unwrap_or_default(),
+        }
+    }
+
+    /// Start the background poller
+    pub fn start<F>(&self, saga_factory: F) -> SagaPollerHandle
+    where
+        F: Fn(hodei_server_domain::saga::SagaType, serde_json::Value) -> Option<Box<dyn Saga>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let repository = self.repository.clone();
+        let orchestrator = self.orchestrator.clone();
+        let config = self.config.clone();
+
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+        let poller_handle = SagaPollerHandle {
+            shutdown_tx: shutdown_tx.clone(),
+        };
+
+        tokio::spawn(async move {
+            info!(
+                "🔄 Saga background poller started (interval: {:?})",
+                config.polling_interval
+            );
+
+            let mut interval = tokio::time::interval(config.polling_interval);
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Process pending sagas
+                        if let Err(e) = process_pending_sagas(
+                            &repository,
+                            &orchestrator,
+                            &saga_factory,
+                        ).await {
+                            tracing::error!("Error processing pending sagas: {}", e);
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("🔄 Saga background poller shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        poller_handle
+    }
+}
+
+/// Handle to control the saga poller
+#[derive(Clone)]
+pub struct SagaPollerHandle {
+    shutdown_tx: tokio::sync::mpsc::Sender<()>,
+}
+
+impl SagaPollerHandle {
+    /// Signal the poller to stop
+    pub async fn stop(&self) -> Result<(), tokio::sync::mpsc::error::SendError<()>> {
+        self.shutdown_tx.send(()).await
+    }
+}
+
+/// Process all pending sagas from the database
+async fn process_pending_sagas<F>(
+    repository: &PostgresSagaRepository,
+    orchestrator: &PostgresSagaOrchestrator<PostgresSagaRepository>,
+    saga_factory: &F,
+) -> Result<(), DomainError>
+where
+    F: Fn(hodei_server_domain::saga::SagaType, serde_json::Value) -> Option<Box<dyn Saga>>
+        + Send
+        + Sync,
+{
+    // Find all pending sagas
+    let pending_sagas = repository
+        .find_by_state(hodei_server_domain::saga::SagaState::Pending)
+        .await?;
+
+    for saga_context in pending_sagas {
+        // Get saga type from context
+        let saga_type = saga_context.saga_type;
+        let saga_id = saga_context.saga_id.clone();
+        let metadata = saga_context.metadata.clone();
+
+        // Create saga instance from factory
+        if let Some(saga) = saga_factory(
+            saga_type,
+            serde_json::to_value(&metadata).unwrap_or_default(),
+        ) {
+            info!(
+                "⚡ Executing pending saga: {} ({})",
+                saga_id.0,
+                saga_type.as_str()
+            );
+
+            match orchestrator.execute_saga(&*saga, saga_context).await {
+                Ok(result) => {
+                    if result.is_success() {
+                        info!("✅ Saga completed successfully: {}", saga_id.0);
+                    } else {
+                        info!(
+                            "⚠️ Saga failed: {} - {}",
+                            saga_id.0,
+                            result.error_message.clone().unwrap_or_default()
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("❌ Saga execution error: {} - {:?}", saga_id.0, e);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

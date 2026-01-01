@@ -88,6 +88,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = env::var("GRPC_PORT").unwrap_or_else(|_| "50051".to_string());
     // Get server bind address from environment or use default
     let server_bind_host = env::var("HODEI_SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    // Get server address for workers to connect (host.docker.internal for Docker)
+    let server_address_for_workers =
+        env::var("HODEI_SERVER_ADDRESS").unwrap_or_else(|_| "host.docker.internal".to_string());
     let addr = format!("{}:{}", server_bind_host, port).parse()?;
 
     // Check dev mode
@@ -586,8 +589,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // HODEI_SERVER_ADDRESS: Used by workers to connect (host.docker.internal for Docker)
                 let server_host =
                     env::var("HODEI_SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-                let server_address_for_workers = env::var("HODEI_SERVER_ADDRESS")
-                    .unwrap_or_else(|_| "host.docker.internal".to_string());
                 let server_address = format!("http://{}:{}", server_address_for_workers, port);
                 let provisioning_config = ProvisioningConfig::new(server_address)
                     .with_default_image(
@@ -743,7 +744,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             + Sync,
     > = Arc::new(PostgresSagaOrchestrator::new(
         saga_repository.clone(),
-        Some(saga_config),
+        Some(saga_config.clone()),
     ));
 
     info!("  ✓ Saga orchestrator initialized with PostgreSQL repository");
@@ -824,6 +825,98 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ RecoverySagaCoordinator initialized");
 
     info!("Saga infrastructure ready");
+
+    // EPIC-33: Start Saga Poller to process pending sagas
+    info!("Starting saga poller for pending saga execution...");
+
+    use hodei_server_infrastructure::persistence::postgres::saga_repository::{
+        PostgresSagaOrchestrator, SagaPoller, SagaPollerConfig,
+    };
+
+    let saga_poller = SagaPoller::new(
+        saga_repository.clone(),
+        Arc::new(PostgresSagaOrchestrator::new(
+            saga_repository.clone(),
+            Some(saga_config.clone()),
+        )),
+        Some(SagaPollerConfig {
+            polling_interval: Duration::from_secs(5),
+            max_concurrent: 10,
+        }),
+    );
+
+    // Create saga factory for provisioning and execution sagas
+    let poller_handle = saga_poller.start(move |saga_type, metadata| {
+        // Create saga instances based on type
+        match saga_type {
+            hodei_server_domain::saga::SagaType::Provisioning => {
+                // Extract provider_id and worker_spec from metadata
+                let provider_id_str = metadata
+                    .get("provider_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let provider_id = if !provider_id_str.is_empty() {
+                    hodei_server_domain::shared_kernel::ProviderId::from_uuid(
+                        Uuid::parse_str(&provider_id_str).unwrap_or_else(|_| Uuid::new_v4()),
+                    )
+                } else {
+                    hodei_server_domain::shared_kernel::ProviderId::new()
+                };
+
+                let worker_image = metadata
+                    .get("worker_image")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("hodei-jobs-worker:latest");
+
+                let spec = hodei_server_domain::workers::WorkerSpec {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId::new(),
+                    image: worker_image.to_string(),
+                    resources: hodei_server_domain::workers::ResourceRequirements {
+                        cpu_cores: 1.0,
+                        memory_bytes: 1024 * 1024 * 1024, // 1GB
+                        disk_bytes: 1024 * 1024 * 1024,   // 1GB
+                        gpu_count: 0,
+                        gpu_type: None,
+                    },
+                    labels: std::collections::HashMap::new(),
+                    annotations: std::collections::HashMap::new(),
+                    environment: std::collections::HashMap::new(),
+                    volumes: vec![],
+                    server_address: format!("http://{}:{}", server_address_for_workers, port),
+                    max_lifetime: Duration::from_secs(3600),
+                    idle_timeout: Duration::from_secs(300),
+                    ttl_after_completion: None,
+                    architecture: hodei_server_domain::workers::Architecture::Amd64,
+                    required_capabilities: vec![],
+                    provider_config: None,
+                    kubernetes: hodei_server_domain::workers::KubernetesWorkerConfig::default(),
+                };
+
+                Some(Box::new(hodei_server_domain::saga::ProvisioningSaga::new(
+                    spec,
+                    provider_id,
+                ))
+                    as Box<dyn hodei_server_domain::saga::Saga>)
+            }
+            hodei_server_domain::saga::SagaType::Execution => {
+                // Execution sagas are handled by the dispatcher
+                None
+            }
+            hodei_server_domain::saga::SagaType::Recovery => {
+                // Recovery sagas - create if needed
+                None
+            }
+        }
+    });
+
+    info!("  ✓ Saga poller started (interval: 5s)");
+
+    // Keep poller handle alive for server lifetime
+    let _saga_poller_guard = poller_handle;
+
+    info!("Saga poller active - pending sagas will be processed every 5s");
 
     // JobController loop - EPIC-31: Now with saga coordinators connected
     let controller_enabled =
