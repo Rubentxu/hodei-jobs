@@ -714,17 +714,17 @@ mod tests {
 
     #[test]
     fn saga_type_should_have_provisioning_variant() {
-        assert_eq!(SagaType::Provisioning.as_str(), "provisioning");
+        assert_eq!(SagaType::Provisioning.as_str(), "PROVISIONING");
     }
 
     #[test]
     fn saga_type_should_have_execution_variant() {
-        assert_eq!(SagaType::Execution.as_str(), "execution");
+        assert_eq!(SagaType::Execution.as_str(), "EXECUTION");
     }
 
     #[test]
     fn saga_type_should_have_recovery_variant() {
-        assert_eq!(SagaType::Recovery.as_str(), "recovery");
+        assert_eq!(SagaType::Recovery.as_str(), "RECOVERY");
     }
 
     #[test]

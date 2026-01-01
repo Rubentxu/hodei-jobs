@@ -397,6 +397,8 @@ mod tests {
     use super::*;
     use hodei_server_domain::shared_kernel::ProviderId;
 
+    use std::time::Instant;
+
     fn create_test_breaker() -> (ProviderId, ProviderCircuitBreaker) {
         let provider_id = ProviderId::new();
         let breaker = ProviderCircuitBreaker::new(provider_id.clone());
@@ -432,8 +434,8 @@ mod tests {
         }
         assert_eq!(breaker.state().await, CircuitState::Open);
 
-        // Simulate timeout by resetting last_failure
-        *breaker.last_failure.lock().await = None;
+        // Simulate timeout by setting last_failure to 60+ seconds ago
+        *breaker.last_failure.lock().await = Some(Instant::now() - Duration::from_secs(61));
 
         // Should allow request now (triggers half-open)
         assert!(breaker.can_proceed().await);
@@ -448,7 +450,8 @@ mod tests {
         for _ in 0..5 {
             breaker.record_failure().await;
         }
-        *breaker.last_failure.lock().await = None;
+        // Simulate timeout by setting last_failure to 60+ seconds ago
+        *breaker.last_failure.lock().await = Some(Instant::now() - Duration::from_secs(61));
         breaker.can_proceed().await;
 
         // Record successes
@@ -468,7 +471,8 @@ mod tests {
         for _ in 0..5 {
             breaker.record_failure().await;
         }
-        *breaker.last_failure.lock().await = None;
+        // Simulate timeout by setting last_failure to 60+ seconds ago
+        *breaker.last_failure.lock().await = Some(Instant::now() - Duration::from_secs(61));
         breaker.can_proceed().await;
 
         // Record one failure

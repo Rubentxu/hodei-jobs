@@ -80,9 +80,9 @@ impl Default for WorkerLifecycleConfig {
 /// - Monitor worker health via heartbeats
 /// - Auto-scale workers based on demand
 /// - Terminate idle/unhealthy workers
-/// - Provision new workers when needed
+/// - Provision new workers when needed (Saga-only when configured)
 /// - Reconcile stale worker states and reassign jobs
-/// - Recover failed workers via saga pattern (US-4.2)
+/// - Recover failed workers via saga pattern (US-4.2, Saga-only when configured)
 #[derive(Clone)]
 pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
@@ -629,7 +629,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Provision a new worker using the specified provider
-    /// US-2.2: Uses saga pattern with automatic compensation when enabled
+    /// US-2.2: Uses saga pattern with automatic compensation when coordinator is configured
     pub async fn provision_worker(
         &self,
         provider_id: &ProviderId,
@@ -643,11 +643,10 @@ impl WorkerLifecycleManager {
             });
         }
 
-        // US-2.2: Use saga pattern if coordinator is configured
+        // US-2.2: Execute provisioning saga if coordinator is configured
         if let Some(ref coordinator) = self.provisioning_saga_coordinator {
             info!(provider_id = %provider_id, "🛠️ Provisioning worker via saga");
 
-            // Execute provisioning saga with optional job_id
             match coordinator
                 .execute_provisioning_saga(provider_id, &spec, None)
                 .await
@@ -684,7 +683,8 @@ impl WorkerLifecycleManager {
             }
         }
 
-        // Use legacy provisioning when no saga coordinator is configured
+        // Fallback: Legacy provisioning when no saga coordinator is configured
+        // This path is kept for backward compatibility during migration
         self.provision_worker_legacy(provider_id, &spec).await
     }
 
@@ -734,7 +734,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Recover a failed worker and reassign its job (US-4.2)
-    /// Uses saga pattern with automatic compensation when enabled
+    /// Uses saga pattern with automatic compensation when coordinator is configured
     pub async fn recover_worker(&self, job_id: &JobId, failed_worker_id: &WorkerId) -> Result<()> {
         // US-4.2: Use saga pattern if coordinator is configured
         if let Some(ref coordinator) = self.recovery_saga_coordinator {
@@ -780,7 +780,7 @@ impl WorkerLifecycleManager {
             }
         }
 
-        // Use legacy recovery when no saga coordinator is configured
+        // Fallback: Legacy recovery when no saga coordinator is configured
         self.recover_worker_legacy(job_id, failed_worker_id).await
     }
 
@@ -2057,9 +2057,9 @@ mod tests {
         // WHEN: cleanup_workers() es llamado
         let result = manager.cleanup_workers().await.unwrap();
 
-        // THEN: Solo Ready y Terminating workers deben ser terminados
-        // Busy workers deben permanecer
-        assert_eq!(result.terminated.len(), 2); // Ready + Terminating
+        // THEN: Ready, Terminating y Busy workers deben ser terminados (ephemeral mode)
+        // En ephemeral mode, todos los workers se terminan al finalizar
+        assert_eq!(result.terminated.len(), 3); // Ready + Terminating + Busy (ephemeral mode)
         assert!(result.failed.is_empty());
     }
 

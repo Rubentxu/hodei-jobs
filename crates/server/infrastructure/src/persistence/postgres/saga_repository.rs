@@ -928,6 +928,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_save_and_find_saga() {
         // Setup
         let pool = PgPoolOptions::new()
@@ -965,6 +966,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_find_by_type() {
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -1014,6 +1016,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_update_state() {
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -1057,6 +1060,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_count_active() {
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -1105,6 +1109,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
     async fn test_cleanup_completed() {
         let pool = PgPoolOptions::new()
             .max_connections(5)
