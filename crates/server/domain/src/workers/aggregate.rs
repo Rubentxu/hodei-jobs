@@ -6,12 +6,13 @@ use crate::shared_kernel::{
 };
 use crate::workers::ProviderConfig;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::Duration;
 
 /// Tipos de provider soportados
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProviderType {
     // Containers
     Docker,
@@ -95,6 +96,92 @@ impl std::fmt::Display for ProviderType {
             Self::BareMetal => write!(f, "baremetal"),
             Self::Custom(name) => write!(f, "custom:{}", name),
         }
+    }
+}
+
+impl std::str::FromStr for ProviderType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "docker" => Ok(Self::Docker),
+            "kubernetes" | "k8s" => Ok(Self::Kubernetes),
+            "fargate" => Ok(Self::Fargate),
+            "cloudrun" => Ok(Self::CloudRun),
+            "containerapps" => Ok(Self::ContainerApps),
+            "lambda" => Ok(Self::Lambda),
+            "cloudfunctions" => Ok(Self::CloudFunctions),
+            "azurefunctions" => Ok(Self::AzureFunctions),
+            "ec2" => Ok(Self::EC2),
+            "computeengine" => Ok(Self::ComputeEngine),
+            "azurevms" => Ok(Self::AzureVMs),
+            "test" => Ok(Self::Test),
+            "baremetal" | "bare_metal" => Ok(Self::BareMetal),
+            custom if custom.starts_with("custom:") => Ok(Self::Custom(
+                custom.trim_start_matches("custom:").to_string(),
+            )),
+            "custom" => Ok(Self::Custom("unknown".to_string())),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Custom serializer for ProviderType that uses the Display implementation
+/// This ensures ProviderType serializes as a string (e.g., "kubernetes")
+/// instead of an object (e.g., {"Kubernetes": null})
+impl Serialize for ProviderType {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// Custom deserializer for ProviderType that parses strings like "kubernetes"
+impl<'de> Deserialize<'de> for ProviderType {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ProviderTypeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ProviderTypeVisitor {
+            type Value = ProviderType;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a provider type string (e.g., 'docker', 'kubernetes')")
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                ProviderType::from_str(value).map_err(|_| {
+                    serde::de::Error::unknown_variant(
+                        value,
+                        &[
+                            "docker",
+                            "kubernetes",
+                            "fargate",
+                            "cloudrun",
+                            "containerapps",
+                            "lambda",
+                            "cloudfunctions",
+                            "azurefunctions",
+                            "ec2",
+                            "computeengine",
+                            "azurevms",
+                            "test",
+                            "baremetal",
+                            "custom",
+                        ],
+                    )
+                })
+            }
+        }
+
+        deserializer.deserialize_str(ProviderTypeVisitor)
     }
 }
 
@@ -1485,5 +1572,125 @@ mod tests {
                 panic!("Expected InvalidWorkerStateTransition error");
             }
         }
+    }
+
+    // === ProviderType Serialization Tests ===
+
+    #[test]
+    fn test_provider_type_serialize_to_string() {
+        // GIVEN: ProviderType::Kubernetes
+        let provider_type = ProviderType::Kubernetes;
+
+        // WHEN: Serialize to JSON
+        let json = serde_json::to_string(&provider_type).unwrap();
+
+        // THEN: Should be a plain string "kubernetes", not an object
+        assert_eq!(json, "\"kubernetes\"");
+    }
+
+    #[test]
+    fn test_provider_type_deserialize_from_string() {
+        // GIVEN: JSON string for kubernetes
+        let json = "\"kubernetes\"";
+
+        // WHEN: Deserialize
+        let provider_type: ProviderType = serde_json::from_str(json).unwrap();
+
+        // THEN: Should be ProviderType::Kubernetes
+        assert_eq!(provider_type, ProviderType::Kubernetes);
+    }
+
+    #[test]
+    fn test_provider_type_serialize_all_variants() {
+        let variants = [
+            (ProviderType::Docker, "\"docker\""),
+            (ProviderType::Kubernetes, "\"kubernetes\""),
+            (ProviderType::Fargate, "\"fargate\""),
+            (ProviderType::CloudRun, "\"cloudrun\""),
+            (ProviderType::ContainerApps, "\"containerapps\""),
+            (ProviderType::Lambda, "\"lambda\""),
+            (ProviderType::CloudFunctions, "\"cloudfunctions\""),
+            (ProviderType::AzureFunctions, "\"azurefunctions\""),
+            (ProviderType::EC2, "\"ec2\""),
+            (ProviderType::ComputeEngine, "\"computeengine\""),
+            (ProviderType::AzureVMs, "\"azurevms\""),
+            (ProviderType::Test, "\"test\""),
+            (ProviderType::BareMetal, "\"baremetal\""),
+        ];
+
+        for (provider_type, expected_json) in variants {
+            let json = serde_json::to_string(&provider_type).unwrap();
+            assert_eq!(json, expected_json, "Failed for {:?}", provider_type);
+        }
+    }
+
+    #[test]
+    fn test_provider_type_deserialize_all_variants() {
+        let variants = [
+            ("docker", ProviderType::Docker),
+            ("kubernetes", ProviderType::Kubernetes),
+            ("k8s", ProviderType::Kubernetes),
+            ("fargate", ProviderType::Fargate),
+            ("cloudrun", ProviderType::CloudRun),
+            ("containerapps", ProviderType::ContainerApps),
+            ("lambda", ProviderType::Lambda),
+            ("cloudfunctions", ProviderType::CloudFunctions),
+            ("azurefunctions", ProviderType::AzureFunctions),
+            ("ec2", ProviderType::EC2),
+            ("computeengine", ProviderType::ComputeEngine),
+            ("azurevms", ProviderType::AzureVMs),
+            ("test", ProviderType::Test),
+            ("baremetal", ProviderType::BareMetal),
+            ("bare_metal", ProviderType::BareMetal),
+        ];
+
+        for (json_str, expected) in variants {
+            let provider_type: ProviderType =
+                serde_json::from_str(&format!("\"{}\"", json_str)).unwrap();
+            assert_eq!(provider_type, expected, "Failed for {}", json_str);
+        }
+    }
+
+    #[test]
+    fn test_provider_type_roundtrip_serialization() {
+        // Test roundtrip for all variants
+        let variants = [
+            ProviderType::Docker,
+            ProviderType::Kubernetes,
+            ProviderType::Fargate,
+            ProviderType::Test,
+            ProviderType::BareMetal,
+            ProviderType::Custom("test-provider".to_string()),
+        ];
+
+        for original in variants {
+            let json = serde_json::to_string(&original).unwrap();
+            let deserialized: ProviderType = serde_json::from_str(&json).unwrap();
+            assert_eq!(original, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_provider_type_custom_serialization() {
+        // GIVEN: A custom provider type
+        let custom = ProviderType::Custom("my-custom-provider".to_string());
+
+        // WHEN: Serialize to JSON
+        let json = serde_json::to_string(&custom).unwrap();
+
+        // THEN: Should serialize as "custom:my-custom-provider"
+        assert_eq!(json, "\"custom:my-custom-provider\"");
+    }
+
+    #[test]
+    fn test_provider_type_deserialize_case_insensitive() {
+        // GIVEN: Uppercase provider type string
+        let json = "\"KUBERNETES\"";
+
+        // WHEN: Deserialize
+        let provider_type: ProviderType = serde_json::from_str(json).unwrap();
+
+        // THEN: Should be ProviderType::Kubernetes (case insensitive)
+        assert_eq!(provider_type, ProviderType::Kubernetes);
     }
 }
