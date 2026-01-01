@@ -421,7 +421,7 @@ job-docker-data:
 # Run data processing job on Kubernetes (scalable)
 job-k8s-data:
     @echo "📈 Running scalable data processing on Kubernetes..."
-    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Data Processing" --command "echo 'Processing large dataset on Kubernetes...'; echo 'Processing 10000 records...'; python3 -c 'import json; data = {\"results\": [x*2 for x in range(1,10001)], \"count\": 10000}; print(f\"Processed {data[\"count\"]} records\")'; echo 'Kubernetes data processing completed!'"
+    @cargo run --bin hodei-jobs-cli -- job run --name "K8s Data Processing" --provider kubernetes --command "echo 'Processing large dataset on Kubernetes...'; echo 'Processing 10000 records...'; python3 -c 'import json; data = {\"results\": [x*2 for x in range(1,10001)], \"count\": 10000}; print(f\"Processed {data[\"count\"]} records\")'; echo 'Kubernetes data processing completed!'"
 
 # Run ML training job on Docker (small model)
 job-docker-ml:
