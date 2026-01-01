@@ -77,22 +77,9 @@ generate:
 # DEVELOPMENT COMMANDS
 # =============================================================================
 
-# Start development database
+# Start development database (idempotent)
 dev-db:
-    @echo "🗄️  Starting PostgreSQL database..."
-    @if ! command -v docker >/dev/null 2>&1; then \
-        echo "❌ Docker is not installed or not in PATH"; \
-        exit 1; \
-    fi
-    @if ! docker info >/dev/null 2>&1; then \
-        echo "❌ Docker daemon is not running"; \
-        echo "💡 Try: sudo systemctl start docker"; \
-        echo "💡 Or use: just dev-no-docker"; \
-        exit 1; \
-    fi
-    docker compose -f docker-compose.dev.yml up -d postgres
-    @sleep 2
-    @echo "✅ Database ready"
+    @chmod +x scripts/dev-db.sh && scripts/dev-db.sh
 
 # Run database migrations
 db-migrate:

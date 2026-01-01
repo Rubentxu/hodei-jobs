@@ -1,20 +1,23 @@
 # Hodei Jobs E2E Testing Procedure
 
-**Document Version:** 1.2
-**Date:** 2025-12-30
+**Document Version:** 1.3
+**Date:** 2026-01-01
 **Status:** Ready for Execution
 
-> **⚡ Automation Available**: This procedure can be fully automated using the E2E testing script:
-> ```bash
-> ./scripts/testing/e2e_test_procedure.sh all
-> ```
+> **⚡ Automation Available**: This procedure can be fully automated using the `just` task runner. All commands have been streamlined for ease of use.
 >
-> Run individual phases:
-> - `./scripts/testing/e2e_test_procedure.sh infra` - Infrastructure setup
-> - `./scripts/testing/e2e_test_procedure.sh build` - Compile binaries
-> - `./scripts/testing/e2e_test_procedure.sh jobs` - Execute test jobs
-> - `./scripts/testing/e2e_test_procedure.sh validate` - Validate results
-> - `./scripts/testing/e2e_test_procedure.sh report` - Generate report
+> **Quick Start:**
+> - `just dev` - Start full development environment
+> - `just e2e` - Run complete end-to-end test
+> - `just job-hello-world` - Run a simple test job
+> - `just test-multi-provider` - Run multi-provider integration tests
+>
+> **Individual Phases with just:**
+> - `just dev-db && just db-migrate` - Infrastructure setup
+> - `just build` - Compile all binaries
+> - `just job-examples-all` - Execute test jobs
+> - Manual validation required (see Phase 6)
+> - `just test-multi-provider-k8s` - Kubernetes testing
 
 This document describes the complete procedure for running end-to-end tests of the Hodei Jobs platform, including job execution on Docker and Kubernetes providers, log stream validation, and worker lifecycle verification.
 
@@ -26,11 +29,12 @@ This document describes the complete procedure for running end-to-end tests of t
 
 | Component | Version | Required |
 |-----------|---------|----------|
+| Rust | 1.70+ | Yes |
 | Docker | 20.10+ | Yes |
 | Docker Compose | 2.0+ | Yes |
-| Rust | 1.70+ | Yes |
 | kubectl | 1.25+ | Optional (for K8s) |
-| PostgreSQL Client | 15+ | Yes |
+| just (task runner) | Latest | **Recommended** |
+| PostgreSQL Client | 15+ | Optional (for manual DB access) |
 
 ### Infrastructure Requirements
 
@@ -45,19 +49,23 @@ docker ps --filter "name=hodei" --format "table {{.Names}}\t{{.Status}}"
 
 ### Environment Variables
 
-```bash
-# Required
-export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
+**With `just` commands, environment variables are pre-configured!** However, you can override them if needed:
 
-# Optional (defaults shown)
-export GRPC_PORT=50051
+```bash
+# Using just (recommended - variables pre-configured in justfile)
+just dev-db
+just db-migrate
+just build
+
+# Manual override (if needed)
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
 export HODEI_SERVER_HOST="host.docker.internal"
-export HODEI_WORKER_IMAGE="hodei-jobs-worker:latest"
 export HODEI_DOCKER_ENABLED=1
 export HODEI_KUBERNETES_ENABLED=1
-export HODEI_PROVISIONING_ENABLED=1
-export HODEI_JOB_CONTROLLER_ENABLED=1
-export HODEI_DEV_MODE=0
+
+# For Kubernetes testing
+export HODEI_K8S_KUBECONFIG="$HOME/.kube/config"
+export HODEI_K8S_NAMESPACE="hodei-jobs-workers"
 ```
 
 ---
@@ -66,6 +74,12 @@ export HODEI_DEV_MODE=0
 
 ### Step 1.1: Start PostgreSQL
 
+**Using `just` (recommended):**
+```bash
+just dev-db
+```
+
+**Manual approach (alternative):**
 ```bash
 # Start PostgreSQL container
 docker run -d \
@@ -81,6 +95,12 @@ docker exec hodei-jobs-postgres pg_isready -U postgres
 
 ### Step 1.2: Run Database Migrations
 
+**Using `just` (recommended):**
+```bash
+just db-migrate
+```
+
+**Manual approach (alternative):**
 ```bash
 # Core tables (domain_events)
 docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
@@ -129,6 +149,12 @@ docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c \
 
 ### Step 1.3: Build Worker Image
 
+**Using `just` (recommended):**
+```bash
+just build-worker
+```
+
+**Manual approach (alternative):**
 ```bash
 # Build the worker image
 docker build -t hodei-jobs-worker:latest -f crates/worker/Dockerfile .
@@ -143,6 +169,13 @@ docker images hodei-jobs-worker:latest
 
 ### Step 2.1: Set Database URL for SQLx
 
+**Using `just` (recommended):**
+```bash
+# Environment variables are pre-configured in justfile
+just build
+```
+
+**Manual approach (alternative):**
 ```bash
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
 ```
@@ -151,6 +184,12 @@ export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
 
 ### Step 2.2: Build Server Binary
 
+**Using `just` (recommended):**
+```bash
+just build-server
+```
+
+**Manual approach (alternative):**
 ```bash
 cargo build -p hodei-server-bin
 
@@ -160,6 +199,12 @@ ls -la target/debug/hodei-server-bin
 
 ### Step 2.3: Build CLI Binary
 
+**Using `just` (recommended):**
+```bash
+just build-cli
+```
+
+**Manual approach (alternative):**
 ```bash
 cargo build -p hodei-jobs-cli
 
@@ -173,6 +218,12 @@ ls -la target/debug/hodei-jobs-cli
 
 ### Step 3.1: Start gRPC Server
 
+**Using `just` (recommended):**
+```bash
+just dev-server
+```
+
+**Manual approach (alternative):**
 ```bash
 # Start server in background
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
@@ -188,6 +239,12 @@ cat server.log | tail -20
 
 # Check port is listening
 netstat -tlnp | grep 50051
+```
+
+**Quick start alternative:**
+```bash
+# Complete environment setup in one command
+just dev
 ```
 
 **Expected Server Log Output:**
@@ -269,8 +326,15 @@ kubectl get pods -n hodei-jobs-workers -l hodei-worker --no-headers 2>/dev/null 
 
 ## Phase 5: Execute Test Jobs
 
+**Using `just` (recommended for all test jobs):**
+
 ### Step 5.1: Job Type 1 - Simple Echo (Docker)
 
+```bash
+just job-docker-hello
+```
+
+**Manual approach (alternative):**
 ```bash
 JOB_ID=$(./target/debug/hodei-jobs-cli job run \
   --name "test-echo-$(date +%s)" \
@@ -291,6 +355,12 @@ Status: SUCCEEDED (Status Code: 4)
 
 ### Step 5.2: Job Type 2 - Multi-Command (Docker)
 
+**Using `just`:**
+```bash
+just job-docker-data
+```
+
+**Manual approach:**
 ```bash
 JOB_ID=$(./target/debug/hodei-jobs-cli job run \
   --name "test-multicmd-$(date +%s)" \
@@ -304,6 +374,12 @@ echo "Job ID: $JOB_ID"
 
 ### Step 5.3: Job Type 3 - Long-Running (Docker)
 
+**Using `just`:**
+```bash
+just job-docker-cpu
+```
+
+**Manual approach:**
 ```bash
 JOB_ID=$(./target/debug/hodei-jobs-cli job run \
   --name "test-long-$(date +%s)" \
@@ -317,6 +393,17 @@ echo "Job ID: $JOB_ID"
 
 ### Step 5.4: Job Type 4 - Environment Variables (Docker)
 
+**Using `just` (with custom env vars):**
+```bash
+cargo run --bin hodei-jobs-cli -- job run \
+  --name "test-env-$(date +%s)" \
+  --provider docker \
+  --command "bash -c 'echo MY_VAR=\$MY_VAR && echo NUM_VAR=\$NUM_VAR'" \
+  --env "MY_VAR=hello_world,NUM_VAR=42" \
+  --timeout 30
+```
+
+**Manual approach:**
 ```bash
 JOB_ID=$(./target/debug/hodei-jobs-cli job run \
   --name "test-env-$(date +%s)" \
@@ -331,6 +418,17 @@ echo "Job ID: $JOB_ID"
 
 ### Step 5.5: Job Type 5 - With Arguments (Docker)
 
+**Using `just` (with arguments):**
+```bash
+cargo run --bin hodei-jobs-cli -- job run \
+  --name "test-args-$(date +%s)" \
+  --provider docker \
+  --command "bash" \
+  --args "-c 'echo Processing file test.txt && echo Done'" \
+  --timeout 30
+```
+
+**Manual approach:**
 ```bash
 JOB_ID=$(./target/debug/hodei-jobs-cli job run \
   --name "test-args-$(date +%s)" \
@@ -341,6 +439,12 @@ JOB_ID=$(./target/debug/hodei-jobs-cli job run \
 
 echo "Job ID: $JOB_ID"
 ./target/debug/hodei-jobs-cli job get --id $JOB_ID
+```
+
+### Run All Docker Jobs at Once
+
+```bash
+just job-docker-all
 ```
 
 ### Step 5.6: Monitor Job Execution and Worker Startup
@@ -547,6 +651,12 @@ ORDER BY occurred_at;
 
 ### Step 7.1: Configure Kubernetes
 
+**Using `just` (recommended):**
+```bash
+just dev-k8s
+```
+
+**Manual approach:**
 ```bash
 # Set Kubernetes configuration
 export HODEI_K8S_KUBECONFIG="$HOME/.kube/config"
@@ -559,6 +669,12 @@ kubectl get nodes
 
 ### Step 7.2: Enable Kubernetes Provider
 
+**Using `just` (recommended):**
+```bash
+just test-k8s-provider
+```
+
+**Manual approach:**
 ```bash
 # Restart server with K8s enabled
 pkill -f hodei-server-bin
@@ -570,6 +686,12 @@ sleep 5
 
 ### Step 7.3: Run Job on Kubernetes
 
+**Using `just`:**
+```bash
+just job-k8s-hello
+```
+
+**Manual approach:**
 ```bash
 JOB_ID=$(./target/debug/hodei-jobs-cli job run \
   --name "test-k8s-$(date +%s)" \
@@ -583,6 +705,12 @@ echo "Job ID: $JOB_ID"
 
 ### Step 7.4: Verify Kubernetes Pod
 
+**Using `just`:**
+```bash
+just job-k8s-pods
+```
+
+**Manual approach:**
 ```bash
 # Check pod was created
 kubectl get pods -n hodei-jobs-workers -l hodei-worker --no-headers
@@ -592,12 +720,24 @@ POD_NAME=$(kubectl get pods -n hodei-jobs-workers -l hodei-worker -o jsonpath='{
 kubectl logs -n hodei-jobs-workers $POD_NAME --tail=20
 ```
 
+### Run All Kubernetes Jobs at Once
+
+```bash
+just job-k8s-all
+```
+
 ---
 
 ## Phase 8: Batch Testing
 
 ### Step 8.1: Run Multiple Jobs
 
+**Using `just` (recommended):**
+```bash
+just job-provider-comparison
+```
+
+**Manual approach:**
 ```bash
 # Create 5 test jobs on Docker
 for i in 1 2 3 4 5; do
@@ -613,6 +753,12 @@ done
 
 ### Step 8.2: Verify All Jobs Completed
 
+**Using `just` (for concurrent test):**
+```bash
+just job-concurrent-test
+```
+
+**Manual approach:**
 ```bash
 docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -t -c "
 SELECT state, COUNT(*) as count
@@ -633,6 +779,13 @@ GROUP BY state;
 
 ### Issue: Jobs stuck in ASSIGNED state
 
+**Using `just` (recommended):**
+```bash
+just stop-server
+just dev-server
+```
+
+**Manual approach:**
 ```bash
 # Check for network issues
 echo "HODEI_SERVER_HOST: ${HODEI_SERVER_HOST:-not set}"
@@ -646,6 +799,13 @@ nohup ./target/debug/hodei-server-bin > server.log 2>&1 &
 
 ### Issue: Docker provider not available
 
+**Using `just` (recommended):**
+```bash
+just verify-providers
+just check-provider-health
+```
+
+**Manual approach:**
 ```bash
 # Verify Docker is running
 docker info 2>&1 | head -3
@@ -658,6 +818,13 @@ SELECT id, provider_type, status FROM provider_configs WHERE provider_type = 'do
 
 ### Issue: Compilation fails with sqlx errors
 
+**Using `just` (recommended):**
+```bash
+just clean
+just build
+```
+
+**Manual approach:**
 ```bash
 # Ensure DATABASE_URL is set
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
@@ -688,27 +855,81 @@ cargo build -p hodei-server-bin
 
 ## Quick Reference Commands
 
+### Using `just` (Recommended)
+
 ```bash
-# Start everything
+# Complete E2E setup and test
+just dev              # Full development environment (DB + Server)
+just e2e              # Run complete end-to-end test
+just job-hello-world  # Run simple test job
+just job-docker-all   # Run all Docker provider jobs
+just job-k8s-all      # Run all Kubernetes provider jobs
+just test-multi-provider  # Run multi-provider tests
+
+# Individual phases
+just dev-db           # Start database only
+just build            # Build all binaries
+just dev-server       # Start server only
+just stop-server      # Stop running server
+just clean            # Clean build artifacts
+
+# Job operations
+just job-test         # Create simple test job
+just job-list         # List all jobs
+just job-details <id> # Get job details
+just job-cancel <id>  # Cancel a job
+
+# Monitoring and debugging
+just status           # Show system status
+just logs             # Show all logs
+just debug-jobs       # Show PENDING jobs
+just debug-workers    # Show registered workers
+just watch-jobs       # Watch jobs table live
+just verify-providers # Verify provider configs
+```
+
+### Manual Commands (Alternative)
+
+```bash
+# Start everything (manual)
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
 export HODEI_SERVER_HOST="$(hostname -I | awk '{print $1}')"
 nohup ./target/debug/hodei-server-bin > server.log 2>&1 &
 
-# Run test job
+# Run test job (manual)
 JOB_ID=$(./target/debug/hodei-jobs-cli job run --name "test-$(date +%s)" --provider docker --command "echo hello" --timeout 30)
 echo "Job: $JOB_ID"
 
-# Check status
+# Check status (manual)
 ./target/debug/hodei-jobs-cli job get --id $JOB_ID
 
-# Check events
+# Check events (manual)
 docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT event_type FROM domain_events WHERE aggregate_id = '$JOB_ID' ORDER BY occurred_at;"
 
-# Check logs
+# Check logs (manual)
 docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT * FROM job_log_files WHERE job_id = '$JOB_ID';"
 
-# Check workers
+# Check workers (manual)
 docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT state, provider_type FROM workers WHERE created_at > NOW() - INTERVAL '1 hour';"
+```
+
+### Common `just` Workflows
+
+```bash
+# Quick start for new developers
+just dev-db && just db-migrate && just build && just dev-server
+
+# Full test suite
+just test-integration && just test-multi-provider
+
+# Debug workflow
+just debug-jobs && just debug-workers && just status
+
+# Complete Kubernetes test
+just dev-k8s && just job-k8s-all && just job-k8s-pods
+
+# Provider comparison
+just job-provider-comparison
 ```
 
 ---
@@ -717,6 +938,7 @@ docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "SELECT state,
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.3 | 2026-01-01 | **Major Update**: Integrated `just` task runner throughout document. Added `just` commands for all phases (dev-db, db-migrate, build, dev-server, job-docker-all, job-k8s-all, test-multi-provider, etc.). Updated Quick Reference with comprehensive `just` workflows. Added just commands to Troubleshooting section. |
 | 1.2 | 2025-12-30 | Added Step 4.3: Check Kubernetes Provider; Added Step 5.6: Monitor Job Execution with 10s timeout and worker verification via docker/kubectl CLI |
 | 1.1 | 2025-12-30 | Added Step 6.7: Validate Saga Execution for debugging |
 | 1.0 | 2025-12-30 | Initial document |
