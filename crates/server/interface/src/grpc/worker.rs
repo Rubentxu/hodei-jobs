@@ -456,14 +456,82 @@ impl WorkerAgentServiceImpl {
             }
         }
 
+        // EPIC-32: Publish WorkerEphemeralTerminating event for cleanup
+        // This triggers reactive worker cleanup through the event system
         if matches!(
             job.state(),
             JobState::Succeeded | JobState::Failed | JobState::Timeout | JobState::Cancelled
         ) {
-            registry
-                .release_from_job(&worker_id)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?;
+            // Get worker info for cleanup event
+            if let Ok(Some(worker)) = registry.get(&worker_id).await {
+                let provider_id = worker.provider_id().clone();
+                let reason = if *job.state() == JobState::Succeeded {
+                    hodei_server_domain::events::TerminationReason::JobCompleted
+                } else {
+                    hodei_server_domain::events::TerminationReason::ProviderError {
+                        message: format!("Job ended with state: {:?}", job.state()),
+                    }
+                };
+
+                // Publish WorkerEphemeralTerminating event via outbox (if available) or event bus
+                let cleanup_event = OutboxEventInsert::for_worker(
+                    worker_id.0,
+                    "WorkerEphemeralTerminating".to_string(),
+                    serde_json::json!({
+                        "worker_id": worker_id.0.to_string(),
+                        "provider_id": provider_id.0.to_string(),
+                        "reason": format!("{:?}", reason),
+                        "job_id": job_id.0.to_string()
+                    }),
+                    Some(serde_json::json!({
+                        "source": "WorkerAgentService",
+                        "cleanup_type": "reactive_event",
+                        "event": "job_completion"
+                    })),
+                    Some(format!(
+                        "ephemeral-terminating-{}-{}",
+                        worker_id.0,
+                        Utc::now().timestamp()
+                    )),
+                );
+
+                if let Some(ref outbox_repo) = self.outbox_repository {
+                    if let Err(e) = outbox_repo.insert_events(&[cleanup_event]).await {
+                        warn!(
+                            "Failed to insert WorkerEphemeralTerminating event for worker {}: {}",
+                            worker_id, e
+                        );
+                    } else {
+                        info!(
+                            "📤 Published WorkerEphemeralTerminating event for reactive cleanup (worker={}, job={})",
+                            worker_id, job_id
+                        );
+                    }
+                } else if let Some(event_bus) = &self.event_bus {
+                    let event = DomainEvent::WorkerEphemeralTerminating {
+                        worker_id: worker_id.clone(),
+                        provider_id: provider_id.clone(),
+                        reason,
+                        occurred_at: Utc::now(),
+                        correlation_id: Some(job_id.0.to_string()),
+                        actor: Some("worker_agent_service".to_string()),
+                    };
+                    if let Err(e) = event_bus.publish(&event).await {
+                        warn!("Failed to publish WorkerEphemeralTerminating event: {}", e);
+                    } else {
+                        info!(
+                            "📤 Published WorkerEphemeralTerminating event (worker={}, job={})",
+                            worker_id, job_id
+                        );
+                    }
+                }
+
+                // Release worker from job (clears current_job_id)
+                registry
+                    .release_from_job(&worker_id)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+            }
         }
 
         Ok(())
