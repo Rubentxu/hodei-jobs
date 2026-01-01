@@ -1,36 +1,79 @@
 // Provider Bootstrap Service
 // Carga providers desde configuración YAML al arranque
 
+use async_trait::async_trait;
 use hodei_server_domain::providers::{
     DockerConfig, FargateConfig, KubernetesConfig, LambdaConfig, ProviderConfig,
-    ProviderConfigRepository, ProviderTypeConfig,
+    ProviderConfigRepository, ProviderTypeConfig, ValidationConfig, ValidationReport,
 };
-use hodei_server_domain::shared_kernel::{DomainError, Result};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, ProviderStatus, Result};
 use hodei_server_domain::workers::ProviderType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 
-/// Configuración de bootstrap de providers
+/// Configuration for bootstrap of providers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderBootstrapConfig {
-    /// Lista de providers a registrar
+    /// Whether to validate providers during bootstrap
+    #[serde(default = "default_validate_on_bootstrap")]
+    pub validate_on_bootstrap: bool,
+    /// Validation configuration
+    #[serde(default)]
+    pub validation_config: Option<BootstrapValidationConfig>,
+    /// List of providers to register
     pub providers: Vec<ProviderDefinition>,
 }
 
-/// Definición de un provider en YAML
+fn default_validate_on_bootstrap() -> bool {
+    true
+}
+
+/// Validation configuration for bootstrap
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapValidationConfig {
+    /// Timeout for connection validation
+    #[serde(default = "default_validation_timeout")]
+    pub timeout_secs: u64,
+    /// Whether to validate permissions
+    #[serde(default = "default_validate_permissions")]
+    pub validate_permissions: bool,
+    /// Whether to check resource quotas
+    #[serde(default = "default_validate_resources")]
+    pub validate_resources: bool,
+    /// Whether to skip validation for specific provider types
+    #[serde(default)]
+    pub skip_validation_for: Vec<String>,
+}
+
+fn default_validation_timeout() -> u64 {
+    30
+}
+
+fn default_validate_permissions() -> bool {
+    true
+}
+
+fn default_validate_resources() -> bool {
+    true
+}
+
+/// Definition of a provider in YAML
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDefinition {
-    /// Nombre único del provider
+    /// Unique name of the provider
     pub name: String,
-    /// Tipo de provider
+    /// Provider type
     #[serde(rename = "type")]
     pub provider_type: String,
-    /// Prioridad (mayor = preferido)
+    /// Priority (higher = preferred)
     #[serde(default)]
     pub priority: i32,
-    /// Máximo de workers concurrentes
+    /// Maximum concurrent workers
     #[serde(default = "default_max_workers")]
     pub max_workers: u32,
     /// Tags
@@ -39,7 +82,7 @@ pub struct ProviderDefinition {
     /// Metadata
     #[serde(default)]
     pub metadata: HashMap<String, String>,
-    /// Configuración específica del tipo
+    /// Type-specific configuration
     #[serde(default)]
     pub config: HashMap<String, serde_yaml::Value>,
 }
@@ -48,18 +91,84 @@ fn default_max_workers() -> u32 {
     10
 }
 
-/// Servicio para bootstrap de providers
+/// Event channel for bootstrap events
+pub type BootstrapEventSender = mpsc::Sender<BootstrapEvent>;
+
+/// Bootstrap events for observability
+#[derive(Debug, Clone)]
+pub enum BootstrapEvent {
+    /// Started loading providers
+    Started { config_path: String },
+    /// Provider registration started
+    ProviderRegistrationStarted { name: String },
+    /// Provider validation started
+    ProviderValidationStarted {
+        name: String,
+        provider_id: ProviderId,
+    },
+    /// Provider validation completed
+    ProviderValidationCompleted {
+        name: String,
+        provider_id: ProviderId,
+        report: ValidationReport,
+    },
+    /// Provider registered successfully
+    ProviderRegistered {
+        name: String,
+        provider_id: ProviderId,
+    },
+    /// Provider skipped (already exists)
+    ProviderSkipped { name: String },
+    /// Provider failed
+    ProviderFailed { name: String, error: String },
+    /// Bootstrap completed
+    Completed {
+        registered: usize,
+        skipped: usize,
+        failed: usize,
+    },
+}
+
+/// Service for provider bootstrap
 pub struct ProviderBootstrap {
+    /// Provider configuration repository
     repository: Arc<dyn ProviderConfigRepository>,
+    /// Event sender for observability
+    event_sender: Arc<Mutex<Option<BootstrapEventSender>>>,
 }
 
 impl ProviderBootstrap {
+    /// Create a new bootstrap service
     pub fn new(repository: Arc<dyn ProviderConfigRepository>) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            event_sender: Arc::new(Mutex::new(None)),
+        }
     }
 
-    /// Cargar providers desde archivo YAML
+    /// Set an event sender for observability
+    pub async fn set_event_sender(&self, sender: BootstrapEventSender) {
+        let mut sender_ref = self.event_sender.lock().await;
+        *sender_ref = Some(sender);
+    }
+
+    /// Emit a bootstrap event
+    async fn emit_event(&self, event: BootstrapEvent) {
+        let sender_opt = self.event_sender.lock().await;
+        if let Some(sender) = sender_opt.as_ref() {
+            if let Err(e) = sender.send(event).await {
+                warn!("Failed to emit bootstrap event: {}", e);
+            }
+        }
+    }
+
+    /// Load providers from file
     pub async fn load_from_file(&self, path: &Path) -> Result<BootstrapResult> {
+        self.emit_event(BootstrapEvent::Started {
+            config_path: path.to_string_lossy().to_string(),
+        })
+        .await;
+
         let content =
             std::fs::read_to_string(path).map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to read bootstrap file: {}", e),
@@ -68,7 +177,7 @@ impl ProviderBootstrap {
         self.load_from_yaml(&content).await
     }
 
-    /// Cargar providers desde string YAML
+    /// Load providers from YAML string
     pub async fn load_from_yaml(&self, yaml_content: &str) -> Result<BootstrapResult> {
         let config: ProviderBootstrapConfig =
             serde_yaml::from_str(yaml_content).map_err(|e| DomainError::InfrastructureError {
@@ -78,7 +187,7 @@ impl ProviderBootstrap {
         self.bootstrap_providers(&config).await
     }
 
-    /// Ejecutar bootstrap de providers
+    /// Execute provider bootstrap
     pub async fn bootstrap_providers(
         &self,
         config: &ProviderBootstrapConfig,
@@ -86,9 +195,12 @@ impl ProviderBootstrap {
         let mut result = BootstrapResult::default();
 
         for definition in &config.providers {
-            match self.register_provider_from_definition(definition).await {
-                Ok(_) => {
-                    result.registered.push(definition.name.clone());
+            match self
+                .register_provider_from_definition(definition, config)
+                .await
+            {
+                Ok(provider) => {
+                    result.registered.push(provider.name.clone());
                 }
                 Err(e) => {
                     if e.to_string().contains("already exists") {
@@ -100,47 +212,65 @@ impl ProviderBootstrap {
             }
         }
 
+        self.emit_event(BootstrapEvent::Completed {
+            registered: result.registered.len(),
+            skipped: result.skipped.len(),
+            failed: result.failed.len(),
+        })
+        .await;
+
         Ok(result)
     }
 
-    /// Registrar provider desde definición YAML
+    /// Register a provider from YAML definition
     async fn register_provider_from_definition(
         &self,
         def: &ProviderDefinition,
+        bootstrap_config: &ProviderBootstrapConfig,
     ) -> Result<ProviderConfig> {
-        // Verificar si ya existe
+        // Check if provider already exists
         if self.repository.exists_by_name(&def.name).await? {
+            self.emit_event(BootstrapEvent::ProviderSkipped {
+                name: def.name.clone(),
+            })
+            .await;
             return Err(DomainError::InvalidProviderConfig {
                 message: format!("Provider '{}' already exists", def.name),
             });
         }
 
-        // Parsear tipo de provider
+        // Parse provider type
         let provider_type = self.parse_provider_type(&def.provider_type)?;
 
-        // Crear configuración específica del tipo
+        // Create type-specific configuration
         let type_config = self.create_type_config(&provider_type, &def.config)?;
 
-        // Crear ProviderConfig
-        let mut config = ProviderConfig::new(def.name.clone(), provider_type, type_config)
+        // Create ProviderConfig
+        let mut provider = ProviderConfig::new(def.name.clone(), provider_type, type_config)
             .with_priority(def.priority)
             .with_max_workers(def.max_workers);
 
-        // Añadir tags
+        // Add tags
         for tag in &def.tags {
-            config = config.with_tag(tag);
+            provider = provider.with_tag(tag);
         }
 
-        // Añadir metadata
-        config.metadata = def.metadata.clone();
+        // Add metadata
+        provider.metadata = def.metadata.clone();
 
-        // Guardar en repositorio
-        self.repository.save(&config).await?;
+        // Save to repository
+        self.repository.save(&provider).await?;
 
-        Ok(config)
+        self.emit_event(BootstrapEvent::ProviderRegistered {
+            name: def.name.clone(),
+            provider_id: provider.id.clone(),
+        })
+        .await;
+
+        Ok(provider)
     }
 
-    /// Parsear tipo de provider desde string
+    /// Parse provider type from string
     fn parse_provider_type(&self, type_str: &str) -> Result<ProviderType> {
         match type_str.to_lowercase().as_str() {
             "docker" => Ok(ProviderType::Docker),
@@ -159,7 +289,7 @@ impl ProviderBootstrap {
         }
     }
 
-    /// Crear configuración específica del tipo
+    /// Create type-specific configuration
     fn create_type_config(
         &self,
         provider_type: &ProviderType,
@@ -239,24 +369,25 @@ impl ProviderBootstrap {
                 };
                 Ok(ProviderTypeConfig::Fargate(fc))
             }
-            // Para otros tipos, usar Docker como fallback
+            // For other types, use Docker as fallback
             _ => Ok(ProviderTypeConfig::Docker(DockerConfig::default())),
         }
     }
 }
 
-/// Resultado del bootstrap
+/// Bootstrap result
 #[derive(Debug, Clone, Default)]
 pub struct BootstrapResult {
-    /// Providers registrados exitosamente
+    /// Providers registered successfully
     pub registered: Vec<String>,
-    /// Providers que ya existían (omitidos)
+    /// Providers that already existed (skipped)
     pub skipped: Vec<String>,
-    /// Providers que fallaron (nombre, error)
+    /// Providers that failed (name, error)
     pub failed: Vec<(String, String)>,
 }
 
 impl BootstrapResult {
+    /// Returns a summary string
     pub fn summary(&self) -> String {
         format!(
             "Bootstrap complete: {} registered, {} skipped, {} failed",
@@ -266,6 +397,7 @@ impl BootstrapResult {
         )
     }
 
+    /// Returns true if all providers were registered successfully
     pub fn is_success(&self) -> bool {
         self.failed.is_empty()
     }
