@@ -215,12 +215,22 @@ impl JobCoordinator {
 
         let dispatcher = self.job_dispatcher.clone();
 
-        // Spawn event processing task
+        // Spawn event processing task with polling fallback
         tokio::spawn(async move {
             info!("🔄 JobCoordinator: Starting reactive event processing");
 
+            // EPIC-32 FIX: Add polling interval as fallback for missed events
+            // This ensures jobs are processed even if events were missed during startup
+            let mut poll_interval = tokio::time::interval(Duration::from_secs(10));
+
             loop {
                 tokio::select! {
+                    // Periodic polling to catch any missed jobs
+                    _ = poll_interval.tick() => {
+                        info!("🔄 JobCoordinator: Periodic polling for pending jobs");
+                        let _ = dispatcher.dispatch_once().await;
+                    }
+
                     // Process JobQueued events
                     event_result = job_queue_stream.next() => {
                         match event_result {

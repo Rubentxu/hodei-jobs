@@ -514,11 +514,14 @@ impl WorkerLifecycleManager {
             .filter(|w| {
                 // Workers que deben terminarse:
                 // 1. En estado Busy/Draining (ephemeral mode - terminación inmediata)
-                // 2. Listos y en idle timeout
-                // 3. Lifetime excedido
-                // 4. TTL after completion excedido
-                matches!(*w.state(), WorkerState::Busy | WorkerState::Draining)
-                    || w.is_idle_timeout()
+                // 2. En estado Terminating (retry de cleanup fallido)
+                // 3. Listos y en idle timeout
+                // 4. Lifetime excedido
+                // 5. TTL after completion excedido
+                matches!(
+                    *w.state(),
+                    WorkerState::Busy | WorkerState::Draining | WorkerState::Terminating
+                ) || w.is_idle_timeout()
                     || w.is_lifetime_exceeded()
                     || w.is_ttl_after_completion_exceeded()
             })
@@ -806,7 +809,7 @@ impl WorkerLifecycleManager {
         Ok(())
     }
 
-    /// Destroy a worker via its provider
+    /// Destroy a worker via its provider with retry logic (FIX: Prevents orphaned containers)
     async fn destroy_worker_via_provider(&self, worker: &Worker) -> Result<()> {
         let providers = self.providers.read().await;
         let provider =
@@ -816,14 +819,53 @@ impl WorkerLifecycleManager {
                     provider_id: worker.provider_id().clone(),
                 })?;
 
-        provider
-            .destroy_worker(worker.handle())
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: e.to_string(),
-            })?;
+        // Retry with exponential backoff for transient failures
+        let max_retries = 3;
+        let mut last_error = None;
 
-        Ok(())
+        for attempt in 1..=max_retries {
+            match provider.destroy_worker(worker.handle()).await {
+                Ok(_) => {
+                    info!(
+                        "Worker {} destroyed successfully via provider {}",
+                        worker.id(),
+                        worker.provider_id()
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        let backoff = Duration::from_secs(2u64.pow(attempt - 1));
+                        warn!(
+                            "Attempt {}/{} failed to destroy worker {}: {}. Retrying in {}s",
+                            attempt,
+                            max_retries,
+                            worker.id(),
+                            error_msg,
+                            backoff.as_secs()
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+        }
+
+        // All retries exhausted
+        error!(
+            "Failed to destroy worker {} after {} attempts: {:?}",
+            worker.id(),
+            max_retries,
+            last_error
+        );
+
+        Err(DomainError::InfrastructureError {
+            message: format!(
+                "Failed to destroy worker after {} attempts: {:?}",
+                max_retries, last_error
+            ),
+        })
     }
 
     /// Get current statistics
@@ -870,7 +912,8 @@ impl WorkerLifecycleManager {
     // Reactive Event Monitoring (EPIC-29)
     // ============================================================
 
-    /// Start monitoring events from all registered providers
+    /// Start monitoring events from all registered providers AND domain events
+    /// This enables reactive worker cleanup based on domain events
     pub async fn start_event_monitoring(&self) {
         let providers = self.providers.read().await;
 
@@ -884,6 +927,144 @@ impl WorkerLifecycleManager {
                 manager.monitor_single_provider(provider_id, provider).await;
             });
         }
+
+        // Also start listening to domain events for reactive cleanup
+        let manager = self.clone();
+        tokio::spawn(async move {
+            manager.start_domain_event_monitoring().await;
+        });
+    }
+
+    /// Start monitoring domain events from the event bus
+    /// This handles WorkerEphemeralTerminating events reactively
+    async fn start_domain_event_monitoring(&self) {
+        use futures::StreamExt;
+        use hodei_server_domain::events::DomainEvent;
+
+        info!("👂 WorkerLifecycleManager: Starting domain event monitoring");
+
+        match self.event_bus.subscribe("lifecycle_events").await {
+            Ok(mut stream) => {
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(event) => {
+                            if let Err(e) = self.handle_domain_event(event).await {
+                                error!("Error handling domain event: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error receiving domain event: {}", e);
+                        }
+                    }
+                }
+                warn!("Domain event stream ended for lifecycle manager");
+            }
+            Err(e) => {
+                error!("Failed to subscribe to domain events: {}", e);
+            }
+        }
+    }
+
+    /// Handle domain events reactively (EPIC-32)
+    /// This is the reactive path for worker cleanup
+    async fn handle_domain_event(&self, event: DomainEvent) -> Result<()> {
+        use hodei_server_domain::events::DomainEvent::*;
+
+        match event {
+            WorkerEphemeralTerminating {
+                worker_id,
+                provider_id,
+                reason,
+                correlation_id,
+                actor,
+                ..
+            } => {
+                info!(
+                    worker_id = %worker_id,
+                    provider_id = %provider_id,
+                    reason = ?reason,
+                    correlation_id = ?correlation_id,
+                    actor = ?actor,
+                    "📥 Received WorkerEphemeralTerminating event - executing cleanup"
+                );
+
+                // Execute cleanup reactively
+                self.perform_worker_cleanup(&worker_id, &provider_id)
+                    .await?;
+
+                Ok(())
+            }
+            WorkerTerminated {
+                worker_id,
+                provider_id,
+                reason,
+                ..
+            } => {
+                info!(
+                    worker_id = %worker_id,
+                    provider_id = %provider_id,
+                    reason = ?reason,
+                    "📥 Received WorkerTerminated event"
+                );
+                // Worker already terminated, nothing to do
+                Ok(())
+            }
+            _ => {
+                // Not our event, ignore
+                Ok(())
+            }
+        }
+    }
+
+    /// Perform worker cleanup (called reactively from domain events)
+    async fn perform_worker_cleanup(
+        &self,
+        worker_id: &WorkerId,
+        provider_id: &ProviderId,
+    ) -> Result<()> {
+        // Get the worker from registry
+        let worker = match self.registry.get(worker_id).await? {
+            Some(w) => w,
+            None => {
+                warn!(
+                    "Worker {} not found in registry during reactive cleanup",
+                    worker_id
+                );
+                return Ok(());
+            }
+        };
+
+        // Update state to Terminating if not already
+        if !matches!(
+            *worker.state(),
+            WorkerState::Terminating | WorkerState::Terminated
+        ) {
+            self.registry
+                .update_state(worker_id, WorkerState::Terminating)
+                .await?;
+        }
+
+        // Try to destroy the worker via provider with retry
+        match self.destroy_worker_via_provider(&worker).await {
+            Ok(_) => {
+                info!(
+                    "Worker {} destroyed successfully via reactive cleanup",
+                    worker_id
+                );
+                // Unregister worker
+                self.registry.unregister(worker_id).await?;
+            }
+            Err(e) => {
+                error!(
+                    "Reactive cleanup failed for worker {}: {}. Worker kept for retry.",
+                    worker_id, e
+                );
+                // Worker stays in Terminating state for cleanup periodic retry
+                return Err(e);
+            }
+        }
+
+        Ok(())
     }
 
     async fn monitor_single_provider(

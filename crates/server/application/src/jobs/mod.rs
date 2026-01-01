@@ -9,6 +9,7 @@ pub mod coordinator;
 pub mod create;
 pub mod dispatcher;
 pub mod event_subscriber;
+pub mod job_completion_handler;
 pub mod orchestrator;
 pub mod queries;
 pub mod repository_ext;

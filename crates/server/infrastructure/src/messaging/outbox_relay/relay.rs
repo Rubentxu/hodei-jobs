@@ -1161,6 +1161,43 @@ impl OutboxRelay {
             }
 
             // =====================================================
+            // WorkerHeartbeat - Worker sends periodic heartbeat
+            // =====================================================
+            "WorkerHeartbeat" => {
+                let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
+                    .map_err(|_| DomainError::InfrastructureError {
+                        message: "Invalid worker_id in WorkerHeartbeat event".to_string(),
+                    })?;
+
+                let current_job_id = payload
+                    .get("current_job_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .map(hodei_server_domain::shared_kernel::JobId);
+
+                Ok(DomainEvent::WorkerHeartbeat {
+                    worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
+                    state: serde_json::from_value(payload["state"].clone()).map_err(|_| {
+                        DomainError::InfrastructureError {
+                            message: "Invalid state in WorkerHeartbeat event".to_string(),
+                        }
+                    })?,
+                    load_average: payload.get("load_average").and_then(|v| v.as_f64()),
+                    memory_usage_mb: payload.get("memory_usage_mb").and_then(|v| v.as_u64()),
+                    current_job_id,
+                    occurred_at: event.created_at,
+                    correlation_id: event.metadata.as_ref().and_then(|m| {
+                        m.get("correlation_id")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                    actor: event.metadata.as_ref().and_then(|m| {
+                        m.get("actor")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
+                })
+            }
+
+            // =====================================================
             // US-26.3: ProviderRecovered
             // =====================================================
             "ProviderRecovered" => {

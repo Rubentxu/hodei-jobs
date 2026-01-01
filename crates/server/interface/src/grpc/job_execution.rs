@@ -29,6 +29,7 @@ use chrono::Utc;
 use hodei_server_domain::events::{DomainEvent, TerminationReason};
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
 use hodei_server_domain::workers::WorkerProvider;
+use hodei_server_domain::workers::provider_api::ProviderError;
 use prost_types;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -243,26 +244,61 @@ impl JobExecutionServiceImpl {
             }
         }
 
-        // Destroy worker via provider immediately
+        // Destroy worker via provider immediately (FIX: Only unregister on success)
         let providers = self.providers.read().await;
-        if let Some(provider) = providers.get(&provider_id) {
-            if let Err(e) = provider.destroy_worker(worker.handle()).await {
+        let destroy_result = if let Some(provider) = providers.get(&provider_id) {
+            provider.destroy_worker(worker.handle()).await.map_err(|e| {
                 warn!(
                     "Failed to destroy worker {} via provider {}: {}",
                     worker_id, provider_id, e
                 );
-                // Emit ProviderError event
+                e
+            })
+        } else {
+            warn!(
+                "Provider {} not found for worker {} cleanup",
+                provider_id, worker_id
+            );
+            Err(ProviderError::Internal("Provider not found".to_string()))
+        };
+
+        // Only unregister worker if destroy was successful (prevents orphaned containers)
+        match destroy_result {
+            Ok(_) => {
+                info!(
+                    "Worker {} destroyed successfully after job {} completion",
+                    worker_id, job_id
+                );
+                // Unregister worker from registry
+                if let Err(e) = self.worker_registry.unregister(worker_id).await {
+                    warn!("Failed to unregister worker {}: {}", worker_id, e);
+                }
+            }
+            Err(e) => {
+                // BUG FIX: Don't unregister if destroy failed - keep worker for retry
+                warn!(
+                    "Worker {} cleanup FAILED: {}. Worker kept in Terminating state for retry.",
+                    worker_id, e
+                );
+
+                // Emit ProviderCleanupFailed event (new event for tracking)
                 let error_event = OutboxEventInsert::for_worker(
                     worker_id.0,
-                    "ProviderError".to_string(),
+                    "ProviderCleanupFailed".to_string(),
                     serde_json::json!({
                         "worker_id": worker_id.0.to_string(),
                         "provider_id": provider_id.0.to_string(),
-                        "message": e.to_string()
+                        "job_id": job_id.0.to_string(),
+                        "error": e.to_string(),
+                        "cleanup_type": "immediate",
+                        "retry_required": true
                     }),
-                    None,
+                    Some(serde_json::json!({
+                        "source": "JobExecutionService",
+                        "event": "cleanup_failed"
+                    })),
                     Some(format!(
-                        "provider-error-{}-{}",
+                        "cleanup-failed-{}-{}",
                         worker_id.0,
                         now.timestamp()
                     )),
@@ -270,22 +306,9 @@ impl JobExecutionServiceImpl {
                 if let Some(ref outbox_repo) = self.outbox_repository {
                     let _ = outbox_repo.insert_events(&[error_event]).await;
                 }
-            } else {
-                info!(
-                    "Worker {} destroyed immediately after job {} completion",
-                    worker_id, job_id
-                );
+                // Worker remains in Terminating state for periodic cleanup retry
+                return Ok(());
             }
-        } else {
-            warn!(
-                "Provider {} not found for worker {} cleanup",
-                provider_id, worker_id
-            );
-        }
-
-        // Unregister worker
-        if let Err(e) = self.worker_registry.unregister(worker_id).await {
-            warn!("Failed to unregister worker {}: {}", worker_id, e);
         }
 
         // Emit WorkerEphemeralTerminated event (EPIC-26 US-26.3)
@@ -692,10 +715,13 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .await
             .map_err(error_to_status)?;
 
-        // Trigger immediate worker cleanup (EPIC-26 US-26.5)
-        // Find the worker that was running this job and clean it up
+        // EPIC-32: Trigger REACTIVE worker cleanup via event publication
+        // Instead of tokio::spawn (which can fail silently), we publish a
+        // WorkerEphemeralTerminating event to the outbox. The OutboxRelay
+        // will convert it to a DomainEvent, and WorkerLifecycleManager
+        // will consume it reactively with retry guarantees.
         let job_id_clone = job_id.clone();
-        let cleanup_spawned = if let Ok(workers) = self
+        if let Ok(workers) = self
             .worker_registry
             .find(&hodei_server_domain::workers::WorkerFilter::new())
             .await
@@ -705,34 +731,56 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 .find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id_clone));
 
             if let Some(worker) = worker {
-                let worker_id_clone = worker.id().clone();
-                let job_id_for_cleanup = job_id_clone.clone();
-                let service = self.clone();
+                let worker_id = worker.id().clone();
+                let provider_id = worker.provider_id().clone();
+                let now = Utc::now();
 
-                // Spawn cleanup task (don't block the response)
-                tokio::spawn(async move {
-                    if let Err(e) = service
-                        .trigger_worker_cleanup(&worker_id_clone, &job_id_for_cleanup)
-                        .await
-                    {
+                // Publish WorkerEphemeralTerminating event to outbox (reactive cleanup)
+                let cleanup_event = OutboxEventInsert::for_worker(
+                    worker_id.0,
+                    "WorkerEphemeralTerminating".to_string(),
+                    serde_json::json!({
+                        "worker_id": worker_id.0.to_string(),
+                        "provider_id": provider_id.0.to_string(),
+                        "reason": "JOB_COMPLETED",
+                        "job_id": job_id.0.to_string()
+                    }),
+                    Some(serde_json::json!({
+                        "source": "JobExecutionService",
+                        "cleanup_type": "reactive_event",
+                        "event": "complete_job"
+                    })),
+                    Some(format!(
+                        "ephemeral-terminating-{}-{}",
+                        worker_id.0,
+                        now.timestamp()
+                    )),
+                );
+
+                if let Some(ref outbox_repo) = self.outbox_repository {
+                    if let Err(e) = outbox_repo.insert_events(&[cleanup_event]).await {
                         warn!(
-                            "Failed to cleanup worker {} after job {} completion: {}",
-                            worker_id_clone, job_id_for_cleanup, e
+                            "Failed to insert WorkerEphemeralTerminating event for worker {}: {}",
+                            worker_id, e
+                        );
+                    } else {
+                        info!(
+                            "📤 Published WorkerEphemeralTerminating event for reactive cleanup (worker={}, job={})",
+                            worker_id, job_id
                         );
                     }
-                });
-                true
+                }
             } else {
-                debug!("No worker found for job {} during cleanup", job_id_clone);
-                false
+                debug!(
+                    "No worker found for job {} during cleanup event publication",
+                    job_id_clone
+                );
             }
         } else {
-            debug!("Failed to query workers for job {} cleanup", job_id_clone);
-            false
-        };
-
-        if !cleanup_spawned {
-            debug!("No worker cleanup triggered for job {}", job_id_clone);
+            debug!(
+                "Failed to query workers for job {} cleanup event",
+                job_id_clone
+            );
         }
 
         Ok(Response::new(CompleteJobResponse {
@@ -778,10 +826,10 @@ impl JobExecutionService for JobExecutionServiceImpl {
             .await
             .map_err(error_to_status)?;
 
-        // Trigger immediate worker cleanup on job failure (EPIC-26 US-26.5)
-        // Find the worker that was running this job and clean it up
+        // EPIC-32: Trigger REACTIVE worker cleanup via event publication
+        // Same pattern as complete_job - publish event instead of spawning task
         let job_id_clone = job_id.clone();
-        let cleanup_spawned = if let Ok(workers) = self
+        if let Ok(workers) = self
             .worker_registry
             .find(&hodei_server_domain::workers::WorkerFilter::new())
             .await
@@ -791,34 +839,56 @@ impl JobExecutionService for JobExecutionServiceImpl {
                 .find(|w| w.current_job_id().map_or(false, |jid| jid == &job_id_clone));
 
             if let Some(worker) = worker {
-                let worker_id_clone = worker.id().clone();
-                let job_id_for_cleanup = job_id_clone.clone();
-                let service = self.clone();
+                let worker_id = worker.id().clone();
+                let provider_id = worker.provider_id().clone();
+                let now = Utc::now();
 
-                // Spawn cleanup task (don't block the response)
-                tokio::spawn(async move {
-                    if let Err(e) = service
-                        .trigger_worker_cleanup(&worker_id_clone, &job_id_for_cleanup)
-                        .await
-                    {
+                // Publish WorkerEphemeralTerminating event to outbox (reactive cleanup)
+                let cleanup_event = OutboxEventInsert::for_worker(
+                    worker_id.0,
+                    "WorkerEphemeralTerminating".to_string(),
+                    serde_json::json!({
+                        "worker_id": worker_id.0.to_string(),
+                        "provider_id": provider_id.0.to_string(),
+                        "reason": "JOB_FAILED",
+                        "job_id": job_id.0.to_string()
+                    }),
+                    Some(serde_json::json!({
+                        "source": "JobExecutionService",
+                        "cleanup_type": "reactive_event",
+                        "event": "fail_job"
+                    })),
+                    Some(format!(
+                        "ephemeral-terminating-{}-{}",
+                        worker_id.0,
+                        now.timestamp()
+                    )),
+                );
+
+                if let Some(ref outbox_repo) = self.outbox_repository {
+                    if let Err(e) = outbox_repo.insert_events(&[cleanup_event]).await {
                         warn!(
-                            "Failed to cleanup worker {} after job {} failure: {}",
-                            worker_id_clone, job_id_for_cleanup, e
+                            "Failed to insert WorkerEphemeralTerminating event for worker {}: {}",
+                            worker_id, e
+                        );
+                    } else {
+                        info!(
+                            "📤 Published WorkerEphemeralTerminating event for reactive cleanup (worker={}, job={})",
+                            worker_id, job_id
                         );
                     }
-                });
-                true
+                }
             } else {
-                debug!("No worker found for job {} during cleanup", job_id_clone);
-                false
+                debug!(
+                    "No worker found for job {} during cleanup event publication",
+                    job_id_clone
+                );
             }
         } else {
-            debug!("Failed to query workers for job {} cleanup", job_id_clone);
-            false
-        };
-
-        if !cleanup_spawned {
-            debug!("No worker cleanup triggered for job {}", job_id_clone);
+            debug!(
+                "Failed to query workers for job {} cleanup event",
+                job_id_clone
+            );
         }
 
         Ok(Response::new(FailJobResponse {

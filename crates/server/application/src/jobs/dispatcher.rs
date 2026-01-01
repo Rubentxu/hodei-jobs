@@ -1175,6 +1175,24 @@ impl JobDispatcher {
         let startup_duration = Self::calculate_startup_time(&provider_config);
         let effective_startup_ms = startup_duration.as_millis() as u64;
 
+        // BUG FIX: Persist selected_provider_id in job BEFORE publishing event
+        // This ensures the job has provider_id set for subsequent processing
+        let mut job = job.clone();
+        job.spec.preferences.preferred_provider = Some(provider_id.to_string());
+
+        // Save job to persist selected_provider_id
+        if let Err(e) = self.job_repository.update(&job).await {
+            error!(
+                "❌ JobDispatcher: Failed to save job with selected_provider: {}",
+                e
+            );
+            return;
+        }
+        info!(
+            "✅ JobDispatcher: Saved job {} with selected_provider_id {}",
+            job.id, provider_id
+        );
+
         let provider_selected_event = DomainEvent::ProviderSelected {
             job_id: job.id.clone(),
             provider_id: provider_id.clone(),
@@ -1226,7 +1244,7 @@ impl JobDispatcher {
 
         // Trigger provisioning directly (since there's no event subscriber yet for WorkerProvisioningRequested)
         // This ensures workers get provisioned even without the reactive infrastructure in place
-        if let Err(e) = self.trigger_provisioning(job).await {
+        if let Err(e) = self.trigger_provisioning(&job).await {
             error!("❌ JobDispatcher: Failed to trigger provisioning: {}", e);
         }
     }
