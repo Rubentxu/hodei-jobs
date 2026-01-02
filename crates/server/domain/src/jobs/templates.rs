@@ -66,6 +66,16 @@ impl Default for JobTemplateStatus {
     }
 }
 
+impl std::fmt::Display for JobTemplateStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobTemplateStatus::Active => write!(f, "Active"),
+            JobTemplateStatus::Disabled => write!(f, "Disabled"),
+            JobTemplateStatus::Archived => write!(f, "Archived"),
+        }
+    }
+}
+
 /// A reusable job definition
 ///
 /// JobTemplate stores the specification that can be used to create
@@ -261,6 +271,18 @@ pub enum TriggerType {
     Webhook,
     /// Triggered as a retry
     Retry,
+}
+
+impl std::fmt::Display for TriggerType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TriggerType::Manual => write!(f, "Manual"),
+            TriggerType::Scheduled => write!(f, "Scheduled"),
+            TriggerType::Api => write!(f, "Api"),
+            TriggerType::Webhook => write!(f, "Webhook"),
+            TriggerType::Retry => write!(f, "Retry"),
+        }
+    }
 }
 
 /// Result of a job execution
@@ -675,6 +697,18 @@ pub enum JobExecutionStatus {
     Error,
 }
 
+impl std::fmt::Display for JobExecutionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobExecutionStatus::Queued => write!(f, "Queued"),
+            JobExecutionStatus::Running => write!(f, "Running"),
+            JobExecutionStatus::Succeeded => write!(f, "Succeeded"),
+            JobExecutionStatus::Failed => write!(f, "Failed"),
+            JobExecutionStatus::Error => write!(f, "Error"),
+        }
+    }
+}
+
 /// Type of a template parameter
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParameterType {
@@ -688,6 +722,18 @@ pub enum ParameterType {
     Choice,
     /// Secret parameter (password, token, etc.)
     Secret,
+}
+
+impl std::fmt::Display for ParameterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParameterType::String => write!(f, "String"),
+            ParameterType::Number => write!(f, "Number"),
+            ParameterType::Boolean => write!(f, "Boolean"),
+            ParameterType::Choice => write!(f, "Choice"),
+            ParameterType::Secret => write!(f, "Secret"),
+        }
+    }
 }
 
 /// Represents a parameter for a job template
@@ -719,11 +765,16 @@ pub struct JobTemplateParameter {
     pub display_order: u32,
     /// Whether this is a secret parameter
     pub secret: bool,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp
+    pub updated_at: DateTime<Utc>,
 }
 
 impl JobTemplateParameter {
     /// Create a new parameter
     pub fn new(template_id: JobTemplateId, name: String, parameter_type: ParameterType) -> Self {
+        let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
             template_id,
@@ -738,6 +789,8 @@ impl JobTemplateParameter {
             choices: Vec::new(),
             display_order: 0,
             secret: false,
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -1009,6 +1062,18 @@ pub trait ScheduledJobRepository: Send + Sync {
 
     /// Find scheduled jobs that should run now
     async fn find_ready_to_run(&self, now: &DateTime<Utc>) -> Result<Vec<ScheduledJob>>;
+
+    /// Get due jobs with limit (for cron scheduler)
+    async fn get_due_jobs(&self, now: DateTime<Utc>, limit: usize) -> Result<Vec<ScheduledJob>>;
+
+    /// Mark a scheduled job as triggered
+    async fn mark_triggered(&self, id: &Uuid, triggered_at: DateTime<Utc>) -> Result<()>;
+
+    /// Mark a scheduled job execution as failed
+    async fn mark_failed(&self, id: &Uuid, status: JobExecutionStatus) -> Result<()>;
+
+    /// Calculate and update next execution time based on cron expression
+    async fn calculate_next_execution(&self, id: &Uuid) -> Result<()>;
 
     /// Delete scheduled job
     async fn delete(&self, id: &Uuid) -> Result<()>;

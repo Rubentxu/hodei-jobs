@@ -1177,7 +1177,21 @@ impl JobDispatcher {
 
         // BUG FIX: Persist selected_provider_id in job BEFORE publishing event
         // This ensures the job has provider_id set for subsequent processing
+        // FIXED: Now calls assign_to_provider() to properly set selected_provider field
         let mut job = job.clone();
+        let execution_context = hodei_server_domain::jobs::ExecutionContext::new(
+            job.id.clone(),
+            provider_id.clone(),
+            format!("exec-{}", Uuid::new_v4()),
+        );
+
+        // Use assign_to_provider() to properly set the selected_provider field in aggregate
+        if let Err(e) = job.assign_to_provider(provider_id.clone(), execution_context) {
+            error!("❌ JobDispatcher: Failed to assign provider to job: {}", e);
+            return;
+        }
+
+        // Also set preferred_provider for scheduling reference
         job.spec.preferences.preferred_provider = Some(provider_id.to_string());
 
         // Save job to persist selected_provider_id

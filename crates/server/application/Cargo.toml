@@ -34,6 +34,9 @@ futures = { workspace = true }
 # Logging & Tracing
 tracing = { workspace = true }
 
+# Scheduling
+cron = "0.12"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 futures = { workspace = true }

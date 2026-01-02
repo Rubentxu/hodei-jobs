@@ -65,8 +65,8 @@ impl LogStorageRepository {
             INSERT INTO job_log_files
                 (id, job_id, storage_uri, size_bytes, entry_count, created_at, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (job_id) DO UPDATE SET
-                storage_uri = EXCLUDED.storage_uri,
+            ON CONFLICT (job_id, storage_uri) DO UPDATE SET
+                id = EXCLUDED.id,
                 size_bytes = EXCLUDED.size_bytes,
                 entry_count = EXCLUDED.entry_count,
                 created_at = EXCLUDED.created_at,

@@ -419,5 +419,9 @@ fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
         result,
         error_message,
         metadata,
+        None, // template_id
+        None, // template_version
+        None, // execution_number
+        None, // triggered_by
     ))
 }

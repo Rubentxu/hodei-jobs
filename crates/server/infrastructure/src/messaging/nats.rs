@@ -349,6 +349,19 @@ impl NatsEventBus {
             DomainEvent::ProviderSelected { .. } => "providers",
             DomainEvent::ProviderExecutionError { .. } => "providers",
 
+            // EPIC-34: Template events
+            DomainEvent::TemplateCreated { .. } => "templates",
+            DomainEvent::TemplateUpdated { .. } => "templates",
+            DomainEvent::TemplateDisabled { .. } => "templates",
+            DomainEvent::TemplateRunCreated { .. } => "templates",
+            DomainEvent::ExecutionRecorded { .. } => "templates",
+
+            // EPIC-34: Scheduling events
+            DomainEvent::ScheduledJobCreated { .. } => "scheduling",
+            DomainEvent::ScheduledJobTriggered { .. } => "scheduling",
+            DomainEvent::ScheduledJobMissed { .. } => "scheduling",
+            DomainEvent::ScheduledJobError { .. } => "scheduling",
+
             DomainEvent::JobQueueDepthChanged { .. } => "queue",
             DomainEvent::GarbageCollectionCompleted { .. } => "gc",
             DomainEvent::SchedulingDecisionFailed { .. } => "scheduling",

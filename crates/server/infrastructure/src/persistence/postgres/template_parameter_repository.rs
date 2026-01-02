@@ -3,6 +3,7 @@
 //! Persistent repository implementation for JobTemplateParameters based on PostgreSQL
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use hodei_server_domain::jobs::{
     JobTemplateId, JobTemplateParameter, JobTemplateParameterRepository,
 };
@@ -158,8 +159,8 @@ impl JobTemplateParameterRepository for PostgresJobTemplateParameterRepository {
         Ok(())
     }
 
-    async fn delete_by_template_id(&self, template_id: &JobTemplateId) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM job_template_parameters WHERE template_id = $1")
+    async fn delete_by_template_id(&self, template_id: &JobTemplateId) -> Result<()> {
+        sqlx::query("DELETE FROM job_template_parameters WHERE template_id = $1")
             .bind(template_id.0)
             .execute(&self.pool)
             .await
@@ -167,7 +168,7 @@ impl JobTemplateParameterRepository for PostgresJobTemplateParameterRepository {
                 message: format!("Failed to delete template parameters: {}", e),
             })?;
 
-        Ok(result.rows_affected() as u64)
+        Ok(())
     }
 }
 

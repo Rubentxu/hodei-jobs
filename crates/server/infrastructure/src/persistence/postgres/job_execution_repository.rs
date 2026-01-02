@@ -342,12 +342,12 @@ impl PostgresJobExecutionRepository {
 
         // Parse state
         let state = match state.as_str() {
-            "Queued" => hodei_server_domain::jobs::ExecutionStatus::Queued,
-            "Running" => hodei_server_domain::jobs::ExecutionStatus::Running,
-            "Succeeded" => hodei_server_domain::jobs::ExecutionStatus::Succeeded,
-            "Failed" => hodei_server_domain::jobs::ExecutionStatus::Failed,
-            "Error" => hodei_server_domain::jobs::ExecutionStatus::Error,
-            _ => hodei_server_domain::jobs::ExecutionStatus::Queued,
+            "Queued" => hodei_server_domain::jobs::JobExecutionStatus::Queued,
+            "Running" => hodei_server_domain::jobs::JobExecutionStatus::Running,
+            "Succeeded" => hodei_server_domain::jobs::JobExecutionStatus::Succeeded,
+            "Failed" => hodei_server_domain::jobs::JobExecutionStatus::Failed,
+            "Error" => hodei_server_domain::jobs::JobExecutionStatus::Error,
+            _ => hodei_server_domain::jobs::JobExecutionStatus::Queued,
         };
 
         Ok(JobExecution {

@@ -70,7 +70,6 @@ pub struct JobCoordinator {
     event_bus: Arc<dyn EventBus>,
     job_dispatcher: Arc<JobDispatcher>,
     worker_monitor: Arc<WorkerMonitor>,
-    pool: PgPool,
     // EPIC-32: Dependencies for worker cleanup
     worker_registry: Arc<dyn WorkerRegistry>,
     shutdown_tx: watch::Sender<()>,
@@ -90,13 +89,11 @@ impl JobCoordinator {
     /// * `event_bus` - Event bus for subscriptions
     /// * `job_dispatcher` - Job dispatcher for processing
     /// * `worker_monitor` - Worker health monitor
-    /// * `pool` - Database pool for checkpointing and DLQ
     /// * `worker_registry` - Worker registry for cleanup operations
     pub fn new(
         event_bus: Arc<dyn EventBus>,
         job_dispatcher: Arc<JobDispatcher>,
         worker_monitor: Arc<WorkerMonitor>,
-        pool: PgPool,
         worker_registry: Arc<dyn WorkerRegistry>,
     ) -> Self {
         let (shutdown_tx, _) = watch::channel(());
@@ -104,70 +101,10 @@ impl JobCoordinator {
             event_bus,
             job_dispatcher,
             worker_monitor,
-            pool,
             worker_registry,
             shutdown_tx,
             monitor_shutdown: None,
         }
-    }
-
-    /// Run database migrations for reactive system
-    pub async fn run_migrations(&self) -> anyhow::Result<()> {
-        info!("Running EPIC-32 reactive system migrations...");
-
-        // Create subscription_offsets table
-        sqlx::query!(
-            r#"
-            CREATE TABLE IF NOT EXISTS subscription_offsets (
-                subscription_id VARCHAR(255) PRIMARY KEY,
-                topic VARCHAR(255) NOT NULL,
-                consumer_group VARCHAR(255) NOT NULL,
-                last_event_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
-                last_event_occurred_at TIMESTAMPTZ NOT NULL DEFAULT '-infinity',
-                last_processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                event_count BIGINT NOT NULL DEFAULT 0,
-                gap_detected_at TIMESTAMPTZ,
-                gap_resolved_at TIMESTAMPTZ,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            "#
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Create event_processing_dlq table
-        sqlx::query!(
-            r#"
-            CREATE TABLE IF NOT EXISTS event_processing_dlq (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                event_id UUID NOT NULL,
-                event_type VARCHAR(255) NOT NULL,
-                aggregate_id VARCHAR(255) NOT NULL,
-                payload JSONB NOT NULL,
-                error_message TEXT NOT NULL,
-                error_count SMALLINT NOT NULL DEFAULT 1,
-                first_failure_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_failure_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                resolved_at TIMESTAMPTZ,
-                resolution_action VARCHAR(50),
-                resolution_metadata JSONB,
-                subscription_id VARCHAR(255) NOT NULL,
-                retry_count SMALLINT NOT NULL DEFAULT 0,
-                max_retries SMALLINT NOT NULL DEFAULT 3,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(event_id, subscription_id)
-            )
-            "#
-        )
-        .execute(&self.pool)
-        .await?;
-
-        info!("✅ EPIC-32 reactive system migrations complete");
-        Ok(())
     }
 
     /// Start the coordinator in pure reactive mode (EPIC-32)
@@ -179,9 +116,6 @@ impl JobCoordinator {
     ///
     /// Returns: Result<()>
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        // Run migrations first
-        self.run_migrations().await?;
-
         info!("🚀 JobCoordinator: Starting job processing system (EPIC-32 Pure Reactive)");
 
         // Start worker monitor and keep the shutdown signal alive

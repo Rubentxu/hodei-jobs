@@ -80,13 +80,8 @@ impl JobController {
         ));
 
         // Create coordinator that orchestrates everything
-        let coordinator = JobCoordinator::new(
-            event_bus,
-            job_dispatcher,
-            worker_monitor,
-            pool,
-            worker_registry,
-        );
+        let coordinator =
+            JobCoordinator::new(event_bus, job_dispatcher, worker_monitor, worker_registry);
 
         Self {
             coordinator,

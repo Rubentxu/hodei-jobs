@@ -67,6 +67,9 @@ futures = "0.3.31"
 # NATS JetStream
 async-nats = "0.35"
 
+# Scheduling
+cron = "0.12"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = "3.15"

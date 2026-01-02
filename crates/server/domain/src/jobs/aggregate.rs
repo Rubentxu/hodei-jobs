@@ -161,6 +161,87 @@ pub struct JobSpec {
     pub preferences: JobPreferences,
 }
 
+/// Substitute parameters in a string
+///
+/// Supports two formats:
+/// - `${PARAM}` - Bracket format (recommended)
+/// - `$PARAM` - Simple format (UNIX-style)
+///
+/// # Arguments
+/// * `input` - String with parameter placeholders
+/// * `parameters` - Map of parameter name to value
+///
+/// # Returns
+/// String with parameters substituted
+fn substitute_parameters(input: &str, parameters: &HashMap<String, String>) -> String {
+    let mut result = input.to_string();
+
+    // Bracket format: ${PARAM}
+    for (name, value) in parameters {
+        let placeholder = format!("${{{}}}", name);
+        result = result.replace(&placeholder, value);
+    }
+
+    // Simple format: $PARAM - iterate and replace
+    // We need to be careful not to replace substrings
+    let mut final_result = String::new();
+    let chars: Vec<char> = result.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() {
+            // Try to parse identifier starting with letter or underscore
+            let mut j = i + 1;
+            if chars[j].is_ascii_alphabetic() || chars[j] == '_' {
+                j += 1;
+                while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                    j += 1;
+                }
+                let param_name: String = chars[i + 1..j].iter().collect();
+                if let Some(value) = parameters.get(&param_name) {
+                    final_result.push_str(value);
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        final_result.push(chars[i]);
+        i += 1;
+    }
+
+    final_result
+}
+
+/// Substitute parameters in a CommandType
+fn substitute_in_command(
+    command: &CommandType,
+    parameters: &HashMap<String, String>,
+) -> CommandType {
+    match command {
+        CommandType::Shell { cmd, args } => {
+            let new_cmd = substitute_parameters(cmd, parameters);
+            let new_args: Vec<String> = args
+                .iter()
+                .map(|arg| substitute_parameters(arg, parameters))
+                .collect();
+            CommandType::Shell {
+                cmd: new_cmd,
+                args: new_args,
+            }
+        }
+        CommandType::Script {
+            interpreter,
+            content,
+        } => {
+            let new_interpreter = substitute_parameters(interpreter, parameters);
+            let new_content = substitute_parameters(content, parameters);
+            CommandType::Script {
+                interpreter: new_interpreter,
+                content: new_content,
+            }
+        }
+    }
+}
+
 impl JobSpec {
     /// Detecta si una cadena parece ser contenido de script (contiene nuevas líneas o shebang)
     fn looks_like_script(content: &str) -> bool {
@@ -356,6 +437,70 @@ impl JobSpec {
         }
 
         Ok(())
+    }
+
+    /// Apply parameters to the job spec (Parameter Substitution)
+    ///
+    /// This method substitutes parameter placeholders in:
+    /// - Environment variables: `${PARAM}` or `$PARAM`
+    /// - Command arguments: `${PARAM}` or `$PARAM`
+    /// - Stdin: `${PARAM}` or `$PARAM`
+    ///
+    /// # Arguments
+    /// * `parameters` - Map of parameter name to value
+    /// * `required_params` - List of required parameter names (returns error if missing)
+    ///
+    /// # Returns
+    /// * `Self` - Modified JobSpec with substituted values
+    ///
+    /// # Errors
+    /// * If any required parameter is missing
+    /// * If parameter validation fails
+    pub fn apply_parameters(
+        &self,
+        parameters: &HashMap<String, String>,
+        required_params: Option<&[String]>,
+    ) -> Result<Self> {
+        // Check required parameters
+        if let Some(required) = required_params {
+            for param in required {
+                if !parameters.contains_key(param) {
+                    return Err(DomainError::InvalidJobSpec {
+                        field: "parameters".to_string(),
+                        reason: format!("Missing required parameter: {}", param),
+                    });
+                }
+            }
+        }
+
+        // Substitute in environment variables
+        let mut new_env = self.env.clone();
+        for (key, value) in &mut new_env {
+            *value = substitute_parameters(value, parameters);
+        }
+
+        // Substitute in stdin
+        let new_stdin = self
+            .stdin
+            .as_ref()
+            .map(|stdin| substitute_parameters(stdin, parameters));
+
+        // Substitute in command - need to handle CommandType
+        let new_command = substitute_in_command(&self.command, parameters);
+
+        Ok(Self {
+            command: new_command,
+            env: new_env,
+            inputs: self.inputs.clone(),
+            outputs: self.outputs.clone(),
+            constraints: self.constraints.clone(),
+            resources: self.resources.clone(),
+            timeout_ms: self.timeout_ms,
+            image: self.image.clone(),
+            working_dir: self.working_dir.clone(),
+            stdin: new_stdin,
+            preferences: self.preferences.clone(),
+        })
     }
 
     /// Obtiene el comando como vector para ejecución
@@ -566,6 +711,14 @@ pub struct Job {
     error_message: Option<String>,
     /// Metadatos adicionales
     metadata: HashMap<String, String>,
+    /// Template del que fue creado (si aplica)
+    template_id: Option<super::templates::JobTemplateId>,
+    /// Versión del template al momento de creación
+    template_version: Option<u32>,
+    /// Número de ejecución dentro del template
+    execution_number: Option<u32>,
+    /// Tipo de trigger que inició este job
+    triggered_by: Option<super::templates::TriggerType>,
 }
 
 impl Job {
@@ -585,6 +738,10 @@ impl Job {
             result: None,
             error_message: None,
             metadata: HashMap::new(),
+            template_id: None,
+            template_version: None,
+            execution_number: None,
+            triggered_by: None,
         }
     }
 
@@ -603,6 +760,10 @@ impl Job {
         result: Option<JobResult>,
         error_message: Option<String>,
         metadata: HashMap<String, String>,
+        template_id: Option<super::templates::JobTemplateId>,
+        template_version: Option<u32>,
+        execution_number: Option<u32>,
+        triggered_by: Option<super::templates::TriggerType>,
     ) -> Self {
         Self {
             id,
@@ -618,7 +779,28 @@ impl Job {
             result,
             error_message,
             metadata,
+            template_id,
+            template_version,
+            execution_number,
+            triggered_by,
         }
+    }
+
+    /// Create a job from a template
+    pub fn from_template(
+        id: JobId,
+        spec: JobSpec,
+        template_id: super::templates::JobTemplateId,
+        template_version: u32,
+        execution_number: u32,
+        triggered_by: super::templates::TriggerType,
+    ) -> Self {
+        let mut job = Self::new(id, spec);
+        job.template_id = Some(template_id);
+        job.template_version = Some(template_version);
+        job.execution_number = Some(execution_number);
+        job.triggered_by = Some(triggered_by);
+        job
     }
 
     // Getters
@@ -663,6 +845,23 @@ impl Job {
     }
     pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
         &mut self.metadata
+    }
+
+    // Template-related getters
+    pub fn template_id(&self) -> Option<&super::templates::JobTemplateId> {
+        self.template_id.as_ref()
+    }
+    pub fn template_version(&self) -> Option<u32> {
+        self.template_version
+    }
+    pub fn execution_number(&self) -> Option<u32> {
+        self.execution_number
+    }
+    pub fn triggered_by(&self) -> Option<&super::templates::TriggerType> {
+        self.triggered_by.as_ref()
+    }
+    pub fn is_from_template(&self) -> bool {
+        self.template_id.is_some()
     }
 
     /// Pone el job en cola
@@ -1492,5 +1691,170 @@ mod tests {
             priority,
             JobPriority::High | JobPriority::Critical
         ));
+    }
+
+    /// Test: Parameter substitution in command - Shell format
+    #[test]
+    fn test_parameter_substitution_shell_command() {
+        let cmd = CommandType::shell_with_args(
+            "echo ${GREETING} ${NAME}".to_string(),
+            vec!["${EXTRA}".to_string()],
+        );
+        let params = vec![
+            ("GREETING".to_string(), "Hello".to_string()),
+            ("NAME".to_string(), "World".to_string()),
+            ("EXTRA".to_string(), "test".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let result = super::substitute_in_command(&cmd, &params);
+        match result {
+            CommandType::Shell { cmd, args } => {
+                assert_eq!(cmd, "echo Hello World");
+                assert_eq!(args, vec!["test"]);
+            }
+            _ => panic!("Expected Shell command"),
+        }
+    }
+
+    /// Test: Parameter substitution in script
+    #[test]
+    fn test_parameter_substitution_script() {
+        let cmd = CommandType::script("python", "print('${MSG}')");
+        let params = vec![("MSG".to_string(), "Hello Python".to_string())]
+            .into_iter()
+            .collect();
+
+        let result = super::substitute_in_command(&cmd, &params);
+        match result {
+            CommandType::Script {
+                interpreter,
+                content,
+            } => {
+                assert_eq!(interpreter, "python");
+                assert_eq!(content, "print('Hello Python')");
+            }
+            _ => panic!("Expected Script command"),
+        }
+    }
+
+    /// Test: Parameter substitution - missing parameter keeps placeholder
+    #[test]
+    fn test_parameter_substitution_missing_param() {
+        let cmd = CommandType::shell("echo ${DEFINED} ${UNDEFINED}");
+        let params = vec![("DEFINED".to_string(), "value".to_string())]
+            .into_iter()
+            .collect();
+
+        let result = super::substitute_in_command(&cmd, &params);
+        match result {
+            CommandType::Shell { cmd, args: _ } => {
+                assert_eq!(cmd, "echo value ${UNDEFINED}");
+            }
+            _ => panic!("Expected Shell command"),
+        }
+    }
+
+    /// Test: Parameter substitution - simple format $PARAM
+    #[test]
+    fn test_parameter_substitution_simple_format() {
+        let cmd = CommandType::shell("echo $GREETING");
+        let params = vec![("GREETING".to_string(), "Hi".to_string())]
+            .into_iter()
+            .collect();
+
+        let result = super::substitute_in_command(&cmd, &params);
+        match result {
+            CommandType::Shell { cmd, args: _ } => {
+                assert_eq!(cmd, "echo Hi");
+            }
+            _ => panic!("Expected Shell command"),
+        }
+    }
+
+    /// Test: JobSpec::apply_parameters with environment variables
+    #[test]
+    fn test_jobspec_apply_parameters_env() {
+        let cmd = CommandType::shell("echo ${VAR1}");
+        let spec = JobSpec::with_command(cmd)
+            .with_env("VAR1", "${VAR2}")
+            .with_env("VAR2", "value2");
+
+        let params = vec![("VAR2".to_string(), "value2".to_string())]
+            .into_iter()
+            .collect();
+        let result = spec.apply_parameters(&params, None).unwrap();
+
+        assert_eq!(result.env.get("VAR1"), Some(&"value2".to_string()));
+        assert_eq!(result.env.get("VAR2"), Some(&"value2".to_string()));
+    }
+
+    /// Test: JobSpec::apply_parameters with required params
+    #[test]
+    fn test_jobspec_apply_parameters_required() {
+        let cmd = CommandType::shell("echo ${MY_PARAM}");
+        let spec = JobSpec::with_command(cmd);
+
+        let params = vec![("OTHER".to_string(), "value".to_string())]
+            .into_iter()
+            .collect();
+        let required = vec!["MY_PARAM".to_string()];
+
+        let result = spec.apply_parameters(&params, Some(&required));
+        assert!(result.is_err());
+    }
+
+    /// Test: JobSpec::apply_parameters with stdin
+    #[test]
+    fn test_jobspec_apply_parameters_stdin() {
+        let cmd = CommandType::shell("cat");
+        let spec = JobSpec::with_command(cmd).with_stdin("Input: ${DATA}");
+
+        let params = vec![("DATA".to_string(), "test123".to_string())]
+            .into_iter()
+            .collect();
+        let result = spec.apply_parameters(&params, None).unwrap();
+
+        assert_eq!(result.stdin, Some("Input: test123".to_string()));
+    }
+
+    /// Test: Job::from_template and template getters
+    #[test]
+    fn test_job_from_template() {
+        use crate::jobs::templates::{JobTemplateId, TriggerType};
+        use crate::shared_kernel::JobId;
+
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string()]);
+        let template_id = JobTemplateId::new();
+        let job = Job::from_template(
+            job_id.clone(),
+            spec,
+            template_id.clone(),
+            2,
+            5,
+            TriggerType::Scheduled,
+        );
+
+        assert_eq!(job.template_id(), Some(&template_id));
+        assert_eq!(job.template_version(), Some(2));
+        assert_eq!(job.execution_number(), Some(5));
+        assert_eq!(job.triggered_by(), Some(&TriggerType::Scheduled));
+        assert!(job.is_from_template());
+    }
+
+    /// Test: Job::is_from_template returns false for regular jobs
+    #[test]
+    fn test_job_not_from_template() {
+        use crate::shared_kernel::JobId;
+
+        let job_id = JobId::new();
+        let spec = JobSpec::new(vec!["echo".to_string()]);
+        let job = Job::new(job_id, spec);
+
+        assert!(!job.is_from_template());
+        assert_eq!(job.template_id(), None);
+        assert_eq!(job.template_version(), None);
     }
 }

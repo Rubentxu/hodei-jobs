@@ -95,8 +95,8 @@ message JobTemplateParameter {
     bool secret = 13;
 }
 
-// Job Execution
-message JobExecution {
+// Template Execution (tracks a single execution of a template)
+message TemplateExecution {
     string execution_id = 1;
     uint64 execution_number = 2;
     string template_id = 3;
@@ -210,7 +210,7 @@ message TriggerRunRequest {
 
 // Trigger Run Response
 message TriggerRunResponse {
-    JobExecution execution = 1;
+    TemplateExecution execution = 1;
 }
 
 // Get Execution Request
@@ -220,7 +220,7 @@ message GetExecutionRequest {
 
 // Get Execution Response
 message GetExecutionResponse {
-    JobExecution execution = 1;
+    TemplateExecution execution = 1;
 }
 
 // List Executions Request
@@ -235,7 +235,7 @@ message ListExecutionsRequest {
 
 // List Executions Response
 message ListExecutionsResponse {
-    repeated JobExecution executions = 1;
+    repeated TemplateExecution executions = 1;
     string next_page_token = 2;
 }
 

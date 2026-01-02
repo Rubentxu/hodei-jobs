@@ -10,9 +10,7 @@ pub mod job_execution;
 pub mod log_stream;
 pub mod metrics;
 pub mod provider_management;
-pub mod scheduled_job;
 pub mod scheduler;
-pub mod template_management;
 pub mod worker;
 pub mod worker_command_sender;
 
@@ -23,8 +21,6 @@ pub use job_execution::JobExecutionServiceImpl;
 pub use log_stream::{LogStreamService, LogStreamServiceGrpc};
 pub use metrics::MetricsServiceImpl;
 pub use provider_management::ProviderManagementServiceImpl;
-pub use scheduled_job::ScheduledJobServiceImpl;
 pub use scheduler::SchedulerServiceImpl;
-pub use template_management::TemplateManagementServiceImpl;
 pub use worker::WorkerAgentServiceImpl;
 pub use worker_command_sender::GrpcWorkerCommandSender;
