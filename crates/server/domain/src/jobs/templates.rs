@@ -311,7 +311,7 @@ pub struct JobExecution {
     /// Job specification (potentially with parameters substituted)
     pub job_spec: JobSpec,
     /// Current state of execution
-    pub state: ExecutionStatus,
+    pub state: JobExecutionStatus,
     /// Result of execution (if completed)
     pub result: Option<ExecutionResult>,
     /// When execution was queued
@@ -353,7 +353,7 @@ impl JobExecution {
             job_id: None,
             job_name,
             job_spec,
-            state: ExecutionStatus::Queued,
+            state: JobExecutionStatus::Queued,
             result: None,
             queued_at: Utc::now(),
             started_at: None,
@@ -466,15 +466,15 @@ impl JobExecution {
 
     /// Mark execution as started
     pub fn start(&mut self) {
-        self.state = ExecutionStatus::Running;
+        self.state = JobExecutionStatus::Running;
         self.started_at = Some(Utc::now());
     }
 
     /// Complete execution with result
     pub fn complete(&mut self, result: ExecutionResult) {
         self.state = match result.exit_code {
-            0 => ExecutionStatus::Succeeded,
-            _ => ExecutionStatus::Failed,
+            0 => JobExecutionStatus::Succeeded,
+            _ => JobExecutionStatus::Failed,
         };
         self.result = Some(result);
         self.completed_at = Some(Utc::now());
@@ -482,7 +482,7 @@ impl JobExecution {
 
     /// Mark execution as failed
     pub fn fail(&mut self, error_output: String, duration_ms: u64) {
-        self.state = ExecutionStatus::Failed;
+        self.state = JobExecutionStatus::Failed;
         self.result = Some(ExecutionResult {
             exit_code: -1,
             output_summary: "Failed".to_string(),
@@ -536,7 +536,7 @@ pub struct ScheduledJob {
     /// Last execution time
     pub last_execution_at: Option<DateTime<Utc>>,
     /// Status of last execution
-    pub last_execution_status: Option<ExecutionStatus>,
+    pub last_execution_status: Option<JobExecutionStatus>,
     /// Whether the scheduled job is enabled
     pub enabled: bool,
     /// Maximum consecutive failures before pausing
@@ -600,14 +600,14 @@ impl ScheduledJob {
 
     /// Mark execution as successful
     pub fn mark_success(&mut self) {
-        self.last_execution_status = Some(ExecutionStatus::Succeeded);
+        self.last_execution_status = Some(JobExecutionStatus::Succeeded);
         self.consecutive_failures = 0;
         self.updated_at = Utc::now();
     }
 
     /// Mark execution as failed
     pub fn mark_failed(&mut self) {
-        self.last_execution_status = Some(ExecutionStatus::Failed);
+        self.last_execution_status = Some(JobExecutionStatus::Failed);
         self.consecutive_failures += 1;
         self.updated_at = Utc::now();
 
@@ -662,7 +662,7 @@ impl ScheduledJob {
 
 /// Status of a job execution
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ExecutionStatus {
+pub enum JobExecutionStatus {
     /// Execution is queued
     Queued,
     /// Execution is running
@@ -1039,17 +1039,17 @@ pub trait JobTemplateParameterRepository: Send + Sync {
     async fn delete_by_template_id(&self, template_id: &JobTemplateId) -> Result<()>;
 }
 
-/// Helper to map JobState to ExecutionStatus
-fn map_job_state_to_execution_status(state: &crate::shared_kernel::JobState) -> ExecutionStatus {
+/// Helper to map JobState to JobExecutionStatus
+fn map_job_state_to_execution_status(state: &crate::shared_kernel::JobState) -> JobExecutionStatus {
     match state {
-        crate::shared_kernel::JobState::Pending => ExecutionStatus::Queued,
-        crate::shared_kernel::JobState::Assigned => ExecutionStatus::Queued,
-        crate::shared_kernel::JobState::Scheduled => ExecutionStatus::Queued,
-        crate::shared_kernel::JobState::Running => ExecutionStatus::Running,
-        crate::shared_kernel::JobState::Succeeded => ExecutionStatus::Succeeded,
-        crate::shared_kernel::JobState::Failed => ExecutionStatus::Failed,
-        crate::shared_kernel::JobState::Cancelled => ExecutionStatus::Failed,
-        crate::shared_kernel::JobState::Timeout => ExecutionStatus::Failed,
+        crate::shared_kernel::JobState::Pending => JobExecutionStatus::Queued,
+        crate::shared_kernel::JobState::Assigned => JobExecutionStatus::Queued,
+        crate::shared_kernel::JobState::Scheduled => JobExecutionStatus::Queued,
+        crate::shared_kernel::JobState::Running => JobExecutionStatus::Running,
+        crate::shared_kernel::JobState::Succeeded => JobExecutionStatus::Succeeded,
+        crate::shared_kernel::JobState::Failed => JobExecutionStatus::Failed,
+        crate::shared_kernel::JobState::Cancelled => JobExecutionStatus::Failed,
+        crate::shared_kernel::JobState::Timeout => JobExecutionStatus::Failed,
     }
 }
 

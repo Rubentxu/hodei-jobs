@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "assert_matches",
  "async-stream",
@@ -1442,7 +1442,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-cli"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-application"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-bin"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-domain"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-infrastructure"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-interface"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-shared"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-application"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-bin"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "hodei-jobs",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-domain"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "hodei-jobs",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-infrastructure"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "chrono",
