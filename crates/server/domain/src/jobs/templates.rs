@@ -248,6 +248,811 @@ pub trait JobTemplateRepository: Send + Sync {
     async fn delete(&self, id: &JobTemplateId) -> Result<()>;
 }
 
+/// Type of trigger for a job execution
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TriggerType {
+    /// Manual trigger from UI/API
+    Manual,
+    /// Scheduled trigger via cron
+    Scheduled,
+    /// Triggered via API
+    Api,
+    /// Triggered via webhook
+    Webhook,
+    /// Triggered as a retry
+    Retry,
+}
+
+/// Result of a job execution
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionResult {
+    /// Exit code from the job
+    pub exit_code: i32,
+    /// Summary of output
+    pub output_summary: String,
+    /// Error output if any
+    pub error_output: String,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+}
+
+/// Snapshot of resource usage during execution
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResourceUsageSnapshot {
+    /// Peak CPU usage percentage
+    pub peak_cpu_percent: f64,
+    /// Peak memory usage in MB
+    pub peak_memory_mb: u64,
+    /// Average CPU usage percentage
+    pub avg_cpu_percent: f64,
+    /// Average memory usage in MB
+    pub avg_memory_mb: u64,
+    /// Disk I/O in bytes
+    pub disk_io_bytes: u64,
+    /// Network I/O in bytes
+    pub network_io_bytes: u64,
+}
+
+/// Represents an execution instance of a job template
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobExecution {
+    /// Unique identifier for this execution
+    pub id: Uuid,
+    /// Sequential execution number for this template
+    pub execution_number: u64,
+    /// Template that was executed
+    pub template_id: JobTemplateId,
+    /// Version of the template at execution time
+    pub template_version: u32,
+    /// Job created from this execution
+    pub job_id: Option<JobId>,
+    /// Human-readable job name
+    pub job_name: String,
+    /// Job specification (potentially with parameters substituted)
+    pub job_spec: JobSpec,
+    /// Current state of execution
+    pub state: ExecutionStatus,
+    /// Result of execution (if completed)
+    pub result: Option<ExecutionResult>,
+    /// When execution was queued
+    pub queued_at: DateTime<Utc>,
+    /// When execution started
+    pub started_at: Option<DateTime<Utc>>,
+    /// When execution completed
+    pub completed_at: Option<DateTime<Utc>>,
+    /// What triggered this execution
+    pub triggered_by: TriggerType,
+    /// ID of scheduled job if triggered by scheduler
+    pub scheduled_job_id: Option<Uuid>,
+    /// User who triggered (if manual/API)
+    pub triggered_by_user: Option<String>,
+    /// Parameters used for this execution
+    pub parameters: HashMap<String, String>,
+    /// Resource usage snapshot
+    pub resource_usage: Option<ResourceUsageSnapshot>,
+    /// Additional metadata
+    pub metadata: HashMap<String, String>,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+}
+
+impl JobExecution {
+    /// Create a new execution from a template
+    pub fn new(
+        template: &JobTemplate,
+        execution_number: u64,
+        job_name: String,
+        triggered_by: TriggerType,
+    ) -> Self {
+        let job_spec = template.spec.clone();
+        Self {
+            id: Uuid::new_v4(),
+            execution_number,
+            template_id: template.id.clone(),
+            template_version: template.version,
+            job_id: None,
+            job_name,
+            job_spec,
+            state: ExecutionStatus::Queued,
+            result: None,
+            queued_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            triggered_by,
+            scheduled_job_id: None,
+            triggered_by_user: None,
+            parameters: HashMap::new(),
+            resource_usage: None,
+            metadata: HashMap::new(),
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a JobExecution from an existing Job
+    pub fn from_job(
+        job: &Job,
+        template_id: JobTemplateId,
+        template_version: u32,
+        execution_number: u64,
+    ) -> Self {
+        let job_name = job
+            .metadata()
+            .get("job_name")
+            .cloned()
+            .unwrap_or_else(|| format!("job-{}", &job.id));
+
+        let triggered_by = if job.metadata().contains_key("scheduled_job_id") {
+            TriggerType::Scheduled
+        } else if job.metadata().contains_key("retry_of") {
+            TriggerType::Retry
+        } else {
+            TriggerType::Manual
+        };
+
+        let scheduled_job_id = job
+            .metadata()
+            .get("scheduled_job_id")
+            .and_then(|s| Uuid::parse_str(s).ok());
+
+        let triggered_by_user = job.metadata().get("triggered_by_user").cloned();
+
+        Self {
+            id: Uuid::new_v4(),
+            execution_number,
+            template_id,
+            template_version,
+            job_id: Some(job.id.clone()),
+            job_name,
+            job_spec: job.spec.clone(),
+            state: map_job_state_to_execution_status(job.state()),
+            result: job.result().map(|r| match r {
+                crate::shared_kernel::JobResult::Success {
+                    exit_code,
+                    output,
+                    error_output,
+                } => ExecutionResult {
+                    exit_code: *exit_code,
+                    output_summary: output.clone(),
+                    error_output: error_output.clone(),
+                    duration_ms: job
+                        .execution_duration()
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                },
+                crate::shared_kernel::JobResult::Failed {
+                    exit_code,
+                    error_message,
+                    error_output,
+                } => ExecutionResult {
+                    exit_code: *exit_code,
+                    output_summary: error_message.clone(),
+                    error_output: error_output.clone(),
+                    duration_ms: job
+                        .execution_duration()
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                },
+                crate::shared_kernel::JobResult::Cancelled => ExecutionResult {
+                    exit_code: -1,
+                    output_summary: "Cancelled".to_string(),
+                    error_output: "".to_string(),
+                    duration_ms: job
+                        .execution_duration()
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                },
+                crate::shared_kernel::JobResult::Timeout => ExecutionResult {
+                    exit_code: -2,
+                    output_summary: "Timeout".to_string(),
+                    error_output: "".to_string(),
+                    duration_ms: job
+                        .execution_duration()
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                },
+            }),
+            queued_at: *job.created_at(),
+            started_at: job.started_at().cloned(),
+            completed_at: job.completed_at().cloned(),
+            triggered_by,
+            scheduled_job_id,
+            triggered_by_user,
+            parameters: HashMap::new(),
+            resource_usage: None,
+            metadata: job.metadata().clone(),
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Mark execution as started
+    pub fn start(&mut self) {
+        self.state = ExecutionStatus::Running;
+        self.started_at = Some(Utc::now());
+    }
+
+    /// Complete execution with result
+    pub fn complete(&mut self, result: ExecutionResult) {
+        self.state = match result.exit_code {
+            0 => ExecutionStatus::Succeeded,
+            _ => ExecutionStatus::Failed,
+        };
+        self.result = Some(result);
+        self.completed_at = Some(Utc::now());
+    }
+
+    /// Mark execution as failed
+    pub fn fail(&mut self, error_output: String, duration_ms: u64) {
+        self.state = ExecutionStatus::Failed;
+        self.result = Some(ExecutionResult {
+            exit_code: -1,
+            output_summary: "Failed".to_string(),
+            error_output,
+            duration_ms,
+        });
+        self.completed_at = Some(Utc::now());
+    }
+
+    /// Get duration of execution
+    pub fn duration_ms(&self) -> Option<u64> {
+        if let (Some(start), Some(end)) = (self.started_at, self.completed_at) {
+            let duration = end.signed_duration_since(start);
+            Some(duration.num_milliseconds() as u64)
+        } else {
+            None
+        }
+    }
+}
+
+/// Status of a scheduled job
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScheduledJobStatus {
+    /// Scheduled job is active and will run
+    Enabled,
+    /// Scheduled job is paused
+    Disabled,
+    /// Scheduled job has encountered errors
+    Error,
+    /// Scheduled job is temporarily paused due to failures
+    Paused,
+}
+
+/// Represents a cron-scheduled job
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledJob {
+    /// Unique identifier
+    pub id: Uuid,
+    /// Human-readable name
+    pub name: String,
+    /// Description of the scheduled job
+    pub description: Option<String>,
+    /// Template to execute
+    pub template_id: JobTemplateId,
+    /// Cron expression for scheduling
+    pub cron_expression: String,
+    /// Timezone for cron expression
+    pub timezone: String,
+    /// Next execution time (calculated)
+    pub next_execution_at: DateTime<Utc>,
+    /// Last execution time
+    pub last_execution_at: Option<DateTime<Utc>>,
+    /// Status of last execution
+    pub last_execution_status: Option<ExecutionStatus>,
+    /// Whether the scheduled job is enabled
+    pub enabled: bool,
+    /// Maximum consecutive failures before pausing
+    pub max_consecutive_failures: u32,
+    /// Current consecutive failure count
+    pub consecutive_failures: u32,
+    /// Whether to pause on failure
+    pub pause_on_failure: bool,
+    /// Default parameters for job executions
+    pub parameters: HashMap<String, String>,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp
+    pub updated_at: DateTime<Utc>,
+    /// User who created the scheduled job
+    pub created_by: Option<String>,
+}
+
+impl ScheduledJob {
+    /// Create a new scheduled job
+    pub fn new(
+        name: String,
+        template_id: JobTemplateId,
+        cron_expression: String,
+        timezone: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            name,
+            description: None,
+            template_id,
+            cron_expression,
+            timezone,
+            next_execution_at: now,
+            last_execution_at: None,
+            last_execution_status: None,
+            enabled: true,
+            max_consecutive_failures: 3,
+            consecutive_failures: 0,
+            pause_on_failure: false,
+            parameters: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+            created_by: None,
+        }
+    }
+
+    /// Check if the job should run now
+    pub fn should_run_now(&self, now: DateTime<Utc>) -> bool {
+        self.enabled && now >= self.next_execution_at
+    }
+
+    /// Mark that the job has been triggered
+    pub fn mark_triggered(&mut self) {
+        self.last_execution_at = Some(Utc::now());
+        self.consecutive_failures = 0;
+        // Note: next_execution_at should be calculated by the scheduler service
+        // based on the cron expression
+    }
+
+    /// Mark execution as successful
+    pub fn mark_success(&mut self) {
+        self.last_execution_status = Some(ExecutionStatus::Succeeded);
+        self.consecutive_failures = 0;
+        self.updated_at = Utc::now();
+    }
+
+    /// Mark execution as failed
+    pub fn mark_failed(&mut self) {
+        self.last_execution_status = Some(ExecutionStatus::Failed);
+        self.consecutive_failures += 1;
+        self.updated_at = Utc::now();
+
+        // Pause if max consecutive failures reached and pause_on_failure is true
+        if self.pause_on_failure && self.consecutive_failures >= self.max_consecutive_failures {
+            self.enabled = false;
+        }
+    }
+
+    /// Disable the scheduled job
+    pub fn disable(&mut self) {
+        self.enabled = false;
+        self.updated_at = Utc::now();
+    }
+
+    /// Enable the scheduled job
+    pub fn enable(&mut self) {
+        self.enabled = true;
+        self.updated_at = Utc::now();
+    }
+
+    /// Set description
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Add default parameter
+    pub fn with_parameter(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.parameters.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set created_by
+    pub fn with_created_by(mut self, user: impl Into<String>) -> Self {
+        self.created_by = Some(user.into());
+        self
+    }
+
+    /// Set max consecutive failures
+    pub fn with_max_consecutive_failures(mut self, max_failures: u32) -> Self {
+        self.max_consecutive_failures = max_failures;
+        self
+    }
+
+    /// Set pause on failure
+    pub fn with_pause_on_failure(mut self, pause: bool) -> Self {
+        self.pause_on_failure = pause;
+        self
+    }
+}
+
+/// Status of a job execution
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionStatus {
+    /// Execution is queued
+    Queued,
+    /// Execution is running
+    Running,
+    /// Execution succeeded
+    Succeeded,
+    /// Execution failed
+    Failed,
+    /// Execution encountered an error
+    Error,
+}
+
+/// Type of a template parameter
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParameterType {
+    /// String parameter
+    String,
+    /// Number parameter
+    Number,
+    /// Boolean parameter
+    Boolean,
+    /// Choice parameter (enum)
+    Choice,
+    /// Secret parameter (password, token, etc.)
+    Secret,
+}
+
+/// Represents a parameter for a job template
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobTemplateParameter {
+    /// Unique identifier
+    pub id: Uuid,
+    /// Template this parameter belongs to
+    pub template_id: JobTemplateId,
+    /// Parameter name
+    pub name: String,
+    /// Type of the parameter
+    pub parameter_type: ParameterType,
+    /// Description of the parameter
+    pub description: String,
+    /// Whether this parameter is required
+    pub required: bool,
+    /// Default value (if any)
+    pub default_value: Option<String>,
+    /// Validation pattern (regex) for string parameters
+    pub validation_pattern: Option<String>,
+    /// Minimum value for number parameters
+    pub min_value: Option<f64>,
+    /// Maximum value for number parameters
+    pub max_value: Option<f64>,
+    /// Allowed choices for choice parameters
+    pub choices: Vec<String>,
+    /// Display order in UI
+    pub display_order: u32,
+    /// Whether this is a secret parameter
+    pub secret: bool,
+}
+
+impl JobTemplateParameter {
+    /// Create a new parameter
+    pub fn new(template_id: JobTemplateId, name: String, parameter_type: ParameterType) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            template_id,
+            name,
+            parameter_type,
+            description: String::new(),
+            required: false,
+            default_value: None,
+            validation_pattern: None,
+            min_value: None,
+            max_value: None,
+            choices: Vec::new(),
+            display_order: 0,
+            secret: false,
+        }
+    }
+
+    /// Validate a value against this parameter's constraints
+    pub fn validate(&self, value: &str) -> crate::shared_kernel::Result<()> {
+        // Required check
+        if self.required && (value.is_empty() || value.trim().is_empty()) {
+            return Err(ValidationError::Required {
+                parameter_name: self.name.clone(),
+            }
+            .into());
+        }
+
+        // If value is empty and not required, it's valid
+        if value.is_empty() {
+            return Ok(());
+        }
+
+        // Type-specific validation
+        match self.parameter_type {
+            ParameterType::String => {
+                // Validate pattern if present
+                if let Some(pattern) = &self.validation_pattern {
+                    let regex = ::regex::Regex::new(pattern).map_err(|_| {
+                        ValidationError::InvalidPattern {
+                            pattern: pattern.clone(),
+                        }
+                    })?;
+
+                    if !regex.is_match(value) {
+                        return Err(ValidationError::PatternMismatch {
+                            parameter_name: self.name.clone(),
+                            value: value.to_string(),
+                        }
+                        .into());
+                    }
+                }
+            }
+            ParameterType::Number => {
+                // Parse as number
+                let num: std::result::Result<f64, _> = value.parse();
+                match num {
+                    Ok(parsed) => {
+                        // Range validation
+                        if let Some(min) = self.min_value {
+                            if parsed < min {
+                                return Err(ValidationError::OutOfRange {
+                                    parameter_name: self.name.clone(),
+                                    value: value.to_string(),
+                                    min: Some(min),
+                                    max: self.max_value,
+                                }
+                                .into());
+                            }
+                        }
+
+                        if let Some(max) = self.max_value {
+                            if parsed > max {
+                                return Err(ValidationError::OutOfRange {
+                                    parameter_name: self.name.clone(),
+                                    value: value.to_string(),
+                                    min: self.min_value,
+                                    max: Some(max),
+                                }
+                                .into());
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        return Err(ValidationError::InvalidType {
+                            parameter_name: self.name.clone(),
+                            expected: "number".to_string(),
+                            actual: value.to_string(),
+                        }
+                        .into());
+                    }
+                }
+            }
+            ParameterType::Boolean => {
+                // Validate as boolean
+                if value != "true" && value != "false" {
+                    return Err(ValidationError::InvalidType {
+                        parameter_name: self.name.clone(),
+                        expected: "boolean".to_string(),
+                        actual: value.to_string(),
+                    }
+                    .into());
+                }
+            }
+            ParameterType::Choice => {
+                // Validate against allowed choices
+                if !self.choices.contains(&value.to_string()) {
+                    return Err(ValidationError::InvalidChoice {
+                        parameter_name: self.name.clone(),
+                        value: value.to_string(),
+                        allowed_choices: self.choices.clone(),
+                    }
+                    .into());
+                }
+            }
+            ParameterType::Secret => {
+                // Secrets just need to be non-empty
+                if value.is_empty() {
+                    return Err(ValidationError::Required {
+                        parameter_name: self.name.clone(),
+                    }
+                    .into());
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Validation error for template parameters
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ValidationError {
+    /// Required parameter is missing
+    Required { parameter_name: String },
+    /// Invalid type
+    InvalidType {
+        parameter_name: String,
+        expected: String,
+        actual: String,
+    },
+    /// Value out of range
+    OutOfRange {
+        parameter_name: String,
+        value: String,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    /// Invalid choice
+    InvalidChoice {
+        parameter_name: String,
+        value: String,
+        allowed_choices: Vec<String>,
+    },
+    /// Pattern mismatch
+    PatternMismatch {
+        parameter_name: String,
+        value: String,
+    },
+    /// Invalid regex pattern
+    InvalidPattern { pattern: String },
+}
+
+impl From<ValidationError> for crate::shared_kernel::DomainError {
+    fn from(error: ValidationError) -> Self {
+        match error {
+            ValidationError::Required { parameter_name } => {
+                crate::shared_kernel::DomainError::TemplateParameterValidationError {
+                    message: format!("Required parameter '{}' is missing", parameter_name),
+                }
+            }
+            ValidationError::InvalidType {
+                parameter_name,
+                expected,
+                actual,
+            } => crate::shared_kernel::DomainError::TemplateParameterValidationError {
+                message: format!(
+                    "Parameter '{}' expects {} but got {}",
+                    parameter_name, expected, actual
+                ),
+            },
+            ValidationError::OutOfRange {
+                parameter_name,
+                value,
+                min,
+                max,
+            } => {
+                let range_str = match (min, max) {
+                    (Some(min), Some(max)) => format!("between {} and {}", min, max),
+                    (Some(min), None) => format!(">= {}", min),
+                    (None, Some(max)) => format!("<= {}", max),
+                    (None, None) => "no range".to_string(),
+                };
+                crate::shared_kernel::DomainError::TemplateParameterValidationError {
+                    message: format!(
+                        "Parameter '{}' value '{}' is out of range {}",
+                        parameter_name, value, range_str
+                    ),
+                }
+            }
+            ValidationError::InvalidChoice {
+                parameter_name,
+                value,
+                allowed_choices,
+            } => crate::shared_kernel::DomainError::TemplateParameterValidationError {
+                message: format!(
+                    "Parameter '{}' value '{}' is not in allowed choices: {:?}",
+                    parameter_name, value, allowed_choices
+                ),
+            },
+            ValidationError::PatternMismatch {
+                parameter_name,
+                value,
+            } => crate::shared_kernel::DomainError::TemplateParameterValidationError {
+                message: format!(
+                    "Parameter '{}' value '{}' does not match validation pattern",
+                    parameter_name, value
+                ),
+            },
+            ValidationError::InvalidPattern { pattern } => {
+                crate::shared_kernel::DomainError::TemplateParameterValidationError {
+                    message: format!("Invalid validation pattern: {}", pattern),
+                }
+            }
+        }
+    }
+}
+
+/// Repository trait for JobExecutions
+#[async_trait]
+pub trait JobExecutionRepository: Send + Sync {
+    /// Save a new execution
+    async fn save(&self, execution: &JobExecution) -> Result<()>;
+
+    /// Update an existing execution
+    async fn update(&self, execution: &JobExecution) -> Result<()>;
+
+    /// Find execution by ID
+    async fn find_by_id(&self, id: &Uuid) -> Result<Option<JobExecution>>;
+
+    /// Find executions by template ID
+    async fn find_by_template_id(
+        &self,
+        template_id: &JobTemplateId,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<JobExecution>, usize)>;
+
+    /// Find executions by job ID
+    async fn find_by_job_id(&self, job_id: &JobId) -> Result<Option<JobExecution>>;
+
+    /// Find executions by scheduled job ID
+    async fn find_by_scheduled_job_id(
+        &self,
+        scheduled_job_id: &Uuid,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<JobExecution>, usize)>;
+
+    /// Get the next execution number for a template
+    async fn get_next_execution_number(&self, template_id: &JobTemplateId) -> Result<u64>;
+
+    /// Delete executions older than a date
+    async fn delete_older_than(&self, date: &DateTime<Utc>) -> Result<u64>;
+}
+
+/// Repository trait for ScheduledJobs
+#[async_trait]
+pub trait ScheduledJobRepository: Send + Sync {
+    /// Save a new scheduled job
+    async fn save(&self, scheduled_job: &ScheduledJob) -> Result<()>;
+
+    /// Update an existing scheduled job
+    async fn update(&self, scheduled_job: &ScheduledJob) -> Result<()>;
+
+    /// Find scheduled job by ID
+    async fn find_by_id(&self, id: &Uuid) -> Result<Option<ScheduledJob>>;
+
+    /// Find scheduled jobs by template ID
+    async fn find_by_template_id(&self, template_id: &JobTemplateId) -> Result<Vec<ScheduledJob>>;
+
+    /// List all enabled scheduled jobs
+    async fn list_enabled(&self) -> Result<Vec<ScheduledJob>>;
+
+    /// Find scheduled jobs that should run now
+    async fn find_ready_to_run(&self, now: &DateTime<Utc>) -> Result<Vec<ScheduledJob>>;
+
+    /// Delete scheduled job
+    async fn delete(&self, id: &Uuid) -> Result<()>;
+}
+
+/// Repository trait for JobTemplateParameters
+#[async_trait]
+pub trait JobTemplateParameterRepository: Send + Sync {
+    /// Save a new parameter
+    async fn save(&self, parameter: &JobTemplateParameter) -> Result<()>;
+
+    /// Update an existing parameter
+    async fn update(&self, parameter: &JobTemplateParameter) -> Result<()>;
+
+    /// Find parameter by ID
+    async fn find_by_id(&self, id: &Uuid) -> Result<Option<JobTemplateParameter>>;
+
+    /// Find parameters by template ID
+    async fn find_by_template_id(
+        &self,
+        template_id: &JobTemplateId,
+    ) -> Result<Vec<JobTemplateParameter>>;
+
+    /// Delete parameter
+    async fn delete(&self, id: &Uuid) -> Result<()>;
+
+    /// Delete all parameters for a template
+    async fn delete_by_template_id(&self, template_id: &JobTemplateId) -> Result<()>;
+}
+
+/// Helper to map JobState to ExecutionStatus
+fn map_job_state_to_execution_status(state: &crate::shared_kernel::JobState) -> ExecutionStatus {
+    match state {
+        crate::shared_kernel::JobState::Pending => ExecutionStatus::Queued,
+        crate::shared_kernel::JobState::Assigned => ExecutionStatus::Queued,
+        crate::shared_kernel::JobState::Scheduled => ExecutionStatus::Queued,
+        crate::shared_kernel::JobState::Running => ExecutionStatus::Running,
+        crate::shared_kernel::JobState::Succeeded => ExecutionStatus::Succeeded,
+        crate::shared_kernel::JobState::Failed => ExecutionStatus::Failed,
+        crate::shared_kernel::JobState::Cancelled => ExecutionStatus::Failed,
+        crate::shared_kernel::JobState::Timeout => ExecutionStatus::Failed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

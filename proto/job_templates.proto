@@ -1,0 +1,267 @@
+// Job Templates Service - Template management and execution
+syntax = "proto3";
+
+package hodei.job;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Job Template Definition
+message JobTemplate {
+    string template_id = 1;
+    string name = 2;
+    string description = 3;
+    JobSpec spec = 4;
+    string status = 5; // ACTIVE, DISABLED, ARCHIVED
+    uint32 version = 6;
+    map<string, string> labels = 7;
+    google.protobuf.Timestamp created_at = 8;
+    google.protobuf.Timestamp updated_at = 9;
+    string created_by = 10;
+    uint64 run_count = 11;
+    uint64 success_count = 12;
+    uint64 failure_count = 13;
+}
+
+// Job Specification
+message JobSpec {
+    string command = 1;
+    repeated string arguments = 2;
+    map<string, string> environment = 3;
+    repeated ArtifactSource inputs = 4;
+    repeated ArtifactDest outputs = 5;
+    repeated Constraint constraints = 6;
+    ResourceRequirements resources = 7;
+    uint64 timeout_ms = 8;
+    string image = 9;
+    string working_dir = 10;
+    string stdin = 11;
+    JobPreferences preferences = 12;
+}
+
+// Artifact Source/Destination
+message ArtifactSource {
+    string url = 1;
+    string dest_path = 2;
+}
+
+message ArtifactDest {
+    string src_path = 1;
+    string url = 2;
+}
+
+// Constraint
+message Constraint {
+    string key = 1;
+    string operator = 2; // EQ, NE, GT, LT, IN, NOTIN
+    string value = 3;
+}
+
+// Resource Requirements
+message ResourceRequirements {
+    float cpu_cores = 1;
+    uint64 memory_mb = 2;
+    uint64 storage_mb = 3;
+    bool gpu_required = 4;
+    string architecture = 5;
+}
+
+// Job Preferences
+message JobPreferences {
+    string preferred_provider = 1;
+    string preferred_region = 2;
+    double max_budget = 3;
+    string priority = 4; // LOW, NORMAL, HIGH, CRITICAL
+    bool allow_retry = 5;
+    map<string, string> required_labels = 6;
+    map<string, string> required_annotations = 7;
+}
+
+// Template Parameter
+message JobTemplateParameter {
+    string parameter_id = 1;
+    string template_id = 2;
+    string name = 3;
+    string parameter_type = 4; // STRING, NUMBER, BOOLEAN, CHOICE, SECRET
+    string description = 5;
+    bool required = 6;
+    string default_value = 7;
+    string validation_pattern = 8;
+    double min_value = 9;
+    double max_value = 10;
+    repeated string choices = 11;
+    uint32 display_order = 12;
+    bool secret = 13;
+}
+
+// Job Execution
+message JobExecution {
+    string execution_id = 1;
+    uint64 execution_number = 2;
+    string template_id = 3;
+    uint32 template_version = 4;
+    string job_id = 5;
+    string job_name = 6;
+    JobSpec job_spec = 7;
+    string state = 8; // QUEUED, RUNNING, SUCCEEDED, FAILED, ERROR
+    ExecutionResult result = 9;
+    google.protobuf.Timestamp queued_at = 10;
+    google.protobuf.Timestamp started_at = 11;
+    google.protobuf.Timestamp completed_at = 12;
+    string triggered_by = 13; // MANUAL, SCHEDULED, API, WEBHOOK, RETRY
+    string scheduled_job_id = 14;
+    string triggered_by_user = 15;
+    map<string, string> parameters = 16;
+    ResourceUsageSnapshot resource_usage = 17;
+    map<string, string> metadata = 18;
+    google.protobuf.Timestamp created_at = 19;
+}
+
+// Execution Result
+message ExecutionResult {
+    int32 exit_code = 1;
+    string output_summary = 2;
+    string error_output = 3;
+    uint64 duration_ms = 4;
+}
+
+// Resource Usage Snapshot
+message ResourceUsageSnapshot {
+    double peak_cpu_percent = 1;
+    uint64 peak_memory_mb = 2;
+    double avg_cpu_percent = 3;
+    uint64 avg_memory_mb = 4;
+    uint64 disk_io_bytes = 5;
+    uint64 network_io_bytes = 6;
+}
+
+// Create Template Request
+message CreateTemplateRequest {
+    string name = 1;
+    string description = 2;
+    JobSpec spec = 3;
+    map<string, string> labels = 4;
+    string created_by = 5;
+    repeated JobTemplateParameter parameters = 6;
+}
+
+// Create Template Response
+message CreateTemplateResponse {
+    JobTemplate template = 1;
+}
+
+// Update Template Request
+message UpdateTemplateRequest {
+    string template_id = 1;
+    string description = 2;
+    JobSpec spec = 3;
+    map<string, string> labels = 4;
+}
+
+// Update Template Response
+message UpdateTemplateResponse {
+    JobTemplate template = 1;
+}
+
+// Get Template Request
+message GetTemplateRequest {
+    string template_id = 1;
+}
+
+// Get Template Response
+message GetTemplateResponse {
+    JobTemplate template = 1;
+}
+
+// List Templates Request
+message ListTemplatesRequest {
+    string status = 1; // Optional filter by status
+    string label_selector = 2; // Optional label selector
+    uint32 page_size = 3;
+    string page_token = 4;
+}
+
+// List Templates Response
+message ListTemplatesResponse {
+    repeated JobTemplate templates = 1;
+    string next_page_token = 2;
+}
+
+// Delete Template Request
+message DeleteTemplateRequest {
+    string template_id = 1;
+    bool force = 2; // Force delete even if there are executions
+}
+
+// Delete Template Response
+message DeleteTemplateResponse {
+    bool success = 1;
+}
+
+// Trigger Run Request
+message TriggerRunRequest {
+    string template_id = 1;
+    string job_name = 2;
+    string triggered_by_user = 3;
+    map<string, string> parameters = 4;
+    string triggered_by = 5; // MANUAL, API, WEBHOOK
+}
+
+// Trigger Run Response
+message TriggerRunResponse {
+    JobExecution execution = 1;
+}
+
+// Get Execution Request
+message GetExecutionRequest {
+    string execution_id = 1;
+}
+
+// Get Execution Response
+message GetExecutionResponse {
+    JobExecution execution = 1;
+}
+
+// List Executions Request
+message ListExecutionsRequest {
+    string template_id = 1;
+    string state = 2; // Optional filter by state
+    google.protobuf.Timestamp start_time = 3;
+    google.protobuf.Timestamp end_time = 4;
+    uint32 page_size = 5;
+    string page_token = 6;
+}
+
+// List Executions Response
+message ListExecutionsResponse {
+    repeated JobExecution executions = 1;
+    string next_page_token = 2;
+}
+
+// Template Management Service
+service TemplateManagementService {
+    // Create a new job template
+    rpc CreateTemplate(CreateTemplateRequest) returns (CreateTemplateResponse);
+
+    // Update an existing job template
+    rpc UpdateTemplate(UpdateTemplateRequest) returns (UpdateTemplateResponse);
+
+    // Get a job template by ID
+    rpc GetTemplate(GetTemplateRequest) returns (GetTemplateResponse);
+
+    // List job templates
+    rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+
+    // Delete a job template
+    rpc DeleteTemplate(DeleteTemplateRequest) returns (DeleteTemplateResponse);
+
+    // Trigger a job run from a template
+    rpc TriggerRun(TriggerRunRequest) returns (TriggerRunResponse);
+
+    // Get execution by ID
+    rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+
+    // List executions for a template
+    rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+}

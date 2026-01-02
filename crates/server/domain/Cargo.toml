@@ -27,6 +27,9 @@ dashmap = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
+# Template parameter validation
+regex = "1.10"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }

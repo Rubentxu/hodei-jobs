@@ -96,6 +96,9 @@ pub enum DomainError {
 
     #[error("Saga error: {message}")]
     SagaError { message: String },
+
+    #[error("Template parameter validation error: {message}")]
+    TemplateParameterValidationError { message: String },
 }
 
 impl From<sqlx::Error> for DomainError {

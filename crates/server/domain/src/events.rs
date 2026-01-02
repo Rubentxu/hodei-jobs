@@ -465,6 +465,162 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// EPIC-34: A new job template has been created
+    TemplateCreated {
+        /// ID of the template
+        template_id: String,
+        /// Template name
+        template_name: String,
+        /// Template version
+        version: u32,
+        /// User who created it
+        created_by: Option<String>,
+        /// Summary of the spec
+        spec_summary: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A job template has been updated
+    TemplateUpdated {
+        /// ID of the template
+        template_id: String,
+        /// Template name
+        template_name: String,
+        /// Old version
+        old_version: u32,
+        /// New version
+        new_version: u32,
+        /// Changes made
+        changes: Option<String>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A job template has been disabled
+    TemplateDisabled {
+        /// ID of the template
+        template_id: String,
+        /// Template name
+        template_name: String,
+        /// Version at time of disabling
+        version: u32,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A new run has been created from a template
+    TemplateRunCreated {
+        /// ID of the template
+        template_id: String,
+        /// Template name
+        template_name: String,
+        /// Execution ID
+        execution_id: String,
+        /// Job ID
+        job_id: Option<JobId>,
+        /// Job name
+        job_name: String,
+        /// Version of template used
+        template_version: u32,
+        /// Execution number
+        execution_number: u64,
+        /// What triggered this run
+        triggered_by: String,
+        /// User who triggered (if applicable)
+        triggered_by_user: Option<String>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A job execution has been recorded
+    ExecutionRecorded {
+        /// ID of the execution
+        execution_id: String,
+        /// Template ID
+        template_id: String,
+        /// Job ID
+        job_id: Option<JobId>,
+        /// Execution status
+        status: String,
+        /// Exit code (if completed)
+        exit_code: Option<i32>,
+        /// Duration in ms
+        duration_ms: Option<u64>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A scheduled job has been created
+    ScheduledJobCreated {
+        /// ID of the scheduled job
+        scheduled_job_id: String,
+        /// Name of the scheduled job
+        name: String,
+        /// Template ID
+        template_id: String,
+        /// Cron expression
+        cron_expression: String,
+        /// Timezone
+        timezone: String,
+        /// User who created it
+        created_by: Option<String>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A scheduled job has been triggered
+    ScheduledJobTriggered {
+        /// ID of the scheduled job
+        scheduled_job_id: String,
+        /// Name of the scheduled job
+        name: String,
+        /// Template ID
+        template_id: String,
+        /// Execution ID
+        execution_id: String,
+        /// Job ID
+        job_id: Option<JobId>,
+        /// When it was scheduled for
+        scheduled_for: DateTime<Utc>,
+        /// When it was actually triggered
+        triggered_at: DateTime<Utc>,
+        /// Parameters used
+        parameters: HashMap<String, String>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A scheduled job execution was missed
+    ScheduledJobMissed {
+        /// ID of the scheduled job
+        scheduled_job_id: String,
+        /// Name of the scheduled job
+        name: String,
+        /// When it should have run
+        scheduled_for: DateTime<Utc>,
+        /// When it was detected as missed
+        detected_at: DateTime<Utc>,
+        /// Reason for missing
+        reason: String,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
+    /// EPIC-34: A scheduled job encountered an error
+    ScheduledJobError {
+        /// ID of the scheduled job
+        scheduled_job_id: String,
+        /// Name of the scheduled job
+        name: String,
+        /// Error message
+        error_message: String,
+        /// Execution ID if available
+        execution_id: Option<String>,
+        occurred_at: DateTime<Utc>,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    },
 }
 
 /// Razón de limpieza de un worker efímero
@@ -886,7 +1042,16 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioningRequested { correlation_id, .. }
             | DomainEvent::ProviderSelected { correlation_id, .. }
             | DomainEvent::WorkerHeartbeat { correlation_id, .. }
-            | DomainEvent::WorkerSelfTerminated { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::WorkerSelfTerminated { correlation_id, .. }
+            | DomainEvent::TemplateCreated { correlation_id, .. }
+            | DomainEvent::TemplateUpdated { correlation_id, .. }
+            | DomainEvent::TemplateDisabled { correlation_id, .. }
+            | DomainEvent::TemplateRunCreated { correlation_id, .. }
+            | DomainEvent::ExecutionRecorded { correlation_id, .. }
+            | DomainEvent::ScheduledJobCreated { correlation_id, .. }
+            | DomainEvent::ScheduledJobTriggered { correlation_id, .. }
+            | DomainEvent::ScheduledJobMissed { correlation_id, .. }
+            | DomainEvent::ScheduledJobError { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -934,7 +1099,16 @@ impl DomainEvent {
             | DomainEvent::WorkerProvisioningRequested { actor, .. }
             | DomainEvent::ProviderSelected { actor, .. }
             | DomainEvent::WorkerHeartbeat { actor, .. }
-            | DomainEvent::WorkerSelfTerminated { actor, .. } => actor.clone(),
+            | DomainEvent::WorkerSelfTerminated { actor, .. }
+            | DomainEvent::TemplateCreated { actor, .. }
+            | DomainEvent::TemplateUpdated { actor, .. }
+            | DomainEvent::TemplateDisabled { actor, .. }
+            | DomainEvent::TemplateRunCreated { actor, .. }
+            | DomainEvent::ExecutionRecorded { actor, .. }
+            | DomainEvent::ScheduledJobCreated { actor, .. }
+            | DomainEvent::ScheduledJobTriggered { actor, .. }
+            | DomainEvent::ScheduledJobMissed { actor, .. }
+            | DomainEvent::ScheduledJobError { actor, .. } => actor.clone(),
         }
     }
 
@@ -987,6 +1161,17 @@ impl DomainEvent {
             DomainEvent::WorkerReady { ready_at, .. } => *ready_at,
             DomainEvent::WorkerStateUpdated { occurred_at, .. } => *occurred_at,
             DomainEvent::WorkerSelfTerminated { occurred_at, .. } => *occurred_at,
+            // EPIC-34: Template events
+            DomainEvent::TemplateCreated { occurred_at, .. } => *occurred_at,
+            DomainEvent::TemplateUpdated { occurred_at, .. } => *occurred_at,
+            DomainEvent::TemplateDisabled { occurred_at, .. } => *occurred_at,
+            DomainEvent::TemplateRunCreated { occurred_at, .. } => *occurred_at,
+            DomainEvent::ExecutionRecorded { occurred_at, .. } => *occurred_at,
+            // EPIC-34: Scheduling events
+            DomainEvent::ScheduledJobCreated { occurred_at, .. } => *occurred_at,
+            DomainEvent::ScheduledJobTriggered { occurred_at, .. } => *occurred_at,
+            DomainEvent::ScheduledJobMissed { occurred_at, .. } => *occurred_at,
+            DomainEvent::ScheduledJobError { occurred_at, .. } => *occurred_at,
         }
     }
 
@@ -1038,6 +1223,17 @@ impl DomainEvent {
             DomainEvent::WorkerHeartbeat { .. } => "WorkerHeartbeat",
             // Self-termination event
             DomainEvent::WorkerSelfTerminated { .. } => "WorkerSelfTerminated",
+            // EPIC-34: Template events
+            DomainEvent::TemplateCreated { .. } => "TemplateCreated",
+            DomainEvent::TemplateUpdated { .. } => "TemplateUpdated",
+            DomainEvent::TemplateDisabled { .. } => "TemplateDisabled",
+            DomainEvent::TemplateRunCreated { .. } => "TemplateRunCreated",
+            DomainEvent::ExecutionRecorded { .. } => "ExecutionRecorded",
+            // EPIC-34: Scheduling events
+            DomainEvent::ScheduledJobCreated { .. } => "ScheduledJobCreated",
+            DomainEvent::ScheduledJobTriggered { .. } => "ScheduledJobTriggered",
+            DomainEvent::ScheduledJobMissed { .. } => "ScheduledJobMissed",
+            DomainEvent::ScheduledJobError { .. } => "ScheduledJobError",
         }
     }
 
@@ -1096,6 +1292,25 @@ impl DomainEvent {
             DomainEvent::WorkerHeartbeat { worker_id, .. } => worker_id.to_string(),
             // Self-termination event
             DomainEvent::WorkerSelfTerminated { worker_id, .. } => worker_id.to_string(),
+            // EPIC-34: Template events
+            DomainEvent::TemplateCreated { template_id, .. } => template_id.clone(),
+            DomainEvent::TemplateUpdated { template_id, .. } => template_id.clone(),
+            DomainEvent::TemplateDisabled { template_id, .. } => template_id.clone(),
+            DomainEvent::TemplateRunCreated { template_id, .. } => template_id.clone(),
+            DomainEvent::ExecutionRecorded { template_id, .. } => template_id.clone(),
+            // EPIC-34: Scheduling events
+            DomainEvent::ScheduledJobCreated {
+                scheduled_job_id, ..
+            } => scheduled_job_id.clone(),
+            DomainEvent::ScheduledJobTriggered {
+                scheduled_job_id, ..
+            } => scheduled_job_id.clone(),
+            DomainEvent::ScheduledJobMissed {
+                scheduled_job_id, ..
+            } => scheduled_job_id.clone(),
+            DomainEvent::ScheduledJobError {
+                scheduled_job_id, ..
+            } => scheduled_job_id.clone(),
         }
     }
 }
