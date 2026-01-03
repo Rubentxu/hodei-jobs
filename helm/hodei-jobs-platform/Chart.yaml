@@ -24,11 +24,15 @@ dependencies:
     version: "12.x.x"
     repository: "https://charts.bitnami.com/bitnami"
     condition: postgresql.enabled
-  - name: redis
-    version: "17.x.x"
-    repository: "https://charts.bitnami.com/bitnami"
-    condition: redis.enabled
+  - name: nats
+    version: "1.x.x"
+    repository: "https://nats-io.github.io/k8s/helm"
+    condition: nats.enabled
   - name: prometheus
     version: "25.x.x"
     repository: "https://prometheus-community.github.io/helm-charts"
     condition: prometheus.enabled
+  - name: external-secrets
+    version: "0.9.x"
+    repository: "https://charts.external-secrets.io"
+    condition: externalSecrets.enabled

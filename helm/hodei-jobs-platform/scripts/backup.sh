@@ -1,6 +1,7 @@
 #!/bin/bash
 # Backup script for Hodei Job Platform
-# This script creates backups of PostgreSQL database and Redis data
+# This script creates backups of PostgreSQL database
+# Note: Redis is no longer used (replaced by NATS JetStream for event streaming)
 
 set -e
 
@@ -55,29 +56,6 @@ if kubectl get deployment -n "${NAMESPACE}" "${RELEASE_NAME}-postgresql" > /dev/
     fi
 else
     warn "PostgreSQL deployment not found, skipping database backup"
-fi
-
-# Backup Redis (if enabled)
-log "Backing up Redis data..."
-if kubectl get deployment -n "${NAMESPACE}" "${RELEASE_NAME}-redis-master" > /dev/null 2>&1; then
-    REDIS_POD=$(kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/name="${RELEASE_NAME}-redis-master" -o jsonpath='{.items[0].metadata.name}')
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    BACKUP_FILE="${BACKUP_DIR}/redis_${TIMESTAMP}.rdb"
-
-    kubectl exec -n "${NAMESPACE}" "${REDIS_POD}" -- redis-cli --rdb - > "${BACKUP_FILE}"
-
-    if [ -f "${BACKUP_FILE}" ]; then
-        log "Redis backup created: ${BACKUP_FILE}"
-
-        # Compress backup
-        gzip "${BACKUP_FILE}"
-        log "Redis backup compressed"
-    else
-        error "Failed to create Redis backup"
-        exit 1
-    fi
-else
-    warn "Redis deployment not found, skipping Redis backup"
 fi
 
 # Upload to S3 (if configured)

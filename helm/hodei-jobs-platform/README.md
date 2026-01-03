@@ -59,10 +59,6 @@ postgresql:
   auth:
     postgresPassword: "your-secure-password"
     database: "hodei_jobs"
-
-# Redis
-redis:
-  enabled: true
 ```
 
 ### Kubernetes Provider Configuration
@@ -291,7 +287,7 @@ securityContext:
 Network policies are enabled by default to restrict traffic:
 
 - Ingress: Only from ingress controller and same namespace
-- Egress: Only to DNS, PostgreSQL, Redis, and system namespaces
+- Egress: Only to DNS, PostgreSQL, NATS, and system namespaces
 
 ## Troubleshooting
 

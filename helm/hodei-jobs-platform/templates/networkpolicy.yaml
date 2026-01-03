@@ -47,14 +47,5 @@ spec:
     - protocol: TCP
       port: 5432
   {{- end }}
-  {{- if .Values.redis.enabled }}
-  - to:
-    - podSelector:
-        matchLabels:
-          app.kubernetes.io/name: {{ include "hodei-jobs-platform.fullname" . }}-redis-master
-    ports:
-    - protocol: TCP
-      port: 6379
-  {{- end }}
   {{- end }}
 {{- end }}

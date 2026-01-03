@@ -1,6 +1,7 @@
 #!/bin/bash
 # Restore script for Hodei Job Platform
-# This script restores backups of PostgreSQL database and Redis data
+# This script restores backups of PostgreSQL database
+# Note: Redis is no longer used (replaced by NATS JetStream for event streaming)
 
 set -e
 
@@ -118,10 +119,8 @@ if [[ "$BACKUP_FILE" == *.gz ]]; then
     log "Backup file decompressed"
 elif [[ "$BACKUP_FILE" == *.sql ]]; then
     BACKUP_TYPE="postgres"
-elif [[ "$BACKUP_FILE" == *.rdb ]]; then
-    BACKUP_TYPE="redis"
 else
-    error "Unknown backup file format. Expected .sql, .gz, or .rdb"
+    error "Unknown backup file format. Expected .sql or .gz"
     exit 1
 fi
 
@@ -156,35 +155,6 @@ if [[ "$BACKUP_TYPE" == "postgres" ]]; then
 
     log "PostgreSQL restore completed successfully"
 
-# Restore Redis
-elif [[ "$BACKUP_TYPE" == "redis" ]]; then
-    log "Restoring Redis data..."
-
-    if ! kubectl get deployment -n "${NAMESPACE}" "${RELEASE_NAME}-redis-master" > /dev/null 2>&1; then
-        error "Redis deployment not found in namespace ${NAMESPACE}"
-        exit 1
-    fi
-
-    REDIS_POD=$(kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/name="${RELEASE_NAME}-redis-master" -o jsonpath='{.items[0].metadata.name}')
-
-    warn "This will overwrite the existing Redis data. Are you sure? (yes/no)"
-    read -r confirmation
-    if [ "$confirmation" != "yes" ]; then
-        log "Restore cancelled by user"
-        exit 0
-    fi
-
-    log "Stopping Redis..."
-    kubectl exec -n "${NAMESPACE}" "${REDIS_POD}" -- redis-cli SHUTDOWN || true
-
-    log "Restoring Redis data from backup..."
-    kubectl cp "${BACKUP_FILE}" "${NAMESPACE}/${REDIS_POD}:/data/dump.rdb"
-
-    log "Starting Redis..."
-    kubectl exec -n "${NAMESPACE}" "${REDIS_POD}" -- redis-server /etc/redis/redis.conf &
-
-    sleep 5
-    log "Redis restore completed successfully"
 else
     error "Unknown backup type: ${BACKUP_TYPE}"
     exit 1
