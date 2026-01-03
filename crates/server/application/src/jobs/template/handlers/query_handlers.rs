@@ -273,41 +273,29 @@ impl ValidateCronHandler {
 impl QueryHandler<ValidateCronQuery> for ValidateCronHandler {
     async fn handle(&self, query: ValidateCronQuery) -> Result<CronValidationResult> {
         use chrono::{DateTime, Utc};
-        // use cron::Schedule;
+        use std::str::FromStr;
 
-        // TODO: Implement cron validation when cron crate is configured
-        // match Schedule::from_expression(&query.cron_expression) {
-        //     Ok(schedule) => {
-        //         let now = Utc::now();
-        //         let next_executions: Vec<DateTime<Utc>> = schedule
-        //             .upcoming(chrono::TimeZone::with_system_tz)
-        //             .take(10)
-        //             .collect();
-        //
-        //         let next_execution = next_executions.first().cloned();
-        //
-        //         Ok(CronValidationResult {
-        //             valid: true,
-        //             error_message: None,
-        //             next_execution,
-        //             next_10_executions: next_executions,
-        //         })
-        //     }
-        //     Err(e) => Ok(CronValidationResult {
-        //         valid: false,
-        //         error_message: Some(e.to_string()),
-        //         next_execution: None,
-        //         next_10_executions: vec![],
-        //     }),
-        // }
+        match cron::Schedule::from_str(&query.cron_expression) {
+            Ok(schedule) => {
+                let now = Utc::now();
+                let next_executions: Vec<DateTime<Utc>> = schedule.upcoming(Utc).take(10).collect();
 
-        // Temporary implementation
-        Ok(CronValidationResult {
-            valid: true,
-            error_message: None,
-            next_execution: None,
-            next_10_executions: vec![],
-        })
+                let next_execution = next_executions.first().cloned();
+
+                Ok(CronValidationResult {
+                    valid: true,
+                    error_message: None,
+                    next_execution,
+                    next_10_executions: next_executions,
+                })
+            }
+            Err(e) => Ok(CronValidationResult {
+                valid: false,
+                error_message: Some(e.to_string()),
+                next_execution: None,
+                next_10_executions: vec![],
+            }),
+        }
     }
 }
 
