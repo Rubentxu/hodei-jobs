@@ -2,10 +2,12 @@
 //!
 //! Core orchestrator for executing sagas with automatic compensation.
 
-use crate::saga::{
-    Saga, SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository,
-    SagaState,
+use super::{
+    ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaError,
+    SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository, SagaState, SagaType,
 };
+use crate::shared_kernel::{JobId, ProviderId};
+use crate::workers::WorkerSpec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -222,6 +224,60 @@ where
             start_time.elapsed(),
             executed_steps as u32,
         ))
+    }
+
+    /// EPIC-42: Execute saga directly from context (for reactive processing)
+    async fn execute(&self, context: &SagaContext) -> Result<SagaExecutionResult, Self::Error> {
+        // Create the appropriate saga based on saga_type
+        let saga: Box<dyn Saga> = match context.saga_type {
+            SagaType::Provisioning => {
+                // Extract provider_id from metadata
+                let provider_id_str = context
+                    .metadata
+                    .get("provider_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let provider_id = if !provider_id_str.is_empty() {
+                    ProviderId::from_uuid(
+                        uuid::Uuid::parse_str(&provider_id_str)
+                            .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    ProviderId::new()
+                };
+
+                let spec = WorkerSpec::new(
+                    "hodei-jobs-worker:latest".to_string(),
+                    "http://localhost:50051".to_string(),
+                );
+
+                Box::new(ProvisioningSaga::new(spec, provider_id))
+            }
+            SagaType::Execution => {
+                let job_id_str = context
+                    .metadata
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let job_id = if !job_id_str.is_empty() {
+                    JobId(
+                        uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    JobId::new()
+                };
+
+                Box::new(ExecutionSaga::new(job_id))
+            }
+            SagaType::Recovery => Box::new(RecoverySaga::new(JobId::new(), JobId::new())),
+        };
+
+        // Execute with a clone of the context
+        self.execute_saga(&*saga, context.clone()).await
     }
 
     async fn get_saga(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error> {

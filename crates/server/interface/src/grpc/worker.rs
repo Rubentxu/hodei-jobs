@@ -3,6 +3,7 @@
 //! Implements the WorkerAgentService with:
 //! - Register RPC with OTP token authentication
 //! - WorkerStream bidirectional stream for Worker↔Server communication
+//! - Actor Model integration via WorkerSupervisorHandle (EPIC-42)
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use hodei_jobs::{
     AckMessage, LogEntry, RegisterWorkerRequest, RegisterWorkerResponse, SelfTerminateMessage,
@@ -23,6 +24,9 @@ use hodei_jobs::{
 use crate::grpc::interceptors::RequestContextExt;
 use crate::grpc::log_stream::LogStreamService;
 use chrono::Utc;
+use hodei_server_application::workers::actor::{
+    DisconnectionReason, WorkerActorState, WorkerMsg, WorkerSupervisorHandle,
+};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::iam::OtpToken;
@@ -55,12 +59,18 @@ struct InMemoryOtpState {
 ///
 /// Implementa el patrón Transactional Outbox para garantizar
 /// consistencia entre actualizaciones de estado y publicación de eventos.
+///
+/// EPIC-42: Soporta integración con WorkerSupervisorActor para eliminar
+/// contención de bloqueos mediante message-passing.
 #[derive(Clone)]
 pub struct WorkerAgentServiceImpl {
+    /// Legacy in-memory worker registry (used when Actor is disabled)
     workers: Arc<RwLock<HashMap<String, RegisteredWorker>>>,
+    /// Legacy OTP tokens storage (used when persistent store is not available)
     otp_tokens: Arc<RwLock<HashMap<String, InMemoryOtpState>>>,
-    /// Channel para enviar comandos a workers conectados
+    /// Legacy channel para enviar comandos a workers conectados
     worker_channels: Arc<RwLock<HashMap<String, mpsc::Sender<Result<ServerMessage, Status>>>>>,
+    /// Worker registry for persistent storage
     worker_registry: Option<Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>>,
     job_repository: Option<Arc<dyn hodei_server_domain::jobs::JobRepository>>,
     token_store: Option<Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>>,
@@ -70,6 +80,9 @@ pub struct WorkerAgentServiceImpl {
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
     /// Outbox Repository para patrón Transactional Outbox
     outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+    /// EPIC-42: WorkerSupervisorActor handle for lock-free worker management
+    /// When Some, worker operations are routed through the Actor
+    supervisor_handle: Option<WorkerSupervisorHandle>,
 }
 
 impl Default for WorkerAgentServiceImpl {
@@ -89,7 +102,41 @@ impl WorkerAgentServiceImpl {
             log_service: None,
             event_bus: None,
             outbox_repository: None,
+            supervisor_handle: None,
         }
+    }
+
+    /// EPIC-42: Create service with WorkerSupervisorActor integration
+    pub fn with_actor_supervisor(
+        worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
+        job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
+        token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
+        log_service: Arc<LogStreamService>,
+        event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
+        supervisor_handle: WorkerSupervisorHandle,
+    ) -> Self {
+        Self {
+            workers: Arc::new(RwLock::new(HashMap::new())),
+            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
+            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            worker_registry: Some(worker_registry),
+            job_repository: Some(job_repository),
+            token_store: Some(token_store),
+            log_service: Some(log_service),
+            event_bus: Some(event_bus),
+            outbox_repository: None,
+            supervisor_handle: Some(supervisor_handle),
+        }
+    }
+
+    /// EPIC-42: Check if Actor model is enabled
+    pub fn is_actor_enabled(&self) -> bool {
+        self.supervisor_handle.is_some()
+    }
+
+    /// EPIC-42: Get supervisor handle if available
+    pub fn supervisor_handle(&self) -> Option<&WorkerSupervisorHandle> {
+        self.supervisor_handle.as_ref()
     }
 
     pub fn with_registry(
@@ -106,6 +153,7 @@ impl WorkerAgentServiceImpl {
             log_service: None,
             event_bus: Some(event_bus),
             outbox_repository: None,
+            supervisor_handle: None,
         }
     }
 
@@ -124,6 +172,7 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            supervisor_handle: None,
         }
     }
 
@@ -168,6 +217,7 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            supervisor_handle: None,
         }
     }
 
@@ -188,6 +238,7 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            supervisor_handle: None,
         }
     }
 
@@ -210,6 +261,7 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: Some(outbox_repository),
+            supervisor_handle: None,
         }
     }
 
@@ -249,6 +301,9 @@ impl WorkerAgentServiceImpl {
 
     /// Handle worker registration using Transactional Outbox Pattern
     ///
+    /// EPIC-42: When WorkerSupervisorActor is enabled, route through the Actor
+    /// for lock-free worker management.
+    ///
     /// This method:
     /// 1. Updates worker state to Ready in registry
     /// 2. Inserts events into outbox table (if configured)
@@ -258,10 +313,32 @@ impl WorkerAgentServiceImpl {
     /// - WorkerStatusChanged: State transition to Ready
     /// - WorkerReady: Worker availability for job assignment
     async fn on_worker_registered(&self, worker_id: &str) -> Result<(), Status> {
+        let worker_id = Self::parse_worker_uuid(worker_id)?;
+
+        // EPIC-42: Route through Actor if enabled
+        if let Some(ref supervisor) = self.supervisor_handle {
+            debug!(
+                "EPIC-42: Routing worker registration through Actor for {}",
+                worker_id
+            );
+
+            // Send heartbeat through Actor to update status to Ready
+            if let Err(e) = supervisor.heartbeat(&worker_id).await {
+                // Log error but don't fail - legacy path is still valid
+                warn!(
+                    "EPIC-42: Failed to route through Actor, falling back to legacy: {:?}",
+                    e
+                );
+            } else {
+                debug!("EPIC-42: Worker registration routed through Actor successfully");
+                return Ok(());
+            }
+        }
+
+        // Legacy path: direct registry update
         let Some(registry) = self.worker_registry() else {
             return Ok(());
         };
-        let worker_id = Self::parse_worker_uuid(worker_id)?;
 
         // Worker may not exist in registry if it's registering directly without provisioning
         // This is valid for workers that connect independently (e.g., external workers)
@@ -696,10 +773,27 @@ impl WorkerAgentServiceImpl {
     }
 
     async fn on_worker_heartbeat(&self, worker_id: &str) -> Result<(), Status> {
+        let worker_id = Self::parse_worker_uuid(worker_id)?;
+
+        // EPIC-42: Route through Actor if enabled for lock-free heartbeat processing
+        if let Some(ref supervisor) = self.supervisor_handle {
+            debug!("EPIC-42: Routing heartbeat through Actor for {}", worker_id);
+
+            if let Err(e) = supervisor.heartbeat(&worker_id).await {
+                warn!(
+                    "EPIC-42: Failed to route heartbeat through Actor, falling back to legacy: {:?}",
+                    e
+                );
+            } else {
+                debug!("EPIC-42: Heartbeat routed through Actor successfully");
+                return Ok(());
+            }
+        }
+
+        // Legacy path: direct registry update
         let Some(registry) = self.worker_registry() else {
             return Ok(());
         };
-        let worker_id = Self::parse_worker_uuid(worker_id)?;
 
         registry
             .heartbeat(&worker_id)

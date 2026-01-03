@@ -550,6 +550,17 @@ pub trait SagaOrchestrator: Send + Sync {
         context: SagaContext,
     ) -> Result<SagaExecutionResult, Self::Error>;
 
+    /// Executes a saga directly from its context (EPIC-42: Reactive Saga Processing)
+    ///
+    /// This method looks up the saga type from the context and executes it.
+    ///
+    /// # Arguments
+    /// * `context` - The saga context with metadata
+    ///
+    /// # Returns
+    /// * `Result<SagaExecutionResult, Self::Error>` - The result of execution
+    async fn execute(&self, context: &SagaContext) -> Result<SagaExecutionResult, Self::Error>;
+
     /// Gets a saga by its ID.
     async fn get_saga(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error>;
 

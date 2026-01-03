@@ -490,6 +490,38 @@ mod tests {
         async fn cancel_saga(&self, _saga_id: &SagaId) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
+
+        /// EPIC-42: Execute saga directly from context (for reactive processing)
+        async fn execute(
+            &self,
+            context: &SagaContext,
+        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
+            let saga_id = context.saga_id.clone();
+            let saga_type = context.saga_type.as_str().to_string();
+
+            self.executed_sagas
+                .lock()
+                .await
+                .push((saga_id.clone(), saga_type.clone()));
+
+            if self.should_fail {
+                return Ok(SagaExecutionResult::failed(
+                    saga_id,
+                    context.saga_type,
+                    std::time::Duration::from_secs(1),
+                    1,
+                    0,
+                    "Test failure".to_string(),
+                ));
+            }
+
+            Ok(SagaExecutionResult::completed_with_steps(
+                saga_id,
+                context.saga_type,
+                std::time::Duration::from_secs(1),
+                4,
+            ))
+        }
     }
 
     #[tokio::test]

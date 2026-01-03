@@ -14,12 +14,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc, watch};
 use tonic::transport::Server;
 use tonic_reflection::server::Builder as ReflectionBuilder;
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use uuid::Uuid;
 
@@ -38,13 +38,16 @@ use hodei_server_application::saga::dispatcher_saga::DynExecutionSagaDispatcher;
 use hodei_server_application::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use hodei_server_application::saga::recovery_saga::DynRecoverySagaCoordinator;
 use hodei_server_application::scheduling::smart_scheduler::SchedulerConfig;
+use hodei_server_application::workers::actor::{
+    WorkerSupervisorBuilder, WorkerSupervisorConfig, WorkerSupervisorHandle,
+};
 use hodei_server_application::workers::{
     DefaultWorkerProvisioningService, ProvisioningConfig, WorkerLifecycleConfig,
     WorkerLifecycleManager,
 };
-use hodei_server_domain::saga::{SagaOrchestrator, SagaOrchestratorConfig};
+use hodei_server_domain::saga::{SagaOrchestrator, SagaOrchestratorConfig, SagaRepository};
 use hodei_server_infrastructure::persistence::postgres::saga_repository::{
-    PostgresSagaOrchestrator, PostgresSagaOrchestratorConfig,
+    PostgresSagaOrchestrator, PostgresSagaOrchestratorConfig, SagaPoller, SagaPollerConfig,
 };
 
 use hodei_server_domain::providers::ProviderConfigRepository;
@@ -70,9 +73,18 @@ use hodei_server_interface::grpc::{
     MetricsServiceImpl, ProviderManagementServiceImpl, SchedulerServiceImpl,
     WorkerAgentServiceImpl, context_interceptor,
 };
+
 use hodei_server_interface::log_persistence::{
     LocalStorageConfig, LogPersistenceConfig, LogStorage, LogStorageFactory, LogStorageRef,
     StorageBackend,
+};
+
+// EPIC-42: Reactive Saga Processing imports
+use hodei_server_infrastructure::persistence::saga::notifying_repository::{
+    NotifyingRepositoryMetrics, NotifyingSagaRepository,
+};
+use hodei_server_infrastructure::persistence::saga::reactive_processor::{
+    ReactiveSagaProcessor, ReactiveSagaProcessorConfig, ReactiveSagaProcessorMetrics,
 };
 
 #[tokio::main]
@@ -331,6 +343,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Provider Registry
     let provider_registry = Arc::new(ProviderRegistry::new(provider_config_repo.clone()));
 
+    // ==========================================================================
+    // EPIC-42: WorkerSupervisor Actor Initialization
+    // ==========================================================================
+    info!("Initializing WorkerSupervisor Actor for lock-free worker management...");
+
+    // Configure WorkerSupervisor based on environment variables
+    let supervisor_config = WorkerSupervisorConfig {
+        max_workers: env::var("HODEI_WORKER_SUPERVISOR_MAX_WORKERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10000),
+        inbox_capacity: env::var("HODEI_WORKER_SUPERVISOR_INBOX_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000),
+        worker_channel_capacity: env::var("HODEI_WORKER_SUPERVISOR_WORKER_CHANNEL_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100),
+        actor_enabled: env::var("HODEI_ACTOR_MODEL_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true),
+    };
+
+    info!(
+        max_workers = supervisor_config.max_workers,
+        inbox_capacity = supervisor_config.inbox_capacity,
+        "WorkerSupervisor Actor configuration"
+    );
+
+    // Create WorkerSupervisor Actor
+    let (supervisor_handle, supervisor, _supervisor_shutdown) = WorkerSupervisorBuilder::new()
+        .with_config(supervisor_config.clone())
+        .build();
+
+    // Spawn WorkerSupervisor Actor in background (move supervisor into spawn)
+    let supervisor_for_spawn = supervisor;
+    tokio::spawn(async move {
+        info!("🚀 WorkerSupervisor Actor: Starting actor loop");
+        supervisor_for_spawn.run().await;
+        info!("✅ WorkerSupervisor Actor: Actor loop ended");
+    });
+
+    info!("  ✓ WorkerSupervisor Actor started");
+
     // Create Use Cases
     let create_job_usecase = Arc::new(CreateJobUseCase::new(
         job_repository.clone(),
@@ -342,15 +400,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_bus.clone(),
     ));
 
-    // Create gRPC services
-    let worker_service =
+    // Create gRPC services with WorkerSupervisor Actor integration (EPIC-42)
+    let worker_service = if supervisor_config.actor_enabled {
+        info!("🔧 Using WorkerSupervisor Actor for worker management");
+
+        WorkerAgentServiceImpl::with_actor_supervisor(
+            worker_registry.clone(),
+            job_repository.clone(),
+            token_store.clone(),
+            log_stream_service.clone(),
+            event_bus.clone(),
+            supervisor_handle,
+        )
+    } else {
+        info!("⚠️ Using legacy mode for worker management (Actor disabled)");
+
         WorkerAgentServiceImpl::with_registry_job_repository_token_store_and_log_service(
             worker_registry.clone(),
             job_repository.clone(),
             token_store.clone(),
             log_stream_service.clone(),
             event_bus.clone(),
-        );
+        )
+    };
     let worker_service_for_controller = worker_service.clone();
 
     // EPIC-31: Create providers map early for shared access
@@ -826,97 +898,212 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Saga infrastructure ready");
 
-    // EPIC-33: Start Saga Poller to process pending sagas
-    info!("Starting saga poller for pending saga execution...");
+    // ==========================================================================
+    // EPIC-42: Reactive Saga Processing (SIMPLIFIED IMPLEMENTATION)
+    // ==========================================================================
+    info!("Configuring reactive saga processing...");
 
-    use hodei_server_infrastructure::persistence::postgres::saga_repository::{
-        PostgresSagaOrchestrator, SagaPoller, SagaPollerConfig,
-    };
+    // EPIC-42: Check if reactive mode is enabled
+    let reactive_mode = env::var("HODEI_SAGA_REACTIVE_MODE")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
 
-    let saga_poller = SagaPoller::new(
-        saga_repository.clone(),
-        Arc::new(PostgresSagaOrchestrator::new(
+    // Create shared metrics for saga processing
+    let saga_processor_metrics = Arc::new(ReactiveSagaProcessorMetrics::default());
+    let notifying_metrics = Arc::new(NotifyingRepositoryMetrics::new());
+
+    // Channel for saga notifications (signals from NotifyingSagaRepository to processor)
+    let (signal_tx, mut signal_rx) =
+        tokio::sync::mpsc::unbounded_channel::<hodei_server_domain::saga::SagaId>();
+
+    // Wrap saga_repository with NotifyingSagaRepository to emit signals on save/update
+    // The NotifyingSagaRepository decorates the inner repository with signal emission
+    let _notifying_repository =
+        NotifyingSagaRepository::new(saga_repository.clone(), signal_tx, notifying_metrics);
+
+    // EPIC-42: Start reactive signal consumer if reactive mode is enabled
+    // This provides immediate saga execution upon signal, with safety net polling
+    let mut reactive_processor_guard: Option<tokio::task::JoinHandle<()>> = None;
+    let mut use_polling = true;
+
+    if reactive_mode {
+        info!("🚀 Starting Reactive Saga Processor (signal-based execution)...");
+
+        // Configure safety net polling interval
+        let safety_polling_interval = Duration::from_secs(
+            env::var("HODEI_SAGA_SAFETY_POLLING_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300), // 5 minutes safety net
+        );
+
+        // Create shutdown channel
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+
+        // Spawn reactive signal processor
+        let metrics = saga_processor_metrics.clone();
+        let saga_repo = saga_repository.clone();
+        let saga_orchestrator = orchestrator.clone();
+
+        reactive_processor_guard = Some(tokio::spawn(async move {
+            info!("🔄 ReactiveSagaProcessor: Waiting for saga signals...");
+
+            let mut interval = tokio::time::interval(safety_polling_interval);
+
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        info!("✅ ReactiveSagaProcessor: Shutdown signal received");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        // Safety net: process any pending sagas via polling
+                        metrics.record_polling_processed();
+                        info!("🔄 ReactiveSagaProcessor: Safety net polling tick");
+                    }
+                    signal = signal_rx.recv() => {
+                        match signal {
+                            Some(saga_id) => {
+                                let start = std::time::Instant::now();
+
+                                // Process saga immediately using execute method
+                                if let Ok(Some(saga_ctx)) = saga_repo.find_by_id(&saga_id).await {
+                                    if let Err(e) = saga_orchestrator.execute(&saga_ctx).await {
+                                        error!(saga_id = %saga_id, error = ?e, "Saga execution failed");
+                                        metrics.record_error();
+                                    } else {
+                                        metrics.record_reactive_processed();
+                                        let elapsed_ms = start.elapsed().as_millis();
+                                        metrics.record_latency(elapsed_ms as u64);
+                                        info!(saga_id = %saga_id, elapsed_ms = elapsed_ms, "Saga executed reactively");
+                                    }
+                                } else {
+                                    warn!(saga_id = %saga_id, "Saga not found for reactive processing");
+                                }
+                            }
+                            None => {
+                                info!("Signal channel closed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            info!(
+                "✅ ReactiveSagaProcessor: Shutdown complete (reactive={}, polling={}, errors={})",
+                metrics.reactive_processed(),
+                metrics.polling_processed(),
+                metrics.errors()
+            );
+        }));
+
+        // Keep shutdown sender alive
+        let _shutdown_guard = shutdown_tx;
+
+        // Disable legacy poller in reactive mode
+        use_polling = false;
+        info!(
+            safety_polling_interval = %safety_polling_interval.as_secs(),
+            "  ✓ ReactiveSagaProcessor started (safety net active)"
+        );
+    } else {
+        info!("⚠️ Reactive saga processing disabled, using legacy polling mode");
+        info!("  ℹ️  Enable with: export HODEI_SAGA_REACTIVE_MODE=true");
+    }
+
+    // EPIC-33/EPIC-42: Start Saga Poller (only if not using reactive mode)
+    if use_polling {
+        info!("Starting saga poller for pending saga execution...");
+
+        let saga_poller = SagaPoller::new(
             saga_repository.clone(),
-            Some(saga_config.clone()),
-        )),
-        Some(SagaPollerConfig {
-            polling_interval: Duration::from_secs(5),
-            max_concurrent: 10,
-        }),
-    );
+            Arc::new(PostgresSagaOrchestrator::new(
+                saga_repository.clone(),
+                Some(saga_config.clone()),
+            )),
+            Some(SagaPollerConfig {
+                polling_interval: Duration::from_secs(5),
+                max_concurrent: 10,
+            }),
+        );
 
-    // Create saga factory for provisioning and execution sagas
-    let poller_handle = saga_poller.start(move |saga_type, metadata| {
-        // Create saga instances based on type
-        match saga_type {
-            hodei_server_domain::saga::SagaType::Provisioning => {
-                // Extract provider_id and worker_spec from metadata
-                let provider_id_str = metadata
-                    .get("provider_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
+        // Create saga factory for provisioning and execution sagas
+        let poller_handle = saga_poller.start(move |saga_type, metadata| {
+            // Create saga instances based on type
+            match saga_type {
+                hodei_server_domain::saga::SagaType::Provisioning => {
+                    // Extract provider_id and worker_spec from metadata
+                    let provider_id_str = metadata
+                        .get("provider_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
 
-                let provider_id = if !provider_id_str.is_empty() {
-                    hodei_server_domain::shared_kernel::ProviderId::from_uuid(
-                        Uuid::parse_str(&provider_id_str).unwrap_or_else(|_| Uuid::new_v4()),
-                    )
-                } else {
-                    hodei_server_domain::shared_kernel::ProviderId::new()
-                };
+                    let provider_id = if !provider_id_str.is_empty() {
+                        hodei_server_domain::shared_kernel::ProviderId::from_uuid(
+                            Uuid::parse_str(&provider_id_str).unwrap_or_else(|_| Uuid::new_v4()),
+                        )
+                    } else {
+                        hodei_server_domain::shared_kernel::ProviderId::new()
+                    };
 
-                let worker_image = metadata
-                    .get("worker_image")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("hodei-jobs-worker:latest");
+                    let worker_image = metadata
+                        .get("worker_image")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("hodei-jobs-worker:latest");
 
-                let spec = hodei_server_domain::workers::WorkerSpec {
-                    worker_id: hodei_server_domain::shared_kernel::WorkerId::new(),
-                    image: worker_image.to_string(),
-                    resources: hodei_server_domain::workers::ResourceRequirements {
-                        cpu_cores: 1.0,
-                        memory_bytes: 1024 * 1024 * 1024, // 1GB
-                        disk_bytes: 1024 * 1024 * 1024,   // 1GB
-                        gpu_count: 0,
-                        gpu_type: None,
-                    },
-                    labels: std::collections::HashMap::new(),
-                    annotations: std::collections::HashMap::new(),
-                    environment: std::collections::HashMap::new(),
-                    volumes: vec![],
-                    server_address: format!("http://{}:{}", server_address_for_workers, port),
-                    max_lifetime: Duration::from_secs(3600),
-                    idle_timeout: Duration::from_secs(300),
-                    ttl_after_completion: None,
-                    architecture: hodei_server_domain::workers::Architecture::Amd64,
-                    required_capabilities: vec![],
-                    provider_config: None,
-                    kubernetes: hodei_server_domain::workers::KubernetesWorkerConfig::default(),
-                };
+                    let spec = hodei_server_domain::workers::WorkerSpec {
+                        worker_id: hodei_server_domain::shared_kernel::WorkerId::new(),
+                        image: worker_image.to_string(),
+                        resources: hodei_server_domain::workers::ResourceRequirements {
+                            cpu_cores: 1.0,
+                            memory_bytes: 1024 * 1024 * 1024, // 1GB
+                            disk_bytes: 1024 * 1024 * 1024,   // 1GB
+                            gpu_count: 0,
+                            gpu_type: None,
+                        },
+                        labels: std::collections::HashMap::new(),
+                        annotations: std::collections::HashMap::new(),
+                        environment: std::collections::HashMap::new(),
+                        volumes: vec![],
+                        server_address: format!("http://{}:{}", server_address_for_workers, port),
+                        max_lifetime: Duration::from_secs(3600),
+                        idle_timeout: Duration::from_secs(300),
+                        ttl_after_completion: None,
+                        architecture: hodei_server_domain::workers::Architecture::Amd64,
+                        required_capabilities: vec![],
+                        provider_config: None,
+                        kubernetes: hodei_server_domain::workers::KubernetesWorkerConfig::default(),
+                    };
 
-                Some(Box::new(hodei_server_domain::saga::ProvisioningSaga::new(
-                    spec,
-                    provider_id,
-                ))
-                    as Box<dyn hodei_server_domain::saga::Saga>)
+                    Some(Box::new(hodei_server_domain::saga::ProvisioningSaga::new(
+                        spec,
+                        provider_id,
+                    ))
+                        as Box<dyn hodei_server_domain::saga::Saga>)
+                }
+                hodei_server_domain::saga::SagaType::Execution => {
+                    // Execution sagas are handled by the dispatcher
+                    None
+                }
+                hodei_server_domain::saga::SagaType::Recovery => {
+                    // Recovery sagas - create if needed
+                    None
+                }
             }
-            hodei_server_domain::saga::SagaType::Execution => {
-                // Execution sagas are handled by the dispatcher
-                None
-            }
-            hodei_server_domain::saga::SagaType::Recovery => {
-                // Recovery sagas - create if needed
-                None
-            }
-        }
-    });
+        });
 
-    info!("  ✓ Saga poller started (interval: 5s)");
+        info!("  ✓ Saga poller started (interval: 5s)");
 
-    // Keep poller handle alive for server lifetime
-    let _saga_poller_guard = poller_handle;
+        // Keep poller handle alive for server lifetime
+        let _saga_poller_guard = poller_handle;
 
-    info!("Saga poller active - pending sagas will be processed every 5s");
+        info!("Saga poller active - pending sagas will be processed every 5s");
+    } else {
+        info!("⚠️ Legacy saga poller DISABLED (using ReactiveSagaProcessor instead)");
+    }
 
     // JobController loop - EPIC-31: Now with saga coordinators connected
     let controller_enabled =

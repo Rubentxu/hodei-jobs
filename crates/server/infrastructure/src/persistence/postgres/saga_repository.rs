@@ -5,11 +5,12 @@
 
 use chrono::{DateTime, Utc};
 use hodei_server_domain::saga::{
-    Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
-    SagaRepository as SagaRepositoryTrait, SagaState, SagaStep, SagaStepData, SagaStepId,
-    SagaStepState, SagaType,
+    ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaExecutionResult, SagaId,
+    SagaOrchestrator, SagaRepository as SagaRepositoryTrait, SagaState, SagaStep, SagaStepData,
+    SagaStepId, SagaStepState, SagaType,
 };
-use hodei_server_domain::shared_kernel::DomainError;
+use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId};
+use hodei_server_domain::workers::WorkerSpec;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -892,6 +893,73 @@ where
             start_time.elapsed(),
             executed_steps as u32,
         ))
+    }
+
+    /// EPIC-42: Execute saga directly from context (Reactive Saga Processing)
+    async fn execute(&self, context: &SagaContext) -> Result<SagaExecutionResult, Self::Error> {
+        // Create the appropriate saga based on saga_type
+        let saga: Box<dyn Saga> = match context.saga_type {
+            SagaType::Provisioning => {
+                // Extract provider_id from metadata
+                let provider_id_str = context
+                    .metadata
+                    .get("provider_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let provider_id = if !provider_id_str.is_empty() {
+                    ProviderId::from_uuid(
+                        uuid::Uuid::parse_str(&provider_id_str)
+                            .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    ProviderId::new()
+                };
+
+                // Extract worker_spec from metadata
+                let spec_str = context
+                    .metadata
+                    .get("worker_spec")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Create provisioning saga with extracted config
+                // Note: In a full implementation, we'd deserialize the full spec
+                let spec = hodei_server_domain::workers::WorkerSpec::new(
+                    "hodei-jobs-worker:latest".to_string(),
+                    "http://localhost:50051".to_string(),
+                );
+
+                Box::new(ProvisioningSaga::new(spec, provider_id))
+            }
+            SagaType::Execution => {
+                // Extract job_id from metadata
+                let job_id_str = context
+                    .metadata
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let job_id = if !job_id_str.is_empty() {
+                    JobId(
+                        uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    JobId::new()
+                };
+
+                Box::new(ExecutionSaga::new(job_id))
+            }
+            SagaType::Recovery => {
+                // Recovery sagas would need additional context
+                Box::new(RecoverySaga::new(JobId::new(), JobId::new()))
+            }
+        };
+
+        // Execute with a clone of the context
+        self.execute_saga(&*saga, context.clone()).await
     }
 
     async fn get_saga(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error> {

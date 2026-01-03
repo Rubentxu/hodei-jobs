@@ -2252,6 +2252,44 @@ mod tests {
             }
         }
 
+        /// EPIC-42: Execute saga directly from context (for reactive processing)
+        async fn execute(
+            &self,
+            context: &SagaContext,
+        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
+            // Create a mock saga based on type and execute
+            let saga_type_str = context.saga_type.as_str().to_string();
+            self.executed_sagas
+                .lock()
+                .unwrap()
+                .push(saga_type_str.clone());
+
+            let should_fail = *self.should_fail.lock().unwrap();
+            let custom_result = self.saga_result.lock().unwrap().clone();
+
+            if let Some(result) = custom_result {
+                return Ok(result);
+            }
+
+            if should_fail {
+                Ok(SagaExecutionResult::failed(
+                    context.saga_id.clone(),
+                    context.saga_type,
+                    std::time::Duration::from_secs(1),
+                    1,
+                    0,
+                    "Test failure".to_string(),
+                ))
+            } else {
+                Ok(SagaExecutionResult::completed_with_steps(
+                    context.saga_id.clone(),
+                    context.saga_type,
+                    std::time::Duration::from_secs(1),
+                    4,
+                ))
+            }
+        }
+
         async fn get_saga(
             &self,
             _saga_id: &SagaId,
