@@ -32,6 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `docs/NATS_MIGRATION_RUNBOOK.md`: Complete guide for migration, configuration, and troubleshooting
 
+## [v0.27.0] - 2026-01-03
+
+### Added
+
+- **EPIC-42: High-Performance Architecture & Resilience**
+  - WorkerSupervisor Actor for lock-free worker management
+  - NotifyingSagaRepository for signal-based saga processing
+  - ReactiveSagaProcessor with safety net polling
+  - SagaOrchestrator::execute() method for reactive saga execution
+
+### Changed
+
+- **Architecture**: Event-driven architecture replaces polling-based saga triggering
+- **Performance**: Actor Model eliminates lock contention for worker management
+- **Reactivity**: Signal-based saga processing reduces latency from 2.5-5s to < 200ms
+
+### Fixes
+
+- Correct JobId/ProviderId imports from shared_kernel module
+- RecoverySaga initialization fix (default() → new())
+- Type cast fixes for latency metrics (u128 → u64)
+
 ## [v0.9.1] - 2024-12-26
 
 ### Added

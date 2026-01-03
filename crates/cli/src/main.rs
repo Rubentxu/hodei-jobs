@@ -628,6 +628,7 @@ async fn handle_logs(
 }
 
 /// Resolve command from either --command or --script option
+#[allow(dead_code)]
 fn resolve_command(
     command: Option<String>,
     script: Option<String>,
