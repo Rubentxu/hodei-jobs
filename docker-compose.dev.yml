@@ -44,27 +44,37 @@ services:
           memory: 512M
 
   # ===========================================================================
-  # Redis (Cache & NATS JetStream - Development)
+  # NATS JetStream (Production-Ready Event Bus)
   # ===========================================================================
-  redis:
-    image: redis:7-alpine
-    container_name: hodei-jobs-redis
+  nats:
+    image: nats:2.10-alpine
+    container_name: hodei-jobs-nats
     restart: unless-stopped
+    command:
+      - --jetstream
+      - -sd
+      - /data
     ports:
-      - "6379:6379"
+      - "4222:4222" # Client connections
+      - "8222:8222" # HTTP monitoring
     volumes:
-      - redis_dev_data:/data
+      - nats_dev_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
+      test:
+        [
+          "CMD-SHELL",
+          "nats-rply -s localhost:4222 'PING' 'PONG' 2>/dev/null || wget -q --spider http://localhost:8222/healthz",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - hodei-internal
     deploy:
       resources:
         limits:
-          memory: 128M
+          memory: 256M
 
   # ===========================================================================
   # Hodei gRPC Server (Backend API) - Development
@@ -104,6 +114,10 @@ services:
       # Worker image for provisioning
       HODEI_WORKER_IMAGE: "hodei-jobs-worker:latest"
 
+      # NATS Event Bus Configuration (Production-Ready Event-Driven)
+      HODEI_NATS_ENABLED: "1"
+      HODEI_NATS_URLS: "nats://nats:4222"
+
       # Logging
       RUST_LOG: ${RUST_LOG:-debug}
     ports:
@@ -113,6 +127,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      nats:
         condition: service_healthy
     healthcheck:
       test:
@@ -136,7 +152,7 @@ services:
 volumes:
   postgres_dev_data:
     driver: local
-  redis_dev_data:
+  nats_dev_data:
     driver: local
 
 # Development networks
