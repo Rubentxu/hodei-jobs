@@ -83,7 +83,7 @@ impl Saga for ProvisioningSaga {
                 self.provider_id.clone(),
                 self.spec.clone(),
             )),
-            Box::new(RegisterWorkerStep::new(self.provider_id.clone())),
+            Box::new(RegisterWorkerStep::new()),
             Box::new(PublishProvisionedEventStep::new()),
         ]
     }
@@ -219,13 +219,11 @@ impl SagaStep for CreateInfrastructureStep {
 /// contexto para que el coordinador pueda realizar el registro después de
 /// que la infraestructura sea creada.
 #[derive(Debug, Clone)]
-pub struct RegisterWorkerStep {
-    provider_id: ProviderId,
-}
+pub struct RegisterWorkerStep;
 
 impl RegisterWorkerStep {
-    pub fn new(provider_id: ProviderId) -> Self {
-        Self { provider_id }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -364,7 +362,7 @@ mod tests {
 
     #[test]
     fn register_worker_step_has_no_compensation() {
-        let step = RegisterWorkerStep::new(ProviderId::new());
+        let step = RegisterWorkerStep::new();
         assert!(!step.has_compensation());
         assert!(!step.is_idempotent());
     }
