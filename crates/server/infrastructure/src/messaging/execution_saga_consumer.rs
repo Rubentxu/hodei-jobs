@@ -20,6 +20,7 @@ use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -93,27 +94,23 @@ pub enum ExecutionSagaTriggerResult {
 ///
 /// Consumes JobQueued and WorkerReady events from NATS JetStream
 /// and triggers execution sagas for job dispatch.
+/// Uses trait objects for dynamic dispatch with the SagaOrchestrator.
 #[derive(Clone)]
-pub struct ExecutionSagaConsumer<SO, JR, WR>
-where
-    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
-    JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
-{
+pub struct ExecutionSagaConsumer {
     /// NATS client
     _client: Client,
 
     /// NATS JetStream context
     jetstream: JetStreamContext,
 
-    /// Saga orchestrator
-    orchestrator: Arc<SO>,
+    /// Saga orchestrator (trait object for dynamic dispatch)
+    orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
 
     /// Job repository for fetching job details
-    job_repository: Arc<JR>,
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
 
     /// Worker registry for checking worker availability
-    worker_registry: Arc<WR>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 
     /// Consumer configuration
     config: ExecutionSagaConsumerConfig,
@@ -122,20 +119,15 @@ where
     shutdown_tx: mpsc::Sender<()>,
 }
 
-impl<SO, JR, WR> ExecutionSagaConsumer<SO, JR, WR>
-where
-    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
-    JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
-{
+impl ExecutionSagaConsumer {
     /// Create a new ExecutionSagaConsumer
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Client,
         jetstream: JetStreamContext,
-        orchestrator: Arc<SO>,
-        job_repository: Arc<JR>,
-        worker_registry: Arc<WR>,
+        orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
         config: Option<ExecutionSagaConsumerConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
@@ -537,27 +529,16 @@ where
 }
 
 /// Builder for ExecutionSagaConsumer
-#[derive(Debug)]
-pub struct ExecutionSagaConsumerBuilder<SO, JR, WR>
-where
-    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
-    JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
-{
+pub struct ExecutionSagaConsumerBuilder {
     client: Option<Client>,
     jetstream: Option<JetStreamContext>,
-    orchestrator: Option<Arc<SO>>,
-    job_repository: Option<Arc<JR>>,
-    worker_registry: Option<Arc<WR>>,
+    orchestrator: Option<Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+    worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
     config: Option<ExecutionSagaConsumerConfig>,
 }
 
-impl<SO, JR, WR> Default for ExecutionSagaConsumerBuilder<SO, JR, WR>
-where
-    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
-    JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
-{
+impl Default for ExecutionSagaConsumerBuilder {
     fn default() -> Self {
         Self {
             client: None,
@@ -570,12 +551,20 @@ where
     }
 }
 
-impl<SO, JR, WR> ExecutionSagaConsumerBuilder<SO, JR, WR>
-where
-    SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
-    JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
-{
+impl fmt::Debug for ExecutionSagaConsumerBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionSagaConsumerBuilder")
+            .field("client", &self.client.is_some())
+            .field("jetstream", &self.jetstream.is_some())
+            .field("orchestrator", &self.orchestrator.is_some())
+            .field("job_repository", &self.job_repository.is_some())
+            .field("worker_registry", &self.worker_registry.is_some())
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl ExecutionSagaConsumerBuilder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -590,17 +579,26 @@ where
         self
     }
 
-    pub fn with_orchestrator(mut self, orchestrator: Arc<SO>) -> Self {
+    pub fn with_orchestrator(
+        mut self,
+        orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
+    ) -> Self {
         self.orchestrator = Some(orchestrator);
         self
     }
 
-    pub fn with_job_repository(mut self, job_repository: Arc<JR>) -> Self {
+    pub fn with_job_repository(
+        mut self,
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+    ) -> Self {
         self.job_repository = Some(job_repository);
         self
     }
 
-    pub fn with_worker_registry(mut self, worker_registry: Arc<WR>) -> Self {
+    pub fn with_worker_registry(
+        mut self,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    ) -> Self {
         self.worker_registry = Some(worker_registry);
         self
     }
@@ -610,7 +608,7 @@ where
         self
     }
 
-    pub fn build(self) -> anyhow::Result<ExecutionSagaConsumer<SO, JR, WR>> {
+    pub fn build(self) -> anyhow::Result<ExecutionSagaConsumer> {
         let client = self
             .client
             .ok_or_else(|| anyhow::anyhow!("client is required"))?;
