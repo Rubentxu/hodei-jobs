@@ -1499,6 +1499,7 @@ name = "hodei-server-bin"
 version = "0.27.0"
 dependencies = [
  "anyhow",
+ "async-nats",
  "clap",
  "config",
  "hodei-jobs",
