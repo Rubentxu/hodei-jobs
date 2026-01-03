@@ -180,6 +180,28 @@ impl ScheduledJobRepository for PostgresScheduledJobRepository {
             .collect()
     }
 
+    async fn find_all(&self) -> Result<Vec<ScheduledJob>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, name, description, template_id, cron_expression, timezone,
+                   next_execution_at, last_execution_at, last_execution_status,
+                   enabled, max_consecutive_failures, consecutive_failures,
+                   pause_on_failure, parameters, created_at, updated_at, created_by
+            FROM scheduled_jobs
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to find all scheduled jobs: {}", e),
+        })?;
+
+        rows.into_iter()
+            .map(|row| Self::row_to_scheduled_job(row))
+            .collect()
+    }
+
     async fn find_ready_to_run(&self, now: &DateTime<Utc>) -> Result<Vec<ScheduledJob>> {
         let rows = sqlx::query(
             r#"

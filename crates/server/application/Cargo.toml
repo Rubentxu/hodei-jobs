@@ -13,6 +13,8 @@ lifecycle-management = []
 # Internal dependencies
 hodei-server-domain = { path = "../domain" }
 hodei-shared = { path = "../../shared" }
+# Note: Infrastructure dependencies are not needed for core infrastructure
+# Events and repositories are defined in the domain crate
 
 # Async runtime
 tokio = { workspace = true }

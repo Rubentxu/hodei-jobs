@@ -3,10 +3,14 @@
 //! Centralized conversion functions between domain types and Protocol Buffer messages.
 //! This module ensures consistent mapping across all gRPC services.
 
+use hodei_jobs::job::ResourceRequirements;
+use hodei_jobs::job::{JobSpec as GrpcJobSpec, JobTemplate, TemplateExecution};
 use hodei_jobs::{
-    ExecutionId, JobDefinition, JobExecution, JobStatus, JobSummary, LabelSelector,
-    ResourceRequirements, SchedulingInfo, TimeoutConfig, Toleration,
+    ExecutionId, JobDefinition, JobExecution, JobStatus, JobSummary, LabelSelector, SchedulingInfo,
+    TimeoutConfig, Toleration,
 };
+// Temporarily commented out until template module is fixed
+// use hodei_server_application::jobs::template::queries::{ExecutionSummary, TemplateSummary};
 use hodei_server_domain::jobs::{Job, JobSpec};
 use hodei_server_domain::shared_kernel::JobState;
 use prost_types::{Duration, Timestamp};
@@ -159,7 +163,7 @@ pub fn map_spec_to_definition(spec: &JobSpec, job_id: &str) -> JobDefinition {
         command,
         arguments,
         environment: spec.env.clone(),
-        requirements: Some(ResourceRequirements {
+        requirements: Some(hodei_jobs::ResourceRequirements {
             cpu_cores: spec.resources.cpu_cores as f64,
             memory_bytes: (spec.resources.memory_mb * 1024 * 1024) as i64,
             disk_bytes: (spec.resources.storage_mb * 1024 * 1024) as i64,
@@ -252,6 +256,84 @@ pub fn error_to_status(err: impl std::fmt::Display) -> tonic::Status {
         tonic::Status::invalid_argument(err_str)
     } else {
         tonic::Status::internal(err_str)
+    }
+}
+
+/*
+/// Map TemplateSummary to gRPC JobTemplate
+pub fn map_template_summary_to_grpc(
+    summary: &TemplateSummary,
+) -> Result<JobTemplate, tonic::Status> {
+    Ok(JobTemplate {
+        template_id: summary.id.to_string(),
+        name: summary.name.clone(),
+        description: summary.description.clone().unwrap_or_default(),
+        spec: GrpcJobSpec::default(), // TODO: Get spec from template
+        status: summary.status.clone(),
+        version: summary.version,
+        labels: summary.labels.clone(),
+        created_at: Some(to_timestamp(summary.created_at)),
+        updated_at: Some(to_timestamp(summary.updated_at)),
+        created_by: summary.created_by.clone().unwrap_or_default(),
+        run_count: summary.run_count,
+        success_count: summary.success_count,
+        failure_count: summary.failure_count,
+    })
+}
+
+/// Map ExecutionSummary to gRPC TemplateExecution
+pub fn map_execution_summary_to_grpc(
+    summary: &ExecutionSummary,
+) -> Result<TemplateExecution, tonic::Status> {
+    Ok(TemplateExecution {
+        execution_id: summary.id.to_string(),
+        execution_number: summary.execution_number,
+        template_id: summary.template_id.to_string(),
+        template_version: summary.template_version,
+        job_id: summary.job_id.as_ref().map(|j| j.to_string()),
+        job_name: summary.job_name.clone(),
+        job_spec: GrpcJobSpec::default(), // TODO: Get spec from execution
+        state: summary.state.clone(),
+        result: None, // TODO: Map execution result
+        queued_at: Some(to_timestamp(summary.queued_at)),
+        started_at: summary.started_at.map(to_timestamp),
+        completed_at: summary.completed_at.map(to_timestamp),
+        triggered_by: summary.triggered_by.clone(),
+        scheduled_job_id: None,
+        triggered_by_user: summary.triggered_by_user.clone(),
+        parameters: summary.parameters.clone(),
+        resource_usage: None,
+        metadata: std::collections::HashMap::new(),
+        created_at: Some(to_timestamp(summary.queued_at)),
+    })
+}
+*/
+
+/// Map gRPC JobSpec to domain JobSpec (JSON value)
+pub fn map_job_spec_to_grpc(spec: &JobSpec) -> GrpcJobSpec {
+    GrpcJobSpec {
+        command: spec.command_vec().first().cloned().unwrap_or_default(),
+        arguments: if spec.command_vec().len() > 1 {
+            spec.command_vec()[1..].to_vec()
+        } else {
+            vec![]
+        },
+        environment: spec.env.clone(),
+        inputs: vec![],      // TODO: Map inputs
+        outputs: vec![],     // TODO: Map outputs
+        constraints: vec![], // TODO: Map constraints
+        resources: Some(hodei_jobs::job::ResourceRequirements {
+            cpu_cores: spec.resources.cpu_cores,
+            memory_mb: spec.resources.memory_mb,
+            storage_mb: spec.resources.storage_mb,
+            gpu_required: spec.resources.gpu_required,
+            architecture: spec.resources.architecture.clone(),
+        }),
+        timeout_ms: spec.timeout_ms,
+        image: spec.image.clone().unwrap_or_default(),
+        working_dir: spec.working_dir.clone().unwrap_or_default(),
+        stdin: spec.stdin.clone().unwrap_or_default(),
+        preferences: None, // TODO: Map preferences
     }
 }
 

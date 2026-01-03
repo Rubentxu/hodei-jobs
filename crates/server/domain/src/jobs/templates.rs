@@ -1057,6 +1057,9 @@ pub trait ScheduledJobRepository: Send + Sync {
     /// Find scheduled jobs by template ID
     async fn find_by_template_id(&self, template_id: &JobTemplateId) -> Result<Vec<ScheduledJob>>;
 
+    /// List all scheduled jobs
+    async fn find_all(&self) -> Result<Vec<ScheduledJob>>;
+
     /// List all enabled scheduled jobs
     async fn list_enabled(&self) -> Result<Vec<ScheduledJob>>;
 

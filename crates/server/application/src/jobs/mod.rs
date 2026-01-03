@@ -17,6 +17,7 @@ pub mod orchestrator;
 pub mod queries;
 pub mod repository_ext;
 pub mod saga_dispatcher;
+pub mod template;
 pub mod timeout_monitor;
 pub mod worker_monitor;
 
@@ -35,5 +36,6 @@ pub use orchestrator::*;
 pub use queries::*;
 pub use repository_ext::*;
 pub use saga_dispatcher::*;
+// pub use template::*;
 pub use timeout_monitor::*;
 pub use worker_monitor::*;

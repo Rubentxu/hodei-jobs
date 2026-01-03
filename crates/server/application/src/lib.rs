@@ -2,6 +2,9 @@
 // Hodei Job Platform - Application Layer
 // Use Cases y Servicios de Aplicación reorganizados por Bounded Contexts
 
+// Core Infrastructure (CQRS, Event-Driven)
+pub mod core;
+
 // Bounded Contexts
 pub mod audit;
 pub mod credentials;
@@ -23,6 +26,7 @@ pub mod audit_test_helper;
 
 // Re-exports de bounded contexts
 pub use audit::*;
+pub use core::*;
 pub use debug::*;
 pub use jobs::*;
 pub use metrics::*;

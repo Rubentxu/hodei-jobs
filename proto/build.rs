@@ -4,6 +4,8 @@ fn main() {
     println!("cargo:rerun-if-changed=hodei_all_in_one.proto");
     println!("cargo:rerun-if-changed=provider_management.proto");
     println!("cargo:rerun-if-changed=worker_agent.proto");
+    println!("cargo:rerun-if-changed=job_templates.proto");
+    println!("cargo:rerun-if-changed=scheduled_jobs.proto");
 
     let out_dir = PathBuf::from("src/generated");
     let descriptor_path = out_dir.join("hodei_descriptor.bin");
@@ -18,6 +20,8 @@ fn main() {
                 "hodei_all_in_one.proto",
                 "provider_management.proto",
                 "worker_agent.proto",
+                "job_templates.proto",
+                "scheduled_jobs.proto",
             ],
             &["."],
         )

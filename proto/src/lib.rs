@@ -18,5 +18,10 @@ pub mod providers {
     include!("generated/hodei.providers.rs");
 }
 
+/// Job templates and scheduled jobs gRPC types
+pub mod job {
+    include!("generated/hodei.job.rs");
+}
+
 /// File descriptor set for gRPC reflection
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/hodei_descriptor.bin");

@@ -161,6 +161,13 @@ pub struct JobSpec {
     pub preferences: JobPreferences,
 }
 
+impl JobSpec {
+    /// Get the command type
+    pub fn command(&self) -> &CommandType {
+        &self.command
+    }
+}
+
 /// Substitute parameters in a string
 ///
 /// Supports two formats:
