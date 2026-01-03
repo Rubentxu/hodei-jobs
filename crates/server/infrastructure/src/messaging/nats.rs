@@ -649,6 +649,11 @@ impl NatsEventBus {
         &self.jetstream
     }
 
+    /// Get a reference to the NATS client
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Subscribe with a custom handler function
     ///
     /// The handler is called for each event and must return quickly.
