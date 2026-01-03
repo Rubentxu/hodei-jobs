@@ -2060,7 +2060,7 @@ mod tests {
             .expect("Failed to connect to test database");
 
         // Create outbox table
-        sqlx::query!(
+        sqlx::query(
             r#"
             CREATE TABLE outbox_events (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2078,7 +2078,7 @@ mod tests {
                 last_error TEXT,
                 UNIQUE(idempotency_key)
             )
-            "#
+            "#,
         )
         .execute(&pool)
         .await

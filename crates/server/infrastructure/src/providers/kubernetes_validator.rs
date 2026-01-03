@@ -505,7 +505,7 @@ mod tests {
         // Skip if no cluster available
         let result = validator.validate(&config).await;
 
-        // Should either succeed or fail gracefully (not panic)
+        // Should either succeed () or fail gracefully (not panic)
         assert!(result.is_ok() || result.is_err());
     }
 
