@@ -55,6 +55,10 @@ use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
 
 use hodei_server_infrastructure::messaging::OutboxEventBus;
+use hodei_server_infrastructure::messaging::execution_saga_consumer::{
+    ExecutionSagaConsumer, ExecutionSagaConsumerBuilder, ExecutionSagaConsumerConfig,
+};
+use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
 use hodei_server_infrastructure::messaging::outbox_relay::OutboxRelay;
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
@@ -292,16 +296,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Database migrations completed");
 
-    // Create Real Event Bus (Postgres/Notify)
-    let real_event_bus_impl = PostgresEventBus::new(pool.clone());
-    real_event_bus_impl
-        .run_migrations()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to run event bus migrations: {}", e))?;
-    let real_event_bus = Arc::new(real_event_bus_impl);
+    // ==========================================================================
+    // Event Bus Configuration - NATS JetStream Only
+    // ==========================================================================
+    // EPIC-42: NATS JetStream is the production-ready event bus.
+    // Provides:
+    // - Durable consumers (events survive restarts)
+    // - At-least-once delivery semantics
+    // - Work queue pattern for multi-instance processing
+    // - Automatic replay of missed events
+    //
+    // NATS is required. Server will fail to start if NATS is unavailable.
 
-    // Create Outbox Repository
-    // Transactional Outbox Pattern enabled
+    // Connect to NATS
+    let nats_urls = env::var("HODEI_NATS_URLS").unwrap_or_else(|_| "nats://nats:4222".to_string());
+    info!("Connecting to NATS at: {}", nats_urls);
+
+    // Create NATS EventBus (handles connection internally)
+    let nats_config = NatsConfig {
+        urls: vec![nats_urls],
+        connection_timeout_secs: 10,
+        request_timeout_secs: Some(30),
+        max_reconnects: Some(5),
+        name: Some("hodei-server".to_string()),
+        ..Default::default()
+    };
+
+    let nats_event_bus = NatsEventBus::new(nats_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize NATS EventBus: {}", e))?;
+
+    // Get JetStream context and client from the EventBus
+    let nats_jetstream = nats_event_bus.jetstream().clone();
+    let nats_client = nats_event_bus.client().clone();
+
+    let event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus> = Arc::new(nats_event_bus);
+
+    info!("✅ NATS EventBus initialized (JetStream enabled)");
+
+    // Create Outbox Repository (Transactional Outbox Pattern)
     let outbox_repository_impl: PostgresOutboxRepository =
         PostgresOutboxRepository::new(pool.clone());
     outbox_repository_impl
@@ -311,8 +344,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outbox_repository = Arc::new(outbox_repository_impl);
 
     // Start OutboxRelay background service
-    // Reads from OutboxRepo and publishes to RealEventBus
-    let outbox_relay = OutboxRelay::new_with_defaults(pool.clone(), real_event_bus.clone());
+    // Reads from OutboxRepo and publishes to NATS EventBus
+    let outbox_relay = OutboxRelay::new_with_defaults(pool.clone(), event_bus.clone());
     let outbox_relay = Arc::new(outbox_relay);
 
     let outbox_relay_clone = outbox_relay.clone();
@@ -324,12 +357,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("  ✓ OutboxRelay started (Transactional Outbox Pattern enabled)");
 
-    // Create App Event Bus (Outbox Adapter) and SHADOW 'event_bus' variable
-    // All downstream services will use this Outbox-aware bus
-    let event_bus = Arc::new(OutboxEventBus::new(
-        outbox_repository.clone(),
-        real_event_bus.clone(),
-    ));
+    // Create OutboxEventBus (wraps real bus with outbox pattern)
+    // All downstream services use this for reliable event publishing
+    let outbox_event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus> =
+        Arc::new(hodei_server_infrastructure::messaging::OutboxEventBus::new(
+            outbox_repository.clone(),
+            event_bus.clone(),
+        ));
 
     // Cleanup orphaned workers from previous runs
     // Remove workers in TERMINATING or TERMINATED state
@@ -393,11 +427,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let create_job_usecase = Arc::new(CreateJobUseCase::new(
         job_repository.clone(),
         job_queue.clone(),
-        event_bus.clone(),
+        outbox_event_bus.clone(),
     ));
     let cancel_job_usecase = Arc::new(CancelJobUseCase::new(
         job_repository.clone(),
-        event_bus.clone(),
+        outbox_event_bus.clone(),
     ));
 
     // Create gRPC services with WorkerSupervisor Actor integration (EPIC-42)
@@ -409,7 +443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             job_repository.clone(),
             token_store.clone(),
             log_stream_service.clone(),
-            event_bus.clone(),
+            outbox_event_bus.clone(),
             supervisor_handle,
         )
     } else {
@@ -420,7 +454,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             job_repository.clone(),
             token_store.clone(),
             log_stream_service.clone(),
-            event_bus.clone(),
+            outbox_event_bus.clone(),
         )
     };
     let worker_service_for_controller = worker_service.clone();
@@ -431,7 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(RwLock::new(HashMap::new()));
 
     // EPIC-31: Use with_cleanup_support to enable JobQueued event publishing
-    // The event_bus is required for reactive job processing (JobCoordinator)
+    // The outbox_event_bus is required for reactive job processing (JobCoordinator)
     let job_service = JobExecutionServiceImpl::with_cleanup_support(
         create_job_usecase.clone(),
         cancel_job_usecase,
@@ -439,7 +473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_registry.clone(),
         providers.clone(), // Empty now, will be populated when providers are initialized
         None,              // outbox_repository
-        Some(event_bus.clone()), // EPIC-31 FIX: event_bus required for JobQueued events
+        Some(outbox_event_bus.clone()), // EPIC-31 FIX: event_bus required for JobQueued events
     );
 
     let metrics_service = MetricsServiceImpl::new();
@@ -682,7 +716,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     worker_registry.clone(),
                     providers.clone(),
                     WorkerLifecycleConfig::default(),
-                    event_bus.clone(),
+                    outbox_event_bus.clone(),
                 );
 
                 info!("  ✓ WorkerLifecycleManager started (legacy mode)");
@@ -725,14 +759,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create SchedulerService with or without provisioning
     // EPIC-29: Always use with_event_bus for reactive processing
-    let scheduler_service = if let Some(ref prov) = provisioning_service {
+    let scheduler_service = if let Some(ref _prov) = provisioning_service {
         SchedulerServiceImpl::with_event_bus(
             create_job_usecase.clone(),
             job_repository.clone(),
             job_queue.clone(),
             worker_registry.clone(),
             SchedulerConfig::default(),
-            event_bus.clone(),
+            outbox_event_bus.clone(),
         )
     } else {
         SchedulerServiceImpl::with_event_bus(
@@ -741,7 +775,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             job_queue.clone(),
             worker_registry.clone(),
             SchedulerConfig::default(),
-            event_bus.clone(),
+            outbox_event_bus.clone(),
         )
     };
 
@@ -1133,7 +1167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 provider_registry.clone(),
                 SchedulerConfig::default(),
                 sender,
-                event_bus.clone(),
+                outbox_event_bus.clone(),
                 controller_provisioning,
                 Some(execution_dispatcher), // EPIC-31: Now connected to saga dispatcher
                 Some(provisioning_coordinator), // EPIC-31: Now connected to saga coordinator
@@ -1164,6 +1198,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("JobController loop disabled (HODEI_JOB_CONTROLLER_ENABLED != 1)");
     }
 
+    // ==========================================================================
+    // EPIC-42: NATS Event-Driven Saga Consumers (Production-Ready)
+    // ==========================================================================
+    // Start the ExecutionSagaConsumer to process job execution events
+    // reactively via NATS JetStream durable consumers.
+    // This eliminates polling and provides at-least-once delivery semantics.
+    info!("🚀 Starting NATS ExecutionSagaConsumer for reactive job processing");
+
+    // Create ExecutionSagaConsumer for event-driven saga triggering
+    let exec_consumer = ExecutionSagaConsumerBuilder::new()
+        .with_client(nats_client)
+        .with_jetstream(nats_jetstream)
+        .with_orchestrator(orchestrator.clone())
+        .with_job_repository(job_repository.clone())
+        .with_worker_registry(worker_registry.clone())
+        .with_config(ExecutionSagaConsumerConfig {
+            consumer_name: "execution-saga-consumer".to_string(),
+            stream_prefix: "HODEI".to_string(),
+            job_queued_topic: "hodei.jobs.jobqueued".to_string(),
+            worker_ready_topic: "hodei.workers.workerready".to_string(),
+            consumer_group: "execution-dispatchers".to_string(),
+            concurrency: 10,
+            ack_wait: Duration::from_secs(30),
+            max_deliver: 3,
+            enable_auto_dispatch: true,
+            saga_timeout: Duration::from_secs(60),
+        })
+        .build()
+        .expect("Failed to build ExecutionSagaConsumer");
+
+    // Spawn the consumer in background
+    let consumer = exec_consumer.clone();
+    tokio::spawn(async move {
+        info!("📦 ExecutionSagaConsumer: Starting NATS consumer");
+        if let Err(e) = consumer.start().await {
+            tracing::error!("ExecutionSagaConsumer error: {}", e);
+        }
+        info!("📦 ExecutionSagaConsumer: Stopped");
+    });
+
+    // Keep consumer alive for server lifetime
+    let _nats_exec_consumer_guard = exec_consumer;
+
+    info!("✅ NATS ExecutionSagaConsumer started (reactive mode enabled)");
+
     // EPIC-28: ProviderManager DESHABILITADO
     // El modelo efímero usa: 1 job = 1 worker provisioned on-demand
     // El dispatcher (JobCoordinator) aprovisiona workers bajo demanda
@@ -1177,7 +1256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _worker_monitor_guard =
         match hodei_server_application::jobs::worker_monitor::WorkerMonitor::new(
             worker_registry.clone(),
-            event_bus.clone(),
+            outbox_event_bus.clone(),
         )
         .start()
         .await
