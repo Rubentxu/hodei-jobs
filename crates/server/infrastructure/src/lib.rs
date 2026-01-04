@@ -4,6 +4,7 @@
 // Por tecnología
 pub mod messaging;
 pub mod persistence;
+pub mod reconciliation;
 
 // Por dominio (implementaciones de providers)
 pub mod providers;
