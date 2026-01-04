@@ -391,6 +391,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires PostgreSQL. Run with DATABASE_URL set and migrations applied"]
     async fn test_queue_job_with_tx() {
         // Create a test pool (will fail without real DB, but tests the logic)
         let pool = PgPoolOptions::new()

@@ -8,6 +8,9 @@
 //! - Docker tests: cargo test --test multi_provider_integration test_docker_provider
 //! - Kubernetes tests: HODEI_K8S_TEST=1 cargo test --test multi_provider_integration test_kubernetes_provider
 //! - Both providers: HODEI_K8S_TEST=1 cargo test --test multi_provider_integration
+//!
+//! ⚠️ EPIC-43: These tests require maintenance for WorkerRegistry::register signature change
+//! The tests call register() with 2 arguments but now require 3 (including JobId).
 
 use hodei_server_domain::workers::provider_api::{
     WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs, WorkerMetrics,

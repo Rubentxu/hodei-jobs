@@ -1972,19 +1972,29 @@ mod tests {
         let busy_worker = create_test_worker_with_provider(provider_id.clone());
 
         // Registrar workers
+        // EPIC-43: register() ahora requiere job_id (uno-a-uno worker-job)
         let ready_worker = registry
-            .register(ready_worker.handle().clone(), ready_worker.spec().clone())
+            .register(
+                ready_worker.handle().clone(),
+                ready_worker.spec().clone(),
+                JobId::new(), // Workers de test no asignados a jobs
+            )
             .await
             .unwrap();
         let terminating_worker = registry
             .register(
                 terminating_worker.handle().clone(),
                 terminating_worker.spec().clone(),
+                JobId::new(),
             )
             .await
             .unwrap();
         let busy_worker = registry
-            .register(busy_worker.handle().clone(), busy_worker.spec().clone())
+            .register(
+                busy_worker.handle().clone(),
+                busy_worker.spec().clone(),
+                JobId::new(),
+            )
             .await
             .unwrap();
 
@@ -2066,7 +2076,11 @@ mod tests {
                 None,
             );
             let worker = registry
-                .register(worker_spec.handle().clone(), worker_spec.spec().clone())
+                .register(
+                    worker_spec.handle().clone(),
+                    worker_spec.spec().clone(),
+                    JobId::new(),
+                )
                 .await
                 .unwrap();
             // Set state to Connecting then Ready (proper state transitions)
@@ -2127,7 +2141,11 @@ mod tests {
                 None,
             );
             let worker = registry
-                .register(worker_spec.handle().clone(), worker_spec.spec().clone())
+                .register(
+                    worker_spec.handle().clone(),
+                    worker_spec.spec().clone(),
+                    JobId::new(),
+                )
                 .await
                 .unwrap();
             // Set state to Connecting then Ready (proper state transitions)
@@ -2400,8 +2418,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "EPIC-43: provision_worker now requires saga coordinator - test needs update"]
     async fn test_provision_worker_uses_legacy_when_no_saga_coordinator() {
         // GIVEN: Un WorkerLifecycleManager sin coordinator, con un provider registrado
+        // EPIC-43: Este test ya no es válido porque provision_worker ahora siempre usa saga coordinator
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());

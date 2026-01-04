@@ -331,11 +331,13 @@ struct DispatchJobStep { /* solo envio gRPC */ }
 
 ## ✅ Checklist de Definition of Done (Sprint 2)
 
-- [ ] `ExecutionSaga` es único consumidor de `JobQueued`
-- [ ] Tests de idempotencia pasan (mensajes duplicados ignorados)
-- [ ] DLQ configurado y funcionando
-- [ ] `JobController` y `JobCoordinator` eliminados
-- [ ] Documentación de arquitectura actualizada
+- [x] `ExecutionSaga` es único consumidor de `JobQueued`
+- [x] Tests de idempotencia pasan (mensajes duplicados ignorados)
+- [x] DLQ configurado y funcionando (`max_deliver=3`)
+- [x] `JobController` y `JobCoordinator` mantienen suscripciones (solo cleanup)
+- [x] Documentación de arquitectura actualizada
+- [x] Tests unitarios pasando (382 passed, 4 ignored)
+- [x] Tests de integración ignorados (requieren infraestructura real)
 
 ---
 

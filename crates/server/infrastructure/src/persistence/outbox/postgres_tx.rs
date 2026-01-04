@@ -98,13 +98,14 @@ mod tests {
             .await
             .expect("Failed to connect to postgres");
 
+        // Note: sqlx::query().execute() expects &Pool, not &mut Pool
         sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
-            .execute(&mut admin_conn)
+            .execute(&admin_conn)
             .await
             .expect("Failed to drop test database");
 
         sqlx::query(&format!("CREATE DATABASE {}", db_name))
-            .execute(&mut admin_conn)
+            .execute(&admin_conn)
             .await
             .expect("Failed to create test database");
 
