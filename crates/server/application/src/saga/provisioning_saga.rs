@@ -108,7 +108,11 @@ impl DynProvisioningSagaCoordinator {
                     // After saga completes, use provisioning_service to create the worker
                     match self
                         .provisioning_service
-                        .provision_worker(provider_id, spec.clone())
+                        .provision_worker(
+                            provider_id,
+                            spec.clone(),
+                            job_id.clone().unwrap_or_default(),
+                        )
                         .await
                     {
                         Ok(provisioning_result) => {
@@ -303,7 +307,11 @@ where
                     // After saga completes, use provisioning_service to create the worker
                     match self
                         .provisioning_service
-                        .provision_worker(provider_id, spec.clone())
+                        .provision_worker(
+                            provider_id,
+                            spec.clone(),
+                            job_id.clone().unwrap_or_default(),
+                        )
                         .await
                     {
                         Ok(provisioning_result) => {

@@ -189,6 +189,7 @@ pub mod test_in_memory {
             &self,
             handle: hodei_server_domain::workers::WorkerHandle,
             spec: hodei_server_domain::workers::WorkerSpec,
+            _job_id: Option<hodei_server_domain::shared_kernel::JobId>,
         ) -> Result<hodei_server_domain::workers::Worker> {
             let mut workers = self.workers.write().await;
             if workers.contains_key(&handle.worker_id) {

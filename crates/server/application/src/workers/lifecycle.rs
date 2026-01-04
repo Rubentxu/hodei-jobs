@@ -32,6 +32,7 @@ use hodei_server_domain::{
     workers::{Worker, WorkerFilter, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
+use hodei_shared::event_topics::worker_topics;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -629,11 +630,13 @@ impl WorkerLifecycleManager {
     }
 
     /// Provision a new worker using the specified provider
-    /// US-2.2: Uses saga pattern with automatic compensation when coordinator is configured
+    /// Uses saga pattern with automatic compensation - saga coordinator is REQUIRED
+    /// The job_id is REQUIRED - each worker is dedicated to a specific job
     pub async fn provision_worker(
         &self,
         provider_id: &ProviderId,
         spec: WorkerSpec,
+        job_id: JobId,
     ) -> Result<Worker> {
         // Check max workers limit first (before any provisioning attempt)
         let current_count = self.registry.count().await?;
@@ -643,94 +646,49 @@ impl WorkerLifecycleManager {
             });
         }
 
-        // US-2.2: Execute provisioning saga if coordinator is configured
-        if let Some(ref coordinator) = self.provisioning_saga_coordinator {
-            info!(provider_id = %provider_id, "🛠️ Provisioning worker via saga");
-
-            match coordinator
-                .execute_provisioning_saga(provider_id, &spec, None)
-                .await
-            {
-                Ok((worker_id, saga_result)) => {
-                    info!(
-                        provider_id = %provider_id,
-                        worker_id = %worker_id,
-                        saga_duration_ms = ?saga_result.duration.as_millis(),
-                        "✅ Worker provisioned via saga"
-                    );
-
-                    // Fetch the worker from registry
-                    let worker = self.registry.get(&worker_id).await?.ok_or_else(|| {
-                        DomainError::WorkerNotFound {
-                            worker_id: worker_id.clone(),
-                        }
-                    })?;
-
-                    return Ok(worker);
-                }
-                Err(ProvisioningSagaError::Compensated) => {
-                    error!(provider_id = %provider_id, "⚠️ Saga was compensated - infrastructure cleaned up");
-                    return Err(DomainError::WorkerProvisioningFailed {
-                        message: "Provisioning saga was compensated".to_string(),
-                    });
-                }
-                Err(e) => {
-                    error!(provider_id = %provider_id, error = %e, "❌ Saga provisioning failed");
-                    return Err(DomainError::WorkerProvisioningFailed {
-                        message: e.to_string(),
-                    });
-                }
-            }
-        }
-
-        // Fallback: Legacy provisioning when no saga coordinator is configured
-        // This path is kept for backward compatibility during migration
-        self.provision_worker_legacy(provider_id, &spec).await
-    }
-
-    /// Legacy provisioning method (used when saga coordinator is not configured)
-    async fn provision_worker_legacy(
-        &self,
-        provider_id: &ProviderId,
-        spec: &WorkerSpec,
-    ) -> Result<Worker> {
-        let providers = self.providers.read().await;
-        let provider = providers
-            .get(provider_id)
-            .ok_or_else(|| DomainError::ProviderNotFound {
-                provider_id: provider_id.clone(),
-            })?;
-
-        info!(
-            "Provisioning new worker via provider {} (legacy mode)",
-            provider_id
-        );
-
-        // Create worker via provider
-        let handle = provider.create_worker(spec).await.map_err(|e| {
-            DomainError::WorkerProvisioningFailed {
-                message: e.to_string(),
+        // Saga coordinator is required
+        let coordinator = self.provisioning_saga_coordinator.as_ref().ok_or_else(|| {
+            DomainError::InfrastructureError {
+                message: "Provisioning saga coordinator not configured".to_string(),
             }
         })?;
 
-        // Register in registry
-        let worker = self.registry.register(handle, spec.clone()).await?;
+        info!(provider_id = %provider_id, job_id = %job_id, "🛠️ Provisioning worker via saga");
 
-        // Publish WorkerProvisioned event
-        let event = DomainEvent::WorkerProvisioned {
-            worker_id: worker.id().clone(),
-            provider_id: provider_id.clone(),
-            spec_summary: format!("image={}, server={}", spec.image, spec.server_address),
-            occurred_at: Utc::now(),
-            correlation_id: None,
-            actor: Some("lifecycle-manager-legacy".to_string()),
-        };
-        if let Err(e) = self.event_bus.publish(&event).await {
-            warn!("Failed to publish WorkerProvisioned event: {}", e);
+        match coordinator
+            .execute_provisioning_saga(provider_id, &spec, Some(job_id))
+            .await
+        {
+            Ok((worker_id, saga_result)) => {
+                info!(
+                    provider_id = %provider_id,
+                    worker_id = %worker_id,
+                    saga_duration_ms = ?saga_result.duration.as_millis(),
+                    "✅ Worker provisioned via saga"
+                );
+
+                // Fetch the worker from registry
+                let worker = self.registry.get(&worker_id).await?.ok_or_else(|| {
+                    DomainError::WorkerNotFound {
+                        worker_id: worker_id.clone(),
+                    }
+                })?;
+
+                Ok(worker)
+            }
+            Err(ProvisioningSagaError::Compensated) => {
+                error!(provider_id = %provider_id, "⚠️ Saga was compensated - infrastructure cleaned up");
+                Err(DomainError::WorkerProvisioningFailed {
+                    message: "Provisioning saga was compensated".to_string(),
+                })
+            }
+            Err(e) => {
+                error!(provider_id = %provider_id, error = %e, "❌ Saga provisioning failed");
+                Err(DomainError::WorkerProvisioningFailed {
+                    message: e.to_string(),
+                })
+            }
         }
-
-        info!("Worker {} provisioned successfully (legacy)", worker.id());
-        Ok(worker)
     }
 
     /// Recover a failed worker and reassign its job (US-4.2)
@@ -943,8 +901,12 @@ impl WorkerLifecycleManager {
 
         info!("👂 WorkerLifecycleManager: Starting domain event monitoring");
 
-        // Subscribe to hodei_events topic (same as JobCoordinator publishes to)
-        match self.event_bus.subscribe("hodei_events").await {
+        // Subscribe to worker ephemeral terminating events only
+        match self
+            .event_bus
+            .subscribe(worker_topics::EPHEMERAL_TERMINATING)
+            .await
+        {
             Ok(mut stream) => {
                 while let Some(result) = stream.next().await {
                     match result {
@@ -1763,7 +1725,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkerRegistry for MockWorkerRegistry {
-        async fn register(&self, handle: WorkerHandle, spec: WorkerSpec) -> Result<Worker> {
+        async fn register(
+            &self,
+            handle: WorkerHandle,
+            spec: WorkerSpec,
+            _job_id: Option<JobId>,
+        ) -> Result<Worker> {
             let worker = Worker::new(handle.clone(), spec);
             self.workers
                 .write()
@@ -2328,6 +2295,7 @@ mod tests {
             &self,
             _provider_id: &ProviderId,
             _spec: WorkerSpec,
+            _job_id: JobId,
         ) -> Result<ProvisioningResult> {
             let worker = Worker::new(
                 WorkerHandle::new(
@@ -2445,9 +2413,10 @@ mod tests {
         let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
 
         let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
+        let job_id = JobId::new();
 
         // WHEN: Se llama provision_worker
-        let result = manager.provision_worker(&provider_id, spec).await;
+        let result = manager.provision_worker(&provider_id, spec, job_id).await;
 
         // THEN: Debe usar legacy provisioning (el worker debe ser registrado)
         assert!(result.is_ok(), "Legacy provisioning should succeed");
@@ -2535,9 +2504,10 @@ mod tests {
         manager.set_provisioning_saga_coordinator(coordinator);
 
         let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
+        let job_id = JobId::new();
 
         // WHEN: Se llama provision_worker
-        let result = manager.provision_worker(&provider_id, spec).await;
+        let result = manager.provision_worker(&provider_id, spec, job_id).await;
 
         // THEN: Debe retornar error ProviderOverloaded
         assert!(result.is_err());

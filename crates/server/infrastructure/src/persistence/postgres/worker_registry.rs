@@ -50,14 +50,20 @@ impl PostgresWorkerRegistry {
 
 #[async_trait]
 impl WorkerRegistry for PostgresWorkerRegistry {
-    async fn register(&self, handle: WorkerHandle, spec: WorkerSpec) -> Result<Worker> {
+    async fn register(
+        &self,
+        handle: WorkerHandle,
+        spec: WorkerSpec,
+        job_id: Option<JobId>,
+    ) -> Result<Worker> {
         let worker_id = handle.worker_id.0;
         let provider_id = handle.provider_id.0;
+        let current_job_id = job_id.map(|j| j.0);
 
         sqlx::query(
             r#"
-            INSERT INTO workers (id, provider_id, provider_type, provider_resource_id, state, spec, handle)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO workers (id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(worker_id)
@@ -75,6 +81,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
                 message: format!("Failed to serialize worker handle: {}", e),
             }
         })?)
+        .bind(current_job_id)
         .execute(&self.pool)
         .await
         .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {

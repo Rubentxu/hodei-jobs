@@ -3,7 +3,8 @@ use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobQueue;
-use hodei_server_domain::shared_kernel::{DomainError, Result};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_shared::event_topics::ALL_EVENTS;
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -44,13 +45,11 @@ where
     }
 
     pub async fn subscribe_to_events(&self) -> Result<()> {
-        let mut stream = self
-            .event_bus
-            .subscribe("hodei_events")
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
+        let mut stream = self.event_bus.subscribe(ALL_EVENTS).await.map_err(|e| {
+            DomainError::InfrastructureError {
                 message: format!("Failed to subscribe to events: {}", e),
-            })?;
+            }
+        })?;
 
         info!("ProviderManager subscribed to events");
 
@@ -157,7 +156,7 @@ where
                         );
 
                         match provisioning_service
-                            .provision_worker(provider_id, worker_spec)
+                            .provision_worker(provider_id, worker_spec, JobId::new())
                             .await
                         {
                             Ok(result) => {

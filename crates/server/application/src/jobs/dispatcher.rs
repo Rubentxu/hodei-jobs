@@ -31,6 +31,7 @@ use hodei_server_domain::scheduling::{
 use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::health::WorkerHealthService;
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
+use hodei_shared::states::JobState;
 use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -864,7 +865,10 @@ impl JobDispatcher {
                 .default_worker_spec(&provider_id)
                 .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
 
-            match provisioning.provision_worker(&provider_id, spec).await {
+            match provisioning
+                .provision_worker(&provider_id, spec, job.id.clone())
+                .await
+            {
                 Ok(result) => {
                     info!(
                         "✅ Worker provisioned: id={}, otp={}",
@@ -1107,13 +1111,62 @@ impl JobDispatcher {
     }
 
     /// Find a pending job that matches worker capabilities
-    async fn find_pending_job_for_worker(&self, _worker: &Worker) -> anyhow::Result<Option<Job>> {
-        // Try to dequeue a job for this worker
-        // If we get a job, it's assigned to this worker (we'll re-enqueue if dispatch fails)
+    /// Priority: 1) Worker has associated job_id → fetch that specific job
+    ///           2) Worker has no job_id → dequeue oldest pending job (FIFO)
+    async fn find_pending_job_for_worker(&self, worker: &Worker) -> anyhow::Result<Option<Job>> {
+        // Check if worker has a pre-associated job_id (set during provisioning)
+        if let Some(associated_job_id) = worker.current_job_id() {
+            debug!(
+                worker_id = %worker.id(),
+                job_id = %associated_job_id,
+                "JobDispatcher: Worker has associated job, fetching directly"
+            );
+
+            // Fetch the specific job associated with this worker
+            match self.job_repository.find_by_id(&associated_job_id).await {
+                Ok(Some(job)) => {
+                    // Verify job is still in PENDING state
+                    if *job.state() == JobState::Pending {
+                        debug!(
+                            job_id = %job.id,
+                            "JobDispatcher: Found associated pending job"
+                        );
+                        return Ok(Some(job));
+                    } else {
+                        debug!(
+                            job_id = %job.id,
+                            state = ?job.state(),
+                            "JobDispatcher: Associated job is not pending, using FIFO"
+                        );
+                        // Job already processed, fall through to FIFO
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        job_id = %associated_job_id,
+                        "JobDispatcher: Associated job not found, using FIFO"
+                    );
+                    // Job doesn't exist, fall through to FIFO
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        job_id = %associated_job_id,
+                        "JobDispatcher: Failed to fetch associated job, using FIFO"
+                    );
+                    // Fall through to FIFO on error
+                }
+            }
+        }
+
+        // Fallback: Dequeue oldest pending job (FIFO) for workers without job association
         let dequeued_job = self.job_queue.dequeue().await?;
 
         if let Some(job) = dequeued_job {
-            // Return the job for dispatching
+            debug!(
+                job_id = %job.id,
+                "JobDispatcher: Dequeued job via FIFO for worker without job association"
+            );
             Ok(Some(job))
         } else {
             Ok(None)

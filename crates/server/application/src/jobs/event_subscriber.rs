@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
+use hodei_shared::event_topics::ALL_EVENTS;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -59,7 +60,7 @@ impl EventSubscriber {
         // Subscribe to the event topic
         let mut stream = self
             .event_bus
-            .subscribe("hodei_events")
+            .subscribe(ALL_EVENTS)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 

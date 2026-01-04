@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use hodei_server_domain::iam::WorkerBootstrapTokenStore;
-use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, Result};
 use hodei_server_domain::workers::{WorkerProvider, WorkerRegistry, WorkerSpec};
 
 use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
@@ -107,10 +107,11 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         &self,
         provider_id: &ProviderId,
         spec: WorkerSpec,
+        job_id: JobId,
     ) -> Result<ProvisioningResult> {
         info!(
-            "Provisioning worker via provider {} with image {}",
-            provider_id, spec.image
+            "Provisioning worker via provider {} with image {} for job {:?}",
+            provider_id, spec.image, job_id
         );
 
         // Get the provider
@@ -158,8 +159,8 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             }
         })?;
 
-        // Register in registry
-        let worker = self.registry.register(handle, spec).await?;
+        // Register in registry with job association
+        let worker = self.registry.register(handle, spec, Some(job_id)).await?;
 
         info!("Worker {} provisioned successfully with OTP", worker_id);
 

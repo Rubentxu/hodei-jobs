@@ -96,7 +96,13 @@ impl WorkerFilter {
 #[async_trait]
 pub trait WorkerRegistry: Send + Sync {
     /// Registrar un nuevo worker
-    async fn register(&self, handle: WorkerHandle, spec: WorkerSpec) -> Result<Worker>;
+    /// Si se proporciona job_id, el worker se asocia directamente con ese job
+    async fn register(
+        &self,
+        handle: WorkerHandle,
+        spec: WorkerSpec,
+        job_id: Option<JobId>,
+    ) -> Result<Worker>;
 
     /// Dar de baja un worker
     async fn unregister(&self, worker_id: &WorkerId) -> Result<()>;

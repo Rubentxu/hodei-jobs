@@ -328,7 +328,12 @@ mod tests {
 
     #[async_trait]
     impl WorkerRegistry for MockWorkerRegistry {
-        async fn register(&self, _handle: WorkerHandle, _spec: WorkerSpec) -> TestResult<Worker> {
+        async fn register(
+            &self,
+            _handle: WorkerHandle,
+            _spec: WorkerSpec,
+            _job_id: Option<JobId>,
+        ) -> TestResult<Worker> {
             unimplemented!()
         }
         async fn unregister(&self, _worker_id: &WorkerId) -> TestResult {

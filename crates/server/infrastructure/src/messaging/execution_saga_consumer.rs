@@ -20,11 +20,24 @@ use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
+use serde::Deserialize;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
+
+use hodei_shared::event_topics::{job_topics, worker_topics};
+
+/// Message envelope for NATS transport (matches nats.rs)
+#[derive(Debug, Clone, Deserialize)]
+pub struct NatsMessageEnvelope {
+    pub payload: String,
+    #[serde(default)]
+    pub event_type: String,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+}
 
 /// Configuration for execution saga consumer
 #[derive(Debug, Clone)]
@@ -65,8 +78,8 @@ impl Default for ExecutionSagaConsumerConfig {
         Self {
             consumer_name: "execution-saga-consumer".to_string(),
             stream_prefix: "HODEI".to_string(),
-            job_queued_topic: "hodei_events.jobs.queued".to_string(),
-            worker_ready_topic: "hodei_events.workers.ready".to_string(),
+            job_queued_topic: job_topics::QUEUED.to_string(),
+            worker_ready_topic: worker_topics::READY.to_string(),
             consumer_group: "execution-dispatchers".to_string(),
             concurrency: 10,
             ack_wait: Duration::from_secs(30),
@@ -203,11 +216,18 @@ impl ExecutionSagaConsumer {
 
     /// Process a single NATS message payload
     async fn process_message(&self, payload: &[u8]) -> Result<(), DomainError> {
-        // Parse the event from the message payload
-        let event: DomainEvent =
+        // Parse the envelope from the message payload
+        let envelope: NatsMessageEnvelope =
             serde_json::from_slice(payload).map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to deserialize event: {}", e),
+                message: format!("Failed to deserialize envelope: {}", e),
             })?;
+
+        // Deserialize the domain event from the envelope's payload
+        let event: DomainEvent = serde_json::from_str(&envelope.payload).map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to deserialize event from envelope: {}", e),
+            }
+        })?;
 
         match &event {
             DomainEvent::JobQueued { job_id, .. } => {
@@ -385,38 +405,27 @@ impl ExecutionSagaConsumer {
     }
 
     /// Ensure the execution events stream exists
+    /// Uses the shared HODEI_EVENTS stream instead of creating a separate one
     async fn ensure_stream(&self) -> Result<async_nats::jetstream::stream::Stream, DomainError> {
-        let stream_name = format!("{}_EXECUTION_EVENTS", self.config.stream_prefix);
+        let stream_name = format!("{}_EVENTS", self.config.stream_prefix);
 
         match self.jetstream.get_stream(&stream_name).await {
             Ok(stream) => {
                 debug!(
-                    "📦 ExecutionSagaConsumer: Stream '{}' already exists",
+                    "📦 ExecutionSagaConsumer: Using shared stream '{}'",
                     stream_name
                 );
                 Ok(stream)
             }
             Err(_) => {
-                let stream = self
-                    .jetstream
-                    .create_stream(StreamConfig {
-                        name: stream_name.clone(),
-                        subjects: vec![
-                            self.config.job_queued_topic.clone(),
-                            self.config.worker_ready_topic.clone(),
-                        ],
-                        retention: RetentionPolicy::WorkQueue,
-                        max_messages: 50000,
-                        max_bytes: 50 * 1024 * 1024, // 50MB
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| DomainError::InfrastructureError {
-                        message: format!("Failed to create stream {}: {}", stream_name, e),
-                    })?;
-
-                info!("📦 ExecutionSagaConsumer: Created stream '{}'", stream_name);
-                Ok(stream)
+                // Stream doesn't exist - this is an error condition
+                // The main server should have created HODEI_EVENTS
+                Err(DomainError::InfrastructureError {
+                    message: format!(
+                        "Stream '{}' does not exist. Ensure the server is running and has created the events stream.",
+                        stream_name
+                    ),
+                })
             }
         }
     }
@@ -426,9 +435,11 @@ impl ExecutionSagaConsumer {
         &self,
         stream_name: &str,
     ) -> Result<async_nats::jetstream::consumer::PullConsumer, DomainError> {
+        // Consumer ID includes filter_subject to ensure uniqueness for WorkQueue streams
+        let filter_suffix = self.config.job_queued_topic.replace('.', "-");
         let consumer_id = format!(
-            "{}-{}",
-            self.config.consumer_name, self.config.consumer_group
+            "{}-{}-{}",
+            self.config.consumer_name, self.config.consumer_group, filter_suffix
         );
 
         // Get stream to interact with consumer
@@ -448,6 +459,8 @@ impl ExecutionSagaConsumer {
                 Ok(consumer)
             }
             Err(_) => {
+                // Consumer doesn't exist, create it with filter_subject
+                // Consumer ID already includes filter_subject for uniqueness
                 let consumer_config = PullConsumerConfig {
                     durable_name: Some(consumer_id.clone()),
                     deliver_policy: DeliverPolicy::All,
@@ -455,7 +468,8 @@ impl ExecutionSagaConsumer {
                     ack_wait: self.config.ack_wait,
                     max_deliver: self.config.max_deliver,
                     max_ack_pending: self.config.concurrency as i64,
-                    filter_subject: "".to_string(), // Subscribe to all subjects
+                    // Subscribe to job_queued_topic for triggering execution sagas
+                    filter_subject: self.config.job_queued_topic.clone(),
                     ..Default::default()
                 };
 

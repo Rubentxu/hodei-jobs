@@ -22,10 +22,13 @@ use futures::stream::BoxStream;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
+
+use hodei_shared::event_topics::ALL_EVENTS;
 
 /// NATS connection configuration.
 ///
@@ -177,6 +180,8 @@ pub struct NatsEventBus {
     stream_prefix: String,
     /// Consumer state tracking
     state: Arc<Mutex<NatsEventBusState>>,
+    /// Database pool for domain_events persistence
+    pool: Option<Arc<PgPool>>,
 }
 
 #[derive(Debug, Default)]
@@ -243,6 +248,17 @@ impl NatsEventBus {
     /// # Errors
     /// Returns an error if connection to NATS fails
     pub async fn new(config: NatsConfig) -> Result<Self, EventBusError> {
+        Self::new_with_pool(config, None).await
+    }
+
+    /// Creates a new NatsEventBus with database pool for domain_events persistence
+    ///
+    /// # Errors
+    /// Returns an error if connection to NATS fails
+    pub async fn new_with_pool(
+        config: NatsConfig,
+        pool: Option<Arc<PgPool>>,
+    ) -> Result<Self, EventBusError> {
         let connection_timeout = Duration::from_secs(config.connection_timeout_secs);
 
         let mut connect_options = ConnectOptions::default().connection_timeout(connection_timeout);
@@ -286,6 +302,7 @@ impl NatsEventBus {
             config: Arc::new(config),
             stream_prefix: "HODEI".to_string(),
             state: Arc::new(Mutex::new(NatsEventBusState::default())),
+            pool,
         })
     }
 
@@ -368,40 +385,48 @@ impl NatsEventBus {
         };
 
         let action = event.event_type().to_lowercase();
-        format!("hodei.{}.{}", entity, action)
+        // Professional naming: hodei.events.{entity}.{action}
+        format!("hodei.events.{}.{}", entity, action)
     }
 
     /// Gets the stream name for a subject
+    /// Uses HODEI_EVENTS stream for all events (per EPIC design)
     fn stream_name_for_subject(&self, subject: &str) -> String {
-        let parts: Vec<&str> = subject.split('.').collect();
-        if parts.len() >= 2 {
-            format!("{}_{}", self.stream_prefix, parts[1])
-        } else {
-            format!("{}_events", self.stream_prefix)
-        }
+        // All subjects map to HODEI_EVENTS stream
+        format!("{}_EVENTS", self.stream_prefix)
+    }
+
+    /// Gets the subjects that should be configured for the stream
+    fn get_stream_subjects(&self) -> Vec<String> {
+        // Use > wildcard to match all levels: hodei.events.jobs.jobcreated, hodei.events.workers.ready, etc.
+        vec!["hodei.events.>".to_string()]
     }
 
     /// Ensures the stream exists for a given subject
     async fn ensure_stream(&self, subject: &str) -> Result<StreamHandle, EventBusError> {
         let stream_name = self.stream_name_for_subject(subject);
+        eprintln!(
+            "[NATS-STREAM] ensure_stream: stream={}, subject={}",
+            stream_name, subject
+        );
 
         // Check if stream already exists in our state
         {
             let state = self.state.lock().await;
             if let Some(info) = state.streams.iter().find(|s| s.name == stream_name) {
                 if let Some(handle) = &info.handle {
-                    debug!("Stream {} already exists", stream_name);
+                    eprintln!("[NATS-STREAM] Found in cache: {}", stream_name);
                     return Ok(handle.clone());
                 }
             }
         }
 
+        eprintln!("[NATS-STREAM] Not in cache, checking NATS...");
         // Try to get stream from NATS (it might exist from previous run)
         match self.jetstream.get_stream(&stream_name).await {
             Ok(stream) => {
-                debug!("Stream {} already exists in NATS", stream_name);
+                eprintln!("[NATS-STREAM] Found in NATS: {}", stream_name);
                 let mut state = self.state.lock().await;
-                // Update or add to state
                 if let Some(info) = state.streams.iter_mut().find(|s| s.name == stream_name) {
                     info.handle = Some(stream.clone());
                 } else {
@@ -413,19 +438,27 @@ impl NatsEventBus {
                 }
                 return Ok(stream);
             }
-            Err(_) => {
-                // Stream doesn't exist, create it
-                info!("Creating stream {} for subject {}", stream_name, subject);
+            Err(e) => {
+                eprintln!(
+                    "[NATS-STREAM] Not found in NATS: {} (error: {:?}), creating...",
+                    stream_name, e
+                );
             }
         }
 
-        // Create stream with workqueue retention for efficient processing
+        // Create stream with all configured subjects
+        let stream_subjects = self.get_stream_subjects();
+        eprintln!(
+            "[NATS-STREAM] Creating stream {} with subjects: {:?}",
+            stream_name, stream_subjects
+        );
+
         let stream_config = StreamConfig {
             name: stream_name.clone(),
-            subjects: vec![subject.to_string()],
+            subjects: stream_subjects,
             retention: async_nats::jetstream::stream::RetentionPolicy::WorkQueue,
-            max_age: Duration::from_secs(24 * 60 * 60), // 24 hours
-            max_bytes: 1024 * 1024 * 1024,              // 1GB
+            max_age: Duration::from_secs(24 * 60 * 60),
+            max_bytes: 1024 * 1024 * 1024,
             max_messages: 1_000_000,
             storage: async_nats::jetstream::stream::StorageType::File,
             num_replicas: 1,
@@ -433,12 +466,20 @@ impl NatsEventBus {
             ..Default::default()
         };
 
+        eprintln!("[NATS-STREAM] Creating stream {}...", stream_name);
         let stream = self
             .jetstream
             .create_stream(stream_config)
             .await
-            .map_err(|e| EventBusError::ConnectionError(e.to_string()))?;
+            .map_err(|e| {
+                eprintln!(
+                    "[NATS-STREAM] FAILED to create stream {}: {:?}",
+                    stream_name, e
+                );
+                EventBusError::ConnectionError(e.to_string())
+            })?;
 
+        eprintln!("[NATS-STREAM] Stream {} created successfully!", stream_name);
         let mut state = self.state.lock().await;
         state.streams.push(StreamInfo {
             name: stream_name,
@@ -446,15 +487,16 @@ impl NatsEventBus {
             handle: Some(stream.clone()),
         });
 
-        info!("✅ Stream created successfully");
         Ok(stream)
     }
 
     /// Gets or creates a consumer for a subject
+    /// For WorkQueue streams, each consumer must have a unique filter_subject
     async fn get_consumer(
         &self,
         subject: &str,
         consumer_name: &str,
+        filter_subject: Option<&str>,
     ) -> Result<PullConsumer, EventBusError> {
         let mut stream = self.ensure_stream(subject).await?;
         let stream_info = stream
@@ -462,7 +504,11 @@ impl NatsEventBus {
             .await
             .map_err(|e| EventBusError::ConnectionError(e.to_string()))?;
         let stream_name = stream_info.config.name.clone();
-        let consumer_id = format!("{}-{}", stream_name, consumer_name);
+        // Consumer ID includes filter_subject to ensure uniqueness
+        let filter_suffix = filter_subject
+            .map(|f| format!("-{}", f.replace('.', "-")))
+            .unwrap_or_default();
+        let consumer_id = format!("{}{}-{}", stream_name, filter_suffix, consumer_name);
 
         // Try to get existing consumer
         match stream.get_consumer(&consumer_id).await {
@@ -472,9 +518,10 @@ impl NatsEventBus {
             }
             Err(_) => {
                 // Consumer doesn't exist, create it
+                // Consumer ID includes filter_subject for uniqueness, so no need to delete duplicates
                 info!(
-                    "Creating consumer {} for stream {}",
-                    consumer_id, stream_name
+                    "Creating consumer {} for stream {} with filter {:?}",
+                    consumer_id, stream_name, filter_subject
                 );
             }
         }
@@ -487,6 +534,8 @@ impl NatsEventBus {
             ack_wait: Duration::from_secs(30),
             max_deliver: 5, // Retry up to 5 times
             max_ack_pending: 1000,
+            // For WorkQueue streams, filter_subject is required for multiple consumers
+            filter_subject: filter_subject.map(|s| s.to_string()).unwrap_or_default(),
             ..Default::default()
         };
 
@@ -502,37 +551,130 @@ impl NatsEventBus {
 
 #[async_trait]
 impl EventBus for NatsEventBus {
-    /// Publishes a domain event to NATS JetStream
+    /// Publishes a domain event to NATS JetStream and persists to domain_events
     ///
     /// # Errors
     /// Returns an error if:
     /// - Serialization fails
     /// - Publishing to NATS fails
     /// - Ack is not received within timeout
+    /// - Database persistence fails (if pool is configured)
     #[instrument(skip(self, event), fields(event_type = ?event.event_type(), aggregate_id = ?event.aggregate_id()))]
     async fn publish(&self, event: &DomainEvent) -> Result<(), EventBusError> {
+        if let Some(ref pool) = self.pool {
+            info!(
+                "[NATS-PUBLISH] Event {} - persisting to domain_events",
+                event.event_type()
+            );
+        } else {
+            warn!(
+                "[NATS-PUBLISH] Event {} - NO pool configured, skipping domain_events persistence",
+                event.event_type()
+            );
+        }
         let subject = Self::event_to_subject(event);
         let envelope = NatsMessageEnvelope::from_domain_event(event);
 
         let payload = serde_json::to_vec(&envelope)
             .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
 
+        // Clone payload for persistence before it's moved
+        let payload_for_persistence = payload.clone();
+
+        // Ensure the stream exists before publishing
+        let stream_name = self.stream_name_for_subject(&subject);
+        eprintln!(
+            "[NATS-PUBLISH] About to ensure stream '{}' for subject '{}'",
+            stream_name, subject
+        );
+        let _stream = self.ensure_stream(&subject).await.map_err(|e| {
+            eprintln!("[NATS-PUBLISH] CRITICAL: ensure_stream failed: {:?}", e);
+            EventBusError::ConnectionError(format!("ensure_stream failed: {}", e))
+        })?;
+        eprintln!(
+            "[NATS-PUBLISH] Stream ensured, about to publish to subject '{}'",
+            subject
+        );
+
         // Publish with ack request for at-least-once delivery guarantee
         let ack = self
             .jetstream
             .publish(subject.clone(), payload.into())
             .await
-            .map_err(|e| EventBusError::PublishError(e.to_string()))?;
+            .map_err(|e| {
+                eprintln!("[NATS-PUBLISH] FAILED to publish to {}: {:?}", subject, e);
+                EventBusError::PublishError(e.to_string())
+            })?;
 
+        eprintln!("[NATS-PUBLISH] Got ack, waiting for confirmation...");
         // Wait for ack (confirms message was stored)
-        ack.await
-            .map_err(|e| EventBusError::PublishError(e.to_string()))?;
+        ack.await.map_err(|e| {
+            eprintln!("[NATS-PUBLISH] FAILED to confirm ack: {:?}", e);
+            EventBusError::PublishError(e.to_string())
+        })?;
 
-        debug!(
-            "✅ Published event {} to subject {}",
+        eprintln!(
+            "[NATS-PUBLISH] Successfully published {} to {}",
             event.event_type(),
             subject
         );
+
+        // Persist event to domain_events table if pool is configured
+        if let Some(ref pool) = self.pool {
+            info!(
+                "[DOMAIN-EVENTS] Persisting event {} to database",
+                event.event_type()
+            );
+
+            let event_id = uuid::Uuid::new_v4();
+            let occurred_at = event.occurred_at();
+            let event_type = event.event_type();
+            let aggregate_id = event.aggregate_id();
+            let correlation_id = event.correlation_id();
+            let actor = event.actor();
+
+            // Convert payload to JSON Value for insertion
+            let payload_json: serde_json::Value = serde_json::from_slice(&payload_for_persistence)
+                .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
+
+            match sqlx::query(
+                r#"
+                INSERT INTO domain_events
+                (id, occurred_at, event_type, aggregate_id, correlation_id, actor, payload)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(event_id)
+            .bind(occurred_at)
+            .bind(event_type)
+            .bind(aggregate_id)
+            .bind(correlation_id)
+            .bind(actor)
+            .bind(payload_json)
+            .execute(pool.as_ref())
+            .await
+            {
+                Ok(_) => {
+                    info!(
+                        "[DOMAIN-EVENTS] ✅ Event {} persisted (id: {})",
+                        event.event_type(),
+                        event_id
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "[DOMAIN-EVENTS] ❌ Failed to persist event {}: {}",
+                        event.event_type(),
+                        e
+                    );
+                }
+            }
+        } else {
+            warn!(
+                "[DOMAIN-EVENTS] No pool configured, skipping persistence for event {}",
+                event.event_type()
+            );
+        }
 
         Ok(())
     }
@@ -556,7 +698,10 @@ impl EventBus for NatsEventBus {
         let subject = topic.to_string();
         let consumer_name = format!("consumer-{}", topic.replace('.', "-"));
 
-        let consumer: PullConsumer = self.get_consumer(&subject, &consumer_name).await?;
+        // For WorkQueue streams, use the topic as filter_subject to enable multiple consumers
+        let consumer: PullConsumer = self
+            .get_consumer(&subject, &consumer_name, Some(&subject))
+            .await?;
 
         // Create the message stream
         let stream = async_stream::stream! {
@@ -629,7 +774,7 @@ impl NatsEventBus {
         &self,
         entity: &str,
     ) -> Result<BoxStream<'static, Result<DomainEvent, EventBusError>>, EventBusError> {
-        let subject = format!("hodei.{}.*", entity);
+        let subject = format!("hodei.events.{}.>", entity);
         self.subscribe(&subject).await
     }
 
@@ -639,7 +784,7 @@ impl NatsEventBus {
     pub async fn subscribe_all(
         &self,
     ) -> Result<BoxStream<'static, Result<DomainEvent, EventBusError>>, EventBusError> {
-        self.subscribe("hodei.>").await
+        self.subscribe(ALL_EVENTS).await
     }
 
     /// Get a reference to the JetStream context for advanced operations
@@ -694,6 +839,8 @@ mod tests {
     /// Tests that events are correctly mapped to subjects
     #[test]
     fn test_event_to_subject_mapping() {
+        use hodei_server_shared::event_topics::{job_topics, worker_topics};
+
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
 
@@ -705,10 +852,7 @@ mod tests {
             correlation_id: None,
             actor: None,
         };
-        assert_eq!(
-            NatsEventBus::event_to_subject(&event),
-            "hodei.jobs.jobcreated"
-        );
+        assert_eq!(NatsEventBus::event_to_subject(&event), job_topics::CREATED);
 
         // Test WorkerReady
         let event = DomainEvent::WorkerReady {
@@ -718,10 +862,7 @@ mod tests {
             correlation_id: None,
             actor: None,
         };
-        assert_eq!(
-            NatsEventBus::event_to_subject(&event),
-            "hodei.workers.workerready"
-        );
+        assert_eq!(NatsEventBus::event_to_subject(&event), worker_topics::READY);
 
         // Test JobQueued
         let event = DomainEvent::JobQueued {
@@ -732,10 +873,7 @@ mod tests {
             correlation_id: None,
             actor: None,
         };
-        assert_eq!(
-            NatsEventBus::event_to_subject(&event),
-            "hodei.jobs.jobqueued"
-        );
+        assert_eq!(NatsEventBus::event_to_subject(&event), job_topics::QUEUED);
 
         // Test WorkerProvisioningRequested
         let event = DomainEvent::WorkerProvisioningRequested {
@@ -748,7 +886,7 @@ mod tests {
         };
         assert_eq!(
             NatsEventBus::event_to_subject(&event),
-            "hodei.workers.workerprovisioningrequested"
+            worker_topics::PROVISIONING_REQUESTED
         );
     }
 

@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+use hodei_shared::event_topics::ALL_EVENTS;
+
 /// Configuration for saga event consumer
 #[derive(Debug, Clone)]
 pub struct SagaConsumerConfig {
@@ -50,7 +52,7 @@ impl Default for SagaConsumerConfig {
     fn default() -> Self {
         Self {
             consumer_group: "saga-processors".to_string(),
-            topic: "hodei_events".to_string(),
+            topic: ALL_EVENTS.to_string(), // Multi-level wildcard for all events
             durable_name: "saga-consumer".to_string(),
             stream_prefix: "HODEI".to_string(),
             concurrency: 10,
@@ -288,7 +290,7 @@ mod tests {
     #[test]
     fn test_config_default_values() {
         let config = SagaConsumerConfig::default();
-        assert_eq!(config.topic, "hodei_events");
+        assert_eq!(config.topic, "hodei.events.>");
         assert_eq!(config.consumer_group, "saga-processors");
         assert_eq!(config.concurrency, 10);
         assert_eq!(config.max_retries, 3);

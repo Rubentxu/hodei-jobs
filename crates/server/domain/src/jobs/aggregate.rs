@@ -638,6 +638,7 @@ pub struct InputFile {
 
 /// Preferencias del usuario para un job
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobPreferences {
     /// Provider preferido (opcional)
     pub preferred_provider: Option<String>,

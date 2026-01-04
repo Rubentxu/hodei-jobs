@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use hodei_server_domain::providers::ProviderConfig;
-use hodei_server_domain::shared_kernel::{ProviderId, Result, WorkerId};
+use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId};
 use hodei_server_domain::workers::WorkerSpec;
 
 /// Result of a successful worker provisioning
@@ -40,15 +40,17 @@ pub trait WorkerProvisioningService: Send + Sync {
     ///
     /// This method:
     /// 1. Creates the worker via the provider
-    /// 2. Registers it in the WorkerRegistry
+    /// 2. Registers it in the WorkerRegistry with the job association
     /// 3. Generates an OTP token for authentication
     /// 4. Returns the provisioning result
     ///
-    /// The worker will use the OTP to authenticate when it connects.
+    /// The job_id is REQUIRED - each worker is dedicated to a specific job.
+    /// This ensures proper worker-to-job matching as per the system policy.
     async fn provision_worker(
         &self,
         provider_id: &ProviderId,
         spec: WorkerSpec,
+        job_id: JobId,
     ) -> Result<ProvisioningResult>;
 
     /// Check if a provider is available for provisioning
@@ -95,6 +97,7 @@ mod tests {
             &self,
             provider_id: &ProviderId,
             spec: WorkerSpec,
+            _job_id: JobId,
         ) -> Result<ProvisioningResult> {
             self.provisions
                 .lock()
@@ -144,7 +147,8 @@ mod tests {
             "http://localhost:50051".to_string(),
         );
 
-        let result = service.provision_worker(&provider_id, spec).await;
+        let job_id = JobId::new();
+        let result = service.provision_worker(&provider_id, spec, job_id).await;
         assert!(result.is_ok());
 
         let result = result.unwrap();

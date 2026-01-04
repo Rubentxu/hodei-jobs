@@ -18,6 +18,9 @@ use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, TerminationReason};
 use hodei_server_domain::workers::WorkerRegistry;
+use hodei_shared::event_topics::ALL_EVENTS;
+use hodei_shared::event_topics::job_topics;
+use hodei_shared::event_topics::worker_topics;
 use sqlx::PgPool;
 use std::fmt;
 use std::sync::Arc;
@@ -144,21 +147,30 @@ impl JobCoordinator {
 
         // Subscribe to JobQueued events
         let mut job_queue_stream = event_bus
-            .subscribe("hodei_events")
+            .subscribe(job_topics::QUEUED)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to {}: {}", job_topics::QUEUED, e))?;
 
         // Subscribe to WorkerReady events
-        let mut worker_ready_stream = event_bus
-            .subscribe("hodei_events")
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
+        let mut worker_ready_stream =
+            event_bus
+                .subscribe(worker_topics::READY)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to subscribe to {}: {}", worker_topics::READY, e)
+                })?;
 
         // EPIC-32: Subscribe to JobStatusChanged for worker cleanup
         let mut job_status_stream = event_bus
-            .subscribe("hodei_events")
+            .subscribe(job_topics::STATUS_CHANGED)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to hodei_events: {}", e))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to subscribe to {}: {}",
+                    job_topics::STATUS_CHANGED,
+                    e
+                )
+            })?;
 
         let dispatcher = self.job_dispatcher.clone();
         let event_bus_for_cleanup = event_bus.clone();

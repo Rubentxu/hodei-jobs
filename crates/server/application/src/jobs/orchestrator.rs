@@ -235,7 +235,7 @@ impl JobOrchestrator {
         let spec = self.default_worker_spec.clone();
         let worker = self
             .lifecycle_manager
-            .provision_worker(provider_id, spec)
+            .provision_worker(provider_id, spec, job_id.clone())
             .await?;
 
         // Wait for worker to be ready (simplified - in practice would use events)

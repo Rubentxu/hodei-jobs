@@ -71,6 +71,7 @@ use hodei_server_infrastructure::providers::docker::DockerProviderBuilder;
 use hodei_server_infrastructure::providers::kubernetes::{
     KubernetesConfig, KubernetesConfigBuilder, KubernetesProviderBuilder,
 };
+use hodei_shared::event_topics::{job_topics, worker_topics};
 
 use hodei_server_interface::grpc::{
     GrpcWorkerCommandSender, JobExecutionServiceImpl, LogStreamService, LogStreamServiceGrpc,
@@ -93,9 +94,13 @@ use hodei_server_infrastructure::persistence::saga::reactive_processor::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging with env filter
+    // Initialize logging - default to INFO level unless RUST_LOG is set
+    let env_filter = match EnvFilter::try_from_default_env() {
+        Ok(filter) => filter,
+        Err(_) => EnvFilter::try_new("info")?,
+    };
     let subscriber = FmtSubscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .with_target(true)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
@@ -146,6 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
 
     info!("Connected to database");
+
+    // Create Arc wrapper for components that need it
+    let pool_arc = Arc::new(pool.clone());
 
     // Initialize log persistence configuration
     let server_config =
@@ -309,7 +317,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // NATS is required. Server will fail to start if NATS is unavailable.
 
     // Connect to NATS
-    let nats_urls = env::var("HODEI_NATS_URLS").unwrap_or_else(|_| "nats://nats:4222".to_string());
+    let nats_urls =
+        env::var("HODEI_NATS_URLS").unwrap_or_else(|_| "nats://localhost:4222".to_string());
     info!("Connecting to NATS at: {}", nats_urls);
 
     // Create NATS EventBus (handles connection internally)
@@ -322,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let nats_event_bus = NatsEventBus::new(nats_config)
+    let nats_event_bus = NatsEventBus::new_with_pool(nats_config, Some(pool_arc.clone()))
         .await
         .map_err(|e| anyhow::anyhow!("Failed to initialize NATS EventBus: {}", e))?;
 
@@ -332,7 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus> = Arc::new(nats_event_bus);
 
-    info!("✅ NATS EventBus initialized (JetStream enabled)");
+    info!("✅ NATS EventBus initialized (JetStream enabled with domain_events persistence)");
 
     // Create Outbox Repository (Transactional Outbox Pattern)
     let outbox_repository_impl: PostgresOutboxRepository =
@@ -1216,8 +1225,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_config(ExecutionSagaConsumerConfig {
             consumer_name: "execution-saga-consumer".to_string(),
             stream_prefix: "HODEI".to_string(),
-            job_queued_topic: "hodei.jobs.jobqueued".to_string(),
-            worker_ready_topic: "hodei.workers.workerready".to_string(),
+            job_queued_topic: job_topics::QUEUED.to_string(),
+            worker_ready_topic: worker_topics::READY.to_string(),
             consumer_group: "execution-dispatchers".to_string(),
             concurrency: 10,
             ack_wait: Duration::from_secs(30),

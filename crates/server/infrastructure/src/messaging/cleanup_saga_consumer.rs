@@ -20,10 +20,23 @@ use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
+use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
+
+use hodei_shared::event_topics::{job_topics, worker_topics};
+
+/// Message envelope for NATS transport (matches nats.rs)
+#[derive(Debug, Clone, Deserialize)]
+pub struct NatsMessageEnvelope {
+    pub payload: String,
+    #[serde(default)]
+    pub event_type: String,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+}
 
 /// Configuration for cleanup saga consumer
 #[derive(Debug, Clone)]
@@ -67,9 +80,9 @@ impl Default for CleanupSagaConsumerConfig {
         Self {
             consumer_name: "cleanup-saga-consumer".to_string(),
             stream_prefix: "HODEI".to_string(),
-            job_completed_topic: "hodei_events.jobs.completed".to_string(),
-            job_failed_topic: "hodei_events.jobs.failed".to_string(),
-            worker_terminated_topic: "hodei_events.workers.terminated".to_string(),
+            job_completed_topic: job_topics::COMPLETED.to_string(),
+            job_failed_topic: job_topics::FAILED.to_string(),
+            worker_terminated_topic: worker_topics::TERMINATED.to_string(),
             consumer_group: "cleanup-dispatchers".to_string(),
             concurrency: 5,
             ack_wait: Duration::from_secs(30),
@@ -215,11 +228,18 @@ where
 
     /// Process a single NATS message payload
     async fn process_message(&self, payload: &[u8]) -> Result<(), DomainError> {
-        // Parse the event from the message payload
-        let event: DomainEvent =
+        // Parse the envelope from the message payload
+        let envelope: NatsMessageEnvelope =
             serde_json::from_slice(payload).map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to deserialize event: {}", e),
+                message: format!("Failed to deserialize envelope: {}", e),
             })?;
+
+        // Deserialize the domain event from the envelope's payload
+        let event: DomainEvent = serde_json::from_str(&envelope.payload).map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to deserialize event from envelope: {}", e),
+            }
+        })?;
 
         match &event {
             DomainEvent::JobStatusChanged {

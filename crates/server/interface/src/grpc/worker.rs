@@ -346,10 +346,56 @@ impl WorkerAgentServiceImpl {
             Ok(Some(w)) => w,
             Ok(None) => {
                 info!(
-                    "Worker {} not in registry, allowing direct registration",
+                    "Worker {} not in registry, creating new worker entry...",
                     worker_id
                 );
-                return Ok(());
+
+                // Create a new worker entry in the registry
+                // For direct registration, we create WorkerHandle and WorkerSpec with basic info
+                let provider_id = ProviderId::new(); // Default provider for direct registration
+
+                // Create WorkerHandle with the required fields
+                let handle = hodei_server_domain::workers::WorkerHandle::new(
+                    worker_id.clone(),
+                    format!("direct-{}", worker_id.0.simple()),
+                    hodei_server_domain::workers::ProviderType::Docker,
+                    provider_id,
+                );
+
+                // Create WorkerSpec with minimal required fields
+                let spec = hodei_server_domain::workers::WorkerSpec::new(
+                    "direct-worker:latest".to_string(),
+                    "http://localhost:50051".to_string(),
+                );
+
+                // Create the worker in the registry using the correct signature
+                // WorkerRegistry::register(handle: WorkerHandle, spec: WorkerSpec)
+                registry.register(handle, spec).await.map_err(|e| {
+                    error!("Failed to create worker {} in registry: {:?}", worker_id, e);
+                    Status::internal(format!("Failed to create worker: {}", e))
+                })?;
+
+                info!(
+                    "✅ Worker {} created in registry (direct registration)",
+                    worker_id
+                );
+
+                // Get the created worker to continue with state update
+                match registry.get(&worker_id).await {
+                    Ok(Some(w)) => w,
+                    Ok(None) => {
+                        // This shouldn't happen, but handle gracefully
+                        warn!("Worker {} was created but not found immediately", worker_id);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to retrieve newly created worker {}: {:?}",
+                            worker_id, e
+                        );
+                        return Ok(());
+                    }
+                }
             }
             Err(e) => return Err(Status::internal(e.to_string())),
         };

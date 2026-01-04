@@ -570,6 +570,11 @@ impl OutboxRelay {
 
         // Convert outbox event to domain event
         let domain_event = self.convert_to_domain_event(&event)?;
+        info!(
+            event_id = %event.id,
+            event_type = %event.event_type,
+            "[OutboxRelay] Converting event, about to publish to event bus"
+        );
 
         // Publish to event bus
         if let Err(e) = self.event_bus.publish(&domain_event).await {
