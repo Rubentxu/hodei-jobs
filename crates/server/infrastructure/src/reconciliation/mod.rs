@@ -6,9 +6,12 @@
 //!
 //! EPIC-43: Sprint 4 - Reconciliación (Red de Seguridad)
 
+pub mod database_reaper;
 pub mod infrastructure_reconciler;
+pub mod monitoring;
 
-pub use infrastructure_reconciler::{DatabaseReaper, DatabaseReaperConfig, DatabaseReaperResult};
+pub use database_reaper::{DatabaseReaper, DatabaseReaperConfig, DatabaseReaperResult};
 pub use infrastructure_reconciler::{
     InfrastructureReconciler, InfrastructureReconcilerConfig, ReconciliationResult,
 };
+pub use monitoring::{Alert, AlertConfig, AlertEvaluator, AlertSeverity, ReconcilerMonitoring};

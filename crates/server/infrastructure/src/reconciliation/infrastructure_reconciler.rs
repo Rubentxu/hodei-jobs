@@ -12,7 +12,7 @@
 //!
 //! The InfrastructureReconciler runs periodically and:
 //! 1. Finds TERMINATED workers that still have infrastructure (zombies)
-//! 2. Finds BUSHY workers without infrastructure (ghosts)
+//! 2. Finds BUSY workers without infrastructure (ghosts)
 //! 3. Destroys zombie workers
 //! 4. Recovers jobs from ghost workers
 //! 5. Emits domain events for tracking
@@ -25,12 +25,13 @@
 //! - Detailed logging for debugging and audit
 
 use crate::persistence::outbox::PostgresOutboxRepository;
-use crate::providers::{DockerProvider, KubernetesProvider, WorkerProvider};
+use crate::providers::{DockerProvider, KubernetesProvider};
 use chrono::{DateTime, Utc};
 use hodei_server_domain::events::{DomainEvent, TerminationReason};
-use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
-use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
-use hodei_server_domain::workers::{WorkerHandle, WorkerState};
+use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepositoryTx};
+use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId, WorkerState};
+use hodei_server_domain::workers::provider_api::{ProviderError, WorkerProvider};
+use hodei_server_domain::workers::{Worker, WorkerHandle};
 use hodei_shared::states::JobState;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -244,13 +245,22 @@ impl InfrastructureReconciler {
                 }
             };
 
-            // Check if infrastructure still exists
-            match provider.worker_exists(worker.handle().external_id()).await {
-                Ok(true) => {
-                    // Zombie found! Destroy it
+            // Get the worker handle
+            let handle = match worker.handle() {
+                Some(h) => h,
+                None => {
+                    warn!(target: "hodei::reconciler", "Worker {} has no handle", worker.id());
+                    continue;
+                }
+            };
+
+            // Check if infrastructure still exists by getting worker status
+            match provider.get_worker_status(handle).await {
+                Ok(status) => {
+                    // Worker still exists - it's a zombie
                     info!(target: "hodei::reconciler", "Destroying zombie worker {}", worker.id());
 
-                    if let Err(e) = provider.destroy_worker(worker.handle()).await {
+                    if let Err(e) = provider.destroy_worker(handle).await {
                         result.add_error(format!(
                             "Failed to destroy zombie worker {}: {}",
                             worker.id(),
@@ -264,12 +274,13 @@ impl InfrastructureReconciler {
                     // Emit event
                     self.emit_zombie_destroyed_event(&worker).await?;
                 }
-                Ok(false) => {
+                Err(ProviderError::WorkerNotFound { .. }) => {
                     // Infrastructure already cleaned up, nothing to do
+                    trace!(target: "hodei::reconciler", "Worker {} infrastructure already gone", worker.id());
                 }
                 Err(e) => {
                     result.add_error(format!(
-                        "Failed to check worker existence {}: {}",
+                        "Failed to check worker status {}: {}",
                         worker.id(),
                         e
                     ));
@@ -303,9 +314,18 @@ impl InfrastructureReconciler {
                 }
             };
 
+            // Get the worker handle
+            let handle = match worker.handle() {
+                Some(h) => h,
+                None => {
+                    warn!(target: "hodei::reconciler", "Worker {} has no handle", worker.id());
+                    continue;
+                }
+            };
+
             // Check if infrastructure still exists
-            match provider.worker_exists(worker.handle().external_id()).await {
-                Ok(false) => {
+            match provider.get_worker_status(handle).await {
+                Err(ProviderError::WorkerNotFound { .. }) => {
                     // Ghost found! Worker is BUSY but infrastructure is gone
                     info!(target: "hodei::reconciler", "Handling ghost worker {}", worker.id());
 
@@ -319,12 +339,12 @@ impl InfrastructureReconciler {
                     self.terminate_ghost_worker(&worker).await?;
                     result.add_ghost();
                 }
-                Ok(true) => {
+                Ok(_) => {
                     // Infrastructure exists, worker is fine
                 }
                 Err(e) => {
                     result.add_error(format!(
-                        "Failed to check ghost worker existence {}: {}",
+                        "Failed to check ghost worker status {}: {}",
                         worker.id(),
                         e
                     ));
@@ -336,9 +356,7 @@ impl InfrastructureReconciler {
     }
 
     /// Finds TERMINATED workers
-    async fn find_terminated_workers(
-        &self,
-    ) -> Result<Vec<hodei_server_domain::workers::Worker>, sqlx::Error> {
+    async fn find_terminated_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"
             SELECT w.id, w.status, w.provider_id, w.worker_handle, w.spec,
@@ -361,9 +379,7 @@ impl InfrastructureReconciler {
     }
 
     /// Finds BUSY workers
-    async fn find_busy_workers(
-        &self,
-    ) -> Result<Vec<hodei_server_domain::workers::Worker>, sqlx::Error> {
+    async fn find_busy_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"
             SELECT w.id, w.status, w.provider_id, w.worker_handle, w.spec,
@@ -406,7 +422,7 @@ impl InfrastructureReconciler {
             return Ok(());
         }
 
-        // Publish recovery event
+        // Publish recovery event using OutboxRepositoryTx trait
         let outbox_event = OutboxEventInsert::for_job(
             *job_id,
             "JobStatusChanged".to_string(),
@@ -422,6 +438,7 @@ impl InfrastructureReconciler {
         );
 
         self.outbox_repository
+            .as_ref()
             .insert_events_with_tx(&mut tx, &[outbox_event])
             .await?;
 
@@ -432,10 +449,7 @@ impl InfrastructureReconciler {
     }
 
     /// Terminates a ghost worker
-    async fn terminate_ghost_worker(
-        &self,
-        worker: &hodei_server_domain::workers::Worker,
-    ) -> Result<(), OutboxError> {
+    async fn terminate_ghost_worker(&self, worker: &Worker) -> Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
         // Update worker status (already TERMINATED, just ensure it)
@@ -452,6 +466,7 @@ impl InfrastructureReconciler {
         );
 
         self.outbox_repository
+            .as_ref()
             .insert_events_with_tx(&mut tx, &[outbox_event])
             .await?;
 
@@ -461,10 +476,7 @@ impl InfrastructureReconciler {
     }
 
     /// Emits event when zombie is destroyed
-    async fn emit_zombie_destroyed_event(
-        &self,
-        worker: &hodei_server_domain::workers::Worker,
-    ) -> Result<(), OutboxError> {
+    async fn emit_zombie_destroyed_event(&self, worker: &Worker) -> Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
         let outbox_event = OutboxEventInsert::for_worker(
@@ -481,6 +493,7 @@ impl InfrastructureReconciler {
         );
 
         self.outbox_repository
+            .as_ref()
             .insert_events_with_tx(&mut tx, &[outbox_event])
             .await?;
 
