@@ -140,11 +140,11 @@ pub mod test_in_memory {
             Ok(queue.pop_front())
         }
 
-
         async fn peek(&self) -> Result<Option<Job>> {
             let queue = self.queue.lock().unwrap();
             Ok(queue.front().cloned())
         }
+
         async fn len(&self) -> Result<usize> {
             let queue = self.queue.lock().unwrap();
             Ok(queue.len())
@@ -194,7 +194,7 @@ pub mod test_in_memory {
             &self,
             handle: hodei_server_domain::workers::WorkerHandle,
             spec: hodei_server_domain::workers::WorkerSpec,
-            _job_id: Option<hodei_server_domain::shared_kernel::JobId>,
+            _job_id: hodei_server_domain::shared_kernel::JobId,
         ) -> Result<hodei_server_domain::workers::Worker> {
             let mut workers = self.workers.write().await;
             if workers.contains_key(&handle.worker_id) {
@@ -258,6 +258,7 @@ pub mod test_in_memory {
             Ok(workers
                 .values()
                 .filter(|w| *w.state() == hodei_server_domain::shared_kernel::WorkerState::Ready)
+                .filter(|w| w.current_job_id().is_none())
                 .cloned()
                 .collect())
         }

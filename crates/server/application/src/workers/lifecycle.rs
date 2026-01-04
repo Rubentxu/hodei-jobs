@@ -1762,6 +1762,7 @@ mod tests {
                 .await
                 .values()
                 .filter(|w| w.state().can_accept_jobs())
+                .filter(|w| w.current_job_id().is_none())
                 .cloned()
                 .collect())
         }

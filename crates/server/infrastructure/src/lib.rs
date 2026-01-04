@@ -122,11 +122,6 @@ pub mod test_infrastructure {
             Ok(queue.pop())
         }
 
-
-        async fn peek(&self) -> Result<Option<Job>> {
-            let queue = self.queue.lock().unwrap();
-            queue.front().cloned()
-        }
         async fn len(&self) -> Result<usize> {
             let queue = self.queue.lock().unwrap();
             Ok(queue.len())
@@ -236,6 +231,7 @@ pub mod test_infrastructure {
             &self,
             handle: hodei_server_domain::workers::WorkerHandle,
             spec: hodei_server_domain::workers::WorkerSpec,
+            job_id: hodei_server_domain::shared_kernel::JobId,
         ) -> Result<hodei_server_domain::workers::Worker> {
             let mut workers = self.workers.lock().unwrap();
             let worker = hodei_server_domain::workers::Worker::new(handle, spec);
@@ -270,7 +266,11 @@ pub mod test_infrastructure {
 
         async fn find_available(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             let workers = self.workers.lock().unwrap();
-            Ok(workers.values().cloned().collect())
+            Ok(workers
+                .values()
+                .filter(|w| w.current_job_id().is_none())
+                .cloned()
+                .collect())
         }
 
         async fn find_by_provider(

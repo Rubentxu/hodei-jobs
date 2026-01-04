@@ -101,7 +101,7 @@ pub trait WorkerRegistry: Send + Sync {
         &self,
         handle: WorkerHandle,
         spec: WorkerSpec,
-        job_id: Option<JobId>,
+        job_id: JobId,
     ) -> Result<Worker>;
 
     /// Dar de baja un worker

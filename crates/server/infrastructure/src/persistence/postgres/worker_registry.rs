@@ -54,11 +54,11 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         &self,
         handle: WorkerHandle,
         spec: WorkerSpec,
-        job_id: Option<JobId>,
+        job_id: JobId,
     ) -> Result<Worker> {
         let worker_id = handle.worker_id.0;
         let provider_id = handle.provider_id.0;
-        let current_job_id = job_id.map(|j| j.0);
+        let current_job_id = job_id.0;
 
         sqlx::query(
             r#"
@@ -199,7 +199,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             r#"
             SELECT id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at
             FROM workers
-            WHERE state = $1
+            WHERE state = $1 AND current_job_id IS NULL
             "#,
         )
         .bind(WorkerState::Ready.to_string())

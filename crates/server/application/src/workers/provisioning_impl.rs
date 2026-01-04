@@ -160,7 +160,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         })?;
 
         // Register in registry with job association
-        let worker = self.registry.register(handle, spec, Some(job_id)).await?;
+        let worker = self.registry.register(handle, spec, job_id).await?;
 
         info!("Worker {} provisioned successfully with OTP", worker_id);
 
