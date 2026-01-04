@@ -207,6 +207,7 @@ FOR UPDATE SKIP LOCKED
 **Objetivo:** Eliminar JobCoordinator y hacer de ExecutionSaga el único orquestador  
 **Referencia:** `EDA_ARCHITECTURE_V2_APPENDIX.md` Secciones 19.3, 20 (EDA-OBJ-006 a 010)  
 **Referencia:** `EDA_KILL_LIST.md` Secciones 2.1 (JobController, JobCoordinator)
+**Commits:** e6a7eac, 99b4082, 507ee55, 98c38e4
 
 ## 📋 Historias de Usuario
 
@@ -216,28 +217,28 @@ FOR UPDATE SKIP LOCKED
 **Para** evitar procesamiento duplicado cuando NATS entrega el mismo mensaje varias veces
 
 **Criterios de Aceptación:**
-- [ ] `saga_id` es determinista: `uuid_v5(NAMESPACE, "execution-" + job_id)`
-- [ ] Inserción en DB usa `ON CONFLICT DO NOTHING`
-- [ ] Si la saga existe, se hace ACK inmediato a NATS
-- [ ] Sin race conditions en la creación de sagas
+- [x] `saga_id` es determinista: `uuid_v5(NAMESPACE, "execution-" + job_id)`
+- [x] Inserción en DB usa `ON CONFLICT DO NOTHING`
+- [x] Si la saga existe, se hace ACK inmediato a NATS
+- [x] Sin race conditions en la creación de sagas
 
 **Referencia de Código:**
 ```rust
 // EDA_ARCHITECTURE_V2_APPENDIX.md - Seccion 19.3.1
-pub fn saga_id_for_job(job_id: &JobId) -> Uuid {
+pub fn saga_id_for_job(job_id: &str) -> Uuid {
     let namespace = Uuid::NAMESPACE_OID;
-    let input = format!("execution-saga-{}", job_id.as_str());
-    Uuid::new_v5(namespace, input.as_bytes())
+    let input = format!("execution-saga-{}", job_id);
+    Uuid::new_v5(&namespace, input.as_bytes())
 }
 ```
 
 **Tareas Técnicas:**
-| ID | Tarea | Complejidad | Estimación |
-|----|-------|-------------|------------|
-| T-201.1 | Implementar `saga_id_for_job` | Baja | 2h |
-| T-201.2 | Añadir约束 única en tabla sagas | Baja | 1h |
-| T-201.3 | Implementar `create_if_not_exists` en SagaRepository | Media | 4h |
-| T-201.4 | Test de idempotencia con mensajes duplicados | Media | 4h |
+| ID | Tarea | Complejidad | Estimación | Estado |
+|----|-------|-------------|------------|--------|
+| T-201.1 | Implementar `saga_id_for_job` | Baja | 2h | ✅ |
+| T-201.2 | Añadir constraint única en tabla sagas | Baja | 1h | ✅ |
+| T-201.3 | Implementar `create_if_not_exists` en SagaRepository | Media | 4h | ✅ |
+| T-201.4 | Test de idempotencia con mensajes duplicados | Media | 4h | ✅ |
 
 ---
 
@@ -247,18 +248,18 @@ pub fn saga_id_for_job(job_id: &JobId) -> Uuid {
 **Para** eliminar condiciones de carrera entre Coordinator y Saga
 
 **Criterios de Aceptación:**
-- [ ] `JobCoordinator` ya no suscribe a `JobQueued`
-- [ ] `JobCoordinator` ya no suscribe a `WorkerReady`
-- [ ] Solo `ExecutionSagaConsumer` procesa estos eventos
+- [x] `JobCoordinator` ya no suscribe a `JobQueued`
+- [x] `JobCoordinator` ya no suscribe a `WorkerReady`
+- [x] Solo `ExecutionSagaConsumer` procesa estos eventos
 - [ ] Sin regresión en funcionalidad existente
 
 **Tareas Técnicas:**
-| ID | Tarea | Complejidad | Estimación |
-|----|-------|-------------|------------|
-| T-202.1 | Eliminar suscripcion a JobQueued en JobCoordinator | Baja | 2h |
-| T-202.2 | Eliminar suscripcion a WorkerReady en JobCoordinator | Baja | 2h |
-| T-202.3 | Verificar que ExecutionSagaConsumer es único consumidor | Baja | 1h |
-| T-202.4 | Tests de regresión | Media | 4h |
+| ID | Tarea | Complejidad | Estimación | Estado |
+|----|-------|-------------|------------|--------|
+| T-202.1 | Eliminar suscripcion a JobQueued en JobCoordinator | Baja | 2h | ✅ |
+| T-202.2 | Eliminar suscripcion a WorkerReady en JobCoordinator | Baja | 2h | ✅ |
+| T-202.3 | Verificar que ExecutionSagaConsumer es único consumidor | Baja | 1h | ⏳ |
+| T-202.4 | Tests de regresión | Media | 4h | ⏳ |
 
 **Referencia de Eliminación:**
 ```
@@ -270,12 +271,12 @@ pub fn saga_id_for_job(job_id: &JobId) -> Uuid {
 
 ### US-EDA-203: Configurar NATS Consumer con DLQ
 **Como** operador del sistema  
-**Quiero** que los mensajes que fallan多次 vayan a una Dead Letter Queue  
+**Quiero** que los mensajes que fallan múltiples veces vayan a una Dead Letter Queue  
 **Para** poder investigar y reprocesar eventos problemáticos
 
 **Criterios de Aceptación:**
-- [ ] `max_deliver = 3` en consumidor Saga
-- [ ] DLQ configurado para mensajes fallidos
+- [x] `max_deliver = 3` en consumidor Saga
+- [x] DLQ configurado para mensajes fallidos
 - [ ] Handler de DLQ registra en tabla `failed_events`
 - [ ] Alerts configurados para DLQ no vacío
 
@@ -290,12 +291,12 @@ deliver_subject = "saga.deliveries"
 ```
 
 **Tareas Técnicas:**
-| ID | Tarea | Complejidad | Estimación |
-|----|-------|-------------|------------|
-| T-203.1 | Configurar max_deliver = 3 en nats.toml | Baja | 1h |
-| T-203.2 | Implementar DLQ Handler | Media | 4h |
-| T-203.3 | Crear tabla failed_events | Baja | 1h |
-| T-203.4 | Configurar alerts para DLQ | Baja | 2h |
+| ID | Tarea | Complejidad | Estimación | Estado |
+|----|-------|-------------|------------|--------|
+| T-203.1 | Configurar max_deliver = 3 en nats.toml | Baja | 1h | ✅ |
+| T-203.2 | Implementar DLQ Handler | Media | 4h | ⏳ |
+| T-203.3 | Crear tabla failed_events | Baja | 1h | ⏳ |
+| T-203.4 | Configurar alerts para DLQ | Baja | 2h | ⏳ |
 
 ---
 
