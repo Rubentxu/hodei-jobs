@@ -1,6 +1,6 @@
 #!/bin/bash
 # Robust development server startup script
-# Ensures clean restart with proper port handling
+# Ensures clean restart with proper port handling and container networking
 
 set -e
 
@@ -56,6 +56,37 @@ else
     echo "✅ Port 50051 is free"
 fi
 
+# Get container IPs for proper networking
+get_container_ip() {
+    local container_name=$1
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name" 2>/dev/null
+}
+
+# Check if running inside Docker and get container IPs
+POSTGRES_CONTAINER="hodei-jobs-postgres"
+NATS_CONTAINER="hodei-jobs-nats"
+
+# Detect if we need to use container IPs (localhost works for native, container IPs for bridged)
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "$POSTGRES_CONTAINER"; then
+    echo "🔗 Detected Docker containers, configuring container networking..."
+
+    POSTGRES_IP=$(get_container_ip "$POSTGRES_CONTAINER")
+    NATS_IP=$(get_container_ip "$NATS_CONTAINER")
+
+    if [ -n "$POSTGRES_IP" ]; then
+        echo "   PostgreSQL container IP: $POSTGRES_IP"
+        export DATABASE_URL="postgres://postgres:postgres@${POSTGRES_IP}:5432/hodei_jobs"
+    fi
+
+    if [ -n "$NATS_IP" ]; then
+        echo "   NATS container IP: $NATS_IP"
+        export HODEI_NATS_URLS="nats://${NATS_IP}:4222"
+    fi
+else
+    echo "⚠️  Docker containers not detected, using localhost"
+    export DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost:5432/hodei_jobs}"
+fi
+
 # Compile server
 echo "🔨 Recompiling server..."
 cargo build --package hodei-server-bin
@@ -68,6 +99,9 @@ fi
 # Wait one more time to be absolutely sure
 sleep 1
 
-# Start server
+# Start server with proper environment
 echo "🚀 Starting server..."
+echo "   DATABASE_URL: ${DATABASE_URL:-localhost}"
+echo "   HODEI_NATS_URLS: ${HODEI_NATS_URLS:-nats://localhost:4222}"
+
 cd crates/server/bin && cargo run --bin hodei-server-bin

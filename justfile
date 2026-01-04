@@ -220,19 +220,21 @@ e2e:
     fi
     @just dev-db
     @sleep 2
-    @just db-migrate
-    @echo "Starting server..."
-    cargo run --bin hodei-server-bin &
+    @echo "Starting server with container networking..."
+    @bash scripts/dev-start.sh &
     SERVER_PID=$$!
-    sleep 5
-    @echo "Starting worker..."
-    cargo run --bin hodei-worker-bin &
-    WORKER_PID=$$!
-    sleep 5
-    @echo "✅ E2E environment running"
-    @echo "Server PID: $$SERVER_PID"
-    @echo "Worker PID: $$WORKER_PID"
-    @echo "Run 'kill $$SERVER_PID $$WORKER_PID' to stop"
+    sleep 25
+    if curl -s http://localhost:50051/health >/dev/null 2>&1; then \
+        echo "✅ Server is running"; \
+    else \
+        echo "❌ Server failed to start"; \
+        kill $$SERVER_PID 2>/dev/null || true; \
+        exit 1; \
+    fi
+    @echo ""
+    @echo "✅ E2E environment ready"
+    @echo "Server running on: http://localhost:50051"
+    @echo "To stop: pkill -f hodei-server-bin"
 
 # Test complete job flow
 e2e-job-flow:
