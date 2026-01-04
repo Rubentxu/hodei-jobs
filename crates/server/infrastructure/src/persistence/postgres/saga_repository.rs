@@ -5,9 +5,9 @@
 
 use chrono::{DateTime, Utc};
 use hodei_server_domain::saga::{
-    ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaExecutionResult, SagaId,
-    SagaOrchestrator, SagaRepository as SagaRepositoryTrait, SagaState, SagaStep, SagaStepData,
-    SagaStepId, SagaStepState, SagaType,
+    ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaError,
+    SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository as SagaRepositoryTrait,
+    SagaResult, SagaState, SagaStep, SagaStepData, SagaStepId, SagaStepState, SagaType,
 };
 use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId};
 use hodei_server_domain::workers::WorkerSpec;
@@ -892,18 +892,174 @@ where
                         .update_state(&saga_id, SagaState::Compensating, Some(e.to_string()))
                         .await?;
 
-                    // Execute compensation for completed steps in reverse order
-                    for j in (0..index).rev() {
-                        // Compensation logic would go here - steps[j] would be the step to compensate
+                    // EPIC-SAGA-ENGINE: Execute compensation for completed steps in reverse order
+                    info!(
+                        saga_id = %saga_id,
+                        failed_step = step.name(),
+                        error = %e,
+                        "⚠️ Step failed, starting compensation for {} completed steps",
+                        index
+                    );
+
+                    // Load completed steps from database
+                    let completed_steps_data = self
+                        .repository
+                        .find_steps_by_saga_id(&saga_id)
+                        .await
+                        .map_err(|db_err| {
+                            DomainError::InfrastructureError {
+                                message: format!(
+                                    "Failed to load saga steps for compensation: {}",
+                                    db_err
+                                ),
+                            }
+                            .into()
+                        })?
+                        .into_iter()
+                        .filter(|s| s.state == SagaStepState::Completed)
+                        .collect::<Vec<_>>();
+
+                    let mut compensations_executed = 0;
+                    let saga_steps = saga.steps();
+
+                    // Iterate steps in reverse order for compensation
+                    for (i, step_def) in saga_steps.into_iter().enumerate().rev() {
+                        // Only compensate if this step was completed
+                        if completed_steps_data
+                            .iter()
+                            .any(|s| s.step_order as usize == i)
+                        {
+                            if step_def.has_compensation() {
+                                info!(
+                                    saga_id = %saga_id,
+                                    step = step_def.name(),
+                                    step_order = i,
+                                    "🔄 Compensating step"
+                                );
+
+                                // Mark step as COMPENSATING
+                                if let Some(step_record) = completed_steps_data
+                                    .iter()
+                                    .find(|s| s.step_order as usize == i)
+                                {
+                                    self.repository
+                                        .update_step_state(
+                                            &step_record.step_id,
+                                            SagaStepState::Compensating,
+                                            None,
+                                        )
+                                        .await
+                                        .map_err(|db_err| {
+                                            DomainError::InfrastructureError {
+                                                message: format!(
+                                                    "Failed to update step state to compensating: {}",
+                                                    db_err
+                                                ),
+                                            }
+                                            .into()
+                                        })?;
+                                }
+
+                                // Execute compensation
+                                match step_def.compensate(&mut context).await {
+                                    Ok(()) => {
+                                        info!(
+                                            saga_id = %saga_id,
+                                            step = step_def.name(),
+                                            "✅ Step compensated successfully"
+                                        );
+
+                                        // Mark step as COMPENSATED
+                                        if let Some(step_record) = completed_steps_data
+                                            .iter()
+                                            .find(|s| s.step_order as usize == i)
+                                        {
+                                            self.repository
+                                                .update_step_state(
+                                                    &step_record.step_id,
+                                                    SagaStepState::Compensated,
+                                                    None,
+                                                )
+                                                .await
+                                                .map_err(|db_err| {
+                                                    DomainError::InfrastructureError {
+                                                        message: format!(
+                                                            "Failed to update step state to compensated: {}",
+                                                            db_err
+                                                        ),
+                                                    }
+                                                    .into()
+                                                })?;
+                                        }
+
+                                        compensations_executed += 1;
+                                    }
+                                    Err(comp_err) => {
+                                        error!(
+                                            saga_id = %saga_id,
+                                            step = step_def.name(),
+                                            error = %comp_err,
+                                            "❌ Compensation failed - saga will be marked as FAILED"
+                                        );
+
+                                        // Mark saga as FAILED (compensation also failed)
+                                        self.repository
+                                            .update_state(
+                                                &saga_id,
+                                                SagaState::Failed,
+                                                Some(format!(
+                                                    "Compensation failed for step '{}': {}",
+                                                    step_def.name(),
+                                                    comp_err
+                                                )),
+                                            )
+                                            .await
+                                            .ok();
+
+                                        return Err(DomainError::SagaStepFailed {
+                                            step: step_def.name().to_string(),
+                                            error: comp_err.to_string(),
+                                        }
+                                        .into());
+                                    }
+                                }
+                            } else {
+                                info!(
+                                    saga_id = %saga_id,
+                                    step = step_def.name(),
+                                    "⏭️  Skipping compensation (not supported by step)"
+                                );
+                            }
+                        }
                     }
 
-                    return Ok(SagaExecutionResult::failed(
+                    // Mark saga as COMPLETED (successful compensation = complete rollback)
+                    self.repository
+                        .update_state(&saga_id, SagaState::Completed, None)
+                        .await
+                        .map_err(|db_err| {
+                            DomainError::InfrastructureError {
+                                message: format!(
+                                    "Failed to update saga state after compensation: {}",
+                                    db_err
+                                ),
+                            }
+                            .into()
+                        })?;
+
+                    info!(
+                        saga_id = %saga_id,
+                        compensations = compensations_executed,
+                        original_error = %e,
+                        "✅ Saga compensated successfully (rollback complete)"
+                    );
+
+                    return Ok(SagaExecutionResult::compensated(
                         saga_id,
                         saga.saga_type(),
                         start_time.elapsed(),
                         executed_steps as u32,
-                        index as u32,
-                        e.to_string(),
+                        compensations_executed,
                     ));
                 }
                 Err(_) => {
@@ -1416,6 +1572,250 @@ mod tests {
         let found = repo.find_by_id(&saga.saga_id).await.unwrap();
         assert!(found.is_none());
 
+        pool.close().await;
+    }
+
+    // ============ EPIC-SAGA-ENGINE: Compensation Tests ============
+
+    /// Helper to create a step that fails on execution
+    struct FailingTestSagaStep {
+        fail_on_step: usize,
+        current_step: usize,
+    }
+
+    impl FailingTestSagaStep {
+        fn new(fail_on_step: usize) -> Self {
+            Self {
+                fail_on_step,
+                current_step: 0,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SagaStep for FailingTestSagaStep {
+        type Output = ();
+
+        fn name(&self) -> &'static str {
+            if self.current_step == self.fail_on_step {
+                "FailingStep"
+            } else {
+                "SuccessStep"
+            }
+        }
+
+        async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+            self.current_step += 1;
+            if self.current_step - 1 == self.fail_on_step {
+                Err(SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "Intentional failure for testing".to_string(),
+                    will_compensate: true,
+                })
+            } else {
+                // Store metadata for compensation verification
+                context
+                    .set_metadata(&format!("step_{}_completed", self.current_step - 1), &true)
+                    .ok();
+                Ok(())
+            }
+        }
+
+        async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+            // Verify we can access metadata from execute phase
+            let step_num = self.current_step.saturating_sub(1);
+            let _ = context.get_metadata::<bool>(&format!("step_{}_completed", step_num));
+            Ok(())
+        }
+
+        fn has_compensation(&self) -> bool {
+            true
+        }
+
+        fn is_idempotent(&self) -> bool {
+            true
+        }
+    }
+
+    /// Simple saga for testing compensation
+    struct TestCompensationSaga {
+        steps: Vec<Box<dyn SagaStep<Output = ()>>>,
+    }
+
+    impl TestCompensationSaga {
+        fn new(steps: Vec<Box<dyn SagaStep<Output = ()>>>) -> Self {
+            Self { steps }
+        }
+    }
+
+    impl Saga for TestCompensationSaga {
+        fn saga_type(&self) -> SagaType {
+            SagaType::Provisioning
+        }
+
+        fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+            self.steps.clone()
+        }
+    }
+
+    /// Test that compensation loop executes for completed steps
+    #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
+    async fn test_compensation_loop_executes_for_completed_steps() {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
+            .await
+            .unwrap();
+
+        let repo = Arc::new(PostgresSagaRepository::new(pool.clone()));
+        let config = PostgresSagaOrchestratorConfig::default();
+        let orchestrator = PostgresSagaOrchestrator::new(repo.clone(), Some(config));
+
+        // Create saga with steps where step 2 fails
+        let steps: Vec<Box<dyn SagaStep<Output = ()>>> = vec![
+            Box::new(FailingTestSagaStep::new(2)), // Step 0: succeeds
+            Box::new(FailingTestSagaStep::new(2)), // Step 1: succeeds
+            Box::new(FailingTestSagaStep::new(2)), // Step 2: FAILS
+            Box::new(FailingTestSagaStep::new(2)), // Step 3: never reached
+        ];
+
+        let saga = TestCompensationSaga::new(steps);
+        let saga_id = SagaId::new();
+        let mut context = SagaContext::new(
+            saga_id.clone(),
+            SagaType::Provisioning,
+            Some("test-compensation".to_string()),
+            Some("test".to_string()),
+        );
+
+        // Execute saga - should fail on step 2 and compensate steps 0 and 1
+        let result = orchestrator.execute_saga(&saga, context).await;
+
+        // Verify compensation was triggered
+        assert!(result.is_ok());
+        let execution_result = result.unwrap();
+        assert!(execution_result.is_compensated());
+        assert_eq!(execution_result.steps_executed, 2); // Steps 0 and 1 completed
+        assert_eq!(execution_result.compensations_executed, 2); // Both compensated
+
+        // Verify saga state in database
+        let saga_record = repo.find_by_id(&saga_id).await.unwrap().unwrap();
+        assert_eq!(saga_record.state, "COMPLETED"); // Compensation successful = completed
+
+        // Verify step states
+        let steps = repo.find_steps_by_saga_id(&saga_id).await.unwrap();
+        assert_eq!(steps.len(), 4);
+
+        let step0 = steps.iter().find(|s| s.step_order == 0).unwrap();
+        let step1 = steps.iter().find(|s| s.step_order == 1).unwrap();
+        let step2 = steps.iter().find(|s| s.step_order == 2).unwrap();
+
+        assert_eq!(step0.state, SagaStepState::Compensated);
+        assert_eq!(step1.state, SagaStepState::Compensated);
+        assert_eq!(step2.state, SagaStepState::Failed);
+
+        // Cleanup
+        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS saga_steps")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS sagas")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    /// Test that steps without compensation are skipped
+    #[tokio::test]
+    #[ignore = "Requires PostgreSQL"]
+    async fn test_compensation_skips_steps_without_compensation() {
+        struct NoCompensationStep;
+        struct WithCompensationStep;
+
+        #[async_trait::async_trait]
+        impl SagaStep for NoCompensationStep {
+            type Output = ();
+            fn name(&self) -> &'static str {
+                "NoCompensationStep"
+            }
+            async fn execute(&self, _ctx: &mut SagaContext) -> SagaResult<Self::Output> {
+                Ok(())
+            }
+            async fn compensate(&self, _ctx: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+            fn has_compensation(&self) -> bool {
+                false
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl SagaStep for WithCompensationStep {
+            type Output = ();
+            fn name(&self) -> &'static str {
+                "WithCompensationStep"
+            }
+            async fn execute(&self, _ctx: &mut SagaContext) -> SagaResult<Self::Output> {
+                Ok(())
+            }
+            async fn compensate(&self, _ctx: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+            fn has_compensation(&self) -> bool {
+                true
+            }
+        }
+
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
+            .await
+            .unwrap();
+
+        let repo = Arc::new(PostgresSagaRepository::new(pool.clone()));
+        let config = PostgresSagaOrchestratorConfig::default();
+        let orchestrator = PostgresSagaOrchestrator::new(repo.clone(), Some(config));
+
+        // Step 0: has compensation, Step 1: no compensation, Step 2: fails
+        let steps: Vec<Box<dyn SagaStep<Output = ()>>> = vec![
+            Box::new(WithCompensationStep),
+            Box::new(NoCompensationStep),
+            Box::new(FailingTestSagaStep::new(2)), // Fails
+        ];
+
+        let saga = TestCompensationSaga::new(steps);
+        let saga_id = SagaId::new();
+        let context = SagaContext::new(
+            saga_id,
+            SagaType::Provisioning,
+            Some("test-no-comp".to_string()),
+            Some("test".to_string()),
+        );
+
+        let result = orchestrator.execute_saga(&saga, context).await.unwrap();
+
+        // Only step 0 should be compensated (step 1 has no compensation)
+        assert_eq!(result.compensations_executed, 1);
+
+        // Cleanup
+        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS saga_steps")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS sagas")
+            .execute(&pool)
+            .await
+            .unwrap();
         pool.close().await;
     }
 }
