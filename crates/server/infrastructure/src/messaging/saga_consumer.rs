@@ -42,10 +42,16 @@ pub struct SagaConsumerConfig {
     /// Enable dead letter queue
     pub enable_dlq: bool,
 
+    /// EPIC-43: Maximum delivery attempts before moving to DLQ
+    pub max_deliver: u32,
+
     /// Retry configuration
     pub max_retries: u32,
     pub retry_delay: Duration,
     pub max_retry_delay: Duration,
+
+    /// DLQ stream name
+    pub dlq_stream_name: String,
 }
 
 impl Default for SagaConsumerConfig {
@@ -58,9 +64,11 @@ impl Default for SagaConsumerConfig {
             concurrency: 10,
             processing_timeout: Duration::from_secs(60),
             enable_dlq: true,
-            max_retries: 3,
+            max_deliver: 3, // EPIC-43: Maximum 3 delivery attempts
+            max_retries: 2, // EPIC-43: 2 retries after initial delivery
             retry_delay: Duration::from_millis(1000),
             max_retry_delay: Duration::from_secs(60),
+            dlq_stream_name: "HODEI_DLQ".to_string(),
         }
     }
 }
@@ -146,7 +154,7 @@ where
             deliver_policy: DeliverPolicy::All,
             ack_policy: AckPolicy::Explicit,
             ack_wait: Duration::from_secs(30),
-            max_deliver: (self.config.max_retries + 1) as i64,
+            max_deliver: self.config.max_deliver as i64, // EPIC-43: Use configured max_deliver
             max_ack_pending: self.config.concurrency as i64,
             ..Default::default()
         };

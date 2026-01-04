@@ -244,6 +244,44 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         Ok(())
     }
 
+    /// EPIC-43: Create saga if it doesn't exist (idempotent creation)
+    async fn create_if_not_exists(&self, context: &SagaContext) -> Result<bool, Self::Error> {
+        let saga_id = context.saga_id.0;
+        let saga_type = context.saga_type.as_str();
+        let state = "PENDING";
+        let metadata = serde_json::to_value(&context.metadata).map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Serialization error: {}", e),
+            }
+        })?;
+
+        // ON CONFLICT DO NOTHING returns 0 rows affected if conflict
+        let result = sqlx::query(
+            r#"
+            INSERT INTO sagas (id, saga_type, state, correlation_id, actor, started_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .bind(saga_id)
+        .bind(saga_type)
+        .bind(state)
+        .bind(&context.correlation_id)
+        .bind(&context.actor)
+        .bind(context.started_at)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        // Return true if row was inserted (not conflicted)
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn find_by_id(
         &self,
         saga_id: &hodei_server_domain::saga::SagaId,

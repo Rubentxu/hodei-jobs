@@ -98,6 +98,15 @@ impl<R: SagaRepositoryTrait<Error = DomainError> + Send + Sync> SagaRepositoryTr
         Ok(())
     }
 
+    /// EPIC-43: Create saga if it doesn't exist (idempotent)
+    async fn create_if_not_exists(&self, context: &SagaContext) -> Result<bool, Self::Error> {
+        let created = self.inner.create_if_not_exists(context).await?;
+        if created {
+            self.notify(&context.saga_id);
+        }
+        Ok(created)
+    }
+
     async fn find_by_id(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error> {
         self.inner.find_by_id(saga_id).await.map_err(|e| e.into())
     }
@@ -350,6 +359,10 @@ mod tests {
 
         async fn save(&self, _: &SagaContext) -> Result<(), Self::Error> {
             Ok(())
+        }
+
+        async fn create_if_not_exists(&self, _: &SagaContext) -> Result<bool, Self::Error> {
+            Ok(true)
         }
 
         async fn find_by_id(&self, _: &SagaId) -> Result<Option<SagaContext>, Self::Error> {
