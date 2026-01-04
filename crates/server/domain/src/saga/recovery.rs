@@ -102,7 +102,7 @@ impl SagaStep for CheckWorkerConnectivityStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -161,7 +161,7 @@ impl SagaStep for ProvisionNewWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -212,7 +212,7 @@ impl SagaStep for TransferJobStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -258,7 +258,7 @@ impl SagaStep for TerminateOldWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -304,7 +304,7 @@ impl SagaStep for CancelOldWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 

@@ -106,7 +106,7 @@ impl SagaStep for ValidateJobStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -159,7 +159,7 @@ impl SagaStep for AssignWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -205,7 +205,7 @@ impl SagaStep for ExecuteJobStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -261,7 +261,7 @@ impl SagaStep for CompleteJobStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 

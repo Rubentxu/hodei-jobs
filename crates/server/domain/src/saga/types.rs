@@ -28,13 +28,12 @@ use uuid::Uuid;
 ///
 /// # Example
 /// ```rust
-/// use hodei_server_domain::shared_kernel::JobId;
 /// use hodei_server_domain::saga::saga_id_for_job;
 ///
-/// let job_id = JobId::from_string("job-123");
-/// let saga_id = saga_id_for_job(&job_id);
+/// let job_id = "job-123";
+/// let saga_id = saga_id_for_job(job_id);
 /// // Same job_id always produces the same saga_id
-/// assert_eq!(saga_id, saga_id_for_job(&job_id));
+/// assert_eq!(saga_id, saga_id_for_job(job_id));
 /// ```
 #[inline]
 pub fn saga_id_for_job(job_id: &str) -> Uuid {
@@ -340,7 +339,19 @@ pub trait SagaStep: Send + Sync {
     ///
     /// This is called when a later step fails, to restore the system
     /// to its original state before this step executed.
-    async fn compensate(&self, output: &Self::Output) -> SagaResult<()>;
+    ///
+    /// # Arguments
+    /// * `context` - The saga context containing metadata from the execute phase.
+    ///   Steps should use `context.get_metadata()` to retrieve data stored
+    ///   during `execute()` for performing compensation actions.
+    ///
+    /// # Design Change (EPIC-SAGA-ENGINE)
+    /// The signature changed from `compensate(&self, output: &Self::Output)` to
+    /// `compensate(&self, context: &mut SagaContext)` to enable compensation
+    /// logic to access metadata stored during execute phase. This allows steps
+    /// to perform real compensation actions (e.g., destroying a worker) rather
+    /// than relying on output stored in a separate field.
+    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()>;
 
     /// Returns true if this step is idempotent.
     ///
@@ -535,6 +546,17 @@ impl SagaContext {
 /// This structure holds references to the services needed by saga steps
 /// during execution. These services are injected at runtime and are not
 /// persisted with the saga context.
+///
+/// # Example
+///
+/// ```ignore
+/// let services = SagaServices::new(
+///     provider_registry,
+///     event_bus,
+///     Some(job_repository),
+///     Some(provisioning_service),  // Optional - only for provisioning sagas
+/// );
+/// ```
 pub struct SagaServices {
     /// Provider registry for infrastructure operations
     pub provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
@@ -542,21 +564,48 @@ pub struct SagaServices {
     pub event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
     /// Job repository for job operations
     pub job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+    /// Worker provisioning service for creating/destroying workers (EPIC-SAGA-ENGINE)
+    ///
+    /// This field is optional because not all sagas require worker provisioning.
+    /// Provisioning sagas will inject this service to enable real infrastructure
+    /// creation within saga steps.
+    pub provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
 }
 
 impl SagaServices {
-    /// Creates a new SagaServices instance.
+    /// Creates a new SagaServices instance with all services.
     #[inline]
     pub fn new(
         provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
         job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
     ) -> Self {
         Self {
             provider_registry,
             event_bus,
             job_repository,
+            provisioning_service,
         }
+    }
+
+    /// Creates a new SagaServices instance without provisioning service.
+    ///
+    /// This is a convenience constructor for sagas that don't need
+    /// worker provisioning (e.g., execution, recovery sagas).
+    #[inline]
+    pub fn without_provisioning(
+        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
+        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+    ) -> Self {
+        Self::new(provider_registry, event_bus, job_repository, None)
+    }
+
+    /// Returns true if a provisioning service is available.
+    #[inline]
+    pub fn has_provisioning_service(&self) -> bool {
+        self.provisioning_service.is_some()
     }
 }
 
@@ -770,7 +819,8 @@ mod tests {
             Ok(())
         }
 
-        async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+        // New signature: context instead of output (EPIC-SAGA-ENGINE)
+        async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
             Ok(())
         }
 

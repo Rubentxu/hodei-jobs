@@ -388,7 +388,7 @@ mod tests {
             }
         }
 
-        async fn compensate(&self, _output: &Self::Output) -> Result<(), SagaError> {
+        async fn compensate(&self, _context: &mut SagaContext) -> Result<(), SagaError> {
             Ok(())
         }
     }

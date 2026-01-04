@@ -134,7 +134,7 @@ impl SagaStep for ValidateProviderCapacityStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         // No compensation needed for validation metadata
         Ok(())
     }
@@ -195,7 +195,7 @@ impl SagaStep for CreateInfrastructureStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         // Compensation is handled by the coordinator, not the step
         Ok(())
     }
@@ -248,7 +248,7 @@ impl SagaStep for RegisterWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         Ok(())
     }
 
@@ -306,7 +306,7 @@ impl SagaStep for PublishProvisionedEventStep {
         Ok(())
     }
 
-    async fn compensate(&self, _output: &Self::Output) -> SagaResult<()> {
+    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
         // Event publishing cannot be compensated
         Ok(())
     }
