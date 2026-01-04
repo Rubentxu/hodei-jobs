@@ -1771,6 +1771,10 @@ mod tests {
             Ok(vec![])
         }
 
+        async fn get_by_job_id(&self, _job_id: &JobId) -> Result<Option<Worker>> {
+            Ok(None)
+        }
+
         async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
             if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
                 match state {

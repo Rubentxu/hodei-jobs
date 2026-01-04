@@ -335,9 +335,15 @@ impl WorkerAgentServiceImpl {
             }
         }
 
-
-
-        Ok(())
+        // Legacy path is no longer supported - workers must be provisioned with a job_id
+        // Return an error indicating workers must be provisioned through the normal flow
+        warn!(
+            "Legacy worker registration attempted for {} - workers must be provisioned with job_id",
+            worker_id
+        );
+        return Err(Status::failed_precondition(
+            "Workers must be provisioned through the normal flow with a job_id. Legacy registration is no longer supported.",
+        ));
     }
 
     async fn on_job_result(

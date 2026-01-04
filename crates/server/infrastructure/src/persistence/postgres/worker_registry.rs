@@ -242,6 +242,30 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         Ok(workers)
     }
 
+    async fn get_by_job_id(&self, job_id: &JobId) -> Result<Option<Worker>> {
+        let job_uuid = job_id.0;
+
+        let row = sqlx::query(
+            r#"
+            SELECT id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at
+            FROM workers
+            WHERE current_job_id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(job_uuid)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+            message: format!("Failed to find worker by job_id: {}", e),
+        })?;
+
+        match row {
+            Some(row) => Ok(Some(map_row_to_worker(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
         let worker_uuid = worker_id.0;
 

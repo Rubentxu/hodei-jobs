@@ -973,7 +973,54 @@ impl JobDispatcher {
             }
         };
 
-        // Step 2: Query available workers
+        // Step 2: FIRST check for workers already associated with this job
+        // Workers provisioned for this job have current_job_id = job_id
+        let associated_worker = match self.worker_registry.get_by_job_id(job_id).await {
+            Ok(Some(worker)) => {
+                info!(
+                    "JobDispatcher: Found worker {} already associated with job {}",
+                    worker.id(),
+                    job_id
+                );
+                Some(worker)
+            }
+            Ok(None) => {
+                debug!(
+                    "JobDispatcher: No worker found associated with job {}",
+                    job_id
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    "JobDispatcher: Failed to find worker for job {}: {}, continuing...",
+                    job_id, e
+                );
+                None
+            }
+        };
+
+        // Step 3: If we have an associated worker, dispatch directly
+        if let Some(worker) = associated_worker {
+            info!(
+                "🚀 JobDispatcher: Dispatching job {} to provisioned worker {}",
+                job_id,
+                worker.id()
+            );
+            let mut job = match self.job_repository.find_by_id(job_id).await {
+                Ok(Some(j)) => j,
+                _ => {
+                    warn!("JobDispatcher: Job {} not found for dispatch", job_id);
+                    return;
+                }
+            };
+            if let Err(e) = self.dispatch_job_to_worker(&mut job, worker.id()).await {
+                error!("❌ JobDispatcher: Failed to dispatch job {}: {}", job_id, e);
+            }
+            return;
+        }
+
+        // Step 4: No associated worker - query available workers (for jobs without provisioning)
         let workers = match self.query_healthy_workers().await {
             Ok(workers) => {
                 debug!("JobDispatcher: Found {} healthy workers", workers.len());
@@ -985,7 +1032,7 @@ impl JobDispatcher {
             }
         };
 
-        // Step 3: Dispatch or request provisioning
+        // Step 5: Dispatch or request provisioning
         if workers.is_empty() {
             info!(
                 "⚠️ JobDispatcher: No workers available for job {}, requesting provisioning",

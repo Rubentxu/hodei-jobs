@@ -281,6 +281,17 @@ pub mod test_infrastructure {
             Ok(workers.values().cloned().collect())
         }
 
+        async fn get_by_job_id(
+            &self,
+            job_id: &hodei_server_domain::shared_kernel::JobId,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            let workers = self.workers.lock().unwrap();
+            Ok(workers
+                .values()
+                .find(|w| w.current_job_id() == Some(job_id))
+                .cloned())
+        }
+
         async fn update_state(
             &self,
             _worker_id: &hodei_server_domain::shared_kernel::WorkerId,

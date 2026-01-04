@@ -480,6 +480,12 @@ mod tests {
         ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
+        async fn get_by_job_id(
+            &self,
+            _job_id: &JobId,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            Ok(None)
+        }
         async fn update_state(
             &self,
             _worker_id: &WorkerId,

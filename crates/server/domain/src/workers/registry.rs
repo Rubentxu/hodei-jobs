@@ -96,7 +96,7 @@ impl WorkerFilter {
 #[async_trait]
 pub trait WorkerRegistry: Send + Sync {
     /// Registrar un nuevo worker
-    /// Si se proporciona job_id, el worker se asocia directamente con ese job
+    /// El job_id es obligatorio: cada worker debe tener un job asociado
     async fn register(
         &self,
         handle: WorkerHandle,
@@ -109,6 +109,9 @@ pub trait WorkerRegistry: Send + Sync {
 
     /// Obtener worker por ID
     async fn get(&self, worker_id: &WorkerId) -> Result<Option<Worker>>;
+
+    /// Obtener worker asociado a un job específico
+    async fn get_by_job_id(&self, job_id: &JobId) -> Result<Option<Worker>>;
 
     /// Obtener todos los workers que coinciden con el filtro
     async fn find(&self, filter: &WorkerFilter) -> Result<Vec<Worker>>;

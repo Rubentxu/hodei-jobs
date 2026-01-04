@@ -351,6 +351,9 @@ mod tests {
         async fn find_by_provider(&self, _provider_id: &ProviderId) -> TestResult<Vec<Worker>> {
             Ok(vec![])
         }
+        async fn get_by_job_id(&self, _job_id: &JobId) -> TestResult<Option<Worker>> {
+            Ok(None)
+        }
         async fn update_state(&self, _worker_id: &WorkerId, _state: WorkerState) -> TestResult {
             Ok(())
         }

@@ -275,6 +275,17 @@ pub mod test_in_memory {
                 .collect())
         }
 
+        async fn get_by_job_id(
+            &self,
+            job_id: &hodei_server_domain::shared_kernel::JobId,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            let workers = self.workers.read().await;
+            Ok(workers
+                .values()
+                .find(|w| w.current_job_id() == Some(job_id))
+                .cloned())
+        }
+
         async fn update_state(
             &self,
             worker_id: &hodei_server_domain::shared_kernel::WorkerId,
