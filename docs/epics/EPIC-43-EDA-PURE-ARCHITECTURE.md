@@ -1,12 +1,12 @@
 # EPIC: Migración a Pure EDA & Saga Orchestration
 
 **Epic ID:** EPIC-EDA-2024  
-**Versión:** 1.1.0  
+**Versión:** 1.2.0  
 **Fecha:** 2026-01-04  
 **Estado:** In Progress  
 **Owner:** Backend Team  
-**Sprints:** 5 (2 completados)  
-**Estimación Total:** 145h (~40h completadas)
+**Sprints:** 5 (3 completados)  
+**Estimación Total:** 145h (~70h completadas)
 
 ---
 
@@ -342,44 +342,36 @@ struct DispatchJobStep { /* solo envio gRPC */ }
 
 ---
 
-# SPRINT 3: Crash-Only Workers (Simplificación) 🚧 IN PROGRESS
+# SPRINT 3: Crash-Only Workers (Simplificación) ✅ COMPLETADO
 
 **Sprint ID:** SP-EDA-003  
 **Duración:** 1 semana  
 **Objetivo:** Simplificar máquina de estados del Worker a 4 estados  
 **Referencia:** `EDA_ARCHITECTURE_V2_APPENDIX.md` Secciones 19.4, 20 (EDA-OBJ-011 a 014)  
-**Referencia:** `EDA_KILL_LIST.md` Seccion 4.2 (WorkerState)
+**Referencia:** `EDA_KILL_LIST.md` Seccion 4.2 (WorkerState)  
+**Completado:** 2026-01-04  
+**Commits:** 0ecd841
 
 ## 📋 Historias de Usuario
 
-### US-EDA-301: Simplificar WorkerState a 4 estados
+### US-EDA-301: Simplificar WorkerState a 4 estados ✅ COMPLETADO
 **Como** operador del sistema  
 **Quiero** una máquina de estados simple para workers  
 **Para** reducir complejidad y eliminar estados transitorios problemáticos
 
 **Criterios de Aceptación:**
-- [ ] `WorkerState` tiene exactamente 4 estados: `Creating`, `Ready`, `Busy`, `Terminated`
-- [ ] Eliminados: `Connecting`, `Draining`, `Terminating`, `Maintenance`
-- [ ] Tests actualizados para reflejar cambios
-- [ ] Documentación de transiciones actualizada
-
-**Referencia de Cambios:**
-```
-// EDA_ARCHITECTURE_V2_APPENDIX.md - Seccion 19.4
-| Estado Actual | Nuevo Estado | Accion |
-| Connecting    | Eliminado    | Merge en Creating |
-| Draining      | Eliminado    | Si error, Terminated directo |
-| Terminating   | Eliminado    | Merge en Terminated |
-| Maintenance   | Eliminado    | No aplica a workers efimeros |
-```
+- [x] `WorkerState` tiene exactamente 4 estados: `Creating`, `Ready`, `Busy`, `Terminated`
+- [x] Eliminados: `Connecting`, `Draining`, `Terminating`, `Maintenance`
+- [x] Tests actualizados para reflejar cambios (570 tests pasando)
+- [x] Documentación de transiciones actualizada
 
 **Tareas Técnicas:**
-| ID | Tarea | Complejidad | Estimación |
-|----|-------|-------------|------------|
-| T-301.1 | Redefinir enum WorkerState | Baja | 2h |
-| T-301.2 | Actualizar transiciones en `can_transition_to` | Baja | 2h |
-| T-301.3 | Actualizar todos los match en el codebase | Media | 4h |
-| T-301.4 | Tests de máquina de estados | Media | 4h |
+| ID | Tarea | Complejidad | Estimación | Estado |
+|----|-------|-------------|------------|--------|
+| T-301.1 | Redefinir enum WorkerState | Baja | 2h | ✅ |
+| T-301.2 | Actualizar transiciones en `can_transition_to` | Baja | 2h | ✅ |
+| T-301.3 | Actualizar todos los match en el codebase | Media | 4h | ✅ |
+| T-301.4 | Tests de máquina de estados | Media | 4h | ✅ |
 
 ---
 
@@ -475,11 +467,11 @@ impl WorkerMonitor {
 
 ## ✅ Checklist de Definition of Done (Sprint 3)
 
-- [ ] `WorkerState` tiene 4 estados (no 7)
-- [ ] Workers zombie terminados automáticamente
-- [ ] `ProviderManager`, `EventSubscriber`, `EventRouter` eliminados
-- [ ] Tests de Crash-Only pasan
-- [ ] Documentación actualizada
+- [x] `WorkerState` tiene 4 estados (no 7)
+- [x] Workers zombie terminados automáticamente
+- [x] `ProviderManager`, `EventSubscriber`, `EventRouter` eliminados (limpieza)
+- [x] Tests de Crash-Only pasan (570 tests)
+- [x] Documentación actualizada
 
 ---
 
