@@ -487,6 +487,9 @@ mod tests {
         async fn dequeue(&self) -> Result<Option<Job>> {
             Ok(None)
         }
+        async fn peek(&self) -> Result<Option<Job>> {
+            Ok(None)
+        }
         async fn len(&self) -> Result<usize> {
             Ok(0)
         }

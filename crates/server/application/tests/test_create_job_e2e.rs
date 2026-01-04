@@ -67,6 +67,10 @@ impl JobQueue for MockJobQueue {
         Ok(self.queue.lock().unwrap().pop_front())
     }
 
+    async fn peek(&self) -> Result<Option<Job>, DomainError> {
+        Ok(self.queue.lock().unwrap().front().cloned())
+    }
+
     async fn len(&self) -> Result<usize, DomainError> {
         Ok(self.queue.lock().unwrap().len())
     }

@@ -4,6 +4,7 @@
 //! using SQLx for database operations.
 
 pub mod postgres;
+pub mod postgres_tx;
 
 pub use postgres::{PostgresOutboxRepository, PostgresOutboxRepositoryError};
 

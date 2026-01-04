@@ -63,7 +63,7 @@ impl PostgresJobRepository {
         Ok(())
     }
 
-    fn state_to_string(state: &hodei_server_domain::shared_kernel::JobState) -> String {
+    pub(crate) fn state_to_string(state: &hodei_server_domain::shared_kernel::JobState) -> String {
         match state {
             hodei_server_domain::shared_kernel::JobState::Pending => "PENDING".to_string(),
             hodei_server_domain::shared_kernel::JobState::Assigned => "ASSIGNED".to_string(),
@@ -362,7 +362,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     }
 }
 
-fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
+pub(crate) fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
     let id: uuid::Uuid = row.get("id");
     let spec_json: serde_json::Value = row.get("spec");
     let state_str: String = row.get("state");

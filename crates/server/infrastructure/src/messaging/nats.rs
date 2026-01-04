@@ -456,7 +456,10 @@ impl NatsEventBus {
         let stream_config = StreamConfig {
             name: stream_name.clone(),
             subjects: stream_subjects,
-            retention: async_nats::jetstream::stream::RetentionPolicy::WorkQueue,
+            // Interest policy allows multiple consumers to receive the same messages (pub-sub)
+            // WorkQueue only allows one consumer per subject, which conflicts with
+            // having both JobCoordinator and ExecutionSagaConsumer subscribing to JobQueued
+            retention: async_nats::jetstream::stream::RetentionPolicy::Interest,
             max_age: Duration::from_secs(24 * 60 * 60),
             max_bytes: 1024 * 1024 * 1024,
             max_messages: 1_000_000,
@@ -839,7 +842,7 @@ mod tests {
     /// Tests that events are correctly mapped to subjects
     #[test]
     fn test_event_to_subject_mapping() {
-        use hodei_server_shared::event_topics::{job_topics, worker_topics};
+        use hodei_shared::event_topics::{job_topics, worker_topics};
 
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);

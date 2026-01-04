@@ -264,6 +264,9 @@ mod tests {
         async fn dequeue(&self) -> TestResult<Option<Job>> {
             Ok(self.queue.lock().unwrap().pop_front())
         }
+        async fn peek(&self) -> TestResult<Option<Job>> {
+            Ok(self.queue.lock().unwrap().front().cloned())
+        }
         async fn len(&self) -> TestResult<usize> {
             Ok(self.queue.lock().unwrap().len())
         }
@@ -332,7 +335,7 @@ mod tests {
             &self,
             _handle: WorkerHandle,
             _spec: WorkerSpec,
-            _job_id: Option<JobId>,
+            _job_id: JobId,
         ) -> TestResult<Worker> {
             unimplemented!()
         }

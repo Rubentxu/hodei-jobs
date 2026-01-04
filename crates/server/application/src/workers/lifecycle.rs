@@ -1729,7 +1729,7 @@ mod tests {
             &self,
             handle: WorkerHandle,
             spec: WorkerSpec,
-            _job_id: Option<JobId>,
+            _job_id: JobId,
         ) -> Result<Worker> {
             let worker = Worker::new(handle.clone(), spec);
             self.workers

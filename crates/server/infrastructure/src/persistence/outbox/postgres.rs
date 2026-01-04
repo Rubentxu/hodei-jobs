@@ -115,7 +115,7 @@ impl PostgresOutboxRepository {
     }
 
     /// Helper to convert aggregate type to string for database
-    fn aggregate_type_to_str(aggregate_type: &AggregateType) -> &'static str {
+    pub(crate) fn aggregate_type_to_str(aggregate_type: &AggregateType) -> &'static str {
         match aggregate_type {
             AggregateType::Job => "JOB",
             AggregateType::Worker => "WORKER",
@@ -124,7 +124,7 @@ impl PostgresOutboxRepository {
     }
 
     /// Helper to convert database string to aggregate type
-    fn str_to_aggregate_type(s: &str) -> Result<AggregateType, OutboxError> {
+    pub(crate) fn str_to_aggregate_type(s: &str) -> Result<AggregateType, OutboxError> {
         match s {
             "JOB" => Ok(AggregateType::Job),
             "WORKER" => Ok(AggregateType::Worker),

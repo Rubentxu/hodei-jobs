@@ -431,6 +431,10 @@ mod tests {
             Ok(self.queue.lock().unwrap().pop_front())
         }
 
+        async fn peek(&self) -> Result<Option<Job>> {
+            Ok(self.queue.lock().unwrap().front().cloned())
+        }
+
         async fn len(&self) -> Result<usize> {
             Ok(self.queue.lock().unwrap().len())
         }
@@ -453,6 +457,7 @@ mod tests {
             &self,
             _handle: hodei_server_domain::workers::WorkerHandle,
             _spec: WorkerSpec,
+            _job_id: hodei_server_domain::shared_kernel::JobId,
         ) -> Result<hodei_server_domain::workers::Worker> {
             unimplemented!()
         }
