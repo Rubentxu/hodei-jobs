@@ -1210,7 +1210,8 @@ pub trait JobRepository: Send + Sync {
 pub trait JobQueue: Send + Sync {
     async fn enqueue(&self, job: Job) -> Result<()>;
     async fn dequeue(&self) -> Result<Option<Job>>;
-    // Removed peek() as part of technical debt resolution
+    /// Peeks at the next job without dequeuing - required for auto-scaling with job-specific workers
+    async fn peek(&self) -> Result<Option<Job>>;
     async fn len(&self) -> Result<usize>;
     async fn is_empty(&self) -> Result<bool>;
     async fn clear(&self) -> Result<()>;

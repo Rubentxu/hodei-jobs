@@ -370,7 +370,7 @@ impl WorkerAgentServiceImpl {
 
                 // Create the worker in the registry using the correct signature
                 // WorkerRegistry::register(handle: WorkerHandle, spec: WorkerSpec)
-                registry.register(handle, spec).await.map_err(|e| {
+                registry.register(handle, spec, None).await.map_err(|e| {
                     error!("Failed to create worker {} in registry: {:?}", worker_id, e);
                     Status::internal(format!("Failed to create worker: {}", e))
                 })?;

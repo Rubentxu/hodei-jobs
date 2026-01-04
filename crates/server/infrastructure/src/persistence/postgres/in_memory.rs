@@ -140,6 +140,11 @@ pub mod test_in_memory {
             Ok(queue.pop_front())
         }
 
+
+        async fn peek(&self) -> Result<Option<Job>> {
+            let queue = self.queue.lock().unwrap();
+            Ok(queue.front().cloned())
+        }
         async fn len(&self) -> Result<usize> {
             let queue = self.queue.lock().unwrap();
             Ok(queue.len())

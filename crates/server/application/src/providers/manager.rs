@@ -55,14 +55,19 @@ where
 
         let provisioning_service = self.provisioning_service.clone();
         let event_bus_publisher = self.event_bus.clone();
+        let job_queue_publisher = self.job_queue.clone();
 
         tokio::spawn(async move {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
-                        if let Err(e) =
-                            Self::handle_event(&event, &provisioning_service, &event_bus_publisher)
-                                .await
+                        if let Err(e) = Self::handle_event(
+                            &event,
+                            &provisioning_service,
+                            &event_bus_publisher,
+                            &job_queue_publisher,
+                        )
+                        .await
                         {
                             error!("Error handling event: {}", e);
                         }
@@ -78,11 +83,12 @@ where
         Ok(())
     }
 
-    #[instrument(skip(provisioning_service, event_bus))]
+    #[instrument(skip(provisioning_service, event_bus, job_queue))]
     async fn handle_event(
         event: &DomainEvent,
         provisioning_service: &Arc<P>,
         event_bus: &Arc<E>,
+        job_queue: &Arc<Q>,
     ) -> Result<()> {
         match event {
             DomainEvent::JobQueueDepthChanged {
@@ -155,8 +161,23 @@ where
                             provider_id, reason
                         );
 
+                        // Get the next job_id from the queue for job-specific worker provisioning
+                        let job_id = match job_queue.peek().await {
+                            Ok(Some(job)) => job.id,
+                            Ok(None) => {
+                                warn!(
+                                    "⚠️ Queue is empty, cannot provision worker for specific job"
+                                );
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                error!("⚠️ Failed to peek queue for job_id: {}", e);
+                                return Ok(());
+                            }
+                        };
+
                         match provisioning_service
-                            .provision_worker(provider_id, worker_spec, JobId::new())
+                            .provision_worker(provider_id, worker_spec, job_id)
                             .await
                         {
                             Ok(result) => {

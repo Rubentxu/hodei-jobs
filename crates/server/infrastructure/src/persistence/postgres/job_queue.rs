@@ -310,6 +310,36 @@ impl JobQueue for PostgresJobQueue {
         }
     }
 
+    async fn peek(&self) -> Result<Option<Job>> {
+        // Get the next job from the queue without dequeuing
+        let row: Option<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
+            r#"
+            SELECT j.id, j.spec
+            FROM job_queue jq
+            JOIN jobs j ON jq.job_id = j.id
+            WHERE j.state = 'PENDING'
+            ORDER BY jq.priority DESC, jq.enqueued_at ASC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!("Failed to peek queue: {}", e),
+        })?;
+
+        match row {
+            Some((_id, spec)) => {
+                let job: Job =
+                    serde_json::from_value(spec).map_err(|e| DomainError::InfrastructureError {
+                        message: format!("Failed to deserialize job spec: {}", e),
+                    })?;
+                Ok(Some(job))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn len(&self) -> Result<usize> {
         let row: (i64,) = sqlx::query_as(
             r#"
