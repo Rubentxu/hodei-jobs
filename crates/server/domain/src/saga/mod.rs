@@ -39,3 +39,6 @@ pub use recovery::{
     CancelOldWorkerStep, CheckWorkerConnectivityStep, ProvisionNewWorkerStep, RecoverySaga,
     TerminateOldWorkerStep, TransferJobStep,
 };
+
+// Idempotency helpers
+pub use types::{saga_id_for_job, saga_id_for_provisioning, saga_id_for_recovery};

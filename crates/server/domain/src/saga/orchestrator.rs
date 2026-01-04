@@ -405,6 +405,10 @@ mod tests {
             Ok(())
         }
 
+        async fn create_if_not_exists(&self, _context: &SagaContext) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
         async fn find_by_id(&self, _saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error> {
             Ok(None)
         }

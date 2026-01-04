@@ -11,6 +11,68 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 // ============================================================================
+// Idempotency - saga_id generation with UUID v5
+// ============================================================================
+
+/// Generates a deterministic saga ID for execution based on job ID.
+///
+/// This ensures idempotency: the same job will always produce the same
+/// saga ID, preventing duplicate saga creation when NATS delivers
+/// the same message multiple times.
+///
+/// # Arguments
+/// * `job_id` - The job ID to generate the saga ID for
+///
+/// # Returns
+/// A deterministic UUID v5 based on the job ID
+///
+/// # Example
+/// ```rust
+/// use hodei_server_domain::shared_kernel::JobId;
+/// use hodei_server_domain::saga::saga_id_for_job;
+///
+/// let job_id = JobId::from_string("job-123");
+/// let saga_id = saga_id_for_job(&job_id);
+/// // Same job_id always produces the same saga_id
+/// assert_eq!(saga_id, saga_id_for_job(&job_id));
+/// ```
+#[inline]
+pub fn saga_id_for_job(job_id: &str) -> Uuid {
+    let namespace = Uuid::NAMESPACE_OID;
+    let input = format!("execution-saga-{}", job_id);
+    Uuid::new_v5(&namespace, input.as_bytes())
+}
+
+/// Generates a deterministic saga ID for provisioning based on provider and job.
+///
+/// # Arguments
+/// * `provider_id` - The provider identifier
+/// * `job_id` - The job ID
+///
+/// # Returns
+/// A deterministic UUID v5 based on provider and job
+#[inline]
+pub fn saga_id_for_provisioning(provider_id: &str, job_id: &str) -> Uuid {
+    let namespace = Uuid::NAMESPACE_OID;
+    let input = format!("provisioning-saga-{}:{}", provider_id, job_id);
+    Uuid::new_v5(&namespace, input.as_bytes())
+}
+
+/// Generates a deterministic saga ID for recovery based on job ID.
+///
+/// # Arguments
+/// * `job_id` - The job ID
+///
+/// # Returns
+/// A deterministic UUID v5 based on job
+#[inline]
+pub fn saga_id_for_recovery(job_id: &str) -> Uuid {
+    let namespace = Uuid::NAMESPACE_OID;
+    let input = format!("recovery-saga-{}", job_id);
+    Uuid::new_v5(&namespace, input.as_bytes())
+}
+
+// ============================================================================
 // SagaId - Newtype Pattern for type-safe UUID
 // ============================================================================
 
@@ -867,5 +929,71 @@ mod tests {
         assert_eq!(result.compensations_executed, 2);
         assert!(result.error_message.is_some());
         assert_eq!(result.error_message.unwrap(), "Step 'CreateWorker' failed");
+    }
+
+    // ============ Idempotency Tests ============
+
+    #[test]
+    fn saga_id_for_job_should_be_deterministic() {
+        let job_id = "job-12345";
+        let saga_id_1 = saga_id_for_job(job_id);
+        let saga_id_2 = saga_id_for_job(job_id);
+        assert_eq!(saga_id_1, saga_id_2);
+    }
+
+    #[test]
+    fn saga_id_for_job_should_be_unique_per_job() {
+        let saga_id_1 = saga_id_for_job("job-111");
+        let saga_id_2 = saga_id_for_job("job-222");
+        assert_ne!(saga_id_1, saga_id_2);
+    }
+
+    #[test]
+    fn saga_id_for_job_should_not_be_nil() {
+        let saga_id = saga_id_for_job("job-test");
+        assert!(!saga_id.is_nil());
+    }
+
+    #[test]
+    fn saga_id_for_job_should_use_uuid_v5() {
+        let saga_id = saga_id_for_job("job-123");
+        // Verify it's a valid v5 UUID by checking the version field
+        // v5 UUIDs have the version bits set to 0101 (5)
+        let bytes = saga_id.as_bytes();
+        let version = (bytes[6] & 0xF0) >> 4;
+        assert_eq!(version, 5, "Expected v5 UUID version bits");
+    }
+
+    #[test]
+    fn saga_id_for_provisioning_should_be_deterministic() {
+        let provider_id = "docker-local";
+        let job_id = "job-12345";
+        let saga_id_1 = saga_id_for_provisioning(provider_id, job_id);
+        let saga_id_2 = saga_id_for_provisioning(provider_id, job_id);
+        assert_eq!(saga_id_1, saga_id_2);
+    }
+
+    #[test]
+    fn saga_id_for_provisioning_should_differ_by_provider() {
+        let job_id = "job-123";
+        let saga_id_docker = saga_id_for_provisioning("docker", job_id);
+        let saga_id_k8s = saga_id_for_provisioning("kubernetes", job_id);
+        assert_ne!(saga_id_docker, saga_id_k8s);
+    }
+
+    #[test]
+    fn saga_id_for_recovery_should_be_deterministic() {
+        let job_id = "job-12345";
+        let saga_id_1 = saga_id_for_recovery(job_id);
+        let saga_id_2 = saga_id_for_recovery(job_id);
+        assert_eq!(saga_id_1, saga_id_2);
+    }
+
+    #[test]
+    fn saga_id_for_recovery_should_differ_from_execution() {
+        let job_id = "job-123";
+        let execution_saga_id = saga_id_for_job(job_id);
+        let recovery_saga_id = saga_id_for_recovery(job_id);
+        assert_ne!(execution_saga_id, recovery_saga_id);
     }
 }

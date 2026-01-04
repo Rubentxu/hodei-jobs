@@ -22,6 +22,19 @@ pub trait SagaRepository: Send + Sync {
     /// Save a new saga instance
     async fn save(&self, context: &SagaContext) -> Result<(), Self::Error>;
 
+    /// Creates a saga if it doesn't exist, returning whether it was created.
+    ///
+    /// This method is idempotent: if a saga with the given ID already exists,
+    /// it returns `Ok(false)` without modifying the existing saga.
+    ///
+    /// # Arguments
+    /// * `context` - The saga context to create
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Saga was created
+    /// * `Ok(false)` - Saga already existed
+    async fn create_if_not_exists(&self, context: &SagaContext) -> Result<bool, Self::Error>;
+
     /// Find a saga by its ID
     async fn find_by_id(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error>;
 
@@ -312,6 +325,15 @@ mod tests {
             Ok(())
         }
 
+        async fn create_if_not_exists(&self, context: &SagaContext) -> Result<bool, Self::Error> {
+            let mut sagas = self.sagas.lock().unwrap();
+            if sagas.iter().any(|s| s.saga_id == context.saga_id) {
+                return Ok(false);
+            }
+            sagas.push(context.clone());
+            Ok(true)
+        }
+
         async fn find_by_id(&self, saga_id: &SagaId) -> Result<Option<SagaContext>, Self::Error> {
             let sagas = self.sagas.lock().unwrap();
             Ok(sagas.iter().find(|s| s.saga_id == *saga_id).cloned())
@@ -522,5 +544,50 @@ mod tests {
         failed_step.mark_failed("Test error".to_string());
         assert_eq!(failed_step.state, SagaStepState::Failed);
         assert_eq!(failed_step.error_message, Some("Test error".to_string()));
+    }
+
+    // ============ Idempotency Tests ============
+
+    #[tokio::test]
+    async fn test_create_if_not_exists_creates_new_saga() {
+        let repo = Arc::new(MockSagaRepository::new());
+        let saga_id = SagaId::new();
+        let context = SagaContext::new(
+            saga_id.clone(),
+            SagaType::Execution,
+            Some("corr-1".to_string()),
+            Some("actor-1".to_string()),
+        );
+
+        let created = repo.create_if_not_exists(&context).await.unwrap();
+        assert!(created);
+
+        // Verify saga was created
+        let found = repo.find_by_id(&saga_id).await.unwrap();
+        assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_if_not_exists_returns_false_for_existing() {
+        let repo = Arc::new(MockSagaRepository::new());
+        let saga_id = SagaId::new();
+        let context = SagaContext::new(
+            saga_id.clone(),
+            SagaType::Execution,
+            Some("corr-1".to_string()),
+            Some("actor-1".to_string()),
+        );
+
+        // First creation
+        let created_1 = repo.create_if_not_exists(&context).await.unwrap();
+        assert!(created_1);
+
+        // Second creation attempt
+        let created_2 = repo.create_if_not_exists(&context).await.unwrap();
+        assert!(!created_2);
+
+        // Verify only one saga exists
+        let count = repo.count_active().await.unwrap();
+        assert_eq!(count, 1);
     }
 }
