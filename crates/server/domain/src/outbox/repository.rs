@@ -3,6 +3,8 @@
 //! Abstraction for outbox event persistence operations.
 
 use crate::outbox::{OutboxError, OutboxEventInsert, OutboxEventView};
+use async_trait::async_trait;
+use sqlx::PgTransaction;
 use uuid::Uuid;
 
 /// Repository for outbox event persistence
@@ -148,6 +150,53 @@ pub trait OutboxRepository {
         // Default: just cleanup published events
         self.cleanup_published_events(older_than).await
     }
+}
+
+/// Outbox Repository with Transaction Support
+///
+/// Extends the base OutboxRepository with transaction-aware operations
+/// for the Transactional Outbox Pattern (EPIC-43 Sprint 1).
+#[async_trait::async_trait]
+pub trait OutboxRepositoryTx {
+    /// Error type for repository operations
+    type Error: From<OutboxError> + std::fmt::Debug + Send + Sync;
+
+    /// Insert events into the outbox within an existing transaction.
+    ///
+    /// This is the core method for the Transactional Outbox Pattern.
+    /// Call this method within the same transaction as your entity persistence.
+    ///
+    /// # Arguments
+    /// * `tx` - The database transaction to use
+    /// * `events` - Events to insert
+    ///
+    /// # Returns
+    /// * `std::result::Result<(), Self::Error>` - Success or error
+    ///
+    /// # Errors
+    /// * Transaction errors, duplicate idempotency keys, etc.
+    async fn insert_events_with_tx(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        events: &[OutboxEventInsert],
+    ) -> std::result::Result<(), Self::Error>;
+
+    /// Check if an idempotency key exists within a transaction.
+    ///
+    /// Useful for checking if an event has already been processed
+    /// before inserting within the same transaction.
+    ///
+    /// # Arguments
+    /// * `tx` - The database transaction to use
+    /// * `idempotency_key` - The key to check
+    ///
+    /// # Returns
+    /// * `std::result::Result<bool, Self::Error>` - True if exists
+    async fn exists_by_idempotency_key_with_tx(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        idempotency_key: &str,
+    ) -> std::result::Result<bool, Self::Error>;
 }
 
 /// Statistics about outbox events

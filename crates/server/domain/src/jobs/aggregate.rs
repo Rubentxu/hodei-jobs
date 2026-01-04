@@ -1205,6 +1205,33 @@ pub trait JobRepository: Send + Sync {
     async fn update(&self, job: &Job) -> Result<()>;
 }
 
+/// Transaction-aware Job Repository (EPIC-43 Sprint 1)
+///
+/// Extends JobRepository with transaction-aware operations for the Transactional Outbox Pattern.
+#[async_trait::async_trait]
+pub trait JobRepositoryTx: JobRepository {
+    /// Save a job within an existing transaction.
+    async fn save_with_tx(&self, tx: &mut sqlx::PgTransaction<'_>, job: &Job) -> Result<()>;
+
+    /// Find a job by ID within an existing transaction.
+    async fn find_by_id_with_tx(
+        &self,
+        tx: &mut sqlx::PgTransaction<'_>,
+        job_id: &JobId,
+    ) -> Result<Option<Job>>;
+
+    /// Update a job within an existing transaction.
+    async fn update_with_tx(&self, tx: &mut sqlx::PgTransaction<'_>, job: &Job) -> Result<()>;
+
+    /// Update job status within an existing transaction.
+    async fn update_status_with_tx(
+        &self,
+        tx: &mut sqlx::PgTransaction<'_>,
+        job_id: &JobId,
+        new_status: &str,
+    ) -> Result<()>;
+}
+
 /// Trait para colas de jobs
 #[async_trait::async_trait]
 pub trait JobQueue: Send + Sync {

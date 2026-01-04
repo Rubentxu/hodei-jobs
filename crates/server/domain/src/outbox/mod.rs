@@ -11,7 +11,7 @@ pub use dlq_handler::DlqHandler;
 pub use dlq_model::{DlqEntry, DlqError, DlqStats, DlqStatus};
 pub use dlq_repository::DlqRepository;
 pub use model::{AggregateType, OutboxError, OutboxEventInsert, OutboxEventView, OutboxStatus};
-pub use repository::{OutboxRepository, OutboxStats};
+pub use repository::{OutboxRepository, OutboxRepositoryTx, OutboxStats};
 pub use transactional_outbox::{
     EventBusPublisher, EventPublisher, OutboxPoller, TransactionalOutbox, TransactionalOutboxError,
 };
