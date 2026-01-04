@@ -175,15 +175,22 @@ impl From<&JobState> for i32 {
     }
 }
 
-/// Estados del ciclo de vida de un worker
+/// Estados del ciclo de vida de un worker (Crash-Only Design)
+///
+/// Estados simplificados según EPIC-43 Sprint 3:
+/// - Creating: Worker provisionándose, agent iniciándose
+/// - Ready: Worker listo para recibir jobs
+/// - Busy: Worker ejecutando un job
+/// - Terminated: Worker destruido (estado terminal)
+///
+/// Los estados transitorios (Connecting, Draining, Terminating) fueron eliminados.
+/// En su lugar, los errores durante Creating van directamente a Terminated.
+/// La terminación es inmediata (no graceful drain para workers efímeros).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorkerState {
     Creating,
-    Connecting,
     Ready,
     Busy,
-    Draining,
-    Terminating,
     Terminated,
 }
 
@@ -191,11 +198,8 @@ impl fmt::Display for WorkerState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WorkerState::Creating => write!(f, "CREATING"),
-            WorkerState::Connecting => write!(f, "CONNECTING"),
             WorkerState::Ready => write!(f, "READY"),
             WorkerState::Busy => write!(f, "BUSY"),
-            WorkerState::Draining => write!(f, "DRAINING"),
-            WorkerState::Terminating => write!(f, "TERMINATING"),
             WorkerState::Terminated => write!(f, "TERMINATED"),
         }
     }
@@ -207,11 +211,8 @@ impl FromStr for WorkerState {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "CREATING" => Ok(WorkerState::Creating),
-            "CONNECTING" => Ok(WorkerState::Connecting),
             "READY" => Ok(WorkerState::Ready),
             "BUSY" => Ok(WorkerState::Busy),
-            "DRAINING" => Ok(WorkerState::Draining),
-            "TERMINATING" => Ok(WorkerState::Terminating),
             "TERMINATED" => Ok(WorkerState::Terminated),
             _ => Err(format!("Invalid WorkerState: {}", s)),
         }
@@ -224,12 +225,9 @@ impl TryFrom<i32> for WorkerState {
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(WorkerState::Creating),
-            1 => Ok(WorkerState::Connecting),
-            2 => Ok(WorkerState::Ready),
-            3 => Ok(WorkerState::Busy),
-            4 => Ok(WorkerState::Draining),
-            5 => Ok(WorkerState::Terminating),
-            6 => Ok(WorkerState::Terminated),
+            1 => Ok(WorkerState::Ready),
+            2 => Ok(WorkerState::Busy),
+            3 => Ok(WorkerState::Terminated),
             _ => Err(format!("Invalid WorkerState value: {}", value)),
         }
     }
@@ -239,12 +237,9 @@ impl From<&WorkerState> for i32 {
     fn from(state: &WorkerState) -> Self {
         match state {
             WorkerState::Creating => 0,
-            WorkerState::Connecting => 1,
-            WorkerState::Ready => 2,
-            WorkerState::Busy => 3,
-            WorkerState::Draining => 4,
-            WorkerState::Terminating => 5,
-            WorkerState::Terminated => 6,
+            WorkerState::Ready => 1,
+            WorkerState::Busy => 2,
+            WorkerState::Terminated => 3,
         }
     }
 }
@@ -252,21 +247,22 @@ impl From<&WorkerState> for i32 {
 impl WorkerState {
     /// Valida si una transición de estado es válida según el State Machine del dominio.
     ///
-    /// Transiciones válidas según la máquina de estados:
-    /// - Creating → Connecting
-    /// - Connecting → Ready
-    /// - Ready → Busy, Draining
-    /// - Busy → Ready (job completado), Draining, Terminated
-    /// - Draining → Terminating
-    /// - Terminating → Terminated
+    /// Transiciones válidas según Crash-Only Design (4 estados):
+    /// - Creating → Ready (éxito), Terminated (error)
+    /// - Ready → Busy (job asignado), Terminated (terminación directa)
+    /// - Busy → Terminated (job completado o error)
     /// - Terminated → (terminal, no transiciones salientes)
+    ///
+    /// Los estados intermedios (Connecting, Draining, Terminating) fueron eliminados.
+    /// Esto simplifica el modelo y elimina condiciones de carrera.
     ///
     /// # Ejemplo
     ///
     /// ```rust
     /// use hodei_shared::states::WorkerState;
     ///
-    /// assert!(WorkerState::Creating.can_transition_to(&WorkerState::Connecting));
+    /// assert!(WorkerState::Creating.can_transition_to(&WorkerState::Ready));
+    /// assert!(WorkerState::Creating.can_transition_to(&WorkerState::Terminated)); // Error
     /// assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Ready));
     /// ```
     pub fn can_transition_to(&self, new_state: &WorkerState) -> bool {
@@ -275,31 +271,15 @@ impl WorkerState {
             (s, n) if s == n => false,
 
             // Transiciones válidas desde Creating
-            (WorkerState::Creating, WorkerState::Connecting) => true,
+            (WorkerState::Creating, WorkerState::Ready) => true,
             (WorkerState::Creating, WorkerState::Terminated) => true, // Error durante creación
-
-            // Transiciones válidas desde Connecting
-            (WorkerState::Connecting, WorkerState::Ready) => true,
-            (WorkerState::Connecting, WorkerState::Terminated) => true, // Error de conexión
 
             // Transiciones válidas desde Ready
             (WorkerState::Ready, WorkerState::Busy) => true,
-            (WorkerState::Ready, WorkerState::Draining) => true,
-            (WorkerState::Ready, WorkerState::Terminating) => true,
+            (WorkerState::Ready, WorkerState::Terminated) => true, // Terminación directa
 
             // Transiciones válidas desde Busy
-            (WorkerState::Busy, WorkerState::Ready) => true, // Job completado, vuelve a estar listo (non-ephemeral)
-            (WorkerState::Busy, WorkerState::Draining) => true, // Graceful shutdown solicitado
-            (WorkerState::Busy, WorkerState::Terminating) => true,
-            (WorkerState::Busy, WorkerState::Terminated) => true, // Modelo efímero EPIC-21
-
-            // Transiciones válidas desde Draining
-            (WorkerState::Draining, WorkerState::Ready) => true, // Drain cancelado
-            (WorkerState::Draining, WorkerState::Terminating) => true,
-            (WorkerState::Draining, WorkerState::Terminated) => true,
-
-            // Transiciones válidas desde Terminating
-            (WorkerState::Terminating, WorkerState::Terminated) => true,
+            (WorkerState::Busy, WorkerState::Terminated) => true, // Job completado o error
 
             // Todas las demás transiciones son inválidas
             _ => false,
@@ -311,44 +291,40 @@ impl WorkerState {
         matches!(self, WorkerState::Terminated)
     }
 
-    /// Retorna true si el estado está en progreso (no es terminal ni en proceso de terminación)
+    /// Retorna true si el estado está en progreso (no es terminal)
     pub fn is_in_progress(&self) -> bool {
         matches!(
             self,
-            WorkerState::Creating
-                | WorkerState::Connecting
-                | WorkerState::Ready
-                | WorkerState::Busy
-                | WorkerState::Draining
+            WorkerState::Creating | WorkerState::Ready | WorkerState::Busy
         )
     }
 
-    /// Retorna true si el estado está en proceso de terminación
+    /// Retorna true si el estado es de terminación o terminado
     pub fn is_terminating(&self) -> bool {
-        matches!(self, WorkerState::Terminating | WorkerState::Terminated)
+        matches!(self, WorkerState::Terminated)
     }
 
+    /// Retorna true si el worker puede aceptar jobs
     pub fn can_accept_jobs(&self) -> bool {
         matches!(self, WorkerState::Ready)
     }
 
+    /// Retorna true si el worker está activo (no terminado)
     pub fn is_active(&self) -> bool {
         matches!(
             self,
-            WorkerState::Creating
-                | WorkerState::Connecting
-                | WorkerState::Ready
-                | WorkerState::Busy
-                | WorkerState::Draining
+            WorkerState::Creating | WorkerState::Ready | WorkerState::Busy
         )
     }
 
+    /// Retorna true si el worker está terminado
     pub fn is_terminated(&self) -> bool {
         matches!(self, WorkerState::Terminated)
     }
 
-    pub fn is_draining(&self) -> bool {
-        matches!(self, WorkerState::Draining)
+    /// Retorna true si el worker está listo para recibir jobs
+    pub fn is_ready(&self) -> bool {
+        matches!(self, WorkerState::Ready)
     }
 }
 
@@ -1194,20 +1170,8 @@ mod tests {
             "CREATING".parse::<WorkerState>().unwrap(),
             WorkerState::Creating
         );
-        assert_eq!(
-            "CONNECTING".parse::<WorkerState>().unwrap(),
-            WorkerState::Connecting
-        );
         assert_eq!("READY".parse::<WorkerState>().unwrap(), WorkerState::Ready);
         assert_eq!("BUSY".parse::<WorkerState>().unwrap(), WorkerState::Busy);
-        assert_eq!(
-            "DRAINING".parse::<WorkerState>().unwrap(),
-            WorkerState::Draining
-        );
-        assert_eq!(
-            "TERMINATING".parse::<WorkerState>().unwrap(),
-            WorkerState::Terminating
-        );
         assert_eq!(
             "TERMINATED".parse::<WorkerState>().unwrap(),
             WorkerState::Terminated
@@ -1219,12 +1183,9 @@ mod tests {
     #[test]
     fn test_worker_state_try_from_i32() {
         assert_eq!(WorkerState::try_from(0).unwrap(), WorkerState::Creating);
-        assert_eq!(WorkerState::try_from(1).unwrap(), WorkerState::Connecting);
-        assert_eq!(WorkerState::try_from(2).unwrap(), WorkerState::Ready);
-        assert_eq!(WorkerState::try_from(3).unwrap(), WorkerState::Busy);
-        assert_eq!(WorkerState::try_from(4).unwrap(), WorkerState::Draining);
-        assert_eq!(WorkerState::try_from(5).unwrap(), WorkerState::Terminating);
-        assert_eq!(WorkerState::try_from(6).unwrap(), WorkerState::Terminated);
+        assert_eq!(WorkerState::try_from(1).unwrap(), WorkerState::Ready);
+        assert_eq!(WorkerState::try_from(2).unwrap(), WorkerState::Busy);
+        assert_eq!(WorkerState::try_from(3).unwrap(), WorkerState::Terminated);
 
         assert!(WorkerState::try_from(99).is_err());
     }
@@ -1232,12 +1193,9 @@ mod tests {
     #[test]
     fn test_worker_state_into_i32() {
         assert_eq!(i32::from(&WorkerState::Creating), 0);
-        assert_eq!(i32::from(&WorkerState::Connecting), 1);
-        assert_eq!(i32::from(&WorkerState::Ready), 2);
-        assert_eq!(i32::from(&WorkerState::Busy), 3);
-        assert_eq!(i32::from(&WorkerState::Draining), 4);
-        assert_eq!(i32::from(&WorkerState::Terminating), 5);
-        assert_eq!(i32::from(&WorkerState::Terminated), 6);
+        assert_eq!(i32::from(&WorkerState::Ready), 1);
+        assert_eq!(i32::from(&WorkerState::Busy), 2);
+        assert_eq!(i32::from(&WorkerState::Terminated), 3);
     }
 
     // ProviderStatus tests
@@ -1897,47 +1855,29 @@ mod tests {
 
     #[test]
     fn test_worker_state_valid_transitions_creating() {
-        assert!(WorkerState::Creating.can_transition_to(&WorkerState::Connecting));
-        assert!(!WorkerState::Creating.can_transition_to(&WorkerState::Ready));
+        // Crash-Only: Creating -> Ready (éxito) o Terminated (error)
+        assert!(WorkerState::Creating.can_transition_to(&WorkerState::Ready));
+        assert!(WorkerState::Creating.can_transition_to(&WorkerState::Terminated));
         assert!(!WorkerState::Creating.can_transition_to(&WorkerState::Busy));
-    }
-
-    #[test]
-    fn test_worker_state_valid_transitions_connecting() {
-        assert!(WorkerState::Connecting.can_transition_to(&WorkerState::Ready));
-        assert!(!WorkerState::Connecting.can_transition_to(&WorkerState::Creating));
-        assert!(!WorkerState::Connecting.can_transition_to(&WorkerState::Busy));
+        assert!(!WorkerState::Creating.can_transition_to(&WorkerState::Creating));
     }
 
     #[test]
     fn test_worker_state_valid_transitions_ready() {
+        // Ready -> Busy (job asignado) o Terminated (terminación directa)
         assert!(WorkerState::Ready.can_transition_to(&WorkerState::Busy));
-        assert!(WorkerState::Ready.can_transition_to(&WorkerState::Draining));
+        assert!(WorkerState::Ready.can_transition_to(&WorkerState::Terminated));
         assert!(!WorkerState::Ready.can_transition_to(&WorkerState::Creating));
-        assert!(!WorkerState::Ready.can_transition_to(&WorkerState::Connecting));
+        assert!(!WorkerState::Ready.can_transition_to(&WorkerState::Ready));
     }
 
     #[test]
     fn test_worker_state_valid_transitions_busy() {
-        assert!(WorkerState::Busy.can_transition_to(&WorkerState::Ready));
-        assert!(WorkerState::Busy.can_transition_to(&WorkerState::Draining));
+        // Busy -> Terminated (job completado o error, worker efímero)
         assert!(WorkerState::Busy.can_transition_to(&WorkerState::Terminated));
+        assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Ready)); // Workers son efímeros
         assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Creating));
-        assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Connecting));
-    }
-
-    #[test]
-    fn test_worker_state_valid_transitions_draining() {
-        assert!(WorkerState::Draining.can_transition_to(&WorkerState::Terminating));
-        assert!(WorkerState::Draining.can_transition_to(&WorkerState::Ready)); // Drain cancelado
-        assert!(WorkerState::Draining.can_transition_to(&WorkerState::Terminated));
-        assert!(!WorkerState::Draining.can_transition_to(&WorkerState::Busy));
-    }
-
-    #[test]
-    fn test_worker_state_valid_transitions_terminating() {
-        assert!(WorkerState::Terminating.can_transition_to(&WorkerState::Terminated));
-        assert!(!WorkerState::Terminating.can_transition_to(&WorkerState::Ready));
+        assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Busy));
     }
 
     #[test]
@@ -1945,24 +1885,21 @@ mod tests {
         assert!(!WorkerState::Ready.can_transition_to(&WorkerState::Ready));
         assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Busy));
         assert!(!WorkerState::Creating.can_transition_to(&WorkerState::Creating));
+        assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Terminated));
     }
 
     #[test]
     fn test_worker_state_invalid_backwards_transitions() {
         assert!(!WorkerState::Ready.can_transition_to(&WorkerState::Creating));
-        assert!(!WorkerState::Ready.can_transition_to(&WorkerState::Connecting));
         assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Creating));
-        // Draining -> Ready es válido (drain cancelado)
+        assert!(!WorkerState::Busy.can_transition_to(&WorkerState::Ready));
     }
 
     #[test]
     fn test_worker_state_terminal_no_transitions() {
         assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Ready));
         assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Creating));
-        assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Connecting));
         assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Busy));
-        assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Draining));
-        assert!(!WorkerState::Terminated.can_transition_to(&WorkerState::Terminating));
     }
 
     #[test]
@@ -1976,19 +1913,16 @@ mod tests {
     #[test]
     fn test_worker_state_in_progress() {
         assert!(WorkerState::Creating.is_in_progress());
-        assert!(WorkerState::Connecting.is_in_progress());
         assert!(WorkerState::Ready.is_in_progress());
         assert!(WorkerState::Busy.is_in_progress());
-        assert!(WorkerState::Draining.is_in_progress());
-        assert!(!WorkerState::Terminating.is_in_progress());
         assert!(!WorkerState::Terminated.is_in_progress());
     }
 
     #[test]
     fn test_worker_state_is_terminating() {
-        assert!(WorkerState::Terminating.is_terminating());
         assert!(WorkerState::Terminated.is_terminating());
         assert!(!WorkerState::Ready.is_terminating());
         assert!(!WorkerState::Busy.is_terminating());
+        assert!(!WorkerState::Creating.is_terminating());
     }
 }

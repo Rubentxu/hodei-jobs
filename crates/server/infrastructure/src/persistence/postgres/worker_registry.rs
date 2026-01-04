@@ -492,12 +492,13 @@ fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
     let state_str: String = row.get("state");
     let state = match state_str.as_str() {
         "CREATING" => hodei_server_domain::shared_kernel::WorkerState::Creating,
-        "CONNECTING" => hodei_server_domain::shared_kernel::WorkerState::Connecting,
         "READY" => hodei_server_domain::shared_kernel::WorkerState::Ready,
         "BUSY" => hodei_server_domain::shared_kernel::WorkerState::Busy,
-        "DRAINING" => hodei_server_domain::shared_kernel::WorkerState::Draining,
-        "TERMINATING" => hodei_server_domain::shared_kernel::WorkerState::Terminating,
         "TERMINATED" => hodei_server_domain::shared_kernel::WorkerState::Terminated,
+        // Legacy states for backward compatibility with existing data
+        "CONNECTING" | "DRAINING" | "TERMINATING" => {
+            hodei_server_domain::shared_kernel::WorkerState::Creating
+        }
         _ => {
             return Err(
                 hodei_server_domain::shared_kernel::DomainError::InfrastructureError {

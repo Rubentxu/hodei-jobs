@@ -887,18 +887,14 @@ impl Worker {
         Ok(())
     }
 
-    /// Worker conectando (agent arrancando gRPC)
-    pub fn mark_connecting(&mut self) -> Result<()> {
-        self.transition_to(WorkerState::Connecting, "Agent starting gRPC connection")
-    }
-
-    /// Alias para retrocompatibilidad
-    pub fn mark_starting(&mut self) -> Result<()> {
-        self.mark_connecting()
-    }
-
-    /// Worker está listo (agent registrado)
+    /// Worker listo (agent registrado exitosamente)
+    /// En Crash-Only Design, esto viene directamente de Creating
+    /// Esta transición es idempotente: si ya está en Ready, no hace nada
     pub fn mark_ready(&mut self) -> Result<()> {
+        // Idempotent: si ya está en Ready, no hacemos nada
+        if self.state.is_ready() {
+            return Ok(());
+        }
         self.transition_to(WorkerState::Ready, "Agent registered successfully")?;
         self.last_heartbeat = self.updated_at;
         Ok(())
@@ -940,29 +936,15 @@ impl Worker {
         Ok(())
     }
 
-    /// Marcar worker como draining (no acepta nuevos jobs)
-    pub fn mark_draining(&mut self) -> Result<()> {
-        // Draining es un no-op si ya estamos en un estado terminal
-        if self.state.is_terminated() {
-            return Ok(());
-        }
-
-        self.transition_to(WorkerState::Draining, "Graceful shutdown requested")
-    }
-
-    /// Iniciar terminación del worker
+    /// Marcar worker como terminado directamente
+    /// En Crash-Only Design, no hay estados intermedios de draining/terminating
     pub fn mark_terminating(&mut self) -> Result<()> {
         // Si ya está terminado, es un no-op
         if self.state.is_terminated() {
             return Ok(());
         }
 
-        self.transition_to(WorkerState::Terminating, "Worker termination initiated")
-    }
-
-    /// Worker terminado
-    pub fn mark_terminated(&mut self) -> Result<()> {
-        self.transition_to(WorkerState::Terminated, "Worker execution completed")
+        self.transition_to(WorkerState::Terminated, "Worker terminated")
     }
 
     /// Worker falló - se marca como Terminated (PRD v6.0 no tiene Failed state)
@@ -1093,11 +1075,7 @@ mod tests {
         // Estado inicial: Creating
         assert_eq!(*worker.state(), WorkerState::Creating);
 
-        // Transición a Connecting
-        worker.mark_connecting().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Connecting);
-
-        // Transición a Ready
+        // Transición a Ready (Crash-Only: Creating -> Ready directamente)
         worker.mark_ready().unwrap();
         assert_eq!(*worker.state(), WorkerState::Ready);
         assert!(worker.state().can_accept_jobs());
@@ -1113,26 +1091,11 @@ mod tests {
         assert_eq!(*worker.state(), WorkerState::Terminated);
         assert_eq!(worker.jobs_executed(), 1);
         assert!(worker.state().is_terminated());
-
-        // Test alternativo: Worker puede ser marcado como draining ANTES de completar job
-        let mut worker2 = create_test_worker();
-        worker2.mark_connecting().unwrap();
-        worker2.mark_ready().unwrap();
-        worker2.assign_job(JobId::new()).unwrap();
-
-        // Draining antes de completar (para jobs largos)
-        worker2.mark_draining().unwrap();
-        assert_eq!(*worker2.state(), WorkerState::Draining);
-
-        // Completar job -> Terminated (desde Draining también termina)
-        worker2.complete_job().unwrap();
-        assert_eq!(*worker2.state(), WorkerState::Terminated);
     }
 
     #[test]
     fn test_worker_cannot_accept_job_when_busy() {
         let mut worker = create_test_worker();
-        worker.mark_starting().unwrap();
         worker.mark_ready().unwrap();
 
         worker.assign_job(JobId::new()).unwrap();
@@ -1145,7 +1108,6 @@ mod tests {
     fn test_worker_terminates_after_successful_job_completion() {
         // GIVEN: Worker en estado Busy con job asignado
         let mut worker = create_test_worker();
-        worker.mark_starting().unwrap();
         worker.mark_ready().unwrap();
         let job_id = JobId::new();
         worker.assign_job(job_id).unwrap();
@@ -1167,7 +1129,6 @@ mod tests {
     fn test_worker_cannot_complete_job_when_not_busy() {
         // GIVEN: Worker en estado Ready
         let mut worker = create_test_worker();
-        worker.mark_starting().unwrap();
         worker.mark_ready().unwrap();
 
         // WHEN: complete_job() es llamado
@@ -1187,7 +1148,6 @@ mod tests {
     fn test_worker_termination_emits_correct_event() {
         // GIVEN: Worker en estado Busy
         let mut worker = create_test_worker();
-        worker.mark_starting().unwrap();
         worker.mark_ready().unwrap();
         let job_id = JobId::new();
         worker.assign_job(job_id).unwrap();
@@ -1201,123 +1161,59 @@ mod tests {
         // El dominio solo cambia el estado
     }
 
-    // === US-31.1: Worker Aggregate Centralized Transition Validation ===
+    // === Crash-Only Worker Tests ===
+    // Tests simplificados para el modelo Crash-Only (4 estados)
 
     #[test]
-    fn test_mark_connecting_from_creating_succeeds() {
+    fn test_mark_ready_from_creating_succeeds() {
         // GIVEN: Worker en estado Creating
         let mut worker = create_test_worker();
         assert_eq!(*worker.state(), WorkerState::Creating);
 
-        // WHEN: mark_connecting() es llamado
-        let result = worker.mark_connecting();
+        // WHEN: mark_ready() es llamado
+        let result = worker.mark_ready();
 
         // THEN: Transición exitosa
         assert!(result.is_ok());
-        assert_eq!(*worker.state(), WorkerState::Connecting);
+        assert_eq!(*worker.state(), WorkerState::Ready);
     }
 
     #[test]
-    fn test_mark_connecting_from_ready_fails() {
+    fn test_mark_ready_from_ready_is_idempotent() {
         // GIVEN: Worker en estado Ready
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         assert_eq!(*worker.state(), WorkerState::Ready);
 
-        // WHEN: mark_connecting() es llamado
-        let result = worker.mark_connecting();
-
-        // THEN: Debe fallar con InvalidWorkerStateTransition
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(DomainError::InvalidWorkerStateTransition { .. })
-        ));
+        // WHEN: mark_ready() es llamado de nuevo
+        // THEN: Debe ser idempotente (éxito, no transición)
+        let result = worker.mark_ready();
+        assert!(result.is_ok());
         // AND: Estado debe permanecer Ready
         assert_eq!(*worker.state(), WorkerState::Ready);
     }
 
     #[test]
-    fn test_mark_connecting_from_terminated_fails() {
+    fn test_mark_ready_from_terminated_fails() {
         // GIVEN: Worker en estado Terminated
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         let job_id = JobId::new();
         worker.assign_job(job_id).unwrap();
         worker.complete_job().unwrap();
         assert_eq!(*worker.state(), WorkerState::Terminated);
 
-        // WHEN: mark_connecting() es llamado
-        let result = worker.mark_connecting();
-
-        // THEN: Debe fallar
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(DomainError::InvalidWorkerStateTransition { .. })
-        ));
-    }
-
-    #[test]
-    fn test_mark_ready_from_connecting_succeeds() {
-        // GIVEN: Worker en estado Connecting
-        let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Connecting);
-
-        // WHEN: mark_ready() es llamado
-        let result = worker.mark_ready();
-
-        // THEN: Transición exitosa
-        assert!(result.is_ok());
-        assert_eq!(*worker.state(), WorkerState::Ready);
-        assert_eq!(worker.last_heartbeat, worker.updated_at);
-    }
-
-    #[test]
-    fn test_mark_ready_from_creating_fails() {
-        // GIVEN: Worker en estado Creating
-        let mut worker = create_test_worker();
-        assert_eq!(*worker.state(), WorkerState::Creating);
-
         // WHEN: mark_ready() es llamado
         let result = worker.mark_ready();
 
         // THEN: Debe fallar
         assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(DomainError::InvalidWorkerStateTransition { .. })
-        ));
-        assert_eq!(*worker.state(), WorkerState::Creating);
-    }
-
-    #[test]
-    fn test_mark_ready_from_busy_succeeds() {
-        // GIVEN: Worker en estado Busy que no es efímero (no completo job)
-        let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
-        worker.mark_ready().unwrap();
-
-        // Simulamos un worker no-efímero: mark_draining y luego mark_ready (drain cancelado)
-        worker.mark_draining().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Draining);
-
-        // WHEN: mark_ready() es llamado (drain cancelado)
-        let result = worker.mark_ready();
-
-        // THEN: Transición exitosa
-        assert!(result.is_ok());
-        assert_eq!(*worker.state(), WorkerState::Ready);
     }
 
     #[test]
     fn test_assign_job_from_ready_succeeds() {
         // GIVEN: Worker en estado Ready
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         assert_eq!(*worker.state(), WorkerState::Ready);
 
@@ -1335,7 +1231,6 @@ mod tests {
     fn test_assign_job_from_terminated_fails() {
         // GIVEN: Worker en estado Terminated
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         let job_id = JobId::new();
         worker.assign_job(job_id).unwrap();
@@ -1374,7 +1269,6 @@ mod tests {
     fn test_complete_job_from_busy_succeeds() {
         // GIVEN: Worker en estado Busy
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         let job_id = JobId::new();
         worker.assign_job(job_id.clone()).unwrap();
@@ -1410,62 +1304,24 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_draining_from_ready_succeeds() {
-        // GIVEN: Worker en estado Ready
-        let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
-        worker.mark_ready().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Ready);
-
-        // WHEN: mark_draining() es llamado
-        let result = worker.mark_draining();
-
-        // THEN: Transición exitosa
-        assert!(result.is_ok());
-        assert_eq!(*worker.state(), WorkerState::Draining);
-    }
-
-    #[test]
-    fn test_mark_draining_from_terminated_fails() {
-        // GIVEN: Worker en estado Terminated
-        let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
-        worker.mark_ready().unwrap();
-        let job_id = JobId::new();
-        worker.assign_job(job_id).unwrap();
-        worker.complete_job().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Terminated);
-
-        // WHEN: mark_draining() es llamado
-        let result = worker.mark_draining();
-
-        // THEN: Es un no-op (ya terminado), retorna Ok
-        assert!(result.is_ok());
-        // AND: Estado permanece Terminated
-        assert_eq!(*worker.state(), WorkerState::Terminated);
-    }
-
-    #[test]
     fn test_mark_terminating_from_ready_succeeds() {
         // GIVEN: Worker en estado Ready
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         assert_eq!(*worker.state(), WorkerState::Ready);
 
-        // WHEN: mark_terminating() es llamado
+        // WHEN: mark_terminating() es llamado (directamente a Terminated en Crash-Only)
         let result = worker.mark_terminating();
 
-        // THEN: Transición exitosa
+        // THEN: Transición exitosa a Terminated
         assert!(result.is_ok());
-        assert_eq!(*worker.state(), WorkerState::Terminating);
+        assert_eq!(*worker.state(), WorkerState::Terminated);
     }
 
     #[test]
     fn test_mark_terminating_from_terminated_no_op() {
         // GIVEN: Worker en estado Terminated
         let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
         worker.mark_ready().unwrap();
         let job_id = JobId::new();
         worker.assign_job(job_id).unwrap();
@@ -1477,23 +1333,6 @@ mod tests {
 
         // THEN: Es un no-op (ya terminado), retorna Ok
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_mark_terminated_succeeds() {
-        // GIVEN: Worker en estado Terminating
-        let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
-        worker.mark_ready().unwrap();
-        worker.mark_terminating().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Terminating);
-
-        // WHEN: mark_terminated() es llamado
-        let result = worker.mark_terminated();
-
-        // THEN: Transición exitosa
-        assert!(result.is_ok());
-        assert_eq!(*worker.state(), WorkerState::Terminated);
     }
 
     #[test]
@@ -1502,8 +1341,8 @@ mod tests {
         let mut worker = create_test_worker();
         let before = worker.updated_at;
 
-        //WHEN: mark_connecting() es llamado
-        worker.mark_connecting().unwrap();
+        //WHEN: mark_ready() es llamado (Creating -> Ready)
+        worker.mark_ready().unwrap();
 
         // THEN: updated_at debe ser actualizado
         assert!(worker.updated_at > before);
@@ -1517,11 +1356,8 @@ mod tests {
         // THEN: Estado inicial es Creating
         assert_eq!(*worker.state(), WorkerState::Creating);
 
-        // WHEN: Ciclo de vida completo
-        worker.mark_connecting().unwrap(); // Creating -> Connecting
-        assert_eq!(*worker.state(), WorkerState::Connecting);
-
-        worker.mark_ready().unwrap(); // Connecting -> Ready
+        // WHEN: Ciclo de vida completo (Crash-Only: 4 estados)
+        worker.mark_ready().unwrap(); // Creating -> Ready
         assert_eq!(*worker.state(), WorkerState::Ready);
 
         let job_id = JobId::new();
@@ -1536,38 +1372,20 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_draining_workflow() {
-        // GIVEN: Worker en estado Ready
-        let mut worker = create_test_worker();
-        worker.mark_connecting().unwrap();
-        worker.mark_ready().unwrap();
-
-        // WHEN: Se inicia draining (no acepta nuevos jobs)
-        worker.mark_draining().unwrap(); // Ready -> Draining
-        assert_eq!(*worker.state(), WorkerState::Draining);
-
-        // THEN: No puede aceptar nuevos jobs
-        let result = worker.assign_job(JobId::new());
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_invalid_transitions_return_descriptive_error() {
         // GIVEN: Worker en estado Creating
         let mut worker = create_test_worker();
 
-        // WHEN: Transiciones inválidas
-        let result1 = worker.mark_ready();
-        let result2 = worker.assign_job(JobId::new());
-        let result3 = worker.complete_job();
+        // WHEN: Transiciones inválidas desde Creating
+        let result1 = worker.assign_job(JobId::new());
+        let result2 = worker.complete_job();
 
         // THEN: Todos deben fallar con InvalidWorkerStateTransition
-        for result in [result1, result2, result3] {
+        for result in [result1, result2] {
             assert!(result.is_err());
             if let Err(DomainError::InvalidWorkerStateTransition { current, .. }) = result {
                 // El estado debe ser CREATING (Display impl es uppercase)
                 assert_eq!(current, "CREATING");
-                // El requested depende de la transición intentada
             } else {
                 panic!("Expected InvalidWorkerStateTransition error");
             }

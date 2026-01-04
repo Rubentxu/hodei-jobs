@@ -691,10 +691,7 @@ impl WorkerAgentServiceImpl {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("Worker not found in registry"))?;
 
-        if matches!(
-            worker.state(),
-            WorkerState::Creating | WorkerState::Connecting
-        ) {
+        if matches!(worker.state(), WorkerState::Creating) {
             registry
                 .update_state(&worker_id, WorkerState::Ready)
                 .await
@@ -704,7 +701,7 @@ impl WorkerAgentServiceImpl {
             if let Some(event_bus) = &self.event_bus {
                 let event = DomainEvent::WorkerStatusChanged {
                     worker_id: worker.id().clone(),
-                    old_status: WorkerState::Connecting, // Asumimos que venía de Connecting/Creating
+                    old_status: WorkerState::Creating, // Crash-Only: viene de Creating
                     new_status: WorkerState::Ready,
                     occurred_at: Utc::now(),
                     correlation_id: None,
@@ -1355,7 +1352,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                                 last_job_id: last_job_id_obj,
                                                 expected_cleanup_ms: term.expected_cleanup_ms,
                                                 actual_wait_ms: term.actual_wait_ms,
-                                                worker_state: WorkerState::Draining,
+                                                worker_state: WorkerState::Terminated, // Crash-Only: no hay Draining
                                                 occurred_at: Utc::now(),
                                                 correlation_id: None,
                                                 actor: Some("worker:self_terminate".to_string()),

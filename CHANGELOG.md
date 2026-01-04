@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **EPIC-43: Pure EDA & Saga Orchestration - Sprint 1: Transactional Outbox**
+  - `JobRepositoryTx` trait: Transaction-aware job repository operations
+    - `save_with_tx()`, `find_by_id_with_tx()`, `update_with_tx()`, `update_status_with_tx()`
+  - `OutboxRepositoryTx` trait: Transaction-aware outbox operations
+    - `insert_events_with_tx()`, `exists_by_idempotency_key_with_tx()`
+  - `QueueJobUseCase`: Atomic job queueing with Transactional Outbox Pattern
+    - Guarantees atomic persistence of Job + JobQueued event
+    - Eliminates dual-write problem (save could succeed, publish could fail)
+  - PostgreSQL implementations in `postgres_tx.rs` and `job_repository_tx.rs`
+
+- **Transactional Outbox Pattern Implementation**:
+  - Jobs and events are persisted in a single PostgreSQL transaction
+  - `OutboxRelay` processes events asynchronously from the outbox table
+  - Idempotency key support prevents duplicate event processing
+  - SKIP LOCKED for concurrent event consumption
+
+### Changed
+
+- **Architecture**: Transactional Outbox Pattern replaces direct event publishing
+- **Reliability**: Zero event loss guarantee through atomic persistence
+- **Consistency**: Jobs and events are always persisted together
+
+### Documentation
+
+- `docs/EPIC-43-EDA-PURE-ARCHITECTURE.md`: Complete EPIC specification
+- `docs/EDA_ARCHITECTURE_V2_APPENDIX.md`: Architecture details and migration guide
+- `docs/EDA_KILL_LIST.md`: Components to be removed/refactored in future sprints
+
+## [v0.28.4] - 2026-01-04
+
+### Added
+
 - **NATS JetStream Integration**: Complete migration from PostgreSQL NOTIFY/LISTEN to NATS JetStream
   - `NatsEventBus` implementation for reliable event publishing
   - `NatsOutboxRelay` for Transactional Outbox Pattern with DLQ support

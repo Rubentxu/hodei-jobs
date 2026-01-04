@@ -144,16 +144,12 @@ impl JobExecutionServiceImpl {
         let worker_state = worker.state().clone();
         let provider_id = worker.handle().provider_id.clone();
 
-        // Skip cleanup if worker is already terminating/terminated
+        // Skip cleanup if worker is already terminated (Crash-Only: no Terminating state)
         if matches!(
             worker_state,
             hodei_server_domain::shared_kernel::WorkerState::Terminated
-                | hodei_server_domain::shared_kernel::WorkerState::Terminating
         ) {
-            debug!(
-                "Worker {} already terminating/terminated, skipping cleanup",
-                worker_id
-            );
+            debug!("Worker {} already terminated, skipping cleanup", worker_id);
             return Ok(());
         }
 
@@ -202,12 +198,12 @@ impl JobExecutionServiceImpl {
             }
         }
 
-        // Update worker state to Terminating
+        // Update worker state to Terminated (Crash-Only Design)
         if let Err(e) = self
             .worker_registry
             .update_state(
                 worker_id,
-                hodei_server_domain::shared_kernel::WorkerState::Terminating,
+                hodei_server_domain::shared_kernel::WorkerState::Terminated,
             )
             .await
         {
@@ -222,7 +218,7 @@ impl JobExecutionServiceImpl {
                 "worker_id": worker_id.0.to_string(),
                 "provider_id": provider_id.0.to_string(),
                 "old_state": format!("{:?}", worker_state),
-                "new_state": "Terminating",
+                "new_state": "Terminated",
                 "current_job_id": job_id.0.to_string(),
                 "last_heartbeat": now.to_rfc3339(),
                 "transition_reason": "job_completion"

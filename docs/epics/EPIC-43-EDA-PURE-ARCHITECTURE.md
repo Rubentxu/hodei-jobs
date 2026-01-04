@@ -200,18 +200,19 @@ FOR UPDATE SKIP LOCKED
 
 ---
 
-# SPRINT 2: Saga Sovereignty (Orquestación Unificada) 🚧 IN PROGRESS
+# SPRINT 2: Saga Sovereignty (Orquestación Unificada) ✅ COMPLETADO
 
 **Sprint ID:** SP-EDA-002  
 **Duración:** 1 semana  
 **Objetivo:** Eliminar JobCoordinator y hacer de ExecutionSaga el único orquestador  
 **Referencia:** `EDA_ARCHITECTURE_V2_APPENDIX.md` Secciones 19.3, 20 (EDA-OBJ-006 a 010)  
-**Referencia:** `EDA_KILL_LIST.md` Secciones 2.1 (JobController, JobCoordinator)
-**Commits:** e6a7eac, 99b4082, 507ee55, 98c38e4
+**Referencia:** `EDA_KILL_LIST.md` Secciones 2.1 (JobController, JobCoordinator)  
+**Completado:** 2026-01-04  
+**Commits:** e6a7eac, 99b4082, 507ee55, 98c38e4, 341fdcc, 62b3b2e
 
 ## 📋 Historias de Usuario
 
-### US-EDA-201: Implementar idempotencia con UUID v5
+### US-EDA-201: Implementar idempotencia con UUID v5 ✅ COMPLETADO
 **Como** desarrollador  
 **Quiero** que las sagas sean idempotentes usando un ID determinista  
 **Para** evitar procesamiento duplicado cuando NATS entrega el mismo mensaje varias veces
@@ -242,7 +243,7 @@ pub fn saga_id_for_job(job_id: &str) -> Uuid {
 
 ---
 
-### US-EDA-202: Desactivar JobCoordinator como consumidor
+### US-EDA-202: Desactivar JobCoordinator como consumidor ✅ COMPLETADO
 **Como** operador del sistema  
 **Quiero** que solo ExecutionSaga procese eventos de jobs  
 **Para** eliminar condiciones de carrera entre Coordinator y Saga
@@ -258,8 +259,8 @@ pub fn saga_id_for_job(job_id: &str) -> Uuid {
 |----|-------|-------------|------------|--------|
 | T-202.1 | Eliminar suscripcion a JobQueued en JobCoordinator | Baja | 2h | ✅ |
 | T-202.2 | Eliminar suscripcion a WorkerReady en JobCoordinator | Baja | 2h | ✅ |
-| T-202.3 | Verificar que ExecutionSagaConsumer es único consumidor | Baja | 1h | ⏳ |
-| T-202.4 | Tests de regresión | Media | 4h | ⏳ |
+| T-202.3 | Verificar que ExecutionSagaConsumer es único consumidor | Baja | 1h | ✅ |
+| T-202.4 | Tests de regresión | Media | 4h | ✅ |
 
 **Referencia de Eliminación:**
 ```
@@ -269,7 +270,7 @@ pub fn saga_id_for_job(job_id: &str) -> Uuid {
 
 ---
 
-### US-EDA-203: Configurar NATS Consumer con DLQ
+### US-EDA-203: Configurar NATS Consumer con DLQ ✅ COMPLETADO
 **Como** operador del sistema  
 **Quiero** que los mensajes que fallan múltiples veces vayan a una Dead Letter Queue  
 **Para** poder investigar y reprocesar eventos problemáticos
@@ -294,9 +295,9 @@ deliver_subject = "saga.deliveries"
 | ID | Tarea | Complejidad | Estimación | Estado |
 |----|-------|-------------|------------|--------|
 | T-203.1 | Configurar max_deliver = 3 en nats.toml | Baja | 1h | ✅ |
-| T-203.2 | Implementar DLQ Handler | Media | 4h | ⏳ |
-| T-203.3 | Crear tabla failed_events | Baja | 1h | ⏳ |
-| T-203.4 | Configurar alerts para DLQ | Baja | 2h | ⏳ |
+| T-203.2 | Implementar DLQ Handler | Media | 4h | ✅ |
+| T-203.3 | Crear tabla failed_events | Baja | 1h | ✅ |
+| T-203.4 | Configurar alerts para DLQ | Baja | 2h | ✅ |
 
 ---
 
@@ -341,7 +342,7 @@ struct DispatchJobStep { /* solo envio gRPC */ }
 
 ---
 
-# SPRINT 3: Crash-Only Workers (Simplificación)
+# SPRINT 3: Crash-Only Workers (Simplificación) 🚧 IN PROGRESS
 
 **Sprint ID:** SP-EDA-003  
 **Duración:** 1 semana  

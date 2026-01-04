@@ -170,11 +170,11 @@ impl WorkerReconciliationService {
             if *worker.state() != WorkerState::Terminated {
                 if let Err(e) = self
                     .registry_port
-                    .update_state(&worker_id, WorkerState::Terminating)
+                    .update_state(&worker_id, WorkerState::Terminated)
                     .await
                 {
                     error!(
-                        "Failed to update worker {} to Terminating state: {}",
+                        "Failed to update worker {} to Terminated state: {}",
                         worker_id, e
                     );
                 } else {
@@ -186,7 +186,7 @@ impl WorkerReconciliationService {
                         .emit_worker_status_changed(
                             &worker_id,
                             worker.state().clone(),
-                            WorkerState::Terminating,
+                            WorkerState::Terminated,
                             "heartbeat_timeout",
                         )
                         .await

@@ -12,12 +12,12 @@ use crate::workers::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
-use std::time::Duration;
-use futures::Stream;
 use std::pin::Pin;
+use std::time::Duration;
 
 // ============================================================================
 // Extension Objects Pattern - WorkerProviderConfig
@@ -440,7 +440,12 @@ pub enum WorkerInfrastructureEvent {
 #[async_trait]
 pub trait WorkerEventSource: Send + Sync {
     /// Subscribe to infrastructure events from this provider
-    async fn subscribe(&self) -> Result<Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>, ProviderError>;
+    async fn subscribe(
+        &self,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>,
+        ProviderError,
+    >;
 }
 
 // ============================================================================
@@ -481,20 +486,12 @@ pub trait StateMapper<T> {
 pub struct DockerStateMapper;
 
 impl DockerStateMapper {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl DockerStateMapper {
-    /// Map Docker container status to WorkerState
+    /// Map Docker container status to WorkerState (Crash-Only Design)
     pub fn map_container_status(status: Option<&str>) -> WorkerState {
         match status {
-            Some("created") => WorkerState::Connecting,
+            Some("created") => WorkerState::Creating,
             Some("running") => WorkerState::Ready,
-            Some("paused") => WorkerState::Draining,
-            Some("restarting") => WorkerState::Connecting,
-            Some("removing") => WorkerState::Terminating,
+            Some("paused") | Some("restarting") | Some("removing") => WorkerState::Creating, // Map to Creating for retry
             Some("exited") | Some("dead") => WorkerState::Terminated,
             None | Some("") => WorkerState::Creating,
             _ => WorkerState::Creating,
@@ -509,20 +506,17 @@ impl<T: AsRef<str>> StateMapper<T> for DockerStateMapper {
 
     fn from_worker_state(&self, state: WorkerState) -> T {
         let _s: &str = match state {
-            WorkerState::Creating | WorkerState::Connecting | WorkerState::Busy => "created",
+            WorkerState::Creating | WorkerState::Busy => "created",
             WorkerState::Ready => "running",
-            WorkerState::Draining => "paused",
-            WorkerState::Terminating | WorkerState::Terminated => "exited",
+            WorkerState::Terminated => "exited",
         };
-        // Return a static string reference wrapped in a newtype
-        // This is simplified - in practice, you'd need to return owned type
         unimplemented!("from_worker_state returns owned type, use explicit conversion")
     }
 }
 
 /// Kubernetes-specific state mapper.
 ///
-/// Maps Kubernetes Pod phases to WorkerState.
+/// Maps Kubernetes Pod phases to WorkerState (Crash-Only Design).
 #[derive(Debug, Clone, Default)]
 pub struct KubernetesStateMapper;
 
@@ -533,7 +527,7 @@ impl KubernetesStateMapper {
 }
 
 impl KubernetesStateMapper {
-    /// Map K8s Pod phase to WorkerState
+    /// Map K8s Pod phase to WorkerState (Crash-Only Design)
     pub fn map_pod_phase(phase: Option<&str>, container_ready: bool) -> WorkerState {
         match phase {
             Some("Pending") => WorkerState::Creating,
@@ -541,7 +535,7 @@ impl KubernetesStateMapper {
                 if container_ready {
                     WorkerState::Ready
                 } else {
-                    WorkerState::Connecting
+                    WorkerState::Creating // No Connecting state in Crash-Only
                 }
             }
             Some("Succeeded") | Some("Failed") => WorkerState::Terminated,
@@ -567,12 +561,9 @@ impl StateMapper<String> for KubernetesStateMapper {
 
     fn from_worker_state(&self, state: WorkerState) -> String {
         match state {
-            WorkerState::Creating | WorkerState::Connecting | WorkerState::Busy => {
-                "Pending".to_string()
-            }
+            WorkerState::Creating | WorkerState::Busy => "Pending".to_string(),
             WorkerState::Ready => "Running".to_string(),
-            WorkerState::Draining => "Running".to_string(), // Pod still running, just draining
-            WorkerState::Terminating | WorkerState::Terminated => "Succeeded".to_string(),
+            WorkerState::Terminated => "Succeeded".to_string(),
         }
     }
 }
@@ -590,12 +581,12 @@ impl FirecrackerStateMapper {
 }
 
 impl FirecrackerStateMapper {
-    /// Map Firecracker MicroVM state to WorkerState
+    /// Map Firecracker MicroVM state to WorkerState (Crash-Only Design)
     pub fn map_vm_state(state: &str) -> WorkerState {
         match state {
             s if s.eq_ignore_ascii_case("Creating") => WorkerState::Creating,
             s if s.eq_ignore_ascii_case("Running") => WorkerState::Ready,
-            s if s.eq_ignore_ascii_case("Stopping") => WorkerState::Draining,
+            s if s.eq_ignore_ascii_case("Stopping") => WorkerState::Creating, // Crash-Only: retry
             s if s.eq_ignore_ascii_case("Stopped") => WorkerState::Terminated,
             s if s.eq_ignore_ascii_case("Failed") => WorkerState::Terminated,
             _ => WorkerState::Creating,
@@ -610,12 +601,9 @@ impl StateMapper<String> for FirecrackerStateMapper {
 
     fn from_worker_state(&self, state: WorkerState) -> String {
         match state {
-            WorkerState::Creating | WorkerState::Connecting | WorkerState::Busy => {
-                "Creating".to_string()
-            }
+            WorkerState::Creating | WorkerState::Busy => "Creating".to_string(),
             WorkerState::Ready => "Running".to_string(),
-            WorkerState::Draining => "Stopping".to_string(),
-            WorkerState::Terminating | WorkerState::Terminated => "Stopped".to_string(),
+            WorkerState::Terminated => "Stopped".to_string(),
         }
     }
 }
@@ -734,7 +722,12 @@ pub trait WorkerProviderExt: WorkerProvider {
     }
 
     /// Wrapper for subscribe
-    async fn subscribe_ext(&self) -> Result<Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>, ProviderError> {
+    async fn subscribe_ext(
+        &self,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>,
+        ProviderError,
+    > {
         WorkerEventSource::subscribe(self).await
     }
 }
@@ -804,7 +797,12 @@ impl WorkerProviderExt for dyn WorkerProvider {
         WorkerMetrics::calculate_health_score(self)
     }
 
-    async fn subscribe_ext(&self) -> Result<Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>, ProviderError> {
+    async fn subscribe_ext(
+        &self,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<WorkerInfrastructureEvent, ProviderError>> + Send>>,
+        ProviderError,
+    > {
         WorkerEventSource::subscribe(self).await
     }
 }
@@ -1563,41 +1561,57 @@ mod tests {
     }
 
     // =========================================================================
-    // State Adapter Pattern Tests
+    // State Adapter Pattern Tests (Crash-Only Design)
     // =========================================================================
 
     #[test]
     fn test_docker_state_mapper_creating() {
-        let mapper = DockerStateMapper::new();
-        assert_eq!(mapper.to_worker_state(&"created"), WorkerState::Connecting);
-        assert_eq!(mapper.to_worker_state(&"created"), WorkerState::Connecting);
+        // DockerStateMapper ya no tiene new(), usa map_container_status directamente
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("created")),
+            WorkerState::Creating
+        );
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("restarting")),
+            WorkerState::Creating
+        );
     }
 
     #[test]
     fn test_docker_state_mapper_ready() {
-        let mapper = DockerStateMapper::new();
-        assert_eq!(mapper.to_worker_state(&"running"), WorkerState::Ready);
-    }
-
-    #[test]
-    fn test_docker_state_mapper_draining() {
-        let mapper = DockerStateMapper::new();
-        assert_eq!(mapper.to_worker_state(&"paused"), WorkerState::Draining);
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("running")),
+            WorkerState::Ready
+        );
     }
 
     #[test]
     fn test_docker_state_mapper_terminated() {
-        let mapper = DockerStateMapper::new();
-        assert_eq!(mapper.to_worker_state(&"exited"), WorkerState::Terminated);
-        assert_eq!(mapper.to_worker_state(&"dead"), WorkerState::Terminated);
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("exited")),
+            WorkerState::Terminated
+        );
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("dead")),
+            WorkerState::Terminated
+        );
     }
 
     #[test]
     fn test_docker_state_mapper_creating_state() {
-        let mapper = DockerStateMapper::new();
-        assert_eq!(mapper.to_worker_state(&"created"), WorkerState::Connecting);
-        assert_eq!(mapper.to_worker_state(&""), WorkerState::Creating);
-        assert_eq!(mapper.to_worker_state(&"unknown"), WorkerState::Creating);
+        // Crash-Only: paused/restarting/removing mapean a Creating (retry)
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("paused")),
+            WorkerState::Creating
+        );
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("")),
+            WorkerState::Creating
+        );
+        assert_eq!(
+            DockerStateMapper::map_container_status(Some("unknown")),
+            WorkerState::Creating
+        );
     }
 
     #[test]
@@ -1618,38 +1632,40 @@ mod tests {
 
     #[test]
     fn test_kubernetes_state_mapper_pending() {
-        let mapper = KubernetesStateMapper::new();
         assert_eq!(
-            mapper.to_worker_state(&"Pending".to_string()),
+            KubernetesStateMapper::map_pod_phase(Some("Pending"), false),
             WorkerState::Creating
         );
     }
 
     #[test]
     fn test_kubernetes_state_mapper_running_ready() {
-        let mapper = KubernetesStateMapper::new();
+        // Crash-Only: Running sin container_ready mapea a Creating
         assert_eq!(
-            mapper.to_worker_state(&"Running".to_string()),
-            WorkerState::Connecting
+            KubernetesStateMapper::map_pod_phase(Some("Running"), true),
+            WorkerState::Ready
+        );
+        assert_eq!(
+            KubernetesStateMapper::map_pod_phase(Some("Running"), false),
+            WorkerState::Creating
         );
     }
 
     #[test]
     fn test_kubernetes_state_mapper_terminated() {
-        let mapper = KubernetesStateMapper::new();
         assert_eq!(
-            mapper.to_worker_state(&"Succeeded".to_string()),
+            KubernetesStateMapper::map_pod_phase(Some("Succeeded"), false),
             WorkerState::Terminated
         );
         assert_eq!(
-            mapper.to_worker_state(&"Failed".to_string()),
+            KubernetesStateMapper::map_pod_phase(Some("Failed"), false),
             WorkerState::Terminated
         );
     }
 
     #[test]
     fn test_kubernetes_state_mapper_from_worker_state() {
-        let mapper = KubernetesStateMapper::new();
+        let mapper = KubernetesStateMapper;
         assert_eq!(mapper.from_worker_state(WorkerState::Creating), "Pending");
         assert_eq!(mapper.from_worker_state(WorkerState::Ready), "Running");
         assert_eq!(
@@ -1668,9 +1684,10 @@ mod tests {
             KubernetesStateMapper::map_pod_phase(Some("Running"), true),
             WorkerState::Ready
         );
+        // Crash-Only: Running sin container_ready mapea a Creating
         assert_eq!(
             KubernetesStateMapper::map_pod_phase(Some("Running"), false),
-            WorkerState::Connecting
+            WorkerState::Creating
         );
         assert_eq!(
             KubernetesStateMapper::map_pod_phase(Some("Succeeded"), false),
@@ -1680,54 +1697,51 @@ mod tests {
 
     #[test]
     fn test_firecracker_state_mapper_creating() {
-        let mapper = FirecrackerStateMapper::new();
         assert_eq!(
-            mapper.to_worker_state(&"Creating".to_string()),
+            FirecrackerStateMapper::map_vm_state("Creating"),
             WorkerState::Creating
         );
         assert_eq!(
-            mapper.to_worker_state(&"creating".to_string()),
+            FirecrackerStateMapper::map_vm_state("creating"),
             WorkerState::Creating
         );
     }
 
     #[test]
     fn test_firecracker_state_mapper_ready() {
-        let mapper = FirecrackerStateMapper::new();
         assert_eq!(
-            mapper.to_worker_state(&"Running".to_string()),
+            FirecrackerStateMapper::map_vm_state("Running"),
             WorkerState::Ready
         );
     }
 
     #[test]
     fn test_firecracker_state_mapper_draining() {
-        let mapper = FirecrackerStateMapper::new();
+        // Crash-Only: Stopping mapea a Creating (retry)
         assert_eq!(
-            mapper.to_worker_state(&"Stopping".to_string()),
-            WorkerState::Draining
+            FirecrackerStateMapper::map_vm_state("Stopping"),
+            WorkerState::Creating
         );
     }
 
     #[test]
     fn test_firecracker_state_mapper_terminated() {
-        let mapper = FirecrackerStateMapper::new();
         assert_eq!(
-            mapper.to_worker_state(&"Stopped".to_string()),
+            FirecrackerStateMapper::map_vm_state("Stopped"),
             WorkerState::Terminated
         );
         assert_eq!(
-            mapper.to_worker_state(&"Failed".to_string()),
+            FirecrackerStateMapper::map_vm_state("Failed"),
             WorkerState::Terminated
         );
     }
 
     #[test]
     fn test_firecracker_state_mapper_from_worker_state() {
-        let mapper = FirecrackerStateMapper::new();
+        let mapper = FirecrackerStateMapper;
         assert_eq!(mapper.from_worker_state(WorkerState::Creating), "Creating");
         assert_eq!(mapper.from_worker_state(WorkerState::Ready), "Running");
-        assert_eq!(mapper.from_worker_state(WorkerState::Draining), "Stopping");
+        // Crash-Only: no hay Draining
         assert_eq!(mapper.from_worker_state(WorkerState::Terminated), "Stopped");
     }
 
@@ -1754,9 +1768,10 @@ mod tests {
     #[test]
     fn test_state_mapper_trait_object() {
         // Test that state mappers can be used as trait objects
-        let docker_mapper: Box<dyn StateMapper<&str>> = Box::new(DockerStateMapper::new());
-        let k8s_mapper: Box<dyn StateMapper<String>> = Box::new(KubernetesStateMapper::new());
-        let fc_mapper: Box<dyn StateMapper<String>> = Box::new(FirecrackerStateMapper::new());
+        // Crash-Only: DockerStateMapper ya no tiene new()
+        let docker_mapper: Box<dyn StateMapper<&str>> = Box::new(DockerStateMapper);
+        let k8s_mapper: Box<dyn StateMapper<String>> = Box::new(KubernetesStateMapper);
+        let fc_mapper: Box<dyn StateMapper<String>> = Box::new(FirecrackerStateMapper);
 
         let running_str = "running";
         let exited_str = "exited";

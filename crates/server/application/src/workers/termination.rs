@@ -98,7 +98,7 @@ impl WorkerTerminationService {
             )?;
 
         self.registry_port
-            .update_state(worker_id, WorkerState::Terminating)
+            .update_state(worker_id, WorkerState::Terminated)
             .await?;
 
         let event = DomainEvent::WorkerEphemeralTerminating {

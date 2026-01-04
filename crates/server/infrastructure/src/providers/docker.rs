@@ -324,17 +324,17 @@ impl DockerProvider {
         Ok(())
     }
 
-    /// Map container state to WorkerState
-    /// Map container state to WorkerState (PRD v6.0)
+    /// Map container state to WorkerState (Crash-Only Design)
     fn map_container_state(status: Option<&ContainerStateStatusEnum>) -> WorkerState {
         match status {
-            Some(ContainerStateStatusEnum::CREATED) => WorkerState::Connecting,
+            Some(ContainerStateStatusEnum::CREATED) => WorkerState::Creating,
             Some(ContainerStateStatusEnum::RUNNING) => WorkerState::Ready,
-            Some(ContainerStateStatusEnum::PAUSED) => WorkerState::Draining,
-            Some(ContainerStateStatusEnum::RESTARTING) => WorkerState::Connecting,
-            Some(ContainerStateStatusEnum::REMOVING) => WorkerState::Terminating,
-            Some(ContainerStateStatusEnum::EXITED) => WorkerState::Terminated,
-            Some(ContainerStateStatusEnum::DEAD) => WorkerState::Terminated,
+            Some(ContainerStateStatusEnum::PAUSED)
+            | Some(ContainerStateStatusEnum::RESTARTING)
+            | Some(ContainerStateStatusEnum::REMOVING) => WorkerState::Creating,
+            Some(ContainerStateStatusEnum::EXITED) | Some(ContainerStateStatusEnum::DEAD) => {
+                WorkerState::Terminated
+            }
             None | Some(ContainerStateStatusEnum::EMPTY) => WorkerState::Creating,
         }
     }
@@ -738,7 +738,7 @@ mod tests {
         ));
         assert!(matches!(
             DockerProvider::map_container_state(Some(&ContainerStateStatusEnum::CREATED)),
-            WorkerState::Connecting
+            WorkerState::Creating // Crash-Only: CREATED mapea a Creating
         ));
     }
 }

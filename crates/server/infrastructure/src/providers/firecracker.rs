@@ -1134,12 +1134,12 @@ impl FirecrackerProvider {
         )
     }
 
-    /// Map MicroVMState to WorkerState
+    /// Map MicroVMState to WorkerState (Crash-Only Design)
     fn map_vm_state(state: &MicroVMState) -> WorkerState {
         match state {
             MicroVMState::Creating => WorkerState::Creating,
             MicroVMState::Running => WorkerState::Ready,
-            MicroVMState::Stopping => WorkerState::Draining,
+            MicroVMState::Stopping => WorkerState::Creating, // Map to Creating for retry in Crash-Only
             MicroVMState::Stopped => WorkerState::Terminated,
             MicroVMState::Failed(_) => WorkerState::Terminated,
         }
@@ -1727,9 +1727,10 @@ mod tests {
             FirecrackerProvider::map_vm_state(&MicroVMState::Running),
             WorkerState::Ready
         ));
+        // Crash-Only: Stopping mapea a Creating (retry)
         assert!(matches!(
             FirecrackerProvider::map_vm_state(&MicroVMState::Stopping),
-            WorkerState::Draining
+            WorkerState::Creating
         ));
         assert!(matches!(
             FirecrackerProvider::map_vm_state(&MicroVMState::Stopped),

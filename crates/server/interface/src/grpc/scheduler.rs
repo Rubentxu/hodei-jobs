@@ -718,12 +718,7 @@ impl SchedulerService for SchedulerServiceImpl {
                 3 => {
                     filter = filter.with_state(WorkerState::Busy);
                 }
-                4 => {
-                    filter = filter.with_state(WorkerState::Draining);
-                }
-                5 => {
-                    filter = filter.with_state(WorkerState::Terminating);
-                }
+                // Opciones 4 y 5 eliminadas en Crash-Only Design (no hay Draining/Terminating)
                 _ => {}
             }
         }

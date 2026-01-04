@@ -344,13 +344,11 @@ mod worker_tests {
         );
         let mut worker = Worker::new(handle, spec);
 
-        // PRD v6.0: Estado inicial es Creating
+        // Crash-Only Design: Estado inicial es Creating, va directamente a Ready
         assert_eq!(*worker.state(), WorkerState::Creating);
 
-        worker.mark_connecting().unwrap();
-        assert_eq!(*worker.state(), WorkerState::Connecting);
-
         worker.mark_ready().unwrap();
+        assert_eq!(*worker.state(), WorkerState::Ready);
         assert!(worker.state().can_accept_jobs());
     }
 }

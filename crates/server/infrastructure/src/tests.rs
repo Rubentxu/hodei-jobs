@@ -348,7 +348,7 @@ mod worker_registry_tests {
         let (handle, spec) = create_test_worker_handle();
         let worker_id = handle.worker_id.clone();
 
-        let worker = registry.register(handle, spec).await.unwrap();
+        let worker = registry.register(handle, spec, JobId::new()).await.unwrap();
         assert_eq!(worker.id(), &worker_id);
 
         let found = registry.get(&worker_id).await.unwrap();
@@ -362,11 +362,11 @@ mod worker_registry_tests {
         let (handle, spec) = create_test_worker_handle();
 
         registry
-            .register(handle.clone(), spec.clone())
+            .register(handle.clone(), spec.clone(), JobId::new())
             .await
             .unwrap();
 
-        let result = registry.register(handle, spec).await;
+        let result = registry.register(handle, spec, JobId::new()).await;
         assert!(result.is_err());
     }
 
@@ -376,7 +376,7 @@ mod worker_registry_tests {
         let (handle, spec) = create_test_worker_handle();
         let worker_id = handle.worker_id.clone();
 
-        registry.register(handle, spec).await.unwrap();
+        registry.register(handle, spec, JobId::new()).await.unwrap();
         registry.unregister(&worker_id).await.unwrap();
 
         let found = registry.get(&worker_id).await.unwrap();
@@ -389,17 +389,13 @@ mod worker_registry_tests {
         let (handle, spec) = create_test_worker_handle();
         let worker_id = handle.worker_id.clone();
 
-        registry.register(handle, spec).await.unwrap();
+        registry.register(handle, spec, JobId::new()).await.unwrap();
 
         // Worker starts in Provisioning, not available
         let available = registry.find_available().await.unwrap();
         assert!(available.is_empty());
 
-        // Transition to Ready (PRD v6.0: Creating -> Connecting -> Ready)
-        registry
-            .update_state(&worker_id, WorkerState::Connecting)
-            .await
-            .unwrap();
+        // Transition to Ready (Crash-Only Design: Creating -> Ready)
         registry
             .update_state(&worker_id, WorkerState::Ready)
             .await
@@ -415,11 +411,7 @@ mod worker_registry_tests {
         let (handle, spec) = create_test_worker_handle();
         let worker_id = handle.worker_id.clone();
 
-        registry.register(handle, spec).await.unwrap();
-        registry
-            .update_state(&worker_id, WorkerState::Connecting)
-            .await
-            .unwrap();
+        registry.register(handle, spec, JobId::new()).await.unwrap();
         registry
             .update_state(&worker_id, WorkerState::Ready)
             .await
@@ -453,7 +445,7 @@ mod worker_registry_tests {
                 ProviderType::Docker,
                 ProviderId::new(),
             );
-            registry.register(handle, spec).await.unwrap();
+            registry.register(handle, spec, JobId::new()).await.unwrap();
         }
 
         let stats = registry.stats().await.unwrap();

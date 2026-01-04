@@ -962,7 +962,7 @@ impl KubernetesProvider {
         }
     }
 
-    /// Map Kubernetes Pod phase to WorkerState
+    /// Map Kubernetes Pod phase to WorkerState (Crash-Only Design)
     fn map_pod_phase(phase: Option<&str>, container_ready: bool) -> WorkerState {
         match phase {
             Some("Pending") => WorkerState::Creating,
@@ -970,7 +970,7 @@ impl KubernetesProvider {
                 if container_ready {
                     WorkerState::Ready
                 } else {
-                    WorkerState::Connecting
+                    WorkerState::Creating // No Connecting state in Crash-Only Design
                 }
             }
             Some("Succeeded") => WorkerState::Terminated,
@@ -2060,7 +2060,7 @@ mod tests {
         ));
         assert!(matches!(
             KubernetesProvider::map_pod_phase(Some("Running"), false),
-            WorkerState::Connecting
+            WorkerState::Creating // No Connecting state in Crash-Only Design
         ));
         assert!(matches!(
             KubernetesProvider::map_pod_phase(Some("Succeeded"), false),

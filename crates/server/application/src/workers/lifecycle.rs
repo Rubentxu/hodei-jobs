@@ -291,7 +291,7 @@ impl WorkerLifecycleManager {
             if *worker.state() != WorkerState::Terminated {
                 if let Err(e) = self
                     .registry
-                    .update_state(&worker_id, WorkerState::Terminating)
+                    .update_state(&worker_id, WorkerState::Terminated)
                     .await
                 {
                     error!(
@@ -306,7 +306,7 @@ impl WorkerLifecycleManager {
                         .emit_worker_status_changed(
                             &worker_id,
                             worker.state().clone(),
-                            WorkerState::Terminating,
+                            WorkerState::Terminated,
                             "heartbeat_timeout",
                         )
                         .await
@@ -368,7 +368,7 @@ impl WorkerLifecycleManager {
             let event = DomainEvent::WorkerStatusChanged {
                 worker_id: worker_id.clone(),
                 old_status: worker.state().clone(),
-                new_status: WorkerState::Terminating,
+                new_status: WorkerState::Terminated,
                 occurred_at: now,
                 correlation_id: None,
                 actor: Some("lifecycle-reconciliation".to_string()),
@@ -514,15 +514,14 @@ impl WorkerLifecycleManager {
             .iter()
             .filter(|w| {
                 // Workers que deben terminarse:
-                // 1. En estado Busy/Draining (ephemeral mode - terminación inmediata)
-                // 2. En estado Terminating (retry de cleanup fallido)
+                // 1. En estado Busy (ephemeral mode - terminación inmediata)
+                // 2. En estado Terminated (retry de cleanup fallido)
                 // 3. Listos y en idle timeout
                 // 4. Lifetime excedido
                 // 5. TTL after completion excedido
-                matches!(
-                    *w.state(),
-                    WorkerState::Busy | WorkerState::Draining | WorkerState::Terminating
-                ) || w.is_idle_timeout()
+                matches!(*w.state(), WorkerState::Busy)
+                    || matches!(*w.state(), WorkerState::Terminated)
+                    || w.is_idle_timeout()
                     || w.is_lifetime_exceeded()
                     || w.is_ttl_after_completion_exceeded()
             })
@@ -548,10 +547,10 @@ impl WorkerLifecycleManager {
             info!("Terminating worker {} (reason: {:?})", worker_id, reason);
 
             // Mark as terminating (skip if already terminating)
-            if !matches!(*worker.state(), WorkerState::Terminating) {
+            if !matches!(*worker.state(), WorkerState::Terminated) {
                 if let Err(e) = self
                     .registry
-                    .update_state(&worker_id, WorkerState::Terminating)
+                    .update_state(&worker_id, WorkerState::Terminated)
                     .await
                 {
                     error!("Failed to mark worker {} as terminating: {}", worker_id, e);
@@ -1000,10 +999,10 @@ impl WorkerLifecycleManager {
         // Update state to Terminating if not already
         if !matches!(
             *worker.state(),
-            WorkerState::Terminating | WorkerState::Terminated
+            WorkerState::Terminated | WorkerState::Terminated
         ) {
             self.registry
-                .update_state(worker_id, WorkerState::Terminating)
+                .update_state(worker_id, WorkerState::Terminated)
                 .await?;
         }
 
@@ -1090,7 +1089,7 @@ impl WorkerLifecycleManager {
                     .find(|w| w.handle().provider_resource_id == provider_resource_id)
                 {
                     if *worker.state() == WorkerState::Creating
-                        || *worker.state() == WorkerState::Connecting
+                        || *worker.state() == WorkerState::Creating
                     {
                         info!("Marking worker {} as Ready (started)", worker.id());
                         self.registry
@@ -1778,24 +1777,13 @@ mod tests {
         async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
             if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
                 match state {
-                    WorkerState::Creating => {} // Estado inicial, no transición
-                    WorkerState::Connecting => worker.mark_connecting().map_err(|e| {
-                        tracing::error!("Failed to mark worker {} as Connecting: {}", worker_id, e);
-                        e
-                    })?,
+                    WorkerState::Creating => {} // Estado inicial, no transición necesaria
                     WorkerState::Ready => worker.mark_ready().map_err(|e| {
                         tracing::error!("Failed to mark worker {} as Ready: {}", worker_id, e);
                         e
                     })?,
-                    WorkerState::Terminating => worker.mark_terminating().map_err(|e| {
-                        tracing::error!(
-                            "Failed to mark worker {} as Terminating: {}",
-                            worker_id,
-                            e
-                        );
-                        e
-                    })?,
-                    WorkerState::Terminated => worker.mark_terminated().map_err(|e| {
+                    WorkerState::Busy => {} // No hay método mark_busy, se asigna job directamente
+                    WorkerState::Terminated => worker.mark_terminating().map_err(|e| {
                         tracing::error!("Failed to mark worker {} as Terminated: {}", worker_id, e);
                         e
                     })?,
@@ -1841,7 +1829,7 @@ mod tests {
                 .read()
                 .await
                 .values()
-                .filter(|w| matches!(*w.state(), WorkerState::Ready | WorkerState::Terminating))
+                .filter(|w| matches!(*w.state(), WorkerState::Ready | WorkerState::Terminated))
                 .cloned()
                 .collect())
         }
@@ -2000,7 +1988,7 @@ mod tests {
 
         // Cambiar estados DESPUÉS del registro (para que se reflejen en el registry)
         registry
-            .update_state(ready_worker.id(), WorkerState::Connecting)
+            .update_state(ready_worker.id(), WorkerState::Creating)
             .await
             .unwrap();
         registry
@@ -2009,7 +1997,7 @@ mod tests {
             .unwrap();
 
         registry
-            .update_state(terminating_worker.id(), WorkerState::Connecting)
+            .update_state(terminating_worker.id(), WorkerState::Creating)
             .await
             .unwrap();
         registry
@@ -2017,12 +2005,12 @@ mod tests {
             .await
             .unwrap();
         registry
-            .update_state(terminating_worker.id(), WorkerState::Terminating)
+            .update_state(terminating_worker.id(), WorkerState::Terminated)
             .await
             .unwrap();
 
         registry
-            .update_state(busy_worker.id(), WorkerState::Connecting)
+            .update_state(busy_worker.id(), WorkerState::Creating)
             .await
             .unwrap();
         registry
@@ -2085,7 +2073,7 @@ mod tests {
                 .unwrap();
             // Set state to Connecting then Ready (proper state transitions)
             registry
-                .update_state(worker.id(), WorkerState::Connecting)
+                .update_state(worker.id(), WorkerState::Creating)
                 .await
                 .unwrap();
             registry
@@ -2150,7 +2138,7 @@ mod tests {
                 .unwrap();
             // Set state to Connecting then Ready (proper state transitions)
             registry
-                .update_state(worker.id(), WorkerState::Connecting)
+                .update_state(worker.id(), WorkerState::Creating)
                 .await
                 .unwrap();
             registry

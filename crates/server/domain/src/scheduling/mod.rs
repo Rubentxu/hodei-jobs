@@ -616,7 +616,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker1 = Worker::new(handle1, spec1);
-        worker1.mark_connecting().unwrap();
+        worker1.mark_ready().unwrap();
         worker1.mark_ready().unwrap();
 
         let mut spec2 = WorkerSpec::new(
@@ -633,7 +633,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker2 = Worker::new(handle2, spec2);
-        worker2.mark_connecting().unwrap();
+        worker2.mark_ready().unwrap();
         worker2.mark_ready().unwrap();
 
         let mut spec3 = WorkerSpec::new(
@@ -653,7 +653,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker3 = Worker::new(handle3, spec3);
-        worker3.mark_connecting().unwrap();
+        worker3.mark_ready().unwrap();
         worker3.mark_ready().unwrap();
 
         let workers = vec![worker1.clone(), worker2.clone(), worker3.clone()];
@@ -687,7 +687,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker1 = Worker::new(handle1, spec1);
-        worker1.mark_connecting().unwrap();
+        worker1.mark_ready().unwrap();
         worker1.mark_ready().unwrap();
 
         let mut spec2 = WorkerSpec::new(
@@ -704,7 +704,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker2 = Worker::new(handle2, spec2);
-        worker2.mark_connecting().unwrap();
+        worker2.mark_ready().unwrap();
         worker2.mark_ready().unwrap();
 
         let mut spec3 = WorkerSpec::new(
@@ -724,7 +724,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker3 = Worker::new(handle3, spec3);
-        worker3.mark_connecting().unwrap();
+        worker3.mark_ready().unwrap();
         worker3.mark_ready().unwrap();
 
         let workers = vec![worker1.clone(), worker2.clone(), worker3.clone()];
@@ -761,7 +761,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker1 = Worker::new(handle1, spec1);
-        worker1.mark_connecting().unwrap();
+        worker1.mark_ready().unwrap();
         worker1.mark_ready().unwrap();
 
         let mut spec2 = WorkerSpec::new(
@@ -781,7 +781,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker2 = Worker::new(handle2, spec2);
-        worker2.mark_connecting().unwrap();
+        worker2.mark_ready().unwrap();
         worker2.mark_ready().unwrap();
 
         let mut spec3 = WorkerSpec::new(
@@ -801,7 +801,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker3 = Worker::new(handle3, spec3);
-        worker3.mark_connecting().unwrap();
+        worker3.mark_ready().unwrap();
         worker3.mark_ready().unwrap();
 
         let workers = vec![worker1.clone(), worker2.clone(), worker3.clone()];
@@ -840,7 +840,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker1 = Worker::new(handle1, spec1);
-        worker1.mark_connecting().unwrap();
+        worker1.mark_ready().unwrap();
         worker1.mark_ready().unwrap();
 
         let mut spec2 = WorkerSpec::new(
@@ -857,7 +857,7 @@ mod tests {
             ProviderId::new(),
         );
         let mut worker2 = Worker::new(handle2, spec2);
-        worker2.mark_connecting().unwrap();
+        worker2.mark_ready().unwrap();
         worker2.mark_ready().unwrap();
 
         let workers = vec![worker1.clone(), worker2.clone()];
