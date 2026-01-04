@@ -3,6 +3,7 @@
 
 // Por tecnología
 pub mod messaging;
+pub mod observability;
 pub mod persistence;
 pub mod reconciliation;
 

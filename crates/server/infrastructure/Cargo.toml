@@ -73,6 +73,13 @@ cron = "0.12"
 # Monitoring
 prometheus = { workspace = true }
 
+# Observability (OpenTelemetry)
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tonic = { workspace = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = "3.15"
