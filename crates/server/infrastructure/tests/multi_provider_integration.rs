@@ -167,7 +167,7 @@ async fn test_docker_provider_basic_operations() {
     assert!(
         matches!(
             status,
-            WorkerState::Ready | WorkerState::Connecting | WorkerState::Creating
+            WorkerState::Ready | WorkerState::Ready | WorkerState::Creating
         ),
         "Unexpected Docker worker state: {:?}",
         status
@@ -239,7 +239,7 @@ async fn test_kubernetes_provider_basic_operations() {
 
     assert!(matches!(
         status,
-        WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+        WorkerState::Creating | WorkerState::Ready | WorkerState::Ready
     ));
     println!("✓ Kubernetes worker status: {:?}", status);
 
@@ -428,7 +428,7 @@ async fn test_concurrent_workers_on_both_providers() {
 
             assert!(matches!(
                 status,
-                WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+                WorkerState::Creating | WorkerState::Ready | WorkerState::Ready
             ));
             println!("✓ Kubernetes worker {} is running: {:?}", i, status);
         }
@@ -443,7 +443,7 @@ async fn test_concurrent_workers_on_both_providers() {
 
         assert!(matches!(
             status,
-            WorkerState::Ready | WorkerState::Connecting
+            WorkerState::Ready | WorkerState::Ready
         ));
         println!("✓ Docker worker {} is running: {:?}", i, status);
     }
@@ -540,7 +540,7 @@ async fn test_gpu_worker_on_kubernetes() {
 
     assert!(matches!(
         status,
-        WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+        WorkerState::Creating | WorkerState::Ready | WorkerState::Ready
     ));
     println!("✓ GPU worker status: {:?}", status);
 

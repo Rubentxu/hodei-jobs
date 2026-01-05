@@ -52,6 +52,8 @@ nix = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
 # Encryption
 aes-gcm = { workspace = true }
@@ -74,9 +76,8 @@ cron = "0.12"
 prometheus = { workspace = true }
 
 # Observability (OpenTelemetry)
-tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry-sdk = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 tonic = { workspace = true }
 

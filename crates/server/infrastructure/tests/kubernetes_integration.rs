@@ -121,7 +121,7 @@ async fn test_kubernetes_provider_create_and_destroy_worker() {
     assert!(
         matches!(
             status,
-            WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+            WorkerState::Creating | WorkerState::Ready | WorkerState::Ready
         ),
         "Worker should be in Creating, Connecting, or Ready state"
     );
@@ -336,7 +336,7 @@ async fn test_kubernetes_provider_gpu_support() {
     assert!(
         matches!(
             status,
-            WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+            WorkerState::Creating | WorkerState::Ready | WorkerState::Ready
         ),
         "GPU Worker should be in Creating, Connecting, or Ready state"
     );
@@ -405,7 +405,7 @@ async fn test_kubernetes_provider_multiple_gpus() {
     assert!(
         matches!(
             status,
-            WorkerState::Creating | WorkerState::Connecting | WorkerState::Ready
+            WorkerState::Creating | WorkerState::Ready | WorkerState::Ready
         ),
         "Multi-GPU Worker should be in Creating, Connecting, or Ready state"
     );
