@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 /// Configuration for InfrastructureReconciler
@@ -140,12 +140,21 @@ impl ReconciliationResult {
 /// - **Event Sourcing**: All state changes emit domain events via Outbox
 /// - **Idempotency**: The reconciler can be run multiple times safely
 /// - **Observability**: Detailed metrics and structured logging
-#[derive(Debug)]
 pub struct InfrastructureReconciler {
     config: InfrastructureReconcilerConfig,
     pool: PgPool,
     outbox_repository: Arc<PostgresOutboxRepository>,
     providers: Arc<HashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+}
+
+impl std::fmt::Debug for InfrastructureReconciler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InfrastructureReconciler")
+            .field("config", &self.config)
+            .field("pool", &self.pool)
+            .field("providers", &self.providers.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl InfrastructureReconciler {
@@ -246,13 +255,7 @@ impl InfrastructureReconciler {
             };
 
             // Get the worker handle
-            let handle = match worker.handle() {
-                Some(h) => h,
-                None => {
-                    warn!(target: "hodei::reconciler", "Worker {} has no handle", worker.id());
-                    continue;
-                }
-            };
+            let handle = worker.handle();
 
             // Check if infrastructure still exists by getting worker status
             match provider.get_worker_status(handle).await {
@@ -315,13 +318,7 @@ impl InfrastructureReconciler {
             };
 
             // Get the worker handle
-            let handle = match worker.handle() {
-                Some(h) => h,
-                None => {
-                    warn!(target: "hodei::reconciler", "Worker {} has no handle", worker.id());
-                    continue;
-                }
-            };
+            let handle = worker.handle();
 
             // Check if infrastructure still exists
             match provider.get_worker_status(handle).await {
@@ -331,7 +328,7 @@ impl InfrastructureReconciler {
 
                     // Recover the job if one was assigned
                     if let Some(job_id) = worker.current_job_id() {
-                        self.recover_job(&job_id).await?;
+                        self.recover_job(&job_id.0).await?;
                         result.add_job_recovered();
                     }
 
@@ -359,12 +356,10 @@ impl InfrastructureReconciler {
     async fn find_terminated_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"
-            SELECT w.id, w.status, w.provider_id, w.worker_handle, w.spec,
-                   w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat,
-                   w.idle_timeout, w.max_lifetime, w.ttl_after_completion,
-                   w.registered_at, w.termination_reason
+            SELECT w.id, w.state, w.provider_id, w.provider_resource_id, w.spec,
+                   w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat
             FROM workers w
-            WHERE w.status = 'TERMINATED'
+            WHERE w.state = 'TERMINATED'
             ORDER BY w.updated_at ASC
             LIMIT $1
             "#,
@@ -382,12 +377,10 @@ impl InfrastructureReconciler {
     async fn find_busy_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"
-            SELECT w.id, w.status, w.provider_id, w.worker_handle, w.spec,
-                   w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat,
-                   w.idle_timeout, w.max_lifetime, w.ttl_after_completion,
-                   w.registered_at, w.termination_reason
+            SELECT w.id, w.state, w.provider_id, w.provider_resource_id, w.spec,
+                   w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat
             FROM workers w
-            WHERE w.status = 'BUSY'
+            WHERE w.state = 'BUSY'
             ORDER BY w.updated_at ASC
             LIMIT $1
             "#,
@@ -403,14 +396,13 @@ impl InfrastructureReconciler {
     async fn recover_job(&self, job_id: &Uuid) -> Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
-        // Update job status back to PENDING
-        let affected = sqlx::query!(
+        // Update job state back to PENDING
+        let affected: sqlx::postgres::PgQueryResult = sqlx::query!(
             r#"
             UPDATE jobs
-            SET status = 'PENDING',
-                worker_id = NULL,
-                updated_at = NOW()
-            WHERE id = $1 AND status = 'RUNNING'
+            SET state = 'PENDING',
+                completed_at = NOW()
+            WHERE id = $1 AND state = 'RUNNING'
             "#,
             job_id
         )
@@ -454,7 +446,7 @@ impl InfrastructureReconciler {
 
         // Update worker status (already TERMINATED, just ensure it)
         let outbox_event = OutboxEventInsert::for_worker(
-            *worker.id(),
+            worker.id().0,
             "WorkerTerminated".to_string(),
             serde_json::json!({
                 "worker_id": worker.id().to_string(),
@@ -480,7 +472,7 @@ impl InfrastructureReconciler {
         let mut tx = self.pool.begin().await?;
 
         let outbox_event = OutboxEventInsert::for_worker(
-            *worker.id(),
+            worker.id().0,
             "ZombieWorkerDestroyed".to_string(),
             serde_json::json!({
                 "worker_id": worker.id().to_string(),

@@ -285,12 +285,11 @@ impl DatabaseReaper {
         let rows = sqlx::query_as!(
             StuckJobRow,
             r#"
-            SELECT id, status, provider_id, command, arguments, environment,
-                   created_at, updated_at, worker_id, started_at
+            SELECT id, state
             FROM jobs
-            WHERE status = 'RUNNING'
-              AND updated_at < NOW() - INTERVAL '%1 seconds'
-            ORDER BY updated_at ASC
+            WHERE state = 'RUNNING'
+              AND started_at < NOW() - INTERVAL '%1 seconds'
+            ORDER BY created_at ASC
             LIMIT $1
             "#,
             self.config.job_timeout.as_secs() as i64
@@ -306,14 +305,11 @@ impl DatabaseReaper {
         let rows = sqlx::query_as!(
             StuckWorkerRow,
             r#"
-            SELECT id, status, provider_id, worker_handle, spec,
-                   current_job_id, created_at, updated_at, last_heartbeat,
-                   idle_timeout, max_lifetime, ttl_after_completion,
-                   registered_at, termination_reason
+            SELECT id, state, provider_id, provider_resource_id, spec
             FROM workers
-            WHERE status = 'CREATING'
-              AND updated_at < NOW() - INTERVAL '%1 seconds'
-            ORDER BY updated_at ASC
+            WHERE state = 'CREATING'
+              AND created_at < NOW() - INTERVAL '%1 seconds'
+            ORDER BY created_at ASC
             LIMIT $1
             "#,
             self.config.worker_timeout.as_secs() as i64
@@ -328,14 +324,13 @@ impl DatabaseReaper {
     async fn mark_job_failed(&self, job_id: &Uuid) -> Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
-        // Update job status to FAILED
-        let affected = sqlx::query!(
+        // Update job state to FAILED
+        let affected: sqlx::postgres::PgQueryResult = sqlx::query!(
             r#"
             UPDATE jobs
-            SET status = 'FAILED',
-                updated_at = NOW(),
-                finished_at = NOW()
-            WHERE id = $1 AND status = 'RUNNING'
+            SET state = 'FAILED',
+                completed_at = NOW()
+            WHERE id = $1 AND state = 'RUNNING'
             "#,
             job_id
         )
@@ -376,16 +371,13 @@ impl DatabaseReaper {
     async fn mark_worker_terminated(&self, worker: &StuckWorkerRow) -> Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
-        // Update worker status to TERMINATED
-        let affected = sqlx::query!(
+        // Update worker state to TERMINATED
+        let affected: sqlx::postgres::PgQueryResult = sqlx::query!(
             r#"
             UPDATE workers
-            SET status = 'TERMINATED',
-                updated_at = NOW(),
-                termination_reason = $1
-            WHERE id = $2 AND status = 'CREATING'
+            SET state = 'TERMINATED'
+            WHERE id = $1 AND state = 'CREATING'
             "#,
-            "Worker timed out in CREATING state",
             worker.id
         )
         .execute(&mut *tx)
@@ -424,34 +416,17 @@ impl DatabaseReaper {
 #[derive(Debug, sqlx::FromRow)]
 struct StuckJobRow {
     id: Uuid,
-    status: String,
-    provider_id: Option<Uuid>,
-    command: Option<String>,
-    arguments: Option<serde_json::Value>,
-    environment: Option<serde_json::Value>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    worker_id: Option<Uuid>,
-    started_at: Option<DateTime<Utc>>,
+    state: String,
 }
 
 /// Row type for stuck workers query
 #[derive(Debug, sqlx::FromRow)]
 struct StuckWorkerRow {
     id: Uuid,
-    status: String,
+    state: String,
     provider_id: Uuid,
-    worker_handle: serde_json::Value,
+    provider_resource_id: Option<String>,
     spec: serde_json::Value,
-    current_job_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    last_heartbeat: Option<DateTime<Utc>>,
-    idle_timeout: Option<i32>,
-    max_lifetime: Option<i32>,
-    ttl_after_completion: Option<i32>,
-    registered_at: Option<DateTime<Utc>>,
-    termination_reason: Option<String>,
 }
 
 #[cfg(test)]
