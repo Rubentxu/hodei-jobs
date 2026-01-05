@@ -375,9 +375,8 @@ use crate::jobs::event_subscriber::EventHandler;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::jobs::{Job, JobsFilter};
+    use hodei_server_domain::jobs::{Job, JobState, JobsFilter};
     use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
-    use hodei_shared::states::JobState;
     use uuid::Uuid;
 
     // Mock implementations for testing
@@ -385,72 +384,37 @@ mod tests {
 
     #[async_trait::async_trait]
     impl hodei_server_domain::jobs::JobRepository for MockJobRepository {
-        async fn find_by_id(
-            &self,
-            _id: &JobId,
-        ) -> Result<Option<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn save(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+        async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> {
             Ok(None)
         }
-
-        async fn update_state(
-            &self,
-            _job_id: &JobId,
-            _state: JobState,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
-            Ok(())
-        }
-        async fn save(
-            &self,
-            _job: &Job,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
-            Ok(())
-        }
-        async fn find(
-            &self,
-            _filter: JobsFilter,
-        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
             Ok(vec![])
         }
-        async fn count_by_state(
-            &self,
-            _state: JobState,
-        ) -> Result<u64, hodei_server_domain::shared_kernel::DomainError> {
-            Ok(0)
-        }
-        async fn delete(
-            &self,
-            _id: &JobId,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
-            Ok(())
-        }
-        async fn find_by_state(
-            &self,
-            _state: &JobState,
-        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
             Ok(vec![])
         }
-        async fn find_pending(
-            &self,
-        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find_pending(&self) -> Result<Vec<Job>> {
             Ok(vec![])
         }
-        async fn find_all(
-            &self,
-            _limit: usize,
-            _offset: usize,
-        ) -> Result<(Vec<Job>, usize), hodei_server_domain::shared_kernel::DomainError> {
+        async fn find_all(&self, _limit: usize, _offset: usize) -> Result<(Vec<Job>, usize)> {
             Ok((vec![], 0))
         }
-        async fn find_by_execution_id(
-            &self,
-            _execution_id: &str,
-        ) -> Result<Option<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
             Ok(None)
         }
-        async fn update(
-            &self,
-            _job: &Job,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
+        async fn count_by_state(&self, _state: JobState) -> Result<u64> {
+            Ok(0)
+        }
+        async fn delete(&self, _job_id: &JobId) -> Result<()> {
+            Ok(())
+        }
+        async fn update(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
     }
@@ -526,101 +490,82 @@ mod tests {
                 message: "Not implemented".to_string(),
             })
         }
-
         async fn save(&self, _worker: &hodei_server_domain::workers::Worker) -> Result<()> {
             Ok(())
         }
-
         async fn unregister(&self, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }
-
         async fn find_by_id(
             &self,
             _id: &WorkerId,
         ) -> Result<Option<hodei_server_domain::workers::Worker>> {
             Ok(None)
         }
-
         async fn get_by_job_id(
             &self,
             _job_id: &JobId,
         ) -> Result<Option<hodei_server_domain::workers::Worker>> {
             Ok(None)
         }
-
         async fn find(
             &self,
             _filter: &hodei_server_domain::workers::WorkerFilter,
         ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn find_ready_worker(
             &self,
             _filter: Option<&hodei_server_domain::workers::WorkerFilter>,
         ) -> Result<Option<hodei_server_domain::workers::Worker>> {
             Ok(None)
         }
-
         async fn find_available(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn find_by_provider(
             &self,
             _provider_id: &ProviderId,
         ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn update_state(&self, _id: &WorkerId, _state: WorkerState) -> Result<()> {
             Ok(())
         }
-
         async fn update_heartbeat(&self, _id: &WorkerId) -> Result<()> {
             Ok(())
         }
-
         async fn mark_busy(&self, _id: &WorkerId, _job_id: Option<JobId>) -> Result<()> {
             Ok(())
         }
-
         async fn release_from_job(&self, _id: &WorkerId) -> Result<()> {
             Ok(())
         }
-
         async fn find_unhealthy(
             &self,
             _timeout: std::time::Duration,
         ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn find_for_termination(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn find_idle_timed_out(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn find_lifetime_exceeded(
             &self,
         ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn find_ttl_after_completion_exceeded(
             &self,
         ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
             Ok(vec![])
         }
-
         async fn stats(&self) -> Result<hodei_server_domain::workers::WorkerRegistryStats> {
             Ok(hodei_server_domain::workers::WorkerRegistryStats::default())
         }
-
         async fn count(&self) -> Result<usize> {
             Ok(0)
         }
