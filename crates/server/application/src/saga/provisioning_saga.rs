@@ -103,33 +103,42 @@ impl DynProvisioningSagaCoordinator {
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
                 if result.is_success() {
-                    info!(provider_id = %provider_id, "✅ Saga orchestration completed, provisioning worker");
+                    info!(provider_id = %provider_id, "✅ Saga orchestration completed successfully");
 
-                    // After saga completes, use provisioning_service to create the worker
-                    match self
-                        .provisioning_service
-                        .provision_worker(
-                            provider_id,
-                            spec.clone(),
-                            job_id.clone().unwrap_or_default(),
-                        )
+                    // EPIC-45 Gap 1: Extract worker_id from saga result metadata
+                    // Get the saga context to access the metadata stored during execution
+                    let saga_context = self
+                        .orchestrator
+                        .get_saga(&result.saga_id)
                         .await
-                    {
-                        Ok(provisioning_result) => {
-                            info!(
-                                provider_id = %provider_id,
-                                worker_id = %provisioning_result.worker_id,
-                                "✅ Worker provisioned via saga"
-                            );
-                            Ok((provisioning_result.worker_id, result))
+                        .map_err(|e| ProvisioningSagaError::SagaFailed {
+                            message: format!("Failed to get saga context: {}", e),
+                        })?
+                        .ok_or_else(|| ProvisioningSagaError::SagaFailed {
+                            message: "Saga context not found".to_string(),
+                        })?;
+
+                    // The CreateInfrastructureStep already provisioned the worker
+                    let worker_id_str = saga_context
+                        .metadata
+                        .get("worker_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ProvisioningSagaError::SagaFailed {
+                            message: "No worker_id in saga result metadata".to_string(),
+                        })?;
+
+                    let worker_id = WorkerId::from_string(worker_id_str).ok_or_else(|| {
+                        ProvisioningSagaError::SagaFailed {
+                            message: "Invalid worker_id format in saga metadata".to_string(),
                         }
-                        Err(e) => {
-                            error!(provider_id = %provider_id, error = %e, "❌ Failed to provision worker");
-                            Err(ProvisioningSagaError::SagaFailed {
-                                message: format!("Worker provisioning failed: {}", e),
-                            })
-                        }
-                    }
+                    })?;
+
+                    info!(
+                        provider_id = %provider_id,
+                        worker_id = %worker_id,
+                        "✅ Worker provisioned via saga (compensation available)"
+                    );
+                    Ok((worker_id, result))
                 } else if result.is_compensated() {
                     warn!(provider_id = %provider_id, "⚠️ Saga was compensated");
                     Err(ProvisioningSagaError::Compensated)

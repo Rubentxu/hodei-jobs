@@ -737,6 +737,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         limit: u64,
         _instance_id: &str,
     ) -> Result<Vec<SagaContext>, Self::Error> {
+        // EPIC-45 Gap 5: Include stuck sagas (IN_PROGRESS > 5 min ago, COMPENSATING)
         // Use FOR UPDATE SKIP LOCKED to atomically claim sagas without blocking
         let rows = sqlx::query_as::<_, SagaDbRow>(
             r#"
@@ -744,7 +745,15 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
                    metadata, error_message, completed_at, created_at, updated_at
             FROM sagas
             WHERE state = 'PENDING'
-            ORDER BY created_at ASC
+               OR (state = 'IN_PROGRESS' AND updated_at < NOW() - INTERVAL '5 minutes')
+               OR state = 'COMPENSATING'
+            ORDER BY
+                CASE
+                    WHEN state = 'COMPENSATING' THEN 1
+                    WHEN state = 'IN_PROGRESS' THEN 2
+                    ELSE 3
+                END,
+                created_at ASC
             LIMIT $1
             FOR UPDATE SKIP LOCKED
             "#,
