@@ -1,8 +1,8 @@
 //! Correlation Module - Propagates correlation IDs across the system
 //!
 //! Provides:
-//! - Extraction of correlation IDs from gRPC headers
-//! - Injection of correlation IDs into NATS headers
+//! - Extraction of correlation IDs from headers
+//! - Injection of correlation IDs into headers
 //! - Propagation through the event-driven architecture
 //!
 //! EPIC-43: Sprint 5 - Observabilidad
@@ -62,56 +62,6 @@ impl NatsHeaders {
         self.custom.insert(key.to_string(), value.to_string());
         self
     }
-
-    /// Convert to NATS header format
-    pub fn to_nats_headers(&self) -> async_nats::Header {
-        let mut headers = async_nats::Header::new();
-
-        if let Some(corr_id) = &self.correlation_id {
-            if let Ok(value) = async_nats::HeaderValue::from_str(corr_id) {
-                headers.insert(CORRELATION_ID_HEADER, value);
-            }
-        }
-
-        if let Some(tp) = &self.traceparent {
-            if let Ok(value) = async_nats::HeaderValue::from_str(tp) {
-                headers.insert(TRACE_PARENT_HEADER, value);
-            }
-        }
-
-        if let Some(ts) = &self.tracestate {
-            if let Ok(value) = async_nats::HeaderValue::from_str(ts) {
-                headers.insert(TRACE_STATE_HEADER, value);
-            }
-        }
-
-        for (key, value) in &self.custom {
-            if let Ok(header_value) = async_nats::HeaderValue::from_str(value) {
-                headers.insert(key.as_str(), header_value);
-            }
-        }
-
-        headers
-    }
-
-    /// Extract from NATS headers
-    pub fn from_nats_headers(headers: &async_nats::Header) -> Self {
-        let mut nats_headers = Self::new();
-
-        if let Some(value) = headers.get(CORRELATION_ID_HEADER) {
-            nats_headers.correlation_id = Some(value.to_string());
-        }
-
-        if let Some(value) = headers.get(TRACE_PARENT_HEADER) {
-            nats_headers.traceparent = Some(value.to_string());
-        }
-
-        if let Some(value) = headers.get(TRACE_STATE_HEADER) {
-            nats_headers.tracestate = Some(value.to_string());
-        }
-
-        nats_headers
-    }
 }
 
 /// Extract correlation ID from event metadata
@@ -139,6 +89,7 @@ pub fn create_event_headers(event: &OutboxEventView) -> NatsHeaders {
 }
 
 /// Middleware for adding correlation ID to gRPC request extensions
+#[derive(Debug, Clone)]
 pub struct CorrelationContext {
     /// Current correlation ID
     pub correlation_id: CorrelationId,
@@ -168,17 +119,6 @@ impl CorrelationContext {
             trace_state: None,
         })
     }
-}
-
-/// Extract correlation context from NATS headers
-pub fn extract_context_from_headers(headers: &async_nats::Header) -> Option<CorrelationContext> {
-    headers.get(CORRELATION_ID_HEADER).and_then(|v| {
-        CorrelationId::from_string(v.to_str().ok()?).map(|id| CorrelationContext {
-            correlation_id: id,
-            parent_span_id: headers.get(TRACE_PARENT_HEADER).map(|s| s.to_string()),
-            trace_state: headers.get(TRACE_STATE_HEADER).map(|s| s.to_string()),
-        })
-    })
 }
 
 /// Convert context to NATS headers for propagation

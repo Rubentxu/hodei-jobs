@@ -100,11 +100,8 @@ impl ObservabilityResult {
 // Re-exports for convenience
 pub use correlation::{
     CORRELATION_ID_HEADER, CorrelationContext, NatsHeaders, TRACE_PARENT_HEADER,
-    TRACE_STATE_HEADER, context_to_headers, create_event_headers, extract_context_from_headers,
+    TRACE_STATE_HEADER, context_to_headers, create_event_headers,
     extract_correlation_id_from_event,
 };
-pub use metrics::{GrpcMetrics, JobMetrics, MetricsRegistry, ObservabilityMetrics, WorkerMetrics};
-pub use tracing::{
-    TracingConfig, TracingResult, extract_trace_context, init_tracing, inject_trace_context,
-    shutdown_tracing,
-};
+pub use metrics::{GrpcMetrics, JobMetrics, ObservabilityMetrics, WorkerMetrics};
+pub use tracing::{TracingConfig, TracingResult, init_tracing, shutdown_tracing};
