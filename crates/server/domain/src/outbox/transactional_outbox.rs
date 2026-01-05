@@ -636,6 +636,13 @@ mod tests {
         ) -> Result<u64, Self::Error> {
             Ok(0)
         }
+
+        async fn find_by_id(
+            &self,
+            _id: Uuid,
+        ) -> Result<Option<crate::outbox::OutboxEventView>, Self::Error> {
+            Ok(None)
+        }
     }
 
     #[tokio::test]

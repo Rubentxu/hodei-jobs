@@ -29,10 +29,11 @@
 
 use crate::persistence::outbox::postgres::PostgresOutboxRepository;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
-use hodei_server_domain::outbox::{OutboxEventView, OutboxRepository};
+use hodei_server_domain::outbox::{OutboxError, OutboxEventView, OutboxRepository};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -93,16 +94,17 @@ impl Default for ReactiveOutboxConfig {
 #[derive(Clone)]
 pub struct ReactiveOutboxRelay {
     pool: PgPool,
-    outbox_repo: Arc<dyn OutboxRepository>,
+    outbox_repo: Arc<dyn OutboxRepository<Error = OutboxError>>,
     event_bus: Arc<dyn EventBus>,
     config: ReactiveOutboxConfig,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl ReactiveOutboxRelay {
     /// Creates a new ReactiveOutboxRelay
     pub fn new(
         pool: PgPool,
-        outbox_repo: Arc<dyn OutboxRepository>,
+        outbox_repo: Arc<dyn OutboxRepository<Error = OutboxError>>,
         event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
@@ -110,13 +112,14 @@ impl ReactiveOutboxRelay {
             outbox_repo,
             event_bus,
             config: ReactiveOutboxConfig::default(),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Creates a new ReactiveOutboxRelay with custom configuration
     pub fn with_config(
         pool: PgPool,
-        outbox_repo: Arc<dyn OutboxRepository>,
+        outbox_repo: Arc<dyn OutboxRepository<Error = OutboxError>>,
         event_bus: Arc<dyn EventBus>,
         config: ReactiveOutboxConfig,
     ) -> Self {
@@ -125,22 +128,21 @@ impl ReactiveOutboxRelay {
             outbox_repo,
             event_bus,
             config,
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Marks the relay for shutdown
+    pub fn shutdown(&self) {
+        self.shutdown_flag.store(true, Ordering::SeqCst);
     }
 
     /// Runs the reactive relay until shutdown
     ///
-    /// # Arguments
-    ///
-    /// * `shutdown_rx` - Optional receiver for shutdown signals
-    ///
     /// # Errors
     ///
     /// Returns `ReactiveOutboxError::Shutdown` if shutdown signal is received
-    pub async fn run(
-        &self,
-        shutdown_rx: Option<mpsc::Receiver<()>>,
-    ) -> Result<(), ReactiveOutboxError> {
+    pub async fn run(&self) -> Result<(), ReactiveOutboxError> {
         info!(
             channel = %self.config.channel_name,
             fallback_interval_secs = self.config.fallback_poll_interval.as_secs(),
@@ -163,22 +165,18 @@ impl ReactiveOutboxRelay {
             "Listening for outbox events"
         );
 
-        // Create shutdown receiver if not provided
-        let mut shutdown_rx = shutdown_rx.or_else(|| {
-            let (tx, rx) = mpsc::channel(1);
-            // Keep tx alive in task
-            tokio::spawn(async move {
-                tx.send(()).await.ok();
-            });
-            Some(rx)
-        });
-
         loop {
+            // Check shutdown flag first (non-blocking)
+            if self.shutdown_flag.load(Ordering::SeqCst) {
+                info!("Shutdown flag set, stopping relay");
+                return Err(ReactiveOutboxError::Shutdown);
+            }
+
             tokio::select! {
-                // Primary: Listen for NOTIFY events (instant wakeup)
-                notification = listener.recv() => {
+                // Primary: Listen for NOTIFY events with timeout
+                notification = timeout(Duration::from_secs(1), listener.recv()) => {
                     match notification {
-                        Ok(notification) => {
+                        Ok(Ok(notification)) => {
                             debug!(
                                 event_id = %notification.payload(),
                                 "Received NOTIFY for outbox event"
@@ -191,10 +189,17 @@ impl ReactiveOutboxRelay {
                                 );
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!(error = %e, "Notification receive error, will retry");
                             // Brief backoff on error
                             tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Err(_) => {
+                            // Timeout - check shutdown and continue loop
+                            if self.shutdown_flag.load(Ordering::SeqCst) {
+                                info!("Shutdown flag set during timeout, stopping relay");
+                                return Err(ReactiveOutboxError::Shutdown);
+                            }
                         }
                     }
                 }
@@ -205,16 +210,6 @@ impl ReactiveOutboxRelay {
                     if let Err(e) = self.process_pending_events().await {
                         error!(error = %e, "Fallback polling failed");
                     }
-                }
-
-                // Shutdown signal
-                _ = async {
-                    if let Some(ref rx) = shutdown_rx {
-                        rx.recv().await.ok();
-                    }
-                } => {
-                    info!("Shutdown signal received");
-                    return Err(ReactiveOutboxError::Shutdown);
                 }
             }
         }
@@ -247,13 +242,22 @@ impl ReactiveOutboxRelay {
             })?;
 
         // Skip if already published
-        if event.status == "PUBLISHED" {
+        if event.is_published() {
             debug!(event_id = %event_id, "Event already published, skipping");
             return Ok(());
         }
 
+        // Deserialize payload to DomainEvent
+        let domain_event: hodei_server_domain::events::DomainEvent =
+            serde_json::from_value(event.payload).map_err(|e| {
+                ReactiveOutboxError::ProcessingError {
+                    event_id: event_id.to_string(),
+                    source: Box::new(e),
+                }
+            })?;
+
         // Publish to event bus
-        self.event_bus.publish(&event.payload).await.map_err(|e| {
+        self.event_bus.publish(&domain_event).await.map_err(|e| {
             ReactiveOutboxError::ProcessingError {
                 event_id: event_id.to_string(),
                 source: Box::new(e),
@@ -262,7 +266,7 @@ impl ReactiveOutboxRelay {
 
         // Mark as published
         self.outbox_repo
-            .mark_published(uuid)
+            .mark_published(&[uuid])
             .await
             .map_err(|e| ReactiveOutboxError::MarkPublishedError(e.to_string()))?;
 
@@ -316,18 +320,17 @@ pub trait OutboxRelayExt {
 #[async_trait::async_trait]
 impl OutboxRelayExt for ReactiveOutboxRelay {
     async fn run_with_shutdown(&self) -> Result<(), ReactiveOutboxError> {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
-
-        // Spawn task to handle shutdown
-        let relay = self.clone();
+        // Spawn task to handle shutdown signal
+        let shutdown_flag = self.shutdown_flag.clone();
         tokio::spawn(async move {
-            // Wait for shutdown signal
-            tokio::signal::ctrl_c().await.ok();
+            // Wait for shutdown signal (Ctrl+C)
+            let _ = tokio::signal::ctrl_c().await;
             info!("Shutdown signal received, stopping relay...");
-            let _ = shutdown_tx.send(()).await;
+            shutdown_flag.store(true, Ordering::SeqCst);
         });
 
-        self.run(Some(shutdown_rx)).await
+        // Run the relay
+        self.run().await
     }
 }
 

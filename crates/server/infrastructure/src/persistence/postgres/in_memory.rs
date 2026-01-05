@@ -7,7 +7,7 @@
 
 pub mod test_in_memory {
     use async_trait::async_trait;
-    use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
+    use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobsFilter};
     use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
@@ -44,6 +44,30 @@ pub mod test_in_memory {
         async fn find_by_id(&self, job_id: &JobId) -> Result<Option<Job>> {
             let jobs = self.jobs.read().await;
             Ok(jobs.get(job_id).cloned())
+        }
+
+        async fn find(&self, filter: JobsFilter) -> Result<Vec<Job>> {
+            let jobs = self.jobs.read().await;
+            let mut result: Vec<Job> = jobs.values().cloned().collect();
+
+            if let Some(ref state) = filter.state {
+                result.retain(|job| job.state() == state);
+            }
+            if let Some(ref provider_id) = filter.provider_id {
+                result.retain(|job| {
+                    job.execution_context()
+                        .map(|ctx| &ctx.provider_id == provider_id)
+                        .unwrap_or(false)
+                });
+            }
+
+            // Apply pagination
+            if let Some(limit) = filter.limit {
+                let offset = filter.offset.unwrap_or(0);
+                result = result.into_iter().skip(offset).take(limit).collect();
+            }
+
+            Ok(result)
         }
 
         async fn find_by_state(
@@ -92,6 +116,14 @@ pub mod test_in_memory {
                         .unwrap_or(false)
                 })
                 .cloned())
+        }
+
+        async fn count_by_state(
+            &self,
+            state: &hodei_server_domain::shared_kernel::JobState,
+        ) -> Result<u64> {
+            let jobs = self.jobs.read().await;
+            Ok(jobs.values().filter(|job| job.state() == state).count() as u64)
         }
 
         async fn delete(&self, job_id: &JobId) -> Result<()> {
@@ -202,6 +234,52 @@ pub mod test_in_memory {
     }
     #[async_trait]
     impl hodei_server_domain::workers::registry::WorkerRegistry for InMemoryWorkerRegistry {
+        async fn save(&self, worker: &hodei_server_domain::workers::Worker) -> Result<()> {
+            let mut workers = self.workers.write().await;
+            workers.insert(worker.handle().worker_id.clone(), worker.clone());
+            Ok(())
+        }
+
+        async fn find_by_id(
+            &self,
+            worker_id: &hodei_server_domain::shared_kernel::WorkerId,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            let workers = self.workers.read().await;
+            Ok(workers.get(worker_id).cloned())
+        }
+
+        async fn find_ready_worker(
+            &self,
+            filter: Option<&hodei_server_domain::workers::registry::WorkerFilter>,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            let workers = self.workers.read().await;
+            let mut available: Vec<hodei_server_domain::workers::Worker> = workers
+                .values()
+                .filter(|w| *w.state() == hodei_server_domain::shared_kernel::WorkerState::Ready)
+                .filter(|w| w.current_job_id().is_none())
+                .cloned()
+                .collect();
+
+            // Apply filter if provided
+            if let Some(f) = filter {
+                if let Some(states) = &f.states {
+                    available.retain(|w| states.contains(w.state()));
+                }
+                if let Some(pid) = &f.provider_id {
+                    available.retain(|w| w.provider_id() == pid);
+                }
+                if let Some(pt) = &f.provider_type {
+                    available.retain(|w| w.provider_type() == pt);
+                }
+                if f.can_accept_jobs == Some(true) {
+                    available.retain(|w| w.current_job_id().is_none());
+                }
+            }
+
+            // Return first match (arbitrary selection for tests)
+            Ok(available.into_iter().next())
+        }
+
         async fn register(
             &self,
             handle: hodei_server_domain::workers::WorkerHandle,
@@ -321,6 +399,31 @@ pub mod test_in_memory {
                         let _ = worker.mark_terminating();
                     }
                 };
+            }
+            Ok(())
+        }
+
+        async fn update_heartbeat(
+            &self,
+            worker_id: &hodei_server_domain::shared_kernel::WorkerId,
+        ) -> Result<()> {
+            let mut workers = self.workers.write().await;
+            if let Some(worker) = workers.get_mut(worker_id) {
+                worker.update_heartbeat();
+            }
+            Ok(())
+        }
+
+        async fn mark_busy(
+            &self,
+            worker_id: &hodei_server_domain::shared_kernel::WorkerId,
+            job_id: Option<hodei_server_domain::shared_kernel::JobId>,
+        ) -> Result<()> {
+            let mut workers = self.workers.write().await;
+            if let Some(worker) = workers.get_mut(worker_id) {
+                if let Some(job) = job_id {
+                    let _ = worker.assign_job(job);
+                }
             }
             Ok(())
         }

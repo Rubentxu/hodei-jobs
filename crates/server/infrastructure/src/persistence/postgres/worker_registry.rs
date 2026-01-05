@@ -474,6 +474,128 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         let count: i64 = row.try_get("count").unwrap_or(0);
         Ok(count as usize)
     }
+
+    async fn save(&self, worker: &Worker) -> Result<()> {
+        let handle = worker.handle();
+        let spec = worker.spec();
+        let worker_id = handle.worker_id.0;
+        let provider_id = handle.provider_id.0;
+        let current_job_id = worker.current_job_id().map(|j| j.0);
+
+        sqlx::query(
+            r#"
+            INSERT INTO workers (id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id) DO UPDATE SET
+                provider_id = EXCLUDED.provider_id,
+                provider_type = EXCLUDED.provider_type,
+                provider_resource_id = EXCLUDED.provider_resource_id,
+                state = EXCLUDED.state,
+                spec = EXCLUDED.spec,
+                handle = EXCLUDED.handle,
+                current_job_id = EXCLUDED.current_job_id,
+                last_heartbeat = EXCLUDED.last_heartbeat,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(worker_id)
+        .bind(provider_id)
+        .bind(handle.provider_type.to_string())
+        .bind(handle.provider_resource_id.clone())
+        .bind(worker.state().to_string())
+        .bind(serde_json::to_value(spec).map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Failed to serialize worker spec: {}", e),
+            }
+        })?)
+        .bind(serde_json::to_value(handle).map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Failed to serialize worker handle: {}", e),
+            }
+        })?)
+        .bind(current_job_id)
+        .bind(worker.last_heartbeat())
+        .bind(worker.created_at())
+        .bind(worker.updated_at())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+            message: format!("Failed to save worker: {}", e),
+        })?;
+
+        Ok(())
+    }
+
+    async fn find_by_id(&self, worker_id: &WorkerId) -> Result<Option<Worker>> {
+        self.get(worker_id).await
+    }
+
+    async fn find_ready_worker(&self, filter: Option<&WorkerFilter>) -> Result<Option<Worker>> {
+        let mut query = sqlx::QueryBuilder::new(
+            r#"
+            SELECT id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at
+            FROM workers
+            WHERE state = 'READY' AND current_job_id IS NULL
+            "#,
+        );
+
+        if let Some(f) = filter {
+            if let Some(states) = &f.states {
+                if !states.is_empty() {
+                    query.push(" AND state = ANY(");
+                    query.push_bind(states.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+                    query.push(")");
+                }
+            }
+            if let Some(provider_id) = &f.provider_id {
+                query.push(" AND provider_id = ");
+                query.push_bind(provider_id.0);
+            }
+            if let Some(provider_type) = &f.provider_type {
+                query.push(" AND provider_type = ");
+                query.push_bind(provider_type.to_string());
+            }
+        }
+
+        query.push(" LIMIT 1");
+
+        let rows = query.build().fetch_all(&self.pool).await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Failed to find ready worker: {}", e),
+            }
+        })?;
+
+        if let Some(row) = rows.into_iter().next() {
+            Ok(Some(map_row_to_worker(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn update_heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
+        self.heartbeat(worker_id).await
+    }
+
+    async fn mark_busy(&self, worker_id: &WorkerId, job_id: Option<JobId>) -> Result<()> {
+        let worker_uuid = worker_id.0;
+        let job_uuid = job_id.map(|j| j.0);
+
+        sqlx::query(
+            "UPDATE workers SET current_job_id = $1, state = $2, updated_at = NOW() WHERE id = $3",
+        )
+        .bind(job_uuid)
+        .bind(WorkerState::Busy.to_string())
+        .bind(worker_uuid)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Failed to mark worker as busy: {}", e),
+            }
+        })?;
+
+        Ok(())
+    }
 }
 
 fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {

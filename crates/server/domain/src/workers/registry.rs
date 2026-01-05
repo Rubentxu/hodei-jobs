@@ -104,11 +104,24 @@ pub trait WorkerRegistry: Send + Sync {
         job_id: JobId,
     ) -> Result<Worker>;
 
+    /// Guardar o actualizar un worker
+    async fn save(&self, worker: &Worker) -> Result<()>;
+
     /// Dar de baja un worker
     async fn unregister(&self, worker_id: &WorkerId) -> Result<()>;
 
+    /// Alias for unregister (for compatibility)
+    async fn delete(&self, worker_id: &WorkerId) -> Result<()> {
+        self.unregister(worker_id).await
+    }
+
     /// Obtener worker por ID
-    async fn get(&self, worker_id: &WorkerId) -> Result<Option<Worker>>;
+    async fn find_by_id(&self, worker_id: &WorkerId) -> Result<Option<Worker>>;
+
+    /// Alias for find_by_id (for compatibility)
+    async fn get(&self, worker_id: &WorkerId) -> Result<Option<Worker>> {
+        self.find_by_id(worker_id).await
+    }
 
     /// Obtener worker asociado a un job específico
     async fn get_by_job_id(&self, job_id: &JobId) -> Result<Option<Worker>>;
@@ -117,6 +130,9 @@ pub trait WorkerRegistry: Send + Sync {
     async fn find(&self, filter: &WorkerFilter) -> Result<Vec<Worker>>;
 
     /// Obtener workers disponibles para jobs
+    async fn find_ready_worker(&self, filter: Option<&WorkerFilter>) -> Result<Option<Worker>>;
+
+    /// Obtener workers disponibles para jobs (legacy method)
     async fn find_available(&self) -> Result<Vec<Worker>>;
 
     /// Obtener workers de un provider específico
@@ -126,10 +142,20 @@ pub trait WorkerRegistry: Send + Sync {
     async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()>;
 
     /// Registrar heartbeat del worker
-    async fn heartbeat(&self, worker_id: &WorkerId) -> Result<()>;
+    async fn update_heartbeat(&self, worker_id: &WorkerId) -> Result<()>;
+
+    /// Alias for update_heartbeat
+    async fn heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
+        self.update_heartbeat(worker_id).await
+    }
 
     /// Asignar worker a un job
-    async fn assign_to_job(&self, worker_id: &WorkerId, job_id: JobId) -> Result<()>;
+    async fn mark_busy(&self, worker_id: &WorkerId, job_id: Option<JobId>) -> Result<()>;
+
+    /// Alias for mark_busy
+    async fn assign_to_job(&self, worker_id: &WorkerId, job_id: JobId) -> Result<()> {
+        self.mark_busy(worker_id, Some(job_id)).await
+    }
 
     /// Liberar worker de un job
     async fn release_from_job(&self, worker_id: &WorkerId) -> Result<()>;

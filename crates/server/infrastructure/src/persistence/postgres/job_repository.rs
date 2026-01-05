@@ -375,6 +375,81 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
 
         Ok(())
     }
+
+    async fn find(&self, filter: hodei_server_domain::jobs::JobsFilter) -> Result<Vec<Job>> {
+        let mut query = sqlx::QueryBuilder::new(
+            r#"
+            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+                   created_at, started_at, completed_at, result, error_message, metadata
+            FROM jobs
+            "#,
+        );
+
+        let mut has_where = false;
+
+        if let Some(ref state) = filter.state {
+            if !has_where {
+                query.push(" WHERE ");
+                has_where = true;
+            } else {
+                query.push(" AND ");
+            }
+            query.push("state = ");
+            query.push_bind(Self::state_to_string(state));
+        }
+
+        if let Some(ref provider_id) = filter.provider_id {
+            if !has_where {
+                query.push(" WHERE ");
+                has_where = true;
+            } else {
+                query.push(" AND ");
+            }
+            query.push("selected_provider_id = ");
+            query.push_bind(provider_id.0);
+        }
+
+        query.push(" ORDER BY created_at DESC");
+
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ");
+            query.push_bind(limit as i64);
+            if let Some(offset) = filter.offset {
+                query.push(" OFFSET ");
+                query.push_bind(offset as i64);
+            }
+        }
+
+        let rows = query.build().fetch_all(&self.pool).await.map_err(|e| {
+            DomainError::InfrastructureError {
+                message: format!("Failed to find jobs: {}", e),
+            }
+        })?;
+
+        let mut jobs = Vec::new();
+        for row in rows {
+            jobs.push(map_row_to_job(row)?);
+        }
+
+        Ok(jobs)
+    }
+
+    async fn count_by_state(
+        &self,
+        state: &hodei_server_domain::shared_kernel::JobState,
+    ) -> Result<u64> {
+        let state_str = Self::state_to_string(state);
+        let row = sqlx::query("SELECT COUNT(*) as count FROM jobs WHERE state = $1")
+            .bind(state_str)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to count jobs by state: {}", e),
+            })?;
+
+        let count: i64 = row.try_get("count").unwrap_or(0);
+        Ok(count as u64)
+    }
 }
 
 pub(crate) fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {

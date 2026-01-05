@@ -193,9 +193,9 @@ impl DispatchFailureHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::events::DispatchFailureReason;
-    use hodei_server_domain::jobs::JobState;
+    use hodei_server_domain::jobs::{Job, JobsFilter};
     use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
+    use hodei_shared::states::{DispatchFailureReason, JobState};
     use uuid::Uuid;
 
     // Mock job repository for testing
@@ -205,35 +205,75 @@ mod tests {
 
     #[async_trait::async_trait]
     impl hodei_server_domain::jobs::JobRepository for MockJobRepository {
-        type Error = std::io::Error;
-
         async fn find_by_id(
             &self,
             _id: &JobId,
-        ) -> Result<Option<hodei_server_domain::jobs::Job>, Self::Error> {
+        ) -> Result<Option<Job>, hodei_server_domain::shared_kernel::DomainError> {
             Ok(None)
         }
 
-        async fn update_state(&self, job_id: &JobId, _state: JobState) -> Result<(), Self::Error> {
+        async fn update_state(
+            &self,
+            job_id: &JobId,
+            _state: JobState,
+        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
             let mut calls = self.update_state_calls.lock().unwrap();
             calls.push(job_id.clone());
             Ok(())
         }
 
-        // ... other methods not implemented for this test
-        async fn save(&self, _job: &hodei_server_domain::jobs::Job) -> Result<(), Self::Error> {
+        async fn save(
+            &self,
+            _job: &Job,
+        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
             Ok(())
         }
         async fn find(
             &self,
-            _filter: crate::JobsFilter,
-        ) -> Result<Vec<hodei_server_domain::jobs::Job>, Self::Error> {
+            _filter: JobsFilter,
+        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
             Ok(vec![])
         }
-        async fn count_by_state(&self, _state: JobState) -> Result<u64, Self::Error> {
+        async fn count_by_state(
+            &self,
+            _state: JobState,
+        ) -> Result<u64, hodei_server_domain::shared_kernel::DomainError> {
             Ok(0)
         }
-        async fn delete(&self, _id: &JobId) -> Result<(), Self::Error> {
+        async fn delete(
+            &self,
+            _id: &JobId,
+        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
+            Ok(())
+        }
+        async fn find_by_state(
+            &self,
+            _state: &JobState,
+        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+            Ok(vec![])
+        }
+        async fn find_pending(
+            &self,
+        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+            Ok(vec![])
+        }
+        async fn find_all(
+            &self,
+            _limit: usize,
+            _offset: usize,
+        ) -> Result<(Vec<Job>, usize), hodei_server_domain::shared_kernel::DomainError> {
+            Ok((vec![], 0))
+        }
+        async fn find_by_execution_id(
+            &self,
+            _execution_id: &str,
+        ) -> Result<Option<Job>, hodei_server_domain::shared_kernel::DomainError> {
+            Ok(None)
+        }
+        async fn update(
+            &self,
+            _job: &Job,
+        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
             Ok(())
         }
     }

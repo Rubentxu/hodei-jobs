@@ -28,9 +28,9 @@ pub mod repositories {
 
 #[cfg(test)]
 pub mod test_infrastructure {
-    use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
+    use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobsFilter};
     use hodei_server_domain::providers::config::{ProviderConfig, ProviderConfigRepository};
-    use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result};
+    use hodei_server_domain::shared_kernel::{JobId, JobState, ProviderId, Result};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -99,6 +99,16 @@ pub mod test_infrastructure {
                 job.set_state(new_state)?;
             }
             Ok(())
+        }
+
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            let jobs = self.jobs.lock().unwrap();
+            Ok(jobs.values().cloned().collect())
+        }
+
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            let jobs = self.jobs.lock().unwrap();
+            Ok(jobs.values().filter(|j| j.state() == _state).count() as u64)
         }
     }
 
@@ -382,6 +392,47 @@ pub mod test_infrastructure {
         async fn count(&self) -> Result<usize> {
             let workers = self.workers.lock().unwrap();
             Ok(workers.len())
+        }
+
+        async fn save(&self, worker: &hodei_server_domain::workers::Worker) -> Result<()> {
+            let mut workers = self.workers.lock().unwrap();
+            workers.insert(worker.handle().worker_id.clone(), worker.clone());
+            Ok(())
+        }
+
+        async fn find_by_id(
+            &self,
+            worker_id: &hodei_server_domain::shared_kernel::WorkerId,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            let workers = self.workers.lock().unwrap();
+            Ok(workers.get(worker_id).cloned())
+        }
+
+        async fn find_ready_worker(
+            &self,
+            _filter: Option<&hodei_server_domain::workers::registry::WorkerFilter>,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            let workers = self.workers.lock().unwrap();
+            Ok(workers
+                .values()
+                .filter(|w| w.current_job_id().is_none())
+                .cloned()
+                .next())
+        }
+
+        async fn update_heartbeat(
+            &self,
+            _worker_id: &hodei_server_domain::shared_kernel::WorkerId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn mark_busy(
+            &self,
+            _worker_id: &hodei_server_domain::shared_kernel::WorkerId,
+            _job_id: Option<hodei_server_domain::shared_kernel::JobId>,
+        ) -> Result<()> {
+            Ok(())
         }
     }
 }

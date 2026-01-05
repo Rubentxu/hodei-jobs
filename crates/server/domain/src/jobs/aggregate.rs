@@ -1197,13 +1197,40 @@ impl ExecutionContext {
 pub trait JobRepository: Send + Sync {
     async fn save(&self, job: &Job) -> Result<()>;
     async fn find_by_id(&self, job_id: &JobId) -> Result<Option<Job>>;
+    async fn find(&self, filter: JobsFilter) -> Result<Vec<Job>>;
     async fn find_by_state(&self, state: &JobState) -> Result<Vec<Job>>;
     async fn find_pending(&self) -> Result<Vec<Job>>;
     async fn find_all(&self, limit: usize, offset: usize) -> Result<(Vec<Job>, usize)>;
     async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>>;
+    async fn count_by_state(&self, state: &JobState) -> Result<u64>;
     async fn delete(&self, job_id: &JobId) -> Result<()>;
     async fn update(&self, job: &Job) -> Result<()>;
     async fn update_state(&self, job_id: &JobId, new_state: JobState) -> Result<()>;
+}
+
+/// Filter for querying jobs
+#[derive(Debug, Clone, Default)]
+pub struct JobsFilter {
+    pub state: Option<JobState>,
+    pub provider_id: Option<ProviderId>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+impl JobsFilter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_state(mut self, state: JobState) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    pub fn with_provider_id(mut self, provider_id: ProviderId) -> Self {
+        self.provider_id = Some(provider_id);
+        self
+    }
 }
 
 /// Transaction-aware Job Repository (EPIC-43 Sprint 1)
