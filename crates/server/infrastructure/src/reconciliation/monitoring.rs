@@ -112,16 +112,16 @@ impl ReconcilerMetrics {
         let jobs_failed = IntCounter::new(
             "hodei_reaper_jobs_failed_total",
             "Total jobs marked as failed by DatabaseReaper",
-        );
+        )?;
         let workers_terminated = IntCounter::new(
             "hodei_reaper_workers_terminated_total",
             "Total workers terminated by DatabaseReaper",
-        );
+        )?;
         let cycles_total = IntCounter::new(
             "hodei_reaper_cycles_total",
             "Total DatabaseReaper cycles run",
-        );
-        let errors = IntCounter::new("hodei_reaper_errors_total", "Total DatabaseReaper errors");
+        )?;
+        let errors = IntCounter::new("hodei_reaper_errors_total", "Total DatabaseReaper errors")?;
 
         registry.register(Box::new(jobs_failed.clone()))?;
         registry.register(Box::new(workers_terminated.clone()))?;
@@ -132,23 +132,23 @@ impl ReconcilerMetrics {
         let zombies_destroyed = IntCounter::new(
             "hodei_reconciler_zombies_destroyed_total",
             "Total zombie workers destroyed",
-        );
+        )?;
         let ghosts_handled = IntCounter::new(
             "hodei_reconciler_ghosts_handled_total",
             "Total ghost workers handled",
-        );
+        )?;
         let jobs_recovered = IntCounter::new(
             "hodei_reconciler_jobs_recovered_total",
             "Total jobs recovered from ghosts",
-        );
+        )?;
         let infra_cycles = IntCounter::new(
             "hodei_reconciler_cycles_total",
             "Total InfrastructureReconciler cycles run",
-        );
+        )?;
         let infra_errors = IntCounter::new(
             "hodei_reconciler_errors_total",
             "Total InfrastructureReconciler errors",
-        );
+        )?;
 
         registry.register(Box::new(zombies_destroyed.clone()))?;
         registry.register(Box::new(ghosts_handled.clone()))?;
@@ -160,15 +160,15 @@ impl ReconcilerMetrics {
         let current_zombie_count = IntGauge::new(
             "hodei_reconciler_current_zombies",
             "Current number of zombie workers detected",
-        );
+        )?;
         let current_job_failure_count = IntGauge::new(
             "hodei_reaper_current_job_failures",
             "Current number of job failures detected",
-        );
+        )?;
         let current_dlq_size = IntGauge::new(
             "hodei_outbox_dlq_size",
             "Current size of the Dead Letter Queue",
-        );
+        )?;
 
         registry.register(Box::new(current_zombie_count.clone()))?;
         registry.register(Box::new(current_job_failure_count.clone()))?;
