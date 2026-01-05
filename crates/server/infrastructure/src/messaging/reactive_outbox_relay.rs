@@ -100,6 +100,14 @@ pub struct ReactiveOutboxRelay {
     shutdown_flag: Arc<AtomicBool>,
 }
 
+// SAFETY: ReactiveOutboxRelay is safe to share between threads because:
+// - PgPool is Send (sqlx guarantees this)
+// - Arc<dyn OutboxRepository> is Send + Sync
+// - Arc<dyn EventBus> is Send + Sync
+// - ReactiveOutboxConfig is Clone + Send
+// - Arc<AtomicBool> is Send + Sync
+unsafe impl Sync for ReactiveOutboxRelay {}
+
 impl ReactiveOutboxRelay {
     /// Creates a new ReactiveOutboxRelay
     pub fn new(

@@ -16,6 +16,8 @@ pub struct MetricsRegistry {
     system_metrics: SystemMetrics,
     performance_metrics: PerformanceMetrics,
     security_metrics: SecurityMetrics,
+    /// EPIC-45 Gap 3: Saga metrics for observability
+    saga_metrics: SagaMetrics,
 }
 
 impl MetricsRegistry {
@@ -27,6 +29,8 @@ impl MetricsRegistry {
         let system_metrics = SystemMetrics::register(&registry)?;
         let performance_metrics = PerformanceMetrics::register(&registry)?;
         let security_metrics = SecurityMetrics::register(&registry)?;
+        // EPIC-45 Gap 3: Register saga metrics
+        let saga_metrics = SagaMetrics::register(&registry)?;
 
         Ok(Self {
             registry,
@@ -34,6 +38,7 @@ impl MetricsRegistry {
             system_metrics,
             performance_metrics,
             security_metrics,
+            saga_metrics,
         })
     }
 
@@ -60,6 +65,11 @@ impl MetricsRegistry {
     /// Get security metrics collector
     pub fn security(&self) -> &SecurityMetrics {
         &self.security_metrics
+    }
+
+    /// EPIC-45 Gap 3: Get saga metrics collector
+    pub fn saga(&self) -> &SagaMetrics {
+        &self.saga_metrics
     }
 }
 
@@ -447,6 +457,454 @@ use once_cell::sync::Lazy;
 pub static METRICS_REGISTRY: Lazy<Arc<MetricsRegistry>> =
     Lazy::new(|| Arc::new(MetricsRegistry::new().expect("Failed to initialize metrics registry")));
 
+/// Prometheus-based saga metrics implementation
+/// EPIC-45 Gap 3: Wraps Prometheus metrics with domain trait
+#[derive(Clone)]
+pub struct PrometheusSagaMetrics {
+    /// Total number of saga executions started
+    saga_started: Arc<IntCounterVec>,
+    /// Total number of saga executions completed successfully
+    saga_completed: Arc<IntCounterVec>,
+    /// Total number of saga executions that required compensation
+    saga_compensated: Arc<IntCounterVec>,
+    /// Total number of saga executions that failed
+    saga_failed: Arc<IntCounterVec>,
+    /// Saga execution duration histogram
+    saga_duration_seconds: Arc<HistogramVec>,
+    /// Number of compensations executed
+    saga_compensation_total: Arc<IntCounterVec>,
+    /// Current number of active sagas
+    saga_active: Arc<IntGaugeVec>,
+    /// Saga step execution latency
+    saga_step_duration_seconds: Arc<HistogramVec>,
+    /// Prometheus registry for metrics
+    registry: Registry,
+}
+
+impl PrometheusSagaMetrics {
+    /// Create a new Prometheus saga metrics instance
+    pub fn new(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let saga_started = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_started_total",
+                "Total number of saga executions started",
+            )
+            .variable_labels(&["saga_type"])
+            .const_label("component", "saga"),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_started.clone()))?;
+
+        let saga_completed = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_completed_total",
+                "Total number of saga executions completed successfully",
+            )
+            .variable_labels(&["saga_type"])
+            .const_label("component", "saga"),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_completed.clone()))?;
+
+        let saga_compensated = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_compensated_total",
+                "Total number of saga executions that required compensation",
+            )
+            .variable_labels(&["saga_type", "compensation_step"])
+            .const_label("component", "saga"),
+            &["saga_type", "compensation_step"],
+        )?;
+        registry.register(Box::new(saga_compensated.clone()))?;
+
+        let saga_failed = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_failed_total",
+                "Total number of saga executions that failed",
+            )
+            .variable_labels(&["saga_type", "error_type"])
+            .const_label("component", "saga"),
+            &["saga_type", "error_type"],
+        )?;
+        registry.register(Box::new(saga_failed.clone()))?;
+
+        let saga_duration_seconds = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "hodei_saga_duration_seconds",
+                "Saga execution duration in seconds",
+            )
+            .variable_labels(&["saga_type"])
+            .const_label("component", "saga")
+            .buckets(vec![0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0]),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_duration_seconds.clone()))?;
+
+        let saga_compensation_total = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_compensation_total",
+                "Total number of compensation steps executed",
+            )
+            .variable_labels(&["saga_type", "step_name"])
+            .const_label("component", "saga"),
+            &["saga_type", "step_name"],
+        )?;
+        registry.register(Box::new(saga_compensation_total.clone()))?;
+
+        let saga_active = IntGaugeVec::new(
+            Opts::new("hodei_saga_active", "Current number of active sagas")
+                .variable_labels(&["saga_type"])
+                .const_label("component", "saga"),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_active.clone()))?;
+
+        let saga_step_duration_seconds = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "hodei_saga_step_duration_seconds",
+                "Saga step execution duration in seconds",
+            )
+            .variable_labels(&["saga_type", "step_name"])
+            .const_label("component", "saga")
+            .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
+            &["saga_type", "step_name"],
+        )?;
+        registry.register(Box::new(saga_step_duration_seconds.clone()))?;
+
+        Ok(Self {
+            saga_started: Arc::new(saga_started),
+            saga_completed: Arc::new(saga_completed),
+            saga_compensated: Arc::new(saga_compensated),
+            saga_failed: Arc::new(saga_failed),
+            saga_duration_seconds: Arc::new(saga_duration_seconds),
+            saga_compensation_total: Arc::new(saga_compensation_total),
+            saga_active: Arc::new(saga_active),
+            saga_step_duration_seconds: Arc::new(saga_step_duration_seconds),
+            registry: registry.clone(),
+        })
+    }
+
+    /// Get the underlying registry
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+}
+
+#[async_trait::async_trait]
+impl hodei_server_domain::saga::SagaMetrics for PrometheusSagaMetrics {
+    async fn record_started(&self, saga_type: hodei_server_domain::saga::SagaType) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_started.with_label_values(&[&saga_type_str]).inc();
+    }
+
+    async fn record_completed(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        duration_secs: f64,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_completed
+            .with_label_values(&[&saga_type_str])
+            .inc();
+        self.saga_duration_seconds
+            .with_label_values(&[&saga_type_str])
+            .observe(duration_secs);
+    }
+
+    async fn record_compensated(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        compensation_step: &str,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_compensated
+            .with_label_values(&[&saga_type_str, compensation_step])
+            .inc();
+    }
+
+    async fn record_failed(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        error_type: &str,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_failed
+            .with_label_values(&[&saga_type_str, error_type])
+            .inc();
+    }
+
+    async fn record_compensation(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        step_name: &str,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_compensation_total
+            .with_label_values(&[&saga_type_str, step_name])
+            .inc();
+    }
+
+    async fn increment_active(&self, saga_type: hodei_server_domain::saga::SagaType) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_active.with_label_values(&[&saga_type_str]).inc();
+    }
+
+    async fn decrement_active(&self, saga_type: hodei_server_domain::saga::SagaType) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_active.with_label_values(&[&saga_type_str]).dec();
+    }
+
+    async fn record_step_duration(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        step_name: &str,
+        duration_secs: f64,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.saga_step_duration_seconds
+            .with_label_values(&[&saga_type_str, step_name])
+            .observe(duration_secs);
+    }
+}
+
+/// Convert SagaType to string for Prometheus labels
+fn saga_type_str(saga_type: &hodei_server_domain::saga::SagaType) -> String {
+    match saga_type {
+        hodei_server_domain::saga::SagaType::Provisioning => "provisioning".to_string(),
+        hodei_server_domain::saga::SagaType::Execution => "execution".to_string(),
+        hodei_server_domain::saga::SagaType::Recovery => "recovery".to_string(),
+    }
+}
+
+/// Internal saga metrics for MetricsRegistry (not a trait implementation)
+/// EPIC-45 Gap 3: Internal metrics for MetricsRegistry
+struct SagaMetricsInternal {
+    /// Total number of saga executions started
+    pub saga_started: IntCounterVec,
+    /// Total number of saga executions completed successfully
+    pub saga_completed: IntCounterVec,
+    /// Total number of saga executions that required compensation
+    pub saga_compensated: IntCounterVec,
+    /// Total number of saga executions that failed
+    pub saga_failed: IntCounterVec,
+    /// Saga execution duration histogram
+    pub saga_duration_seconds: HistogramVec,
+    /// Number of compensations executed
+    pub saga_compensation_total: IntCounterVec,
+    /// Current number of active sagas
+    pub saga_active: IntGaugeVec,
+    /// Saga step execution latency
+    pub saga_step_duration_seconds: HistogramVec,
+}
+
+impl SagaMetricsInternal {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let saga_started = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_started_total",
+                "Total number of saga executions started",
+            )
+            .variable_labels(&["saga_type"])
+            .const_label("component", "saga"),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_started.clone()))?;
+
+        let saga_completed = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_completed_total",
+                "Total number of saga executions completed successfully",
+            )
+            .variable_labels(&["saga_type"])
+            .const_label("component", "saga"),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_completed.clone()))?;
+
+        let saga_compensated = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_compensated_total",
+                "Total number of saga executions that required compensation",
+            )
+            .variable_labels(&["saga_type", "compensation_step"])
+            .const_label("component", "saga"),
+            &["saga_type", "compensation_step"],
+        )?;
+        registry.register(Box::new(saga_compensated.clone()))?;
+
+        let saga_failed = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_failed_total",
+                "Total number of saga executions that failed",
+            )
+            .variable_labels(&["saga_type", "error_type"])
+            .const_label("component", "saga"),
+            &["saga_type", "error_type"],
+        )?;
+        registry.register(Box::new(saga_failed.clone()))?;
+
+        let saga_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "hodei_saga_duration_seconds",
+                "Saga execution duration in seconds",
+            )
+            .variable_labels(&["saga_type"])
+            .const_label("component", "saga")
+            .buckets(vec![0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0]),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_duration_seconds.clone()))?;
+
+        let saga_compensation_total = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_compensation_total",
+                "Total number of compensation steps executed",
+            )
+            .variable_labels(&["saga_type", "step_name"])
+            .const_label("component", "saga"),
+            &["saga_type", "step_name"],
+        )?;
+        registry.register(Box::new(saga_compensation_total.clone()))?;
+
+        let saga_active = IntGaugeVec::new(
+            Opts::new("hodei_saga_active", "Current number of active sagas")
+                .variable_labels(&["saga_type"])
+                .const_label("component", "saga"),
+            &["saga_type"],
+        )?;
+        registry.register(Box::new(saga_active.clone()))?;
+
+        let saga_step_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "hodei_saga_step_duration_seconds",
+                "Saga step execution duration in seconds",
+            )
+            .variable_labels(&["saga_type", "step_name"])
+            .const_label("component", "saga")
+            .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
+            &["saga_type", "step_name"],
+        )?;
+        registry.register(Box::new(saga_step_duration_seconds.clone()))?;
+
+        Ok(Self {
+            saga_started,
+            saga_completed,
+            saga_compensated,
+            saga_failed,
+            saga_duration_seconds,
+            saga_compensation_total,
+            saga_active,
+            saga_step_duration_seconds,
+        })
+    }
+}
+
+/// Wrapper for saga metrics compatible with domain trait
+/// EPIC-45 Gap 3: Adapter for MetricsRegistry to domain trait
+#[derive(Clone)]
+pub struct SagaMetricsAdapter {
+    metrics: Arc<SagaMetricsInternal>,
+}
+
+impl SagaMetricsAdapter {
+    /// Create a new saga metrics adapter
+    pub fn new(metrics: Arc<SagaMetricsInternal>) -> Self {
+        Self { metrics }
+    }
+}
+
+#[async_trait::async_trait]
+impl hodei_server_domain::saga::SagaMetrics for SagaMetricsAdapter {
+    async fn record_started(&self, saga_type: hodei_server_domain::saga::SagaType) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_started
+            .with_label_values(&[&saga_type_str])
+            .inc();
+    }
+
+    async fn record_completed(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        duration_secs: f64,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_completed
+            .with_label_values(&[&saga_type_str])
+            .inc();
+        self.metrics
+            .saga_duration_seconds
+            .with_label_values(&[&saga_type_str])
+            .observe(duration_secs);
+    }
+
+    async fn record_compensated(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        compensation_step: &str,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_compensated
+            .with_label_values(&[&saga_type_str, compensation_step])
+            .inc();
+    }
+
+    async fn record_failed(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        error_type: &str,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_failed
+            .with_label_values(&[&saga_type_str, error_type])
+            .inc();
+    }
+
+    async fn record_compensation(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        step_name: &str,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_compensation_total
+            .with_label_values(&[&saga_type_str, step_name])
+            .inc();
+    }
+
+    async fn increment_active(&self, saga_type: hodei_server_domain::saga::SagaType) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_active
+            .with_label_values(&[&saga_type_str])
+            .inc();
+    }
+
+    async fn decrement_active(&self, saga_type: hodei_server_domain::saga::SagaType) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_active
+            .with_label_values(&[&saga_type_str])
+            .dec();
+    }
+
+    async fn record_step_duration(
+        &self,
+        saga_type: hodei_server_domain::saga::SagaType,
+        step_name: &str,
+        duration_secs: f64,
+    ) {
+        let saga_type_str = saga_type_str(&saga_type);
+        self.metrics
+            .saga_step_duration_seconds
+            .with_label_values(&[&saga_type_str, step_name])
+            .observe(duration_secs);
+    }
+}
+
 /// Helper macros for recording metrics
 
 /// Record a business metric
@@ -487,6 +945,18 @@ macro_rules! record_security_metric {
     };
     ($metric:ident, value: $val:expr, $($labels:expr),*) => {
         METRICS_REGISTRY.security().$metric.with_label_values(&[$($labels),*]).set($val);
+    };
+}
+
+/// Record a saga metric
+/// EPIC-45 Gap 3: Macro for saga observability metrics
+#[macro_export]
+macro_rules! record_saga_metric {
+    ($metric:ident, $($labels:expr),*) => {
+        METRICS_REGISTRY.saga().$metric.with_label_values(&[$($labels),*]).inc();
+    };
+    ($metric:ident, value: $val:expr, $($labels:expr),*) => {
+        METRICS_REGISTRY.saga().$metric.with_label_values(&[$($labels),*]).observe($val);
     };
 }
 
