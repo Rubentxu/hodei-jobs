@@ -10,13 +10,9 @@
 //!
 //! ## Usage
 //! ```rust
-//! use hodei_server_infrastructure::messaging::event_topics::*;
+//! use hodei_shared::event_topics::EVENT_PREFIX;
 //!
-//! // Publish an event
-//! event_bus.publish(&DomainEvent::JobQueued { ... });
-//!
-//! // Subscribe to events
-//! consumer.subscribe(JobTopics::JOB_QUEUED);
+//! assert_eq!(EVENT_PREFIX, "hodei.events");
 //! ```
 
 /// Subject prefix for all Hodei events
