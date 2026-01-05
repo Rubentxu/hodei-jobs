@@ -192,12 +192,12 @@ mod tests {
             .expect("Failed to connect to postgres");
 
         sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
-            .execute(&mut admin_conn)
+            .execute(&admin_conn)
             .await
             .expect("Failed to drop test database");
 
         sqlx::query(&format!("CREATE DATABASE {}", db_name))
-            .execute(&mut admin_conn)
+            .execute(&admin_conn)
             .await
             .expect("Failed to create test database");
 
@@ -257,7 +257,7 @@ mod tests {
         let repo = PostgresJobRepository::new(pool.clone());
 
         let job_id = JobId(Uuid::new_v4());
-        let spec = JobSpec::new(vec!["echo".to_string(), "test"]);
+        let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
         let job = Job::new(job_id.clone(), spec);
 
         // Begin transaction
@@ -303,7 +303,7 @@ mod tests {
         let repo = PostgresJobRepository::new(pool.clone());
 
         let job_id = JobId(Uuid::new_v4());
-        let spec = JobSpec::new(vec!["echo".to_string(), "test"]);
+        let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
         let job = Job::new(job_id.clone(), spec);
 
         // Begin transaction
@@ -338,7 +338,7 @@ mod tests {
         let repo = PostgresJobRepository::new(pool.clone());
 
         let job_id = JobId(Uuid::new_v4());
-        let spec = JobSpec::new(vec!["echo".to_string(), "test"]);
+        let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
         let job = Job::new(job_id.clone(), spec);
 
         // First save the job

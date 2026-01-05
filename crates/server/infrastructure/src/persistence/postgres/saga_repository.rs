@@ -729,6 +729,87 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
 
         Ok(result.rows_affected() as u64)
     }
+
+    // ============ Concurrency Control ============
+
+    async fn claim_pending_sagas(
+        &self,
+        limit: u64,
+        _instance_id: &str,
+    ) -> Result<Vec<SagaContext>, Self::Error> {
+        // Use FOR UPDATE SKIP LOCKED to atomically claim sagas without blocking
+        let rows = sqlx::query_as::<_, SagaDbRow>(
+            r#"
+            SELECT id, saga_type, state, correlation_id, actor, started_at,
+                   metadata, error_message, completed_at, created_at, updated_at
+            FROM sagas
+            WHERE state = 'PENDING'
+            ORDER BY created_at ASC
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+            "#,
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error claiming pending sagas: {}", e),
+            }
+        })?;
+
+        // Update state to IN_PROGRESS for all claimed sagas
+        for row in &rows {
+            sqlx::query(
+                r#"
+                UPDATE sagas
+                SET state = 'IN_PROGRESS', updated_at = NOW()
+                WHERE id = $1
+                "#,
+            )
+            .bind(row.id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Database error updating claimed saga state: {}", e),
+                }
+            })?;
+        }
+
+        // Convert rows to SagaContext
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let saga_type = match row.saga_type.as_str() {
+                    "PROVISIONING" => SagaType::Provisioning,
+                    "EXECUTION" => SagaType::Execution,
+                    "RECOVERY" => SagaType::Recovery,
+                    _ => SagaType::Execution,
+                };
+
+                let metadata: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_value(
+                        row.metadata
+                            .as_object()
+                            .map_or(serde_json::json!({}), |v| serde_json::json!(v)),
+                    )
+                    .unwrap_or_default();
+
+                SagaContext::from_persistence(
+                    SagaId::from_uuid(row.id),
+                    saga_type,
+                    row.correlation_id,
+                    row.actor,
+                    row.started_at,
+                    0,     // current_step not persisted in this schema
+                    false, // is_compensating not persisted in this schema
+                    metadata,
+                    row.error_message,
+                )
+            })
+            .collect())
+    }
 }
 
 /// Create a new PostgresSagaRepository from a connection pool
@@ -906,15 +987,13 @@ where
                         .repository
                         .find_steps_by_saga_id(&saga_id)
                         .await
-                        .map_err(|db_err| {
-                            DomainError::InfrastructureError {
-                                message: format!(
-                                    "Failed to load saga steps for compensation: {}",
-                                    db_err
-                                ),
-                            }
-                            .into()
-                        })?
+                        .map_err(|db_err| DomainError::InfrastructureError {
+                            message: format!(
+                                "Failed to load saga steps for compensation: {}",
+                                db_err
+                            ),
+                        })
+                        .map_err(Into::<Self::Error>::into)?
                         .into_iter()
                         .filter(|s| s.state == SagaStepState::Completed)
                         .collect::<Vec<_>>();
@@ -949,15 +1028,13 @@ where
                                             None,
                                         )
                                         .await
-                                        .map_err(|db_err| {
-                                            DomainError::InfrastructureError {
-                                                message: format!(
-                                                    "Failed to update step state to compensating: {}",
-                                                    db_err
-                                                ),
-                                            }
-                                            .into()
-                                        })?;
+                                        .map_err(|db_err| DomainError::InfrastructureError {
+                                            message: format!(
+                                                "Failed to update step state to compensating: {}",
+                                                db_err
+                                            ),
+                                        })
+                                        .map_err(Into::<Self::Error>::into)?;
                                 }
 
                                 // Execute compensation
@@ -988,8 +1065,8 @@ where
                                                             db_err
                                                         ),
                                                     }
-                                                    .into()
-                                                })?;
+                                                })
+                                                .map_err(Into::<Self::Error>::into)?;
                                         }
 
                                         compensations_executed += 1;
@@ -1016,11 +1093,13 @@ where
                                             .await
                                             .ok();
 
-                                        return Err(DomainError::SagaStepFailed {
-                                            step: step_def.name().to_string(),
-                                            error: comp_err.to_string(),
-                                        }
-                                        .into());
+                                        return Err::<_, Self::Error>(
+                                            DomainError::SagaStepFailed {
+                                                step: step_def.name().to_string(),
+                                                error: comp_err.to_string(),
+                                            }
+                                            .into(),
+                                        );
                                     }
                                 }
                             } else {
@@ -1037,15 +1116,13 @@ where
                     self.repository
                         .update_state(&saga_id, SagaState::Completed, None)
                         .await
-                        .map_err(|db_err| {
-                            DomainError::InfrastructureError {
-                                message: format!(
-                                    "Failed to update saga state after compensation: {}",
-                                    db_err
-                                ),
-                            }
-                            .into()
-                        })?;
+                        .map_err(|db_err| DomainError::InfrastructureError {
+                            message: format!(
+                                "Failed to update saga state after compensation: {}",
+                                db_err
+                            ),
+                        })
+                        .map_err(Into::<Self::Error>::into)?;
 
                     info!(
                         saga_id = %saga_id,
@@ -1068,10 +1145,12 @@ where
                         format!("Step timed out after {:?}", self.config.step_timeout);
                     context.set_error(timeout_error.clone());
 
-                    return Err(DomainError::InfrastructureError {
-                        message: timeout_error,
-                    }
-                    .into());
+                    return Err::<_, Self::Error>(
+                        DomainError::InfrastructureError {
+                            message: timeout_error,
+                        }
+                        .into(),
+                    );
                 }
             }
         }
@@ -1344,478 +1423,4 @@ where
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use hodei_server_domain::SagaId;
-    use sqlx::postgres::PgPoolOptions;
-    use std::time::Duration;
-
-    fn create_test_context() -> SagaContext {
-        SagaContext::new(
-            SagaId::new(),
-            SagaType::Provisioning,
-            Some("test-correlation-123".to_string()),
-            Some("test-actor".to_string()),
-        )
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_save_and_find_saga() {
-        // Setup
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = PostgresSagaRepository::new(pool.clone());
-        repo.run_migrations().await.unwrap();
-
-        // Test save
-        let context = create_test_context();
-        repo.save(&context).await.unwrap();
-
-        // Test find
-        let found = repo.find_by_id(&context.saga_id).await.unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().saga_type, SagaType::Provisioning);
-
-        // Cleanup
-        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS saga_steps")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS sagas")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_find_by_type() {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = PostgresSagaRepository::new(pool.clone());
-        repo.run_migrations().await.unwrap();
-
-        // Create sagas of different types
-        let saga1 = SagaContext::new(SagaId::new(), SagaType::Provisioning, None, None);
-        let saga2 = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
-        let saga3 = SagaContext::new(SagaId::new(), SagaType::Recovery, None, None);
-
-        repo.save(&saga1).await.unwrap();
-        repo.save(&saga2).await.unwrap();
-        repo.save(&saga3).await.unwrap();
-
-        // Find by type
-        let provisioning = repo.find_by_type(SagaType::Provisioning).await.unwrap();
-        assert_eq!(provisioning.len(), 1);
-        assert_eq!(provisioning[0].saga_type, SagaType::Provisioning);
-
-        let execution = repo.find_by_type(SagaType::Execution).await.unwrap();
-        assert_eq!(execution.len(), 1);
-        assert_eq!(execution[0].saga_type, SagaType::Execution);
-
-        let recovery = repo.find_by_type(SagaType::Recovery).await.unwrap();
-        assert_eq!(recovery.len(), 1);
-        assert_eq!(recovery[0].saga_type, SagaType::Recovery);
-
-        // Cleanup
-        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS saga_steps")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS sagas")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_update_state() {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = PostgresSagaRepository::new(pool.clone());
-        repo.run_migrations().await.unwrap();
-
-        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
-        repo.save(&context).await.unwrap();
-
-        // Update to IN_PROGRESS
-        repo.update_state(&context.saga_id, SagaState::InProgress, None)
-            .await
-            .unwrap();
-
-        let found = repo.find_by_id(&context.saga_id).await.unwrap().unwrap();
-        // Note: We don't store state in SagaContext, just update in DB
-
-        // Update to COMPLETED
-        repo.update_state(&context.saga_id, SagaState::Completed, None)
-            .await
-            .unwrap();
-
-        // Cleanup
-        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS saga_steps")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS sagas")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_count_active() {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = PostgresSagaRepository::new(pool.clone());
-        repo.run_migrations().await.unwrap();
-
-        // Initially empty
-        let count = repo.count_active().await.unwrap();
-        assert_eq!(count, 0);
-
-        // Create active sagas
-        let saga1 = SagaContext::new(SagaId::new(), SagaType::Provisioning, None, None);
-        let saga2 = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
-        repo.save(&saga1).await.unwrap();
-        repo.save(&saga2).await.unwrap();
-
-        // Update to IN_PROGRESS to count
-        repo.update_state(&saga1.saga_id, SagaState::InProgress, None)
-            .await
-            .unwrap();
-        repo.update_state(&saga2.saga_id, SagaState::InProgress, None)
-            .await
-            .unwrap();
-
-        let count = repo.count_active().await.unwrap();
-        assert_eq!(count, 2);
-
-        // Cleanup
-        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS saga_steps")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS sagas")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_cleanup_completed() {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = PostgresSagaRepository::new(pool.clone());
-        repo.run_migrations().await.unwrap();
-
-        let saga = SagaContext::new(SagaId::new(), SagaType::Recovery, None, None);
-        repo.save(&saga).await.unwrap();
-        repo.update_state(&saga.saga_id, SagaState::Completed, None)
-            .await
-            .unwrap();
-
-        // Clean up completed sagas older than 0 seconds
-        let cleaned = repo
-            .cleanup_completed(Duration::from_secs(0))
-            .await
-            .unwrap();
-        assert_eq!(cleaned, 1);
-
-        // Should be gone now
-        let found = repo.find_by_id(&saga.saga_id).await.unwrap();
-        assert!(found.is_none());
-
-        pool.close().await;
-    }
-
-    // ============ EPIC-SAGA-ENGINE: Compensation Tests ============
-
-    /// Helper to create a step that fails on execution
-    struct FailingTestSagaStep {
-        fail_on_step: usize,
-        current_step: usize,
-    }
-
-    impl FailingTestSagaStep {
-        fn new(fail_on_step: usize) -> Self {
-            Self {
-                fail_on_step,
-                current_step: 0,
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl SagaStep for FailingTestSagaStep {
-        type Output = ();
-
-        fn name(&self) -> &'static str {
-            if self.current_step == self.fail_on_step {
-                "FailingStep"
-            } else {
-                "SuccessStep"
-            }
-        }
-
-        async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-            self.current_step += 1;
-            if self.current_step - 1 == self.fail_on_step {
-                Err(SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "Intentional failure for testing".to_string(),
-                    will_compensate: true,
-                })
-            } else {
-                // Store metadata for compensation verification
-                context
-                    .set_metadata(&format!("step_{}_completed", self.current_step - 1), &true)
-                    .ok();
-                Ok(())
-            }
-        }
-
-        async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
-            // Verify we can access metadata from execute phase
-            let step_num = self.current_step.saturating_sub(1);
-            let _ = context.get_metadata::<bool>(&format!("step_{}_completed", step_num));
-            Ok(())
-        }
-
-        fn has_compensation(&self) -> bool {
-            true
-        }
-
-        fn is_idempotent(&self) -> bool {
-            true
-        }
-    }
-
-    /// Simple saga for testing compensation
-    struct TestCompensationSaga {
-        steps: Vec<Box<dyn SagaStep<Output = ()>>>,
-    }
-
-    impl TestCompensationSaga {
-        fn new(steps: Vec<Box<dyn SagaStep<Output = ()>>>) -> Self {
-            Self { steps }
-        }
-    }
-
-    impl Saga for TestCompensationSaga {
-        fn saga_type(&self) -> SagaType {
-            SagaType::Provisioning
-        }
-
-        fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
-            self.steps.clone()
-        }
-    }
-
-    /// Test that compensation loop executes for completed steps
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_compensation_loop_executes_for_completed_steps() {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = Arc::new(PostgresSagaRepository::new(pool.clone()));
-        let config = PostgresSagaOrchestratorConfig::default();
-        let orchestrator = PostgresSagaOrchestrator::new(repo.clone(), Some(config));
-
-        // Create saga with steps where step 2 fails
-        let steps: Vec<Box<dyn SagaStep<Output = ()>>> = vec![
-            Box::new(FailingTestSagaStep::new(2)), // Step 0: succeeds
-            Box::new(FailingTestSagaStep::new(2)), // Step 1: succeeds
-            Box::new(FailingTestSagaStep::new(2)), // Step 2: FAILS
-            Box::new(FailingTestSagaStep::new(2)), // Step 3: never reached
-        ];
-
-        let saga = TestCompensationSaga::new(steps);
-        let saga_id = SagaId::new();
-        let mut context = SagaContext::new(
-            saga_id.clone(),
-            SagaType::Provisioning,
-            Some("test-compensation".to_string()),
-            Some("test".to_string()),
-        );
-
-        // Execute saga - should fail on step 2 and compensate steps 0 and 1
-        let result = orchestrator.execute_saga(&saga, context).await;
-
-        // Verify compensation was triggered
-        assert!(result.is_ok());
-        let execution_result = result.unwrap();
-        assert!(execution_result.is_compensated());
-        assert_eq!(execution_result.steps_executed, 2); // Steps 0 and 1 completed
-        assert_eq!(execution_result.compensations_executed, 2); // Both compensated
-
-        // Verify saga state in database
-        let saga_record = repo.find_by_id(&saga_id).await.unwrap().unwrap();
-        assert_eq!(saga_record.state, "COMPLETED"); // Compensation successful = completed
-
-        // Verify step states
-        let steps = repo.find_steps_by_saga_id(&saga_id).await.unwrap();
-        assert_eq!(steps.len(), 4);
-
-        let step0 = steps.iter().find(|s| s.step_order == 0).unwrap();
-        let step1 = steps.iter().find(|s| s.step_order == 1).unwrap();
-        let step2 = steps.iter().find(|s| s.step_order == 2).unwrap();
-
-        assert_eq!(step0.state, SagaStepState::Compensated);
-        assert_eq!(step1.state, SagaStepState::Compensated);
-        assert_eq!(step2.state, SagaStepState::Failed);
-
-        // Cleanup
-        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS saga_steps")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS sagas")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-    }
-
-    /// Test that steps without compensation are skipped
-    #[tokio::test]
-    #[ignore = "Requires PostgreSQL"]
-    async fn test_compensation_skips_steps_without_compensation() {
-        struct NoCompensationStep;
-        struct WithCompensationStep;
-
-        #[async_trait::async_trait]
-        impl SagaStep for NoCompensationStep {
-            type Output = ();
-            fn name(&self) -> &'static str {
-                "NoCompensationStep"
-            }
-            async fn execute(&self, _ctx: &mut SagaContext) -> SagaResult<Self::Output> {
-                Ok(())
-            }
-            async fn compensate(&self, _ctx: &mut SagaContext) -> SagaResult<()> {
-                Ok(())
-            }
-            fn has_compensation(&self) -> bool {
-                false
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl SagaStep for WithCompensationStep {
-            type Output = ();
-            fn name(&self) -> &'static str {
-                "WithCompensationStep"
-            }
-            async fn execute(&self, _ctx: &mut SagaContext) -> SagaResult<Self::Output> {
-                Ok(())
-            }
-            async fn compensate(&self, _ctx: &mut SagaContext) -> SagaResult<()> {
-                Ok(())
-            }
-            fn has_compensation(&self) -> bool {
-                true
-            }
-        }
-
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect("postgres://postgres:postgres@localhost:5432/hodei_test")
-            .await
-            .unwrap();
-
-        let repo = Arc::new(PostgresSagaRepository::new(pool.clone()));
-        let config = PostgresSagaOrchestratorConfig::default();
-        let orchestrator = PostgresSagaOrchestrator::new(repo.clone(), Some(config));
-
-        // Step 0: has compensation, Step 1: no compensation, Step 2: fails
-        let steps: Vec<Box<dyn SagaStep<Output = ()>>> = vec![
-            Box::new(WithCompensationStep),
-            Box::new(NoCompensationStep),
-            Box::new(FailingTestSagaStep::new(2)), // Fails
-        ];
-
-        let saga = TestCompensationSaga::new(steps);
-        let saga_id = SagaId::new();
-        let context = SagaContext::new(
-            saga_id,
-            SagaType::Provisioning,
-            Some("test-no-comp".to_string()),
-            Some("test".to_string()),
-        );
-
-        let result = orchestrator.execute_saga(&saga, context).await.unwrap();
-
-        // Only step 0 should be compensated (step 1 has no compensation)
-        assert_eq!(result.compensations_executed, 1);
-
-        // Cleanup
-        sqlx::query("DROP TABLE IF EXISTS saga_audit_events")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS saga_steps")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS sagas")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-    }
 }

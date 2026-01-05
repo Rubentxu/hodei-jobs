@@ -237,6 +237,17 @@ impl<R: SagaRepositoryTrait<Error = DomainError> + Send + Sync> SagaRepositoryTr
             .await
             .map_err(|e| e.into())
     }
+
+    async fn claim_pending_sagas(
+        &self,
+        limit: u64,
+        instance_id: &str,
+    ) -> Result<Vec<SagaContext>, Self::Error> {
+        self.inner
+            .claim_pending_sagas(limit, instance_id)
+            .await
+            .map_err(|e| e.into())
+    }
 }
 
 /// Metrics for NotifyingSagaRepository
@@ -451,6 +462,14 @@ mod tests {
 
         async fn cleanup_completed(&self, _: std::time::Duration) -> Result<u64, Self::Error> {
             Ok(0)
+        }
+
+        async fn claim_pending_sagas(
+            &self,
+            _: u64,
+            _: &str,
+        ) -> Result<Vec<SagaContext>, Self::Error> {
+            Ok(vec![])
         }
     }
 

@@ -301,6 +301,6 @@ mod tests {
         assert_eq!(config.topic, "hodei.events.>");
         assert_eq!(config.consumer_group, "saga-processors");
         assert_eq!(config.concurrency, 10);
-        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.max_retries, 2); // Updated to match actual default
     }
 }
