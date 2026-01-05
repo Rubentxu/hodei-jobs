@@ -150,6 +150,17 @@ pub trait OutboxRepository {
         // Default: just cleanup published events
         self.cleanup_published_events(older_than).await
     }
+
+    /// Find an event by its ID
+    ///
+    /// Used for reactive processing when receiving NOTIFY events.
+    ///
+    /// # Arguments
+    /// * `id` - The event ID to find
+    ///
+    /// # Returns
+    /// * `Result<Option<OutboxEventView>, Self::Error>` - The event if found
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<OutboxEventView>, Self::Error>;
 }
 
 /// Outbox Repository with Transaction Support
@@ -380,6 +391,11 @@ mod tests {
             });
             let deleted = (before_count - vec.len()) as u64;
             Ok(deleted)
+        }
+
+        async fn find_by_id(&self, id: uuid::Uuid) -> Result<Option<OutboxEventView>, Self::Error> {
+            let vec = self.events.lock().unwrap();
+            Ok(vec.iter().find(|e| e.id == id).cloned())
         }
     }
 

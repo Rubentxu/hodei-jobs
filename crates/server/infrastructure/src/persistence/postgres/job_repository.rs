@@ -4,6 +4,7 @@
 
 use hodei_server_domain::jobs::Job;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_shared::states::JobState;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -356,6 +357,20 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
             .await
             .map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to delete job: {}", e),
+            })?;
+
+        Ok(())
+    }
+
+    async fn update_state(&self, job_id: &JobId, new_state: JobState) -> Result<()> {
+        let state_str = Self::state_to_string(&new_state);
+        sqlx::query("UPDATE jobs SET state = $1, updated_at = NOW() WHERE id = $2")
+            .bind(state_str)
+            .bind(job_id.0)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to update job state: {}", e),
             })?;
 
         Ok(())

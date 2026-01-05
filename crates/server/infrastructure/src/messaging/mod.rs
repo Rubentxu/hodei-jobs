@@ -1,9 +1,9 @@
 //! Messaging and Event Bus Infrastructure
 //!
 //! Provides infrastructure implementations for:
-//! - Event bus (NATS JetStream)
+//! - Event bus (NATS JetStream, PostgreSQL)
 //! - Outbox pattern for reliable event publishing
-//! - Outbox relay for NATS publishing
+//! - Reactive outbox relay using PostgreSQL LISTEN/NOTIFY
 //! - Saga consumers for event-driven saga execution
 
 pub mod cleanup_saga_consumer;
@@ -13,6 +13,7 @@ pub mod nats_outbox_relay;
 pub mod outbox_adapter;
 pub mod outbox_relay;
 pub mod postgres;
+pub mod reactive_outbox_relay;
 pub mod resilient_subscriber;
 pub mod saga_consumer;
 
@@ -30,5 +31,8 @@ pub use nats_outbox_relay::{
     NatsOutboxRelayMetrics, NatsOutboxRelayMetricsSnapshot,
 };
 pub use outbox_adapter::OutboxEventBus;
+pub use reactive_outbox_relay::{
+    OutboxRelayExt, ReactiveOutboxConfig, ReactiveOutboxError, ReactiveOutboxRelay,
+};
 pub use resilient_subscriber::{ResilientSubscriber, ResilientSubscriberConfig};
 pub use saga_consumer::{NatsSagaConsumer, NatsSagaConsumerBuilder, SagaConsumerConfig};

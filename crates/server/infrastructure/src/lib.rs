@@ -92,6 +92,14 @@ pub mod test_infrastructure {
             jobs.insert(job.id.clone(), job.clone());
             Ok(())
         }
+
+        async fn update_state(&self, job_id: &JobId, new_state: JobState) -> Result<()> {
+            let mut jobs = self.jobs.lock().unwrap();
+            if let Some(job) = jobs.get_mut(job_id) {
+                job.set_state(new_state)?;
+            }
+            Ok(())
+        }
     }
 
     pub struct InMemoryJobQueue {

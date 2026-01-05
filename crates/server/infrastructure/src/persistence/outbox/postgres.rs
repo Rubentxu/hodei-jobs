@@ -378,6 +378,58 @@ impl OutboxRepository for PostgresOutboxRepository {
 
         Ok(result.rows_affected() as u64)
     }
+
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<OutboxEventView>, Self::Error> {
+        let row: Option<OutboxEventRow> = sqlx::query_as::<_, OutboxEventRow>(
+            r#"
+            SELECT id, aggregate_id, aggregate_type, event_type, event_version,
+                   payload, metadata, idempotency_key, created_at, published_at,
+                   status, retry_count, last_error
+            FROM outbox_events
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let aggregate_type = Self::str_to_aggregate_type(&row.aggregate_type)?;
+                let payload: serde_json::Value = row.payload.0;
+                let metadata: Option<serde_json::Value> = row.metadata.map(|j| j.0);
+
+                let event = OutboxEventView {
+                    id: row.id,
+                    aggregate_id: row.aggregate_id,
+                    aggregate_type,
+                    event_type: row.event_type,
+                    event_version: row.event_version,
+                    payload,
+                    metadata,
+                    idempotency_key: row.idempotency_key,
+                    created_at: row.created_at,
+                    published_at: row.published_at,
+                    status: match row.status.as_str() {
+                        "PENDING" => OutboxStatus::Pending,
+                        "PUBLISHED" => OutboxStatus::Published,
+                        "FAILED" => OutboxStatus::Failed,
+                        _ => {
+                            return Err(OutboxError::InfrastructureError {
+                                message: format!("Invalid status: {}", row.status),
+                            }
+                            .into());
+                        }
+                    },
+                    retry_count: row.retry_count,
+                    last_error: row.last_error,
+                };
+
+                Ok(Some(event))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]

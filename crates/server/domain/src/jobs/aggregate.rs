@@ -1203,6 +1203,7 @@ pub trait JobRepository: Send + Sync {
     async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>>;
     async fn delete(&self, job_id: &JobId) -> Result<()>;
     async fn update(&self, job: &Job) -> Result<()>;
+    async fn update_state(&self, job_id: &JobId, new_state: JobState) -> Result<()>;
 }
 
 /// Transaction-aware Job Repository (EPIC-43 Sprint 1)

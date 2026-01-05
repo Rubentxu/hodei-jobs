@@ -105,6 +105,18 @@ pub mod test_in_memory {
             jobs.insert(job.id.clone(), job.clone());
             Ok(())
         }
+
+        async fn update_state(
+            &self,
+            job_id: &JobId,
+            new_state: hodei_shared::states::JobState,
+        ) -> Result<()> {
+            let mut jobs = self.jobs.write().await;
+            if let Some(job) = jobs.get_mut(job_id) {
+                job.set_state(new_state)?;
+            }
+            Ok(())
+        }
     }
 
     /// In-memory Job Queue for tests

@@ -1,21 +1,23 @@
 //! Job Completion Worker Cleanup Handler
 //!
-//! Reactively handles job completion events to trigger worker cleanup.
+//! Reactively handles job completion events (Succeeded or Cancelled) to trigger worker cleanup.
 //! This ensures workers are cleaned up reliably through the event-driven pattern
 //! instead of async spawning that can fail silently.
 //!
 //! Flow:
 //! 1. Worker calls complete_job → JobStatusChanged(Succeeded) event published
+//!    OR Job is cancelled by user → JobStatusChanged(Cancelled) event published
 //! 2. This handler receives the event
-//! 3. Finds the worker that executed the job
+//! 3. Finds the worker that executed/was assigned to the job
 //! 4. Emits WorkerEphemeralTerminating event for lifecycle manager to process
 
 use async_trait::async_trait;
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
-use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId};
+use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_server_domain::workers::{WorkerFilter, WorkerRegistry};
+use hodei_shared::states::JobState;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -65,19 +67,27 @@ impl EventHandler for JobCompletionWorkerCleanupHandler {
             _ => return Ok(()), // Not our event, skip
         };
 
-        // Only trigger cleanup when job reaches Succeeded state (terminal state)
-        if new_state != JobState::Succeeded {
+        // Only trigger cleanup when job reaches Succeeded or Cancelled state (terminal states)
+        if !matches!(new_state, JobState::Succeeded | JobState::Cancelled) {
             debug!(
-                "Job {} is now {:?}, skipping worker cleanup (only triggers on Succeeded)",
+                "Job {} is now {:?}, skipping worker cleanup (only triggers on Succeeded/Cancelled)",
                 job_id, new_state
             );
             return Ok(());
         }
 
+        let cleanup_reason = match new_state {
+            JobState::Succeeded => "JOB_SUCCEEDED",
+            JobState::Cancelled => "JOB_CANCELLED",
+            _ => unreachable!(),
+        };
+
         info!(
             job_id = %job_id,
+            new_state = ?new_state,
             correlation_id = ?correlation_id,
-            "🔔 JobCompletionHandler: Job succeeded, triggering worker cleanup"
+            "🔔 JobCompletionHandler: Job {:?}, triggering worker cleanup",
+            new_state
         );
 
         // Find the worker that executed this job
@@ -100,12 +110,13 @@ impl EventHandler for JobCompletionWorkerCleanupHandler {
                     job_id = %job_id,
                     worker_id = %worker_id,
                     provider_id = %provider_id,
-                    "🔔 Found worker {} for succeeded job {}, emitting cleanup event",
-                    worker_id, job_id
+                    new_state = ?new_state,
+                    "🔔 Found worker {} for {:?} job {}, emitting cleanup event",
+                    worker_id, new_state, job_id
                 );
 
                 // Emit WorkerEphemeralTerminating event to trigger cleanup reactively
-                self.emit_cleanup_event(&job_id, &worker_id, &provider_id)
+                self.emit_cleanup_event(&job_id, &worker_id, &provider_id, cleanup_reason)
                     .await?;
 
                 Ok(())
@@ -113,7 +124,9 @@ impl EventHandler for JobCompletionWorkerCleanupHandler {
             None => {
                 warn!(
                     job_id = %job_id,
-                    "No worker found for succeeded job - worker may have already been cleaned up or never assigned"
+                    new_state = ?new_state,
+                    "No worker found for {:?} job - worker may have already been cleaned up or never assigned",
+                    new_state
                 );
                 Ok(())
             }
@@ -128,6 +141,7 @@ impl JobCompletionWorkerCleanupHandler {
         job_id: &JobId,
         worker_id: &WorkerId,
         provider_id: &hodei_server_domain::shared_kernel::ProviderId,
+        cleanup_reason: &str,
     ) -> anyhow::Result<()> {
         if let Some(ref outbox_repo) = self.outbox_repository {
             let now = Utc::now();
@@ -137,13 +151,14 @@ impl JobCompletionWorkerCleanupHandler {
                 serde_json::json!({
                     "worker_id": worker_id.0.to_string(),
                     "provider_id": provider_id.0.to_string(),
-                    "reason": "JOB_SUCCEEDED",
+                    "reason": cleanup_reason,
                     "job_id": job_id.0.to_string()
                 }),
                 Some(serde_json::json!({
                     "source": "JobCompletionWorkerCleanupHandler",
                     "cleanup_type": "reactive",
-                    "event": "job_completion"
+                    "event": "job_completion",
+                    "job_state_reason": cleanup_reason
                 })),
                 Some(format!(
                     "ephemeral-terminating-{}-{}",
@@ -160,6 +175,7 @@ impl JobCompletionWorkerCleanupHandler {
             info!(
                 job_id = %job_id,
                 worker_id = %worker_id,
+                reason = cleanup_reason,
                 "📤 WorkerEphemeralTerminating event persisted for reactive cleanup"
             );
         } else {
