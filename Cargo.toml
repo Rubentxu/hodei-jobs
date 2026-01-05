@@ -59,10 +59,10 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = "0.24"
-opentelemetry = { version = "0.23", features = ["trace"] }
-opentelemetry-sdk = { version = "0.23", features = ["trace"] }
-opentelemetry-otlp = { version = "0.16", features = ["trace"] }
+tracing-opentelemetry = "0.27"
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["trace"] }
+opentelemetry-otlp = { version = "0.26", features = ["trace"] }
 thiserror = "2.0"
 anyhow = "1.0"
 async-trait = "0.1"
