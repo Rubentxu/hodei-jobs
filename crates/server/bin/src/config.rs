@@ -21,37 +21,30 @@ pub struct ServerConfig {
     pub log_ttl_hours: u64,
 }
 
-#[allow(dead_code)]
 fn default_server_port() -> u16 {
     50051
 }
 
-#[allow(dead_code)]
 fn default_database_url() -> Option<String> {
     None
 }
 
-#[allow(dead_code)]
 fn default_log_level() -> String {
     "info".to_string()
 }
 
-#[allow(dead_code)]
 fn default_log_persistence_enabled() -> bool {
     true
 }
 
-#[allow(dead_code)]
 fn default_log_storage_backend() -> String {
     "local".to_string()
 }
 
-#[allow(dead_code)]
 fn default_log_persistence_path() -> String {
     "/tmp/hodei-logs".to_string()
 }
 
-#[allow(dead_code)]
 fn default_log_ttl_hours() -> u64 {
     168 // 7 days
 }

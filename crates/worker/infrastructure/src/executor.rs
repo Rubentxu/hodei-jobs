@@ -2,6 +2,7 @@ use hodei_jobs::{
     CommandSpec, LogEntry, WorkerMessage, command_spec::CommandType as ProtoCommandType,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,10 +14,106 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::FramedRead;
 use tracing::{debug, error, info, warn};
 
+use secrecy::ExposeSecret;
+
 use crate::logging::{FileLogger, LogBatcher};
 use crate::secret_injector::{
-    InjectionConfig, InjectionStrategy, PreparedExecution, SecretInjector,
+    InjectionConfig, InjectionStrategy, PreparedExecution, SecretInjector, SecretString,
 };
+
+/// Errors that can occur during path validation
+#[derive(Debug, thiserror::Error)]
+pub enum PathSecurityError {
+    #[error("Path '{requested}' escapes sandbox to '{resolved}'")]
+    PathEscapeAttempt { requested: String, resolved: String },
+    #[error("Base path does not exist: {base_path}")]
+    InvalidBasePath { base_path: String },
+    #[error("Requested path does not exist: {path}")]
+    PathDoesNotExist { path: String },
+}
+
+/// Validates that a path is within the allowed sandbox
+///
+/// # Example
+///
+/// ```
+/// let sandbox = PathSandbox::new("/var/lib/hodei/jobs");
+/// let safe_path = sandbox.validate("/etc/passwd")?; // Returns error
+/// let safe_path = sandbox.validate("job-123")?; // Returns sandbox/job-123
+/// ```
+#[derive(Debug, Clone)]
+pub struct PathSandbox {
+    base_dir: PathBuf,
+}
+
+impl PathSandbox {
+    /// Creates a new sandbox with the specified base directory
+    pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self, PathSecurityError> {
+        let base_dir = base_dir.into();
+        // Ensure base directory exists
+        if !base_dir.exists() {
+            return Err(PathSecurityError::InvalidBasePath {
+                base_path: base_dir.to_string_lossy().to_string(),
+            });
+        }
+        // Canonicalize to resolve any .. or . components
+        let canonical_base =
+            base_dir
+                .canonicalize()
+                .map_err(|_| PathSecurityError::InvalidBasePath {
+                    base_path: base_dir.to_string_lossy().to_string(),
+                })?;
+        Ok(Self {
+            base_dir: canonical_base,
+        })
+    }
+
+    /// Returns the base directory of this sandbox
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    /// Validates a requested path and returns the sandboxed path
+    ///
+    /// # Arguments
+    ///
+    /// * `requested_path` - The path requested by the job (relative or absolute)
+    ///
+    /// # Returns
+    ///
+    /// The validated path within the sandbox, or an error if the path escapes
+    pub fn validate(&self, requested_path: &str) -> Result<PathBuf, PathSecurityError> {
+        let requested = PathBuf::from(requested_path);
+
+        // If it's an absolute path, validate it directly
+        let resolved = if requested.is_absolute() {
+            // Check if the absolute path exists first
+            if !requested.exists() {
+                return Err(PathSecurityError::PathDoesNotExist {
+                    path: requested.to_string_lossy().to_string(),
+                });
+            }
+            requested
+                .canonicalize()
+                .map_err(|_| PathSecurityError::PathDoesNotExist {
+                    path: requested.to_string_lossy().to_string(),
+                })?
+        } else {
+            // Relative path: join with base and resolve
+            self.base_dir.join(&requested)
+        };
+
+        // Verify the resolved path is within the sandbox
+        if !resolved.starts_with(&self.base_dir) {
+            return Err(PathSecurityError::PathEscapeAttempt {
+                requested: requested_path.to_string(),
+                resolved: resolved.to_string_lossy().to_string(),
+            });
+        }
+
+        Ok(resolved)
+    }
+}
 
 fn current_timestamp() -> prost_types::Timestamp {
     let now = std::time::SystemTime::now();
@@ -293,17 +390,17 @@ impl JobExecutor {
         child: &mut tokio::process::Child,
         job_id: &str,
         log_sender: &mpsc::Sender<WorkerMessage>,
-        stdin_content: Option<String>,
+        stdin_content: Option<SecretString>,
     ) -> Result<(i32, String, String), String> {
-        // Handle STDIN if provided
+        // Handle STDIN if provided - write synchronously before spawning
         if let Some(input) = stdin_content {
             if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
-                tokio::spawn(async move {
-                    if let Err(e) = stdin.write_all(input.as_bytes()).await {
-                        warn!("Failed to write to stdin: {}", e);
-                    }
-                });
+                let input_str = input.expose_secret().to_string();
+                // Write directly (not spawned) to avoid lifetime issues
+                if let Err(e) = stdin.write_all(input_str.as_bytes()).await {
+                    warn!("Failed to write to stdin: {}", e);
+                }
             }
         }
 

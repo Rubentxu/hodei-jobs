@@ -32,3 +32,5 @@ rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
 tempfile = { workspace = true }
 regex = "1.10"
+secrecy = { workspace = true, features = ["serde"] }
+zeroize = { workspace = true, features = ["derive"] }

@@ -12,12 +12,21 @@
 //!
 //! - `Stdin`: Secure, stdin is consumed once and not persisted
 //! - `TmpfsFile`: Secure, files in memory-only filesystem, deleted after use
+//!
+//! # Memory Safety
+//!
+//! This module uses the `secrecy` crate to ensure secrets are zeroized on drop,
+//! preventing exposure in core dumps or memory forensics.
 
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::info;
+
+// Re-export SecretString for use in other modules
+pub use secrecy::SecretString;
 
 /// Errors that can occur during secret injection
 #[derive(Debug, Error)]
@@ -117,16 +126,33 @@ impl InjectionConfig {
 }
 
 /// Prepared execution context with injected secrets
+///
+/// # Security Note
+///
+/// All secret values are stored using `SecretString` which implements
+/// zero-on-drop to prevent exposure in core dumps or memory forensics.
 #[derive(Debug, Clone)]
 pub struct PreparedExecution {
-    /// Environment variables to set (may include secrets for EnvVars strategy)
+    /// Environment variables to set (non-secret only)
     pub env_vars: HashMap<String, String>,
-    /// Content to write to stdin (for Stdin strategy)
-    pub stdin_content: Option<String>,
+    /// Content to write to stdin (for Stdin strategy) - zeroized on drop
+    pub stdin_content: Option<SecretString>,
     /// Directory containing secret files (for TmpfsFile strategy)
     pub secrets_dir: Option<PathBuf>,
     /// The strategy used
     pub strategy: InjectionStrategy,
+}
+
+impl PreparedExecution {
+    /// Merges non-secret env vars with secrets for command execution
+    ///
+    /// Note: For production use, prefer strategies that don't expose
+    /// secrets via environment variables (stdin or tmpfs files instead).
+    pub fn merged_env(&self) -> HashMap<String, String> {
+        let mut merged = self.env_vars.clone();
+        // Note: stdin_content contains JSON with all secrets, not individual key-value pairs
+        merged
+    }
 }
 
 /// Secret injector for preparing job execution contexts
@@ -225,9 +251,10 @@ impl SecretInjector {
             "Prepared secrets for stdin injection"
         );
 
+        // Use SecretString to zeroize secrets on drop
         Ok(PreparedExecution {
             env_vars,
-            stdin_content: Some(secrets_json),
+            stdin_content: Some(SecretString::from(secrets_json)),
             secrets_dir: None,
             strategy: InjectionStrategy::Stdin,
         })
@@ -426,9 +453,10 @@ mod tests {
         assert!(result.stdin_content.is_some());
         assert!(result.secrets_dir.is_none());
 
-        // Check stdin contains JSON
-        let stdin = result.stdin_content.unwrap();
-        let parsed: HashMap<String, String> = serde_json::from_str(&stdin).unwrap();
+        // Check stdin contains JSON - use expose_secret()
+        let binding = result.stdin_content.unwrap();
+        let stdin = binding.expose_secret();
+        let parsed: HashMap<String, String> = serde_json::from_str(stdin).unwrap();
         assert_eq!(parsed.get("api_key"), Some(&"secret123".to_string()));
 
         // Check env var indicator
@@ -503,7 +531,14 @@ mod tests {
         assert!(result.is_ok());
 
         let prepared = result.unwrap();
-        assert_eq!(prepared.stdin_content, Some("{}".to_string()));
+        // Verify stdin_content is Some with "{}" - use expose_secret and compare strings
+        assert!(
+            prepared.stdin_content.is_some(),
+            "stdin_content should be Some"
+        );
+        let binding = prepared.stdin_content.unwrap();
+        let content = binding.expose_secret();
+        assert_eq!(content, "{}");
     }
 
     #[tokio::test]

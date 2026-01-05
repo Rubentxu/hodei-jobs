@@ -5,7 +5,7 @@
 //! - LogStreamService: Subscribe to logs, get historical logs
 //! - SchedulerService: Schedule jobs, get queue status
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::io::Write;
 use tonic::transport::Channel;
@@ -625,26 +625,6 @@ async fn handle_logs(
         }
     }
     Ok(())
-}
-
-/// Resolve command from either --command or --script option
-#[allow(dead_code)]
-fn resolve_command(
-    command: Option<String>,
-    script: Option<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    match (command, script) {
-        (Some(cmd), None) => Ok(cmd),
-        (None, Some(script_path)) => {
-            // Read script file and wrap it for execution
-            let script_content = std::fs::read_to_string(&script_path)
-                .map_err(|e| format!("Failed to read script '{}': {}", script_path, e))?;
-            // Execute script content via bash
-            Ok(script_content)
-        }
-        (None, None) => Err("Either --command or --script must be provided".into()),
-        (Some(_), Some(_)) => Err("Cannot specify both --command and --script".into()),
-    }
 }
 
 /// Create a JobDefinition with scheduling preferences

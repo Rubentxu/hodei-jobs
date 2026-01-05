@@ -19,11 +19,8 @@ pub mod provisioning;
 #[cfg(test)]
 mod tests;
 
-// Re-exports
-// pub use messaging::*;
-// pub use persistence::*;
-// pub use providers::*;
-
+// Re-exports - Only available with test-utils feature
+#[cfg(feature = "test-utils")]
 pub mod repositories {
     pub use crate::persistence::postgres::in_memory::test_in_memory as in_memory;
     pub use crate::persistence::postgres::in_memory::test_in_memory::*;

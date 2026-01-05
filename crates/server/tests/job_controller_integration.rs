@@ -20,6 +20,7 @@ use hodei_jobs_application::{jobs::controller::JobController, providers::Provide
 use hodei_jobs_domain::jobs::{Job, JobSpec};
 use hodei_jobs_domain::shared_kernel::ProviderId;
 use hodei_jobs_domain::workers::{ProviderType, WorkerHandle, WorkerSpec as DomainWorkerSpec};
+#[cfg(feature = "test-utils")]
 use hodei_jobs_infrastructure::repositories::{
     InMemoryJobQueue, InMemoryJobRepository, InMemoryWorkerRegistry,
 };
