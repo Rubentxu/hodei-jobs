@@ -262,60 +262,71 @@ pub fn error_to_status(err: impl std::fmt::Display) -> tonic::Status {
 /// Standardized conversion from DomainError to tonic::Status
 ///
 /// This implementation provides type-safe error mapping instead of string-based detection.
-impl From<hodei_server_domain::shared_kernel::DomainError> for tonic::Status {
-    fn from(err: hodei_server_domain::shared_kernel::DomainError) -> Self {
-        use hodei_server_domain::shared_kernel::DomainError;
+/// Note: Uses a function instead of From trait due to Rust orphan rules.
+pub fn map_domain_error_to_status(
+    err: hodei_server_domain::shared_kernel::DomainError,
+) -> tonic::Status {
+    use hodei_server_domain::shared_kernel::DomainError;
 
-        match err {
-            // Not Found errors
-            DomainError::JobNotFound { job_id } => {
-                tonic::Status::not_found(format!("Job '{}' not found", job_id))
-            }
-            DomainError::WorkerNotFound { worker_id } => {
-                tonic::Status::not_found(format!("Worker '{}' not found", worker_id))
-            }
-            DomainError::ProviderNotFound { provider_id } => {
-                tonic::Status::not_found(format!("Provider '{}' not found", provider_id))
-            }
-
-            // Resource exhausted
-            DomainError::ProviderOverloaded { provider_id, .. } => {
-                tonic::Status::resource_exhausted(format!(
-                    "Provider '{}' is overloaded, retry later",
-                    provider_id
-                ))
-            }
-
-            // Invalid argument
-            DomainError::InvalidJobState {
-                current,
-                expected,
-                job_id,
-            } => tonic::Status::failed_precondition(format!(
-                "Invalid job state for '{}': expected {:?}, got {:?}",
-                job_id, expected, current
-            )),
-            DomainError::ValidationError { message } => tonic::Status::invalid_argument(message),
-
-            // Already exists
-            DomainError::JobAlreadyExists { job_id } => {
-                tonic::Status::already_exists(format!("Job '{}' already exists", job_id))
-            }
-
-            // Permission denied
-            DomainError::Unauthorized { reason } => tonic::Status::permission_denied(reason),
-
-            // Timeout
-            DomainError::Timeout { operation, .. } => {
-                tonic::Status::deadline_exceeded(format!("Operation '{}' timed out", operation))
-            }
-
-            // Conflict
-            DomainError::Conflict { message } => tonic::Status::conflict(message),
-
-            // Catch-all for internal errors
-            _ => tonic::Status::internal(err.to_string()),
+    match err {
+        // Not Found errors
+        DomainError::JobNotFound { job_id } => {
+            tonic::Status::not_found(format!("Job '{}' not found", job_id))
         }
+        DomainError::WorkerNotFound { worker_id } => {
+            tonic::Status::not_found(format!("Worker '{}' not found", worker_id))
+        }
+        DomainError::ProviderNotFound { provider_id } => {
+            tonic::Status::not_found(format!("Provider '{}' not found", provider_id))
+        }
+
+        // Resource exhausted
+        DomainError::ProviderOverloaded { provider_id, .. } => tonic::Status::resource_exhausted(
+            format!("Provider '{}' is overloaded, retry later", provider_id),
+        ),
+
+        // Invalid argument - InvalidStateTransition maps to failed_precondition
+        DomainError::InvalidStateTransition {
+            job_id,
+            from_state,
+            to_state,
+        } => tonic::Status::failed_precondition(format!(
+            "Invalid job state transition for '{}': from {:?} to {:?}",
+            job_id, from_state, to_state
+        )),
+        DomainError::InvalidJobSpec { field, reason } => {
+            tonic::Status::invalid_argument(format!("Invalid job spec field {}: {}", field, reason))
+        }
+        DomainError::InvalidWorkerSpec { field, reason } => tonic::Status::invalid_argument(
+            format!("Invalid worker spec field {}: {}", field, reason),
+        ),
+
+        // Already exists
+        DomainError::WorkerAlreadyExists { worker_id } => {
+            tonic::Status::already_exists(format!("Worker '{}' already exists", worker_id))
+        }
+
+        // Permission denied - InvalidOtpToken maps to permission_denied
+        DomainError::InvalidOtpToken { message } => tonic::Status::permission_denied(message),
+
+        // Timeout - JobExecutionTimeout maps to deadline_exceeded
+        DomainError::JobExecutionTimeout { job_id } => {
+            tonic::Status::deadline_exceeded(format!("Job '{}' execution timed out", job_id))
+        }
+        DomainError::WorkerProvisioningTimeout => {
+            tonic::Status::deadline_exceeded("Worker provisioning timed out".to_string())
+        }
+
+        // Conflict - use for state conflicts (aborted is the closest to conflict)
+        DomainError::WorkerNotAvailable { worker_id } => {
+            tonic::Status::aborted(format!("Worker '{}' is not available", worker_id))
+        }
+        DomainError::JobAlreadyExecuted { job_id } => {
+            tonic::Status::aborted(format!("Job '{}' has already been executed", job_id))
+        }
+
+        // Catch-all for internal errors
+        _ => tonic::Status::internal(err.to_string()),
     }
 }
 

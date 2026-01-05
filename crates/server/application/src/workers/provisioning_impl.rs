@@ -11,8 +11,10 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use hodei_server_domain::iam::WorkerBootstrapTokenStore;
-use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, Result};
-use hodei_server_domain::workers::{WorkerProvider, WorkerRegistry, WorkerSpec};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId};
+use hodei_server_domain::workers::{
+    WorkerProvider, WorkerProvisioning, WorkerProvisioningResult, WorkerRegistry, WorkerSpec,
+};
 
 use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
 
@@ -230,6 +232,72 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             });
         }
         Ok(())
+    }
+}
+
+/// Implementation of domain trait WorkerProvisioning for saga steps.
+///
+/// This allows the DefaultWorkerProvisioningService to be used directly
+/// in saga steps like CreateInfrastructureStep.
+#[async_trait]
+impl WorkerProvisioning for DefaultWorkerProvisioningService {
+    async fn provision_worker(
+        &self,
+        provider_id: &ProviderId,
+        spec: WorkerSpec,
+        job_id: JobId,
+    ) -> Result<WorkerProvisioningResult> {
+        // Delegate to WorkerProvisioningService implementation
+        let result =
+            WorkerProvisioningService::provision_worker(self, provider_id, spec, job_id.clone())
+                .await?;
+        Ok(WorkerProvisioningResult {
+            worker_id: result.worker_id,
+            provider_id: result.provider_id,
+            job_id,
+        })
+    }
+
+    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+        info!("Destroying worker {} (saga compensation)", worker_id);
+
+        // Get worker info to find the provider and handle
+        let worker = self.registry.find_by_id(worker_id).await?.ok_or_else(|| {
+            DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            }
+        })?;
+
+        let handle = worker.handle().clone();
+        let provider_id = worker.provider_id().clone();
+
+        // Get the provider
+        let provider = self.get_provider(&provider_id).await?;
+
+        // Try to destroy the worker on the provider
+        match provider.destroy_worker(&handle).await {
+            Ok(_) => {
+                info!(
+                    "Worker {} destroyed via provider {}",
+                    worker_id, provider_id
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Provider {} failed to destroy worker {}: {}",
+                    provider_id, worker_id, e
+                );
+            }
+        }
+
+        // Unregister from registry
+        self.registry.unregister(worker_id).await?;
+        Ok(())
+    }
+
+    async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
+        // Delegate to WorkerProvisioningService implementation
+        WorkerProvisioningService::is_provider_available(self, provider_id).await
     }
 }
 

@@ -3,11 +3,14 @@
 //! Coordinates worker provisioning using the saga pattern with automatic compensation.
 
 use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
+use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{
     ProvisioningSaga, Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    SagaServices,
 };
 use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
-use hodei_server_domain::workers::WorkerSpec;
+use hodei_server_domain::workers::{WorkerProvisioning, WorkerRegistry, WorkerSpec};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,25 +53,46 @@ pub struct DynProvisioningSagaCoordinator {
     orchestrator: Arc<
         dyn SagaOrchestrator<Error = hodei_server_domain::shared_kernel::DomainError> + Send + Sync,
     >,
-    provisioning_service: Arc<dyn WorkerProvisioningService + Send + Sync>,
+    /// Worker provisioning for saga steps
+    provisioning_service: Arc<dyn WorkerProvisioning + Send + Sync>,
     config: ProvisioningSagaCoordinatorConfig,
+    /// Worker registry for SagaServices injection
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    /// Event bus for SagaServices injection
+    event_bus: Arc<dyn EventBus + Send + Sync>,
+    /// Optional job repository for SagaServices injection
+    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
 }
 
 impl DynProvisioningSagaCoordinator {
     /// Create a new DynProvisioningSagaCoordinator
+    ///
+    /// # Arguments
+    /// * `orchestrator` - The saga orchestrator to use
+    /// * `provisioning_service` - The worker provisioning service
+    /// * `worker_registry` - Worker registry for saga services
+    /// * `event_bus` - Event bus for saga services
+    /// * `job_repository` - Optional job repository for saga services
+    /// * `config` - Optional configuration
     pub fn new(
         orchestrator: Arc<
             dyn SagaOrchestrator<Error = hodei_server_domain::shared_kernel::DomainError>
                 + Send
                 + Sync,
         >,
-        provisioning_service: Arc<dyn WorkerProvisioningService + Send + Sync>,
+        provisioning_service: Arc<dyn WorkerProvisioning + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn EventBus + Send + Sync>,
+        job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
         config: Option<ProvisioningSagaCoordinatorConfig>,
     ) -> Self {
         Self {
             orchestrator,
             provisioning_service,
             config: config.unwrap_or_default(),
+            worker_registry,
+            event_bus,
+            job_repository,
         }
     }
 
@@ -89,6 +113,20 @@ impl DynProvisioningSagaCoordinator {
             Some(format!("provisioning-{}", saga_id_clone.0)),
             Some("job_dispatcher".to_string()),
         );
+
+        // EPIC-45 FIX: Inject SagaServices into context for CreateInfrastructureStep
+        // The provisioning_service needs to be converted to WorkerProvisioning trait
+        let provisioning_as_worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+            self.provisioning_service.clone();
+
+        let services = SagaServices::new(
+            self.worker_registry.clone(),
+            self.event_bus.clone(),
+            self.job_repository.clone(),
+            Some(provisioning_as_worker_provisioning),
+        );
+        context = context.with_services(Arc::new(services));
+        info!(provider_id = %provider_id, "✅ SagaServices injected into context");
 
         context
             .set_metadata("provider_id", &provider_id.to_string())
@@ -183,7 +221,10 @@ pub struct DynProvisioningSagaCoordinatorBuilder {
                 + Sync,
         >,
     >,
-    provisioning_service: Option<Arc<dyn WorkerProvisioningService + Send + Sync>>,
+    provisioning_service: Option<Arc<dyn WorkerProvisioning + Send + Sync>>,
+    worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
     config: Option<ProvisioningSagaCoordinatorConfig>,
 }
 
@@ -192,6 +233,9 @@ impl DynProvisioningSagaCoordinatorBuilder {
         Self {
             orchestrator: None,
             provisioning_service: None,
+            worker_registry: None,
+            event_bus: None,
+            job_repository: None,
             config: None,
         }
     }
@@ -210,9 +254,30 @@ impl DynProvisioningSagaCoordinatorBuilder {
 
     pub fn with_provisioning_service(
         mut self,
-        provisioning_service: Arc<dyn WorkerProvisioningService + Send + Sync>,
+        provisioning_service: Arc<dyn WorkerProvisioning + Send + Sync>,
     ) -> Self {
         self.provisioning_service = Some(provisioning_service);
+        self
+    }
+
+    pub fn with_worker_registry(
+        mut self,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    ) -> Self {
+        self.worker_registry = Some(worker_registry);
+        self
+    }
+
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus + Send + Sync>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    pub fn with_job_repository(
+        mut self,
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+    ) -> Self {
+        self.job_repository = Some(job_repository);
         self
     }
 
@@ -230,10 +295,19 @@ impl DynProvisioningSagaCoordinatorBuilder {
         let provisioning_service = self.provisioning_service.ok_or_else(|| {
             DynProvisioningSagaCoordinatorBuilderError::MissingField("provisioning_service")
         })?;
+        let worker_registry = self.worker_registry.ok_or_else(|| {
+            DynProvisioningSagaCoordinatorBuilderError::MissingField("worker_registry")
+        })?;
+        let event_bus = self
+            .event_bus
+            .ok_or_else(|| DynProvisioningSagaCoordinatorBuilderError::MissingField("event_bus"))?;
 
         Ok(DynProvisioningSagaCoordinator::new(
             orchestrator,
             provisioning_service,
+            worker_registry,
+            event_bus,
+            self.job_repository,
             self.config,
         ))
     }
