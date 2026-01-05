@@ -375,6 +375,7 @@ pub trait SagaStep: Send + Sync {
 ///
 /// Carries metadata and state through the saga's execution,
 /// including correlation IDs, actor information, and step outputs.
+/// EPIC-45 Gap 6: Added state field for reactive processor
 #[derive(Clone)]
 pub struct SagaContext {
     /// Unique identifier for this saga instance
@@ -400,6 +401,8 @@ pub struct SagaContext {
     /// Runtime services injected for step execution (not persisted)
     #[doc(hidden)]
     pub services: Option<Arc<SagaServices>>,
+    /// EPIC-45 Gap 6: Current saga state
+    pub state: SagaState,
 }
 
 impl SagaContext {
@@ -423,10 +426,12 @@ impl SagaContext {
             step_outputs: std::collections::HashMap::new(),
             error_message: None,
             services: None,
+            state: SagaState::Pending,
         }
     }
 
     /// Creates a fully initialized SagaContext from persisted data.
+    /// EPIC-45 Gap 6: Added state parameter
     #[inline]
     pub fn from_persistence(
         saga_id: SagaId,
@@ -438,6 +443,7 @@ impl SagaContext {
         is_compensating: bool,
         metadata: std::collections::HashMap<String, serde_json::Value>,
         error_message: Option<String>,
+        state: SagaState,
     ) -> Self {
         Self {
             saga_id,
@@ -451,6 +457,7 @@ impl SagaContext {
             step_outputs: std::collections::HashMap::new(),
             error_message,
             services: None,
+            state,
         }
     }
 
