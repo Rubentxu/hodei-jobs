@@ -28,6 +28,7 @@ use crate::persistence::outbox::PostgresOutboxRepository;
 use crate::providers::{DockerProvider, KubernetesProvider};
 use chrono::{DateTime, Utc};
 use hodei_server_domain::events::{DomainEvent, TerminationReason};
+use hodei_server_domain::jobs::JobsFilter;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepositoryTx};
 use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId, WorkerState};
 use hodei_server_domain::workers::provider_api::{ProviderError, WorkerProvider};
@@ -498,6 +499,7 @@ impl InfrastructureReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hodei_server_domain::jobs::JobsFilter;
 
     #[tokio::test]
     async fn test_config_defaults() {

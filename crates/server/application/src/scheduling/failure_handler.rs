@@ -365,8 +365,9 @@ use crate::jobs::event_subscriber::EventHandler;
 mod tests {
     use super::*;
     use hodei_server_domain::jobs::{Job, JobsFilter};
-    use hodei_server_domain::shared_kernel::{JobId, ProviderId};
+    use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId};
     use hodei_shared::states::JobState;
+    use std::result::Result;
     use uuid::Uuid;
 
     // Mock implementations for testing
@@ -374,10 +375,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl hodei_server_domain::jobs::JobRepository for MockJobRepository {
-        async fn find_by_id(
-            &self,
-            _id: &JobId,
-        ) -> Result<Option<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find_by_id(&self, _id: &JobId) -> std::result::Result<Option<Job>, DomainError> {
             Ok(None)
         }
 
@@ -385,61 +383,44 @@ mod tests {
             &self,
             _job_id: &JobId,
             _state: JobState,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
+        ) -> std::result::Result<(), DomainError> {
             Ok(())
         }
-        async fn save(
-            &self,
-            _job: &Job,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
+        async fn save(&self, _job: &Job) -> std::result::Result<(), DomainError> {
             Ok(())
         }
-        async fn find(
-            &self,
-            _filter: JobsFilter,
-        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find(&self, _filter: JobsFilter) -> std::result::Result<Vec<Job>, DomainError> {
             Ok(vec![])
         }
-        async fn count_by_state(
-            &self,
-            _state: JobState,
-        ) -> Result<u64, hodei_server_domain::shared_kernel::DomainError> {
+        async fn count_by_state(&self, _state: &JobState) -> std::result::Result<u64, DomainError> {
             Ok(0)
         }
-        async fn delete(
-            &self,
-            _id: &JobId,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
+        async fn delete(&self, _id: &JobId) -> std::result::Result<(), DomainError> {
             Ok(())
         }
         async fn find_by_state(
             &self,
             _state: &JobState,
-        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        ) -> std::result::Result<Vec<Job>, DomainError> {
             Ok(vec![])
         }
-        async fn find_pending(
-            &self,
-        ) -> Result<Vec<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        async fn find_pending(&self) -> std::result::Result<Vec<Job>, DomainError> {
             Ok(vec![])
         }
         async fn find_all(
             &self,
             _limit: usize,
             _offset: usize,
-        ) -> Result<(Vec<Job>, usize), hodei_server_domain::shared_kernel::DomainError> {
+        ) -> std::result::Result<(Vec<Job>, usize), DomainError> {
             Ok((vec![], 0))
         }
         async fn find_by_execution_id(
             &self,
             _execution_id: &str,
-        ) -> Result<Option<Job>, hodei_server_domain::shared_kernel::DomainError> {
+        ) -> std::result::Result<Option<Job>, DomainError> {
             Ok(None)
         }
-        async fn update(
-            &self,
-            _job: &Job,
-        ) -> Result<(), hodei_server_domain::shared_kernel::DomainError> {
+        async fn update(&self, _job: &Job) -> std::result::Result<(), DomainError> {
             Ok(())
         }
     }
@@ -450,29 +431,45 @@ mod tests {
     impl OutboxRepository for MockOutboxRepository {
         type Error = OutboxError;
 
-        async fn insert_events(&self, _events: &[OutboxEventInsert]) -> Result<(), Self::Error> {
+        async fn insert_events(
+            &self,
+            _events: &[OutboxEventInsert],
+        ) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
         async fn get_pending_events(
             &self,
             _limit: usize,
             _max_retries: i32,
-        ) -> Result<Vec<hodei_server_domain::outbox::OutboxEventView>, Self::Error> {
+        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, Self::Error>
+        {
             Ok(vec![])
         }
-        async fn mark_published(&self, _event_ids: &[Uuid]) -> Result<(), Self::Error> {
+        async fn mark_published(
+            &self,
+            _event_ids: &[Uuid],
+        ) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
-        async fn mark_failed(&self, _event_id: &Uuid, _error: &str) -> Result<(), Self::Error> {
+        async fn mark_failed(
+            &self,
+            _event_id: &Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
-        async fn exists_by_idempotency_key(&self, _key: &str) -> Result<bool, Self::Error> {
+        async fn exists_by_idempotency_key(
+            &self,
+            _key: &str,
+        ) -> std::result::Result<bool, Self::Error> {
             Ok(false)
         }
-        async fn count_pending(&self) -> Result<u64, Self::Error> {
+        async fn count_pending(&self) -> std::result::Result<u64, Self::Error> {
             Ok(0)
         }
-        async fn get_stats(&self) -> Result<hodei_server_domain::outbox::OutboxStats, Self::Error> {
+        async fn get_stats(
+            &self,
+        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, Self::Error> {
             Ok(hodei_server_domain::outbox::OutboxStats {
                 pending_count: 0,
                 published_count: 0,
@@ -483,20 +480,21 @@ mod tests {
         async fn cleanup_published_events(
             &self,
             _older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> std::result::Result<u64, Self::Error> {
             Ok(0)
         }
         async fn cleanup_failed_events(
             &self,
             _max_retries: i32,
             _older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> std::result::Result<u64, Self::Error> {
             Ok(0)
         }
         async fn find_by_id(
             &self,
             _id: Uuid,
-        ) -> Result<Option<hodei_server_domain::outbox::OutboxEventView>, Self::Error> {
+        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, Self::Error>
+        {
             Ok(None)
         }
     }
@@ -584,8 +582,8 @@ mod tests {
 
         let event = DomainEvent::SchedulingDecisionFailed {
             job_id,
-            failure_reason: SchedulingFailureReason::ConstraintsUnsatisfiable {
-                constraints: "anti-affinity with self".to_string(),
+            failure_reason: SchedulingFailureReason::NoMatchingProviders {
+                requirement: "anti-affinity with self".to_string(),
             },
             attempted_providers: providers,
             occurred_at: Utc::now(),

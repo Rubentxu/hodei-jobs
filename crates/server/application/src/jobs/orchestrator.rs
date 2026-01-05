@@ -9,7 +9,7 @@ use crate::{
 };
 use hodei_server_domain::{
     event_bus::EventBus,
-    jobs::{Job, JobQueue, JobRepository},
+    jobs::{Job, JobQueue, JobRepository, JobsFilter},
     scheduling::{ProviderInfo, SchedulingContext, SchedulingDecision},
     shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId},
     workers::WorkerProvider,
@@ -382,6 +382,14 @@ mod tests {
             Ok(self.jobs.read().await.get(job_id).cloned())
         }
 
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            Ok(0)
+        }
+
         async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
             Ok(vec![])
         }
@@ -404,6 +412,10 @@ mod tests {
 
         async fn update(&self, job: &Job) -> Result<()> {
             self.jobs.write().await.insert(job.id.clone(), job.clone());
+            Ok(())
+        }
+
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
     }
@@ -461,36 +473,61 @@ mod tests {
         ) -> Result<hodei_server_domain::workers::Worker> {
             unimplemented!()
         }
+
+        async fn save(&self, _worker: &hodei_server_domain::workers::Worker) -> Result<()> {
+            Ok(())
+        }
+
         async fn unregister(&self, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }
+
+        async fn find_by_id(
+            &self,
+            _worker_id: &WorkerId,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            Ok(None)
+        }
+
         async fn get(
             &self,
             _worker_id: &WorkerId,
         ) -> Result<Option<hodei_server_domain::workers::Worker>> {
             Ok(None)
         }
-        async fn find(
-            &self,
-            _filter: &hodei_server_domain::workers::WorkerFilter,
-        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
-            Ok(vec![])
-        }
-        async fn find_available(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
-            Ok(vec![])
-        }
-        async fn find_by_provider(
-            &self,
-            _provider_id: &ProviderId,
-        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
-            Ok(vec![])
-        }
+
         async fn get_by_job_id(
             &self,
             _job_id: &JobId,
         ) -> Result<Option<hodei_server_domain::workers::Worker>> {
             Ok(None)
         }
+
+        async fn find(
+            &self,
+            _filter: &hodei_server_domain::workers::WorkerFilter,
+        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
+
+        async fn find_ready_worker(
+            &self,
+            _filter: Option<&hodei_server_domain::workers::WorkerFilter>,
+        ) -> Result<Option<hodei_server_domain::workers::Worker>> {
+            Ok(None)
+        }
+
+        async fn find_available(&self) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
+
+        async fn find_by_provider(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
+
         async fn update_state(
             &self,
             _worker_id: &WorkerId,
@@ -498,12 +535,23 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        async fn update_heartbeat(&self, _worker_id: &WorkerId) -> Result<()> {
+            Ok(())
+        }
+
         async fn heartbeat(&self, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }
+
+        async fn mark_busy(&self, _worker_id: &WorkerId, _job_id: Option<JobId>) -> Result<()> {
+            Ok(())
+        }
+
         async fn assign_to_job(&self, _worker_id: &WorkerId, _job_id: JobId) -> Result<()> {
             Ok(())
         }
+
         async fn release_from_job(&self, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }

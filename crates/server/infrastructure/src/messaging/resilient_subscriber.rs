@@ -216,6 +216,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hodei_server_domain::jobs::JobsFilter;
     use std::time::Duration;
     use tokio::sync::watch;
 

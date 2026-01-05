@@ -2,7 +2,7 @@
 //!
 //! Persistent repository implementation for Jobs based on PostgreSQL
 
-use hodei_server_domain::jobs::Job;
+use hodei_server_domain::jobs::{Job, JobsFilter};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use hodei_shared::states::JobState;
 use sqlx::Row;

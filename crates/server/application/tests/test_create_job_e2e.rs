@@ -136,6 +136,21 @@ impl JobRepository for MockJobRepository {
     async fn update(&self, _job: &Job) -> Result<(), DomainError> {
         Ok(())
     }
+
+    async fn find(
+        &self,
+        _filter: hodei_server_domain::jobs::JobsFilter,
+    ) -> Result<Vec<Job>, DomainError> {
+        Ok(vec![])
+    }
+
+    async fn count_by_state(&self, _state: &JobState) -> Result<u64, DomainError> {
+        Ok(0)
+    }
+
+    async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 #[tokio::test]

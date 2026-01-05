@@ -319,6 +319,18 @@ mod tests {
             self.jobs.write().await.insert(job.id.clone(), job.clone());
             Ok(())
         }
+
+        async fn find(&self, _filter: JobsFilter) -> TestResult<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn count_by_state(&self, _state: &JobState) -> TestResult<u64> {
+            Ok(0)
+        }
+
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> TestResult {
+            Ok(())
+        }
     }
 
     struct MockWorkerRegistry;
@@ -339,33 +351,66 @@ mod tests {
         ) -> TestResult<Worker> {
             unimplemented!()
         }
+
+        async fn save(&self, _worker: &Worker) -> TestResult {
+            Ok(())
+        }
+
         async fn unregister(&self, _worker_id: &WorkerId) -> TestResult {
             Ok(())
         }
+
+        async fn find_by_id(&self, _worker_id: &WorkerId) -> TestResult<Option<Worker>> {
+            Ok(None)
+        }
+
         async fn get(&self, _worker_id: &WorkerId) -> TestResult<Option<Worker>> {
             Ok(None)
         }
-        async fn find(&self, _filter: &WorkerFilter) -> TestResult<Vec<Worker>> {
-            Ok(vec![])
-        }
-        async fn find_available(&self) -> TestResult<Vec<Worker>> {
-            Ok(vec![])
-        }
-        async fn find_by_provider(&self, _provider_id: &ProviderId) -> TestResult<Vec<Worker>> {
-            Ok(vec![])
-        }
+
         async fn get_by_job_id(&self, _job_id: &JobId) -> TestResult<Option<Worker>> {
             Ok(None)
         }
+
+        async fn find(&self, _filter: &WorkerFilter) -> TestResult<Vec<Worker>> {
+            Ok(vec![])
+        }
+
+        async fn find_ready_worker(
+            &self,
+            _filter: Option<&WorkerFilter>,
+        ) -> TestResult<Option<Worker>> {
+            Ok(None)
+        }
+
+        async fn find_available(&self) -> TestResult<Vec<Worker>> {
+            Ok(vec![])
+        }
+
+        async fn find_by_provider(&self, _provider_id: &ProviderId) -> TestResult<Vec<Worker>> {
+            Ok(vec![])
+        }
+
         async fn update_state(&self, _worker_id: &WorkerId, _state: WorkerState) -> TestResult {
             Ok(())
         }
+
+        async fn update_heartbeat(&self, _worker_id: &WorkerId) -> TestResult {
+            Ok(())
+        }
+
         async fn heartbeat(&self, _worker_id: &WorkerId) -> TestResult {
             Ok(())
         }
+
+        async fn mark_busy(&self, _worker_id: &WorkerId, _job_id: Option<JobId>) -> TestResult {
+            Ok(())
+        }
+
         async fn assign_to_job(&self, _worker_id: &WorkerId, _job_id: JobId) -> TestResult {
             Ok(())
         }
+
         async fn release_from_job(&self, _worker_id: &WorkerId) -> TestResult {
             Ok(())
         }

@@ -2,7 +2,7 @@
 // UC-001: Create Job
 // UC-002: Execute Next Job
 
-use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobSpec};
+use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobSpec, JobsFilter};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -474,6 +474,18 @@ mod tests {
             Ok(())
         }
         async fn update(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            Ok(0)
+        }
+
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
     }
