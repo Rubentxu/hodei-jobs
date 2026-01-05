@@ -115,6 +115,31 @@ pub trait SagaRepository: Send + Sync {
 
     /// Cleanup old completed sagas
     async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64, Self::Error>;
+
+    // ============ Concurrency Control ============
+
+    /// Claims pending sagas for processing with distributed locking.
+    ///
+    /// This method uses `FOR UPDATE SKIP LOCKED` to atomically claim sagas
+    /// that are in PENDING state without blocking other instances.
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum number of sagas to claim
+    /// * `instance_id` - Unique identifier for this processing instance
+    ///
+    /// # Returns
+    /// * `Ok(Vec<SagaContext>)` - List of claimed sagas (may be empty)
+    ///
+    /// # Behavior
+    /// - Only claims sagas in PENDING state
+    /// - Updates state to IN_PROGRESS atomically
+    /// - Other instances will skip already-claimed sagas
+    /// - Safe to call concurrently from multiple instances
+    async fn claim_pending_sagas(
+        &self,
+        limit: u64,
+        instance_id: &str,
+    ) -> Result<Vec<SagaContext>, Self::Error>;
 }
 
 /// Unique identifier for a saga step
@@ -466,6 +491,14 @@ mod tests {
             _older_than: std::time::Duration,
         ) -> Result<u64, Self::Error> {
             Ok(0)
+        }
+
+        async fn claim_pending_sagas(
+            &self,
+            _limit: u64,
+            _instance_id: &str,
+        ) -> Result<Vec<SagaContext>, Self::Error> {
+            Ok(Vec::new())
         }
     }
 

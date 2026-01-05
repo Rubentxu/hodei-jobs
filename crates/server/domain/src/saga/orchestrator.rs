@@ -153,10 +153,32 @@ where
             })?;
 
         let steps = saga.steps();
-        let mut executed_steps = 0;
+        let mut executed_steps = context.current_step;
+        let is_resume = context.current_step > 0;
 
         // Execute steps sequentially
-        for step in steps.into_iter() {
+        let steps_vec = steps.into_iter().collect::<Vec<_>>();
+
+        // Log resume status
+        if is_resume {
+            tracing::info!(
+                saga_id = %saga_id,
+                current_step = context.current_step,
+                "Resuming saga from step"
+            );
+        }
+
+        for (step_idx, step) in steps_vec.iter().enumerate() {
+            // Skip steps that were already executed (resume scenario)
+            if step_idx < context.current_step {
+                tracing::debug!(
+                    step = step.name(),
+                    step_idx = step_idx,
+                    "Skipping already executed step (resume)"
+                );
+                continue;
+            }
+
             // Check saga timeout
             if start_time.elapsed() > self.config.saga_timeout {
                 context.set_error(format!("Saga timed out after {:?}", start_time.elapsed()));
@@ -180,13 +202,48 @@ where
                     executed_steps += 1;
                 }
                 Ok(Err(e)) => {
-                    // Step failed - start compensation
+                    // Step failed - start REAL compensation in REVERSE order
                     context.set_error(e.to_string());
-
-                    self.repository.mark_compensating(&saga_id).await.ok();
+                    context.is_compensating = true;
 
                     self.repository
                         .update_state(&saga_id, SagaState::Compensating, Some(e.to_string()))
+                        .await
+                        .ok();
+
+                    // Execute compensation for all previously executed steps in REVERSE order
+                    let mut _compensations_executed = 0;
+                    for compensate_idx in (0..step_idx).rev() {
+                        let compensate_step = &steps_vec[compensate_idx];
+
+                        // Only compensate if step has compensation defined
+                        if compensate_step.has_compensation() {
+                            let step_name = compensate_step.name();
+                            let comp_result = compensate_step.compensate(&mut context).await;
+
+                            match comp_result {
+                                Ok(()) => {
+                                    _compensations_executed += 1;
+                                    tracing::info!(
+                                        step = step_name,
+                                        "Compensation step executed successfully"
+                                    );
+                                }
+                                Err(comp_error) => {
+                                    tracing::error!(
+                                        step = step_name,
+                                        error = %comp_error,
+                                        "Compensation step failed"
+                                    );
+                                    // Continue compensating other steps even if one fails
+                                }
+                            }
+                        }
+                    }
+
+                    // Update final state to Failed (compensation completed but saga failed)
+                    self.repository
+                        .update_state(&saga_id, SagaState::Failed, Some(e.to_string()))
                         .await
                         .ok();
 
@@ -195,7 +252,7 @@ where
                         saga.saga_type(),
                         start_time.elapsed(),
                         executed_steps as u32,
-                        executed_steps as u32,
+                        _compensations_executed as u32,
                         e.to_string(),
                     ));
                 }
@@ -204,6 +261,49 @@ where
                     let timeout_error =
                         format!("Step timed out after {:?}", self.config.step_timeout);
                     context.set_error(timeout_error.clone());
+                    context.is_compensating = true;
+
+                    self.repository
+                        .update_state(
+                            &saga_id,
+                            SagaState::Compensating,
+                            Some(timeout_error.clone()),
+                        )
+                        .await
+                        .ok();
+
+                    // Execute compensation for all previously executed steps in REVERSE order
+                    let mut compensations_executed = 0;
+                    for compensate_idx in (0..executed_steps).rev() {
+                        let compensate_step = &steps_vec[compensate_idx];
+
+                        if compensate_step.has_compensation() {
+                            let step_name = compensate_step.name();
+                            let comp_result = compensate_step.compensate(&mut context).await;
+
+                            match comp_result {
+                                Ok(()) => {
+                                    compensations_executed += 1;
+                                    tracing::info!(
+                                        step = step_name,
+                                        "Compensation step executed successfully (timeout)"
+                                    );
+                                }
+                                Err(comp_error) => {
+                                    tracing::error!(
+                                        step = step_name,
+                                        error = %comp_error,
+                                        "Compensation step failed (timeout)"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    self.repository
+                        .update_state(&saga_id, SagaState::Failed, Some(timeout_error))
+                        .await
+                        .ok();
 
                     return Err(OrchestratorError::Timeout {
                         duration: self.config.step_timeout,
@@ -324,7 +424,11 @@ impl Drop for DropGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::saga::{SagaContext, SagaStep, SagaStepData, SagaStepId, SagaStepState, SagaType};
+    use crate::saga::{
+        SagaContext, SagaError, SagaResult, SagaStep, SagaStepData, SagaStepId, SagaStepState,
+        SagaType,
+    };
+    use chrono::Utc;
 
     // Test saga implementation - uses Rc<RefCell> to allow cloning
     struct TestSaga {
@@ -502,6 +606,14 @@ mod tests {
         async fn cleanup_completed(&self, _older_than: Duration) -> Result<u64, Self::Error> {
             Ok(0)
         }
+
+        async fn claim_pending_sagas(
+            &self,
+            _limit: u64,
+            _instance_id: &str,
+        ) -> Result<Vec<SagaContext>, Self::Error> {
+            Ok(Vec::new())
+        }
     }
 
     #[tokio::test]
@@ -539,5 +651,490 @@ mod tests {
         let saga_result = result.unwrap();
         assert!(saga_result.is_failed() || saga_result.is_compensated());
         assert_eq!(saga_result.steps_executed, 1);
+    }
+
+    // ============ REAL COMPENSATION TESTS ============
+
+    use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_compensation_loop_executes_in_reverse_order() {
+        // Use Mutex<Vec<usize>> to track which steps were compensated
+        let compensated_steps: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Step that tracks when compensate() is called
+        struct TrackingCompensatingStep {
+            step_number: usize,
+            should_fail: bool,
+            compensated: Arc<Mutex<Vec<usize>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl SagaStep for TrackingCompensatingStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "TrackingCompensatingStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                true
+            }
+
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                if self.should_fail {
+                    Err(SagaError::StepFailed {
+                        step: format!("Step{}", self.step_number),
+                        message: "Intentional failure".to_string(),
+                        will_compensate: true,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                let mut compensated = self.compensated.lock().unwrap();
+                compensated.push(self.step_number);
+                Ok(())
+            }
+        }
+
+        // Create a saga with 3 steps where step 2 fails
+        struct TestSaga {
+            fail_on_step: usize,
+            compensated: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl Saga for TestSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                let compensated = self.compensated.clone();
+                vec![
+                    Box::new(TrackingCompensatingStep {
+                        step_number: 0,
+                        should_fail: false,
+                        compensated: compensated.clone(),
+                    }),
+                    Box::new(TrackingCompensatingStep {
+                        step_number: 1,
+                        should_fail: false,
+                        compensated: compensated.clone(),
+                    }),
+                    Box::new(TrackingCompensatingStep {
+                        step_number: 2,
+                        should_fail: self.fail_on_step == 2,
+                        compensated: compensated.clone(),
+                    }),
+                ]
+            }
+        }
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, None);
+
+        let saga = TestSaga {
+            fail_on_step: 2,
+            compensated: compensated_steps.clone(),
+        };
+        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+
+        let result = orchestrator.execute_saga(&saga, context).await;
+
+        assert!(result.is_ok());
+        let saga_result = result.unwrap();
+        assert!(saga_result.is_failed());
+
+        // Steps 0 and 1 should have been compensated
+        let compensated = compensated_steps.lock().unwrap();
+        assert_eq!(compensated.len(), 2);
+        assert!(compensated.contains(&0));
+        assert!(compensated.contains(&1));
+    }
+
+    #[tokio::test]
+    async fn test_compensation_skips_steps_without_compensation() {
+        // Step with no compensation defined
+        struct NoCompensationTestStep;
+
+        #[async_trait::async_trait]
+        impl SagaStep for NoCompensationTestStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "NoCompensationTestStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                false
+            }
+
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                panic!("Should not be called!");
+            }
+        }
+
+        // Step that fails during execution
+        struct FailingTestStep;
+
+        #[async_trait::async_trait]
+        impl SagaStep for FailingTestStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "FailingTestStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                true
+            }
+
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Err(SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "Intentional failure".to_string(),
+                    will_compensate: true,
+                })
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+        }
+
+        struct TestSaga;
+
+        impl Saga for TestSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                vec![
+                    Box::new(NoCompensationTestStep),
+                    Box::new(FailingTestStep),
+                    Box::new(NoCompensationTestStep),
+                ]
+            }
+        }
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, None);
+
+        let saga = TestSaga;
+        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+
+        let result = orchestrator.execute_saga(&saga, context).await;
+
+        assert!(result.is_ok());
+        let saga_result = result.unwrap();
+        assert!(saga_result.is_failed());
+
+        // FailingTestStep has compensation, but it failed execution, so nothing to compensate
+        assert_eq!(saga_result.compensations_executed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_compensation_continues_even_if_one_fails() {
+        let compensated_steps: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Step that tracks compensation and can fail
+        struct FailingCompensationStep {
+            step_number: usize,
+            should_fail_compensation: bool,
+            compensated: Arc<Mutex<Vec<usize>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl SagaStep for FailingCompensationStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "FailingCompensationStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                true
+            }
+
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                let mut compensated = self.compensated.lock().unwrap();
+                compensated.push(self.step_number);
+
+                if self.should_fail_compensation {
+                    Err(SagaError::CompensationFailed {
+                        step: self.name().to_string(),
+                        message: "Intentional compensation failure".to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        // Step that fails during execution
+        struct FailingTestStep;
+
+        #[async_trait::async_trait]
+        impl SagaStep for FailingTestStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "FailingTestStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                true
+            }
+
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Err(SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "Intentional failure".to_string(),
+                    will_compensate: true,
+                })
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+        }
+
+        struct TestSaga {
+            compensated: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl Saga for TestSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                let compensated = self.compensated.clone();
+                vec![
+                    Box::new(FailingCompensationStep {
+                        step_number: 0,
+                        should_fail_compensation: false,
+                        compensated: compensated.clone(),
+                    }),
+                    Box::new(FailingCompensationStep {
+                        step_number: 1,
+                        should_fail_compensation: true,
+                        compensated: compensated.clone(),
+                    }),
+                    Box::new(FailingTestStep),
+                ]
+            }
+        }
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, None);
+
+        let saga = TestSaga {
+            compensated: compensated_steps.clone(),
+        };
+        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+
+        let result = orchestrator.execute_saga(&saga, context).await;
+
+        assert!(result.is_ok());
+        let saga_result = result.unwrap();
+        assert!(saga_result.is_failed());
+
+        // Both steps should have been attempted for compensation
+        let compensated = compensated_steps.lock().unwrap();
+        assert_eq!(compensated.len(), 2);
+        assert!(compensated.contains(&0));
+        assert!(compensated.contains(&1));
+    }
+
+    // ============ SAGA RESUME TESTS ============
+
+    #[tokio::test]
+    async fn test_saga_resumes_from_last_completed_step() {
+        let executed_steps: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        struct TrackingStep {
+            step_number: usize,
+            executed: Arc<Mutex<Vec<usize>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl SagaStep for TrackingStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "TrackingStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                false
+            }
+
+            async fn execute(&self, context: &mut SagaContext) -> SagaResult<()> {
+                let mut executed = self.executed.lock().unwrap();
+                executed.push(self.step_number);
+                // Update context to track progress
+                context.current_step = self.step_number + 1;
+                Ok(())
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+        }
+
+        struct TestSaga {
+            executed: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl Saga for TestSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                let executed = self.executed.clone();
+                vec![
+                    Box::new(TrackingStep {
+                        step_number: 0,
+                        executed: executed.clone(),
+                    }),
+                    Box::new(TrackingStep {
+                        step_number: 1,
+                        executed: executed.clone(),
+                    }),
+                    Box::new(TrackingStep {
+                        step_number: 2,
+                        executed: executed.clone(),
+                    }),
+                ]
+            }
+        }
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, None);
+
+        // First run: saga with 3 steps
+        let saga = TestSaga {
+            executed: executed_steps.clone(),
+        };
+        // Start from step 1 (simulating resume after step 0 completed)
+        let saga_id = SagaId::new();
+        let context = SagaContext::from_persistence(
+            saga_id,
+            SagaType::Execution,
+            None,
+            None,
+            Utc::now(),
+            1, // Step 0 already completed
+            false,
+            std::collections::HashMap::new(),
+            None,
+        );
+
+        let result = orchestrator.execute_saga(&saga, context).await;
+
+        assert!(result.is_ok());
+        let saga_result = result.unwrap();
+        assert!(saga_result.is_success());
+
+        // Only steps 1 and 2 should have been executed
+        let executed = executed_steps.lock().unwrap();
+        assert_eq!(executed.len(), 2);
+        assert!(executed.contains(&1));
+        assert!(executed.contains(&2));
+        // Step 0 should NOT be executed again
+        assert!(!executed.contains(&0));
+    }
+
+    #[tokio::test]
+    async fn test_saga_starts_from_beginning_if_no_completed_steps() {
+        let executed_steps: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        struct TrackingStep {
+            step_number: usize,
+            executed: Arc<Mutex<Vec<usize>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl SagaStep for TrackingStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "TrackingStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                false
+            }
+
+            async fn execute(&self, context: &mut SagaContext) -> SagaResult<()> {
+                let mut executed = self.executed.lock().unwrap();
+                executed.push(self.step_number);
+                context.current_step = self.step_number + 1;
+                Ok(())
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+        }
+
+        struct TestSaga {
+            executed: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl Saga for TestSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                let executed = self.executed.clone();
+                vec![
+                    Box::new(TrackingStep {
+                        step_number: 0,
+                        executed: executed.clone(),
+                    }),
+                    Box::new(TrackingStep {
+                        step_number: 1,
+                        executed: executed.clone(),
+                    }),
+                ]
+            }
+        }
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, None);
+
+        // Start from beginning (current_step = 0)
+        let saga = TestSaga {
+            executed: executed_steps.clone(),
+        };
+        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+
+        let result = orchestrator.execute_saga(&saga, context).await;
+
+        assert!(result.is_ok());
+        let saga_result = result.unwrap();
+        assert!(saga_result.is_success());
+
+        // All steps should have been executed
+        let executed = executed_steps.lock().unwrap();
+        assert_eq!(executed.len(), 2);
+        assert!(executed.contains(&0));
+        assert!(executed.contains(&1));
     }
 }
