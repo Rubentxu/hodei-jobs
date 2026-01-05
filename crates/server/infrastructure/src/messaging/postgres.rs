@@ -57,18 +57,11 @@ impl PostgresEventBus {
 impl EventBus for PostgresEventBus {
     #[instrument(skip(self, event), fields(event_type = ?event))]
     async fn publish(&self, event: &DomainEvent) -> Result<(), EventBusError> {
-        let payload = serde_json::to_string(event)
-            .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
-
         // Determinar el canal basado en el tipo de evento o usar un canal global 'events'
         // Por simplicidad en esta fase, usaremos 'hodei_events' para todo
         let channel = "hodei_events";
 
-        info!("🔥 Publishing event to channel {}: {}", channel, payload);
-
-        // 1. Persistir el evento para audit log (Timeline)
-        // Usamos una transacción implícita o explícita si fuera necesario,
-        // pero aquí basta con insertar antes de notificar.
+        // Extraer metadatos del evento
         let event_id = uuid::Uuid::new_v4();
         let occurred_at = event.occurred_at();
         let event_type = event.event_type();
@@ -76,10 +69,21 @@ impl EventBus for PostgresEventBus {
         let correlation_id = event.correlation_id();
         let actor = event.actor();
 
-        // Convertir payload a JSON Value para inserción correcta en JSONB
-        let payload_json: serde_json::Value = serde_json::from_str(&payload)
+        // OPTIMIZACIÓN: Single-pass DomainEvent → serde_json::Value
+        // En lugar de to_string() + from_str() (doble serialización),
+        // usamos to_value() directamente
+        let payload_json = serde_json::to_value(event)
             .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
 
+        // Para pg_notify necesitamos String, reutilizamos el Value
+        let payload_string = payload_json.to_string();
+
+        info!(
+            "🔥 Publishing event to channel {}: {}",
+            channel, payload_string
+        );
+
+        // Persistir el evento para audit log (Timeline)
         sqlx::query(
             r#"
             INSERT INTO domain_events
@@ -93,25 +97,23 @@ impl EventBus for PostgresEventBus {
         .bind(aggregate_id)
         .bind(correlation_id)
         .bind(actor)
-        .bind(payload_json)
+        .bind(&payload_json) // sqlx serializa Value a JSONB
         .execute(&self.pool)
         .await
         .map_err(|e| EventBusError::PublishError(format!("Failed to persist event: {}", e)))?;
 
         info!("💾 Event persisted with ID: {}", event_id);
 
-        // 2. CRITICAL: pg_notify requires a DEDICATED connection (not from pool)
-        // Get a fresh connection for NOTIFY
+        // CRITICAL: pg_notify requires a DEDICATED connection (not from pool)
         let mut conn = self.pool.acquire().await.map_err(|e| {
             EventBusError::PublishError(format!("Failed to acquire connection: {}", e))
         })?;
 
         info!("✅ Acquired dedicated connection for NOTIFY");
 
-        // Usamos pg_notify directamente
         sqlx::query("SELECT pg_notify($1, $2)")
             .bind(channel)
-            .bind(payload)
+            .bind(payload_string)
             .execute(&mut *conn)
             .await
             .map_err(|e| EventBusError::PublishError(e.to_string()))?;

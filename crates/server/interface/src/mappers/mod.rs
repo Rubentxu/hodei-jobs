@@ -259,6 +259,66 @@ pub fn error_to_status(err: impl std::fmt::Display) -> tonic::Status {
     }
 }
 
+/// Standardized conversion from DomainError to tonic::Status
+///
+/// This implementation provides type-safe error mapping instead of string-based detection.
+impl From<hodei_server_domain::shared_kernel::DomainError> for tonic::Status {
+    fn from(err: hodei_server_domain::shared_kernel::DomainError) -> Self {
+        use hodei_server_domain::shared_kernel::DomainError;
+
+        match err {
+            // Not Found errors
+            DomainError::JobNotFound { job_id } => {
+                tonic::Status::not_found(format!("Job '{}' not found", job_id))
+            }
+            DomainError::WorkerNotFound { worker_id } => {
+                tonic::Status::not_found(format!("Worker '{}' not found", worker_id))
+            }
+            DomainError::ProviderNotFound { provider_id } => {
+                tonic::Status::not_found(format!("Provider '{}' not found", provider_id))
+            }
+
+            // Resource exhausted
+            DomainError::ProviderOverloaded { provider_id, .. } => {
+                tonic::Status::resource_exhausted(format!(
+                    "Provider '{}' is overloaded, retry later",
+                    provider_id
+                ))
+            }
+
+            // Invalid argument
+            DomainError::InvalidJobState {
+                current,
+                expected,
+                job_id,
+            } => tonic::Status::failed_precondition(format!(
+                "Invalid job state for '{}': expected {:?}, got {:?}",
+                job_id, expected, current
+            )),
+            DomainError::ValidationError { message } => tonic::Status::invalid_argument(message),
+
+            // Already exists
+            DomainError::JobAlreadyExists { job_id } => {
+                tonic::Status::already_exists(format!("Job '{}' already exists", job_id))
+            }
+
+            // Permission denied
+            DomainError::Unauthorized { reason } => tonic::Status::permission_denied(reason),
+
+            // Timeout
+            DomainError::Timeout { operation, .. } => {
+                tonic::Status::deadline_exceeded(format!("Operation '{}' timed out", operation))
+            }
+
+            // Conflict
+            DomainError::Conflict { message } => tonic::Status::conflict(message),
+
+            // Catch-all for internal errors
+            _ => tonic::Status::internal(err.to_string()),
+        }
+    }
+}
+
 /*
 /// Map TemplateSummary to gRPC JobTemplate
 pub fn map_template_summary_to_grpc(
