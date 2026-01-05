@@ -75,7 +75,7 @@ http = "1.1"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 hyperlocal = "0.9"
-nix = { version = "0.30.1", features = ["process", "signal"] }
+nix = { version = "0.31.0", features = ["process", "signal"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate"] }
 config = "0.15.19"
 clap = { version = "4.5", features = ["derive"] }
