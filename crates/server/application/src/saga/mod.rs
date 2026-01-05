@@ -11,15 +11,10 @@
 //! - **CreateInfrastructureStep**: Performs real worker provisioning during saga execution
 //! - **InMemorySagaOrchestrator / PostgresSagaOrchestrator**: Handles compensation loops
 //!
-//! ## Migration from Deprecated Types
-//!
-//! The following types are **DEPRECATED** and will be removed in v0.32.0:
-//! - `ProvisioningSagaCoordinator<T>` - Use `DynProvisioningSagaCoordinator`
-//! - `ProvisioningSagaCoordinatorBuilder<T>` - Use `DynProvisioningSagaCoordinatorBuilder`
-//!
-//! The deprecated types maintain a direct `WorkerProvisioningService` dependency
-//! and call `provision_worker()` AFTER saga completion, violating the principle
-//! of having saga steps perform real work with compensation support.
+//! The `DynProvisioningSagaCoordinator` is the canonical implementation that:
+//! - Injects services (`WorkerProvisioning`, `WorkerRegistry`, `EventBus`) into `SagaContext`
+//! - Lets saga steps (`CreateInfrastructureStep`, `RegisterWorkerStep`) perform real work
+//! - Provides automatic compensation via saga steps on failure
 
 pub mod dispatcher_saga;
 pub mod provisioning_saga;
@@ -32,12 +27,7 @@ pub use dispatcher_saga::{
 
 pub use provisioning_saga::{
     DynProvisioningSagaCoordinator, DynProvisioningSagaCoordinatorBuilder,
-    DynProvisioningSagaCoordinatorBuilderError,
-    // DEPRECATED - kept for backward compatibility during migration
-    #[deprecated(since = "0.31.0", note = "Use `DynProvisioningSagaCoordinator` instead")]
-    ProvisioningSagaCoordinator,
-    #[deprecated(since = "0.31.0", note = "Use `DynProvisioningSagaCoordinatorConfig` instead")]
-    ProvisioningSagaCoordinatorConfig,
+    DynProvisioningSagaCoordinatorBuilderError, ProvisioningSagaCoordinatorConfig,
 };
 
 pub use recovery_saga::{
