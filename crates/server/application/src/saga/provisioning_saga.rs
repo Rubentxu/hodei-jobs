@@ -319,12 +319,31 @@ pub enum DynProvisioningSagaCoordinatorBuilderError {
     MissingField(&'static str),
 }
 
-/// Provisioning Saga Coordinator
+/// Provisioning Saga Coordinator (DEPRECATED)
+///
+/// **DEPRECATED**: Use `DynProvisioningSagaCoordinator` instead.
+///
+/// This struct maintains direct dependency on `WorkerProvisioningService`
+/// and calls `provision_worker()` AFTER saga completion instead of
+/// letting `CreateInfrastructureStep` handle provisioning during execution.
+///
+/// This pattern violates the EPIC-SAGA-ENGINE-PRODUCTION-READINESS principle
+/// of having saga steps perform real work with compensation support.
+///
+/// Use `DynProvisioningSagaCoordinator` which:
+/// - Injects services into `SagaContext`
+/// - Lets `CreateInfrastructureStep` call `provision_worker()` directly
+/// - Provides automatic compensation via saga steps
+#[deprecated(
+    since = "0.31.0",
+    note = "Use `DynProvisioningSagaCoordinator` instead. This struct will be removed in v0.32.0"
+)]
 pub struct ProvisioningSagaCoordinator<OR>
 where
     OR: SagaOrchestrator,
 {
     orchestrator: Arc<OR>,
+    #[deprecated(since = "0.31.0", note = "Use services injected via SagaContext")]
     provisioning_service: Arc<dyn WorkerProvisioningService + Send + Sync>,
     config: ProvisioningSagaCoordinatorConfig,
 }
@@ -333,6 +352,10 @@ impl<OR> ProvisioningSagaCoordinator<OR>
 where
     OR: SagaOrchestrator,
 {
+    #[deprecated(
+        since = "0.31.0",
+        note = "Use `DynProvisioningSagaCoordinator` instead"
+    )]
     pub fn new(
         orchestrator: Arc<OR>,
         provisioning_service: Arc<dyn WorkerProvisioningService + Send + Sync>,
@@ -345,16 +368,25 @@ where
         }
     }
 
+    #[deprecated(
+        since = "0.31.0",
+        note = "Use `DynProvisioningSagaCoordinator` builder instead"
+    )]
     pub fn builder() -> ProvisioningSagaCoordinatorBuilder<OR> {
         ProvisioningSagaCoordinatorBuilder::new()
     }
 }
 
+#[allow(deprecated)]
 impl<OR> ProvisioningSagaCoordinator<OR>
 where
     OR: SagaOrchestrator + Send + Sync + 'static,
     OR::Error: std::fmt::Display + Send + Sync,
 {
+    #[deprecated(
+        since = "0.31.0",
+        note = "Use `DynProvisioningSagaCoordinator::execute_provisioning_saga` instead"
+    )]
     pub async fn execute_provisioning_saga(
         &self,
         provider_id: &ProviderId,
@@ -446,17 +478,29 @@ where
     }
 }
 
-/// Builder for ProvisioningSagaCoordinator
+/// Builder for ProvisioningSagaCoordinator (DEPRECATED)
+///
+/// **DEPRECATED**: Use `DynProvisioningSagaCoordinatorBuilder` instead.
+#[deprecated(
+    since = "0.31.0",
+    note = "Use `DynProvisioningSagaCoordinatorBuilder` instead"
+)]
 pub struct ProvisioningSagaCoordinatorBuilder<OR>
 where
     OR: SagaOrchestrator,
 {
     orchestrator: Option<Arc<OR>>,
+    #[deprecated(since = "0.31.0", note = "Services are now injected via SagaContext")]
     provisioning_service: Option<Arc<dyn WorkerProvisioningService + Send + Sync>>,
     config: Option<ProvisioningSagaCoordinatorConfig>,
 }
 
+#[allow(deprecated)]
 impl<OR: SagaOrchestrator> ProvisioningSagaCoordinatorBuilder<OR> {
+    #[deprecated(
+        since = "0.31.0",
+        note = "Use `DynProvisioningSagaCoordinatorBuilder::new` instead"
+    )]
     pub fn new() -> Self {
         Self {
             orchestrator: None,
@@ -502,6 +546,10 @@ impl<OR: SagaOrchestrator> ProvisioningSagaCoordinatorBuilder<OR> {
 }
 
 #[derive(Debug, Error)]
+#[deprecated(
+    since = "0.31.0",
+    note = "Use `DynProvisioningSagaCoordinatorBuilderError` instead"
+)]
 pub enum ProvisioningSagaCoordinatorBuilderError {
     #[error("Missing required field: {0}")]
     MissingField(&'static str),
