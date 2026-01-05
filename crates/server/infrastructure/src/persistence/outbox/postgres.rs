@@ -58,6 +58,7 @@ struct OutboxEventRow {
 }
 
 /// PostgreSQL implementation of OutboxRepository
+#[derive(Debug)]
 pub struct PostgresOutboxRepository {
     pool: PgPool,
 }
