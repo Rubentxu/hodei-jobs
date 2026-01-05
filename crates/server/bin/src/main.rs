@@ -886,6 +886,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         provisioning_service
             .clone()
             .expect("Provisioning service is required for saga coordinator"),
+        // EPIC-45 Gap 1 Fix: Pass SagaServices dependencies
+        worker_registry.clone(),
+        outbox_event_bus.clone(),
+        Some(job_repository.clone()),
         Some(config),
     ));
 

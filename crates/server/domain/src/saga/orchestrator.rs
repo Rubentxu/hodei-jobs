@@ -1042,6 +1042,7 @@ mod tests {
             false,
             std::collections::HashMap::new(),
             None,
+            SagaState::InProgress,
         );
 
         let result = orchestrator.execute_saga(&saga, context).await;

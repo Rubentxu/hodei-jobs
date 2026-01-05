@@ -167,6 +167,7 @@ impl From<SagaDbRow> for SagaContext {
             saga_state == SagaState::Compensating,
             metadata,
             row.error_message,
+            saga_state,
         )
     }
 }
@@ -815,6 +816,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
                     false, // is_compensating not persisted in this schema
                     metadata,
                     row.error_message,
+                    SagaState::Pending, // Default state for query
                 )
             })
             .collect())

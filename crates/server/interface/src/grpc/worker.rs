@@ -374,15 +374,59 @@ impl WorkerAgentServiceImpl {
 
                         // D. Register in Actor (this unblocks the flow)
                         match supervisor
-                            .register(worker_id.clone(), provider_id.clone(), handle, spec)
+                            .register(
+                                worker_id.clone(),
+                                provider_id.clone(),
+                                handle.clone(),
+                                spec.clone(),
+                            )
                             .await
                         {
                             Ok(_) => {
                                 info!(
-                                    "✅ JIT Registration successful for {}. Emitting events...",
+                                    "✅ JIT Registration successful for {}. Persisting to database...",
                                     worker_id
                                 );
-                                // Continue to emit events below
+
+                                // BUG-001 FIX: Persist worker to PostgreSQL via WorkerRegistry
+                                if let Some(ref registry) = self.worker_registry {
+                                    match registry
+                                        .register(handle.clone(), spec.clone(), JobId::new())
+                                        .await
+                                    {
+                                        Ok(worker) => {
+                                            info!(
+                                                "✅ Worker {} persisted to database with ID: {}",
+                                                worker_id,
+                                                worker.id()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "❌ Failed to persist worker {} to database: {:?}. Compensating...",
+                                                worker_id, e
+                                            );
+                                            // Compensar: eliminar del Actor
+                                            if let Err(unreg_err) =
+                                                supervisor.unregister(&worker_id).await
+                                            {
+                                                warn!(
+                                                    "Failed to compensate actor registration: {:?}",
+                                                    unreg_err
+                                                );
+                                            }
+                                            return Err(Status::internal(format!(
+                                                "Failed to persist worker to database: {}",
+                                                e
+                                            )));
+                                        }
+                                    }
+                                } else {
+                                    warn!(
+                                        "WorkerRegistry not available, worker {} not persisted to database",
+                                        worker_id
+                                    );
+                                }
                             }
                             Err(reg_err) => {
                                 error!("❌ JIT Registration failed: {:?}", reg_err);
