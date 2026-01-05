@@ -522,7 +522,9 @@ mod tests {
             _spec: hodei_server_domain::workers::WorkerSpec,
             _job_id: JobId,
         ) -> Result<hodei_server_domain::workers::Worker> {
-            Err(DomainError::Internal("Not implemented".to_string()))
+            Err(DomainError::InfrastructureError {
+                message: "Not implemented".to_string(),
+            })
         }
 
         async fn save(&self, _worker: &hodei_server_domain::workers::Worker) -> Result<()> {

@@ -481,10 +481,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_error() {
-        let result = ProvisioningSagaCoordinatorBuilder::<TestSagaOrchestrator>::new().build();
+        let result = DynProvisioningSagaCoordinatorBuilder::<TestSagaOrchestrator>::new().build();
         assert!(result.is_err());
         match result {
-            Err(ProvisioningSagaCoordinatorBuilderError::MissingField(_)) => {}
+            Err(DynProvisioningSagaCoordinatorBuilderError::MissingField(_)) => {}
             _ => panic!("Expected MissingField error"),
         }
     }

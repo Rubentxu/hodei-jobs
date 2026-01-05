@@ -17,7 +17,7 @@ use crate::scheduling::smart_scheduler::SchedulerConfig;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::jobs::{JobQueue, JobRepository};
+use hodei_server_domain::jobs::{JobQueue, JobRepository, JobsFilter};
 use hodei_server_domain::workers::WorkerRegistry;
 use sqlx::PgPool;
 use std::sync::Arc;
