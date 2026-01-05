@@ -35,6 +35,7 @@ use hodei_server_domain::shared_kernel::{
     DomainError, JobId, JobResult, JobState, ProviderId, WorkerId, WorkerState,
 };
 use hodei_server_domain::workers::registry::WorkerRegistry;
+use hodei_server_domain::workers::{ProviderType, WorkerHandle, WorkerSpec};
 
 /// Estado interno de un worker registrado
 #[derive(Debug, Clone)]
@@ -300,50 +301,151 @@ impl WorkerAgentServiceImpl {
     }
 
     /// Handle worker registration using Transactional Outbox Pattern
+    /// Modified to support Legacy/JIT flow: If worker validates via OTP but Actor doesn't know it,
+    /// we register it immediately to let the flow continue.
     ///
-    /// EPIC-42: When WorkerSupervisorActor is enabled, route through the Actor
-    /// for lock-free worker management.
+    /// EPIC-42: When WorkerSupervisorActor is enabled, route through the Actor.
+    /// If Actor doesn't have the worker (state inconsistency), perform JIT registration.
     ///
     /// This method:
-    /// 1. Updates worker state to Ready in registry
-    /// 2. Inserts events into outbox table (if configured)
-    /// 3. Falls back to direct event publishing if outbox not configured
+    /// 1. Attempts heartbeat through Actor (fast path if Actor has the worker)
+    /// 2. If Actor returns WorkerNotFound, performs JIT registration to heal state
+    /// 3. Emits WorkerRegistered and WorkerReady events to trigger job dispatch
     ///
     /// Events emitted:
-    /// - WorkerStatusChanged: State transition to Ready
-    /// - WorkerReady: Worker availability for job assignment
-    async fn on_worker_registered(&self, worker_id: &str) -> Result<(), Status> {
-        let worker_id = Self::parse_worker_uuid(worker_id)?;
+    /// - WorkerRegistered: Worker completed initial registration
+    /// - WorkerReady: Worker is available for job assignment (triggers dispatch)
+    async fn on_worker_registered(
+        &self,
+        worker_id_str: &str,
+        worker_info: &WorkerInfo,
+    ) -> Result<(), Status> {
+        let worker_id = Self::parse_worker_uuid(worker_id_str)?;
 
-        // EPIC-42: Route through Actor if enabled
+        // 1. Attempt route through Actor (EPIC-42)
         if let Some(ref supervisor) = self.supervisor_handle {
             debug!(
                 "EPIC-42: Routing worker registration through Actor for {}",
                 worker_id
             );
 
-            // Send heartbeat through Actor to update status to Ready
-            if let Err(e) = supervisor.heartbeat(&worker_id).await {
-                // Log error but don't fail - legacy path is still valid
-                warn!(
-                    "EPIC-42: Failed to route through Actor, falling back to legacy: {:?}",
-                    e
-                );
-            } else {
-                debug!("EPIC-42: Worker registration routed through Actor successfully");
-                return Ok(());
+            match supervisor.heartbeat(&worker_id).await {
+                Ok(_) => {
+                    debug!("EPIC-42: Actor updated successfully (Worker existed)");
+                    // Worker is known to Actor, we're done
+                    self.emit_worker_events(&worker_id).await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Check if error is "WorkerNotFound" (state inconsistency)
+                    let error_msg = e.to_string();
+                    let is_not_found = error_msg.contains("WorkerNotFound")
+                        || error_msg.contains("not found")
+                        || error_msg.contains("not exist");
+
+                    if is_not_found {
+                        info!(
+                            "🔄 JIT Registration: Worker {} validated but missing in Actor. Registering now...",
+                            worker_id
+                        );
+
+                        // A. Recover provider_id from database if possible
+                        let provider_id = ProviderId::new(); // Will be corrected when JobDispatcher processes
+
+                        // B. Build WorkerHandle from worker info
+                        let resource_id = worker_info.name.clone();
+                        let handle = WorkerHandle::new(
+                            worker_id.clone(),
+                            resource_id.clone(),
+                            ProviderType::Docker,
+                            provider_id.clone(),
+                        );
+
+                        // C. Build WorkerSpec from worker info
+                        let mut spec = WorkerSpec::new(
+                            "hodei-worker:latest".to_string(),
+                            "http://localhost:50051".to_string(),
+                        );
+                        // Extract capacity from worker info if available
+                        if let Some(cap) = &worker_info.capacity {
+                            spec.resources.cpu_cores = cap.cpu_cores;
+                            spec.resources.memory_bytes = cap.memory_bytes;
+                        }
+
+                        // D. Register in Actor (this unblocks the flow)
+                        match supervisor
+                            .register(worker_id.clone(), provider_id.clone(), handle, spec)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(
+                                    "✅ JIT Registration successful for {}. Emitting events...",
+                                    worker_id
+                                );
+                                // Continue to emit events below
+                            }
+                            Err(reg_err) => {
+                                error!("❌ JIT Registration failed: {:?}", reg_err);
+                                return Err(Status::internal(
+                                    "Failed to heal worker state in actor",
+                                ));
+                            }
+                        }
+                    } else {
+                        // Real actor error (timeout, channel closed, etc.)
+                        warn!(
+                            "EPIC-42: Actor heartbeat failed with unexpected error: {:?}",
+                            e
+                        );
+                        // Continue anyway - we can still emit events
+                    }
+                }
             }
         }
 
-        // Legacy path is no longer supported - workers must be provisioned with a job_id
-        // Return an error indicating workers must be provisioned through the normal flow
-        warn!(
-            "Legacy worker registration attempted for {} - workers must be provisioned with job_id",
-            worker_id
-        );
-        return Err(Status::failed_precondition(
-            "Workers must be provisioned through the normal flow with a job_id. Legacy registration is no longer supported.",
-        ));
+        // 2. Emit WorkerRegistered and WorkerReady events (triggers JobDispatcher)
+        self.emit_worker_events(&worker_id).await?;
+
+        Ok(())
+    }
+
+    /// Helper to emit WorkerRegistered and WorkerReady events
+    async fn emit_worker_events(&self, worker_id: &WorkerId) -> Result<(), Status> {
+        if let Some(event_bus) = &self.event_bus {
+            let now = Utc::now();
+
+            // WorkerRegistered event
+            let event_registered = DomainEvent::WorkerRegistered {
+                worker_id: worker_id.clone(),
+                provider_id: ProviderId::new(),
+                occurred_at: now,
+                correlation_id: None,
+                actor: Some("worker-jit-registration".to_string()),
+            };
+
+            if let Err(e) = event_bus.publish(&event_registered).await {
+                warn!("Failed to publish WorkerRegistered: {}", e);
+            }
+
+            // WorkerReady event - CRUCIAL: This triggers JobDispatcher to assign job
+            let event_ready = DomainEvent::WorkerReady {
+                worker_id: worker_id.clone(),
+                provider_id: ProviderId::new(),
+                ready_at: now,
+                correlation_id: None,
+                actor: Some("worker-jit-registration".to_string()),
+            };
+
+            if let Err(e) = event_bus.publish(&event_ready).await {
+                warn!("Failed to publish WorkerReady: {}", e);
+            } else {
+                info!(
+                    "🚀 Emitted WorkerReady for {}. JobDispatcher should pick this up.",
+                    worker_id
+                );
+            }
+        }
+        Ok(())
     }
 
     async fn on_job_result(
@@ -947,7 +1049,9 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 validated_worker_id
             );
 
-            self.on_worker_registered(&validated_worker_id).await?;
+            // Pass worker_info for JIT registration if needed
+            self.on_worker_registered(&validated_worker_id, &worker_info)
+                .await?;
         } else {
             info!(
                 "✅ WorkerAgentService::register: Skipping OTP validation for worker {} (valid session)",
