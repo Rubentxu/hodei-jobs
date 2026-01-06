@@ -36,14 +36,14 @@ pub struct SchedulingFailureHandler {
     /// Job repository to update job state
     job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
     /// Outbox repository to persist recovery events
-    outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+    outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
 }
 
 impl SchedulingFailureHandler {
     /// Create a new SchedulingFailureHandler
     pub fn new(
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
-        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         Self {
             job_repository,
@@ -427,47 +427,45 @@ mod tests {
 
     #[async_trait::async_trait]
     impl OutboxRepository for MockOutboxRepository {
-        type Error = OutboxError;
-
         async fn insert_events(
             &self,
             _events: &[OutboxEventInsert],
-        ) -> std::result::Result<(), Self::Error> {
+        ) -> std::result::Result<(), OutboxError> {
             Ok(())
         }
         async fn get_pending_events(
             &self,
             _limit: usize,
             _max_retries: i32,
-        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, Self::Error>
+        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
         {
             Ok(vec![])
         }
         async fn mark_published(
             &self,
             _event_ids: &[Uuid],
-        ) -> std::result::Result<(), Self::Error> {
+        ) -> std::result::Result<(), OutboxError> {
             Ok(())
         }
         async fn mark_failed(
             &self,
             _event_id: &Uuid,
             _error: &str,
-        ) -> std::result::Result<(), Self::Error> {
+        ) -> std::result::Result<(), OutboxError> {
             Ok(())
         }
         async fn exists_by_idempotency_key(
             &self,
             _key: &str,
-        ) -> std::result::Result<bool, Self::Error> {
+        ) -> std::result::Result<bool, OutboxError> {
             Ok(false)
         }
-        async fn count_pending(&self) -> std::result::Result<u64, Self::Error> {
+        async fn count_pending(&self) -> std::result::Result<u64, OutboxError> {
             Ok(0)
         }
         async fn get_stats(
             &self,
-        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, Self::Error> {
+        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, OutboxError> {
             Ok(hodei_server_domain::outbox::OutboxStats {
                 pending_count: 0,
                 published_count: 0,
@@ -478,20 +476,20 @@ mod tests {
         async fn cleanup_published_events(
             &self,
             _older_than: std::time::Duration,
-        ) -> std::result::Result<u64, Self::Error> {
+        ) -> std::result::Result<u64, OutboxError> {
             Ok(0)
         }
         async fn cleanup_failed_events(
             &self,
             _max_retries: i32,
             _older_than: std::time::Duration,
-        ) -> std::result::Result<u64, Self::Error> {
+        ) -> std::result::Result<u64, OutboxError> {
             Ok(0)
         }
         async fn find_by_id(
             &self,
             _id: Uuid,
-        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, Self::Error>
+        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
         {
             Ok(None)
         }

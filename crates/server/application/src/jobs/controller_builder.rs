@@ -16,6 +16,7 @@ use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::{JobQueue, JobRepository};
+use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::workers::WorkerRegistry;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -35,6 +36,7 @@ pub struct JobControllerBuilder {
     scheduler_config: Option<SchedulerConfig>,
     worker_command_sender: Option<Arc<dyn WorkerCommandSender>>,
     event_bus: Option<Arc<dyn EventBus>>,
+    outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
 
     // Optional dependencies
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
@@ -112,6 +114,15 @@ impl JobControllerBuilder {
         self
     }
 
+    /// Set the outbox repository (REQUIRED)
+    pub fn with_outbox_repository(
+        mut self,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+    ) -> Self {
+        self.outbox_repository = Some(outbox_repository);
+        self
+    }
+
     /// Set the provisioning service (OPTIONAL)
     pub fn with_provisioning_service(
         mut self,
@@ -165,6 +176,11 @@ impl JobControllerBuilder {
         let event_bus = self.event_bus.ok_or_else(|| {
             anyhow::anyhow!("JobControllerBuilder: event_bus is required. Use with_event_bus().")
         })?;
+        let outbox_repository = self.outbox_repository.ok_or_else(|| {
+            anyhow::anyhow!(
+                "JobControllerBuilder: outbox_repository is required. Use with_outbox_repository()."
+            )
+        })?;
 
         // Note: JobDispatcher and WorkerMonitor are created internally by JobController::new()
         // This is intentional - we use the public API to maintain encapsulation
@@ -178,6 +194,7 @@ impl JobControllerBuilder {
             scheduler_config,
             worker_command_sender,
             event_bus,
+            outbox_repository,
             self.provisioning_service,
             None, // execution_saga_dispatcher - can be set via builder
             None, // provisioning_saga_coordinator - can be set via builder
@@ -206,6 +223,7 @@ mod tests {
     use hodei_server_domain::event_bus::{EventBus, EventBusError};
     use hodei_server_domain::events::DomainEvent;
     use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobsFilter};
+    use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
     use hodei_server_domain::shared_kernel::{
         DomainError, JobId, JobState, ProviderId, WorkerId, WorkerState,
     };
@@ -238,6 +256,87 @@ mod tests {
             EventBusError,
         > {
             Err(EventBusError::SubscribeError("Mock".to_string()))
+        }
+    }
+
+    struct MockOutboxRepository;
+
+    #[async_trait]
+    impl OutboxRepository for MockOutboxRepository {
+        async fn insert_events(
+            &self,
+            _events: &[OutboxEventInsert],
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn get_pending_events(
+            &self,
+            _limit: usize,
+            _max_retries: i32,
+        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
+        {
+            Ok(vec![])
+        }
+
+        async fn mark_published(
+            &self,
+            _ids: &[uuid::Uuid],
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn mark_failed(
+            &self,
+            _event_id: &uuid::Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn exists_by_idempotency_key(
+            &self,
+            _key: &str,
+        ) -> std::result::Result<bool, OutboxError> {
+            Ok(false)
+        }
+
+        async fn count_pending(&self) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn get_stats(
+            &self,
+        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, OutboxError> {
+            Ok(hodei_server_domain::outbox::OutboxStats {
+                pending_count: 0,
+                published_count: 0,
+                failed_count: 0,
+                oldest_pending_age_seconds: None,
+            })
+        }
+
+        async fn cleanup_published_events(
+            &self,
+            _older_than: std::time::Duration,
+        ) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn cleanup_failed_events(
+            &self,
+            _max_retries: i32,
+            _older_than: std::time::Duration,
+        ) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn find_by_id(
+            &self,
+            _id: uuid::Uuid,
+        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
+        {
+            Ok(None)
         }
     }
 
@@ -526,6 +625,7 @@ mod tests {
         Arc<ProviderRegistry>,
         Arc<dyn WorkerCommandSender>,
         Arc<dyn EventBus>,
+        Arc<dyn OutboxRepository + Send + Sync>,
     ) {
         let job_queue: Arc<dyn JobQueue> = Arc::new(MockJobQueue::new());
         let job_repository: Arc<dyn JobRepository> = Arc::new(MockJobRepository::new());
@@ -534,6 +634,8 @@ mod tests {
         let worker_command_sender: Arc<dyn WorkerCommandSender> =
             Arc::new(MockWorkerCommandSender::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
 
         (
             job_queue,
@@ -542,6 +644,7 @@ mod tests {
             provider_registry,
             worker_command_sender,
             event_bus,
+            outbox_repository,
         )
     }
 
@@ -554,6 +657,7 @@ mod tests {
             provider_registry,
             worker_command_sender,
             event_bus,
+            outbox_repository,
         ) = create_test_components();
 
         let controller = JobControllerBuilder::new()
@@ -564,6 +668,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            .with_outbox_repository(outbox_repository)
             // Skip pool for unit tests since it requires async runtime
             .build();
 
@@ -579,6 +684,7 @@ mod tests {
             provider_registry,
             worker_command_sender,
             event_bus,
+            outbox_repository,
         ) = create_test_components();
 
         let result = JobControllerBuilder::new()
@@ -588,6 +694,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            .with_outbox_repository(outbox_repository)
             // Skip pool for unit tests
             .build();
 
@@ -600,8 +707,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_missing_job_repository() {
-        let (job_queue, _, worker_registry, provider_registry, worker_command_sender, event_bus) =
-            create_test_components();
+        let (
+            job_queue,
+            _,
+            worker_registry,
+            provider_registry,
+            worker_command_sender,
+            event_bus,
+            outbox_repository,
+        ) = create_test_components();
 
         let result = JobControllerBuilder::new()
             .with_job_queue(job_queue)
@@ -610,6 +724,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            .with_outbox_repository(outbox_repository)
             // Skip pool for unit tests
             .build();
 
@@ -629,6 +744,7 @@ mod tests {
             provider_registry,
             worker_command_sender,
             event_bus,
+            outbox_repository,
         ) = create_test_components();
 
         let result = JobControllerBuilder::new()
@@ -639,6 +755,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            .with_outbox_repository(outbox_repository)
             // Skip pool for unit tests
             .build();
 
@@ -654,6 +771,7 @@ mod tests {
             provider_registry,
             worker_command_sender,
             event_bus,
+            outbox_repository,
         ) = create_test_components();
 
         // Test that all setters can be chained
@@ -665,6 +783,7 @@ mod tests {
             .with_scheduler_config(SchedulerConfig::default())
             .with_worker_command_sender(worker_command_sender)
             .with_event_bus(event_bus)
+            .with_outbox_repository(outbox_repository)
             // Skip pool for unit tests
             .build();
 

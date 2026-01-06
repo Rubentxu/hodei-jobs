@@ -10,6 +10,7 @@ use crate::{
 use hodei_server_domain::{
     event_bus::EventBus,
     jobs::{Job, JobQueue, JobRepository},
+    outbox::{OutboxError, OutboxRepository},
     scheduling::{ProviderInfo, SchedulingContext, SchedulingDecision},
     shared_kernel::{DomainError, JobId, ProviderId, WorkerId},
     workers::WorkerProvider,
@@ -39,6 +40,7 @@ impl JobOrchestrator {
         scheduler_config: SchedulerConfig,
         lifecycle_config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         let default_worker_spec = WorkerSpec::new(
             "hodei-jobs-worker:latest".to_string(),
@@ -54,6 +56,7 @@ impl JobOrchestrator {
                 providers.clone(),
                 lifecycle_config,
                 event_bus,
+                outbox_repository,
             ),
             registry,
             job_repository,
@@ -340,6 +343,8 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::RwLock as TokioRwLock;
 
+    use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
+
     struct MockEventBus;
 
     #[async_trait::async_trait]
@@ -586,12 +591,94 @@ mod tests {
         }
     }
 
+    struct MockOutboxRepository;
+
+    #[async_trait::async_trait]
+    impl OutboxRepository for MockOutboxRepository {
+        async fn insert_events(
+            &self,
+            _events: &[OutboxEventInsert],
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn get_pending_events(
+            &self,
+            _limit: usize,
+            _max_retries: i32,
+        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
+        {
+            Ok(vec![])
+        }
+
+        async fn mark_published(
+            &self,
+            _ids: &[uuid::Uuid],
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn mark_failed(
+            &self,
+            _event_id: &uuid::Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn exists_by_idempotency_key(
+            &self,
+            _key: &str,
+        ) -> std::result::Result<bool, OutboxError> {
+            Ok(false)
+        }
+
+        async fn count_pending(&self) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn get_stats(
+            &self,
+        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, OutboxError> {
+            Ok(hodei_server_domain::outbox::OutboxStats {
+                pending_count: 0,
+                published_count: 0,
+                failed_count: 0,
+                oldest_pending_age_seconds: None,
+            })
+        }
+
+        async fn cleanup_published_events(
+            &self,
+            _older_than: std::time::Duration,
+        ) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn cleanup_failed_events(
+            &self,
+            _max_retries: i32,
+            _older_than: std::time::Duration,
+        ) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn find_by_id(
+            &self,
+            _id: uuid::Uuid,
+        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
+        {
+            Ok(None)
+        }
+    }
+
     #[tokio::test]
     async fn test_orchestrator_creation() {
         let registry = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus = Arc::new(MockEventBus);
+        let outbox = Arc::new(MockOutboxRepository);
 
         let _orchestrator = JobOrchestrator::new(
             registry,
@@ -600,6 +687,7 @@ mod tests {
             SchedulerConfig::default(),
             WorkerLifecycleConfig::default(),
             event_bus,
+            outbox,
         );
     }
 
@@ -617,6 +705,7 @@ mod tests {
             SchedulerConfig::default(),
             WorkerLifecycleConfig::default(),
             event_bus,
+            Arc::new(MockOutboxRepository),
         );
 
         let job = Job::new(JobId::new(), JobSpec::new(vec!["echo".to_string()]));
@@ -641,6 +730,7 @@ mod tests {
             SchedulerConfig::default(),
             WorkerLifecycleConfig::default(),
             event_bus,
+            Arc::new(MockOutboxRepository),
         );
 
         let stats = orchestrator.stats().await.unwrap();
