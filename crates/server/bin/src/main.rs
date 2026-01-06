@@ -32,6 +32,8 @@ use hodei_jobs::{
     worker_agent_service_server::WorkerAgentServiceServer,
 };
 
+use hodei_server_domain::outbox::OutboxError;
+
 use hodei_server_application::jobs::{CancelJobUseCase, CreateJobUseCase, JobController};
 use hodei_server_application::providers::ProviderRegistry;
 use hodei_server_application::saga::dispatcher_saga::DynExecutionSagaDispatcher;
@@ -351,6 +353,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to run outbox migrations: {}", e))?;
     let outbox_repository = Arc::new(outbox_repository_impl);
+
+    // Create trait object for shared use
+    let outbox_repository_dyn: Arc<
+        dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync,
+    > = outbox_repository.clone();
 
     // Start OutboxRelay background service
     // Reads from OutboxRepo and publishes to NATS EventBus
@@ -726,6 +733,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     providers.clone(),
                     WorkerLifecycleConfig::default(),
                     outbox_event_bus.clone(),
+                    outbox_repository_dyn.clone(),
                 );
 
                 info!("  ✓ WorkerLifecycleManager started (legacy mode)");
@@ -852,15 +860,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create Production-Ready Saga Orchestrator with PostgreSQL persistence
+    // Create Production-Ready Saga Orchestrator with PostgreSQL persistence
+    let orchestrator_impl = Arc::new(PostgresSagaOrchestrator::new(
+        saga_repository.clone(),
+        Some(saga_config.clone()),
+    ));
+
     let orchestrator: Arc<
         dyn hodei_server_domain::saga::SagaOrchestrator<
                 Error = hodei_server_domain::shared_kernel::DomainError,
             > + Send
             + Sync,
-    > = Arc::new(PostgresSagaOrchestrator::new(
-        saga_repository.clone(),
-        Some(saga_config.clone()),
-    ));
+    > = orchestrator_impl.clone();
 
     info!("  ✓ Saga orchestrator initialized with PostgreSQL repository");
 
@@ -939,6 +950,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recovery_coordinator = Arc::new(DynRecoverySagaCoordinator::new(
         orchestrator.clone(),
         Some(config),
+        None,
     ));
 
     info!("  ✓ RecoverySagaCoordinator initialized");
@@ -992,7 +1004,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Spawn reactive signal processor
         let metrics = saga_processor_metrics.clone();
         let saga_repo = saga_repository.clone();
-        let saga_orchestrator = orchestrator.clone();
+        // Use concrete orchestrator implementation to access the execute() method
+        // which handles saga reconstruction from context
+        let saga_orchestrator = orchestrator_impl.clone();
 
         reactive_processor_guard = Some(tokio::spawn(async move {
             info!("🔄 ReactiveSagaProcessor: Waiting for saga signals...");
@@ -1007,8 +1021,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ = interval.tick() => {
                         // Safety net: process any pending sagas via polling
+                        // This handles missed events or stuck sagas (resumption)
                         metrics.record_polling_processed();
-                        info!("🔄 ReactiveSagaProcessor: Safety net polling tick");
+
+                        // Claim pending sagas using the specific Postgres repository method
+                        match saga_repo.claim_pending_sagas(10, "reactive-safety-net").await {
+                            Ok(contexts) => {
+                                if !contexts.is_empty() {
+                                    info!("🔄 ReactiveSagaProcessor: Safety net processing {} sagas", contexts.len());
+
+                                    for ctx in contexts {
+                                        let saga_id = ctx.saga_id.clone();
+                                        info!(saga_id = %saga_id.0, "Derived execution via safety net");
+
+                                        // Execute using the concrete orchestrator which knows how to rebuild sagas
+                                        if let Err(e) = saga_orchestrator.execute(&ctx).await {
+                                            error!(saga_id = %saga_id.0, error = ?e, "Safety net execution failed");
+                                            metrics.record_error();
+                                        } else {
+                                            metrics.record_reactive_processed(); // Count as processed
+                                            info!(saga_id = %saga_id.0, "Safety net execution completed");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = ?e, "Failed to claim pending sagas in safety net");
+                                metrics.record_error();
+                            }
+                        }
                     }
                     signal = signal_rx.recv() => {
                         match signal {
@@ -1142,6 +1183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Recovery sagas - create if needed
                     None
                 }
+                _ => None, // Cancellation, Timeout, Cleanup - not handled by poller
             }
         });
 
@@ -1184,6 +1226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SchedulerConfig::default(),
                 sender,
                 outbox_event_bus.clone(),
+                outbox_repository_dyn.clone(), // Mandatory outbox
                 controller_provisioning,
                 Some(execution_dispatcher), // EPIC-31: Now connected to saga dispatcher
                 Some(provisioning_coordinator), // EPIC-31: Now connected to saga coordinator
