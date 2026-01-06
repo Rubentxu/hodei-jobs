@@ -308,7 +308,7 @@ impl DeadLetterEntry {
 #[derive(Clone)]
 pub struct NatsOutboxRelay {
     pool: PgPool,
-    repository: Arc<dyn OutboxRepository<Error = PostgresOutboxRepositoryError>>,
+    repository: Arc<dyn OutboxRepository>,
     event_bus: NatsEventBus,
     config: NatsOutboxRelayConfig,
     metrics: NatsOutboxRelayMetrics,
@@ -321,7 +321,7 @@ impl NatsOutboxRelay {
         event_bus: NatsEventBus,
         config: Option<NatsOutboxRelayConfig>,
     ) -> Self {
-        let repository: Arc<dyn OutboxRepository<Error = PostgresOutboxRepositoryError>> =
+        let repository: Arc<dyn OutboxRepository> =
             Arc::new(PostgresOutboxRepository::new(pool.clone()));
 
         Self {

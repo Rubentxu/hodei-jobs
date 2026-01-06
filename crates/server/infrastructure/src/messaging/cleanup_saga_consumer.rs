@@ -370,8 +370,11 @@ where
         // Create cleanup/recovery saga (using Recovery saga for cleanup)
         // BUG-009 Fix: failed_worker_id is now correctly typed as WorkerId
         let dummy_failed_worker_id = WorkerId::new();
-        let saga =
-            hodei_server_domain::saga::RecoverySaga::new(job_id.clone(), dummy_failed_worker_id);
+        let saga = hodei_server_domain::saga::RecoverySaga::new(
+            job_id.clone(),
+            dummy_failed_worker_id,
+            None,
+        );
 
         // Execute saga
         match self.orchestrator.execute_saga(&saga, context).await {
@@ -428,7 +431,8 @@ where
         // Create recovery saga for worker cleanup
         // BUG-009 Fix: failed_worker_id is now correctly typed as WorkerId
         let dummy_job_id = JobId::new();
-        let saga = hodei_server_domain::saga::RecoverySaga::new(dummy_job_id, WorkerId::new());
+        let saga =
+            hodei_server_domain::saga::RecoverySaga::new(dummy_job_id, WorkerId::new(), None);
 
         // Execute saga
         match self.orchestrator.execute_saga(&saga, context).await {

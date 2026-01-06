@@ -139,9 +139,7 @@ impl PostgresOutboxRepository {
 
 #[async_trait::async_trait]
 impl OutboxRepository for PostgresOutboxRepository {
-    type Error = PostgresOutboxRepositoryError;
-
-    async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), Self::Error> {
+    async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), OutboxError> {
         if events.is_empty() {
             return Ok(());
         }
@@ -164,7 +162,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         query_builder.push(" ON CONFLICT (idempotency_key) DO NOTHING");
 
         let query = query_builder.build();
-        query.execute(&self.pool).await?;
+        query.execute(&self.pool).await.map_err(OutboxError::from)?;
 
         Ok(())
     }
@@ -173,7 +171,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         &self,
         limit: usize,
         max_retries: i32,
-    ) -> Result<Vec<OutboxEventView>, Self::Error> {
+    ) -> Result<Vec<OutboxEventView>, OutboxError> {
         let rows: Vec<OutboxEventRow> = sqlx::query_as::<_, OutboxEventRow>(
             r#"
             SELECT id, aggregate_id, aggregate_type, event_type, event_version,
@@ -232,7 +230,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(events)
     }
 
-    async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), Self::Error> {
+    async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), OutboxError> {
         if event_ids.is_empty() {
             return Ok(());
         }
@@ -255,7 +253,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(())
     }
 
-    async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), Self::Error> {
+    async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError> {
         sqlx::query!(
             r#"
             UPDATE outbox_events
@@ -273,7 +271,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(())
     }
 
-    async fn exists_by_idempotency_key(&self, idempotency_key: &str) -> Result<bool, Self::Error> {
+    async fn exists_by_idempotency_key(&self, idempotency_key: &str) -> Result<bool, OutboxError> {
         let result: Option<OutboxEventRow> = sqlx::query_as::<_, OutboxEventRow>(
             r#"
             SELECT id, aggregate_id, aggregate_type, event_type, event_version,
@@ -291,7 +289,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(result.is_some())
     }
 
-    async fn count_pending(&self) -> Result<u64, Self::Error> {
+    async fn count_pending(&self) -> Result<u64, OutboxError> {
         #[derive(sqlx::FromRow)]
         struct CountRow {
             count: i64,
@@ -309,7 +307,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(result.count as u64)
     }
 
-    async fn get_stats(&self) -> Result<OutboxStats, Self::Error> {
+    async fn get_stats(&self) -> Result<OutboxStats, OutboxError> {
         #[derive(sqlx::FromRow)]
         struct StatsRow {
             pending_count: Option<i64>,
@@ -341,7 +339,7 @@ impl OutboxRepository for PostgresOutboxRepository {
     async fn cleanup_published_events(
         &self,
         older_than: std::time::Duration,
-    ) -> Result<u64, Self::Error> {
+    ) -> Result<u64, OutboxError> {
         let older_than_secs = older_than.as_secs_f64();
         let result: sqlx::postgres::PgQueryResult = sqlx::query!(
             r#"
@@ -361,7 +359,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         &self,
         max_retries: i32,
         older_than: std::time::Duration,
-    ) -> Result<u64, Self::Error> {
+    ) -> Result<u64, OutboxError> {
         let older_than_secs = older_than.as_secs_f64();
         let result: sqlx::postgres::PgQueryResult = sqlx::query!(
             r#"
@@ -379,7 +377,7 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(result.rows_affected() as u64)
     }
 
-    async fn find_by_id(&self, id: Uuid) -> Result<Option<OutboxEventView>, Self::Error> {
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<OutboxEventView>, OutboxError> {
         let row: Option<OutboxEventRow> = sqlx::query_as::<_, OutboxEventRow>(
             r#"
             SELECT id, aggregate_id, aggregate_type, event_type, event_version,

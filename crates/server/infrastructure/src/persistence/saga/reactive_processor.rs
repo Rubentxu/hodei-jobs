@@ -250,6 +250,8 @@ mod tests {
             HashMap::new(),
             None,
             state,
+            1,
+            None,
         )
     }
 

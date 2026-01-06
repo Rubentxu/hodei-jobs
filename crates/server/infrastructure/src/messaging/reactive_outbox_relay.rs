@@ -94,7 +94,7 @@ impl Default for ReactiveOutboxConfig {
 #[derive(Clone)]
 pub struct ReactiveOutboxRelay {
     pool: PgPool,
-    outbox_repo: Arc<dyn OutboxRepository<Error = OutboxError>>,
+    outbox_repo: Arc<dyn OutboxRepository>,
     event_bus: Arc<dyn EventBus>,
     config: ReactiveOutboxConfig,
     shutdown_flag: Arc<AtomicBool>,
@@ -112,7 +112,7 @@ impl ReactiveOutboxRelay {
     /// Creates a new ReactiveOutboxRelay
     pub fn new(
         pool: PgPool,
-        outbox_repo: Arc<dyn OutboxRepository<Error = OutboxError>>,
+        outbox_repo: Arc<dyn OutboxRepository>,
         event_bus: Arc<dyn EventBus>,
     ) -> Self {
         Self {
@@ -127,7 +127,7 @@ impl ReactiveOutboxRelay {
     /// Creates a new ReactiveOutboxRelay with custom configuration
     pub fn with_config(
         pool: PgPool,
-        outbox_repo: Arc<dyn OutboxRepository<Error = OutboxError>>,
+        outbox_repo: Arc<dyn OutboxRepository>,
         event_bus: Arc<dyn EventBus>,
         config: ReactiveOutboxConfig,
     ) -> Self {
