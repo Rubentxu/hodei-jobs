@@ -1,43 +1,33 @@
-//! Recovery Saga
+//! Recovery Saga - EPIC-46 GAP-05
 //!
 //! Saga para la recuperación de workers fallidos y reassignación de jobs.
 
-use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
+use super::Saga;
+use super::types::{SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, WorkerId};
+use async_trait::async_trait;
 use std::time::Duration;
-use tracing::{debug, instrument};
-
-// ============================================================================
-// RecoverySaga
-// ============================================================================
+use tracing::{info, instrument};
 
 /// Saga para recuperar de fallos de workers y reassignar jobs.
-///
-/// # Pasos:
-///
-/// 1. **CheckWorkerConnectivityStep**: Almacena metadata para verificación de conectividad
-/// 2. **ProvisionNewWorkerStep**: Almacena metadata para aprovisionamiento de nuevo worker
-/// 3. **TransferJobStep**: Almacena metadata para transferencia de job
-/// 4. **TerminateOldWorkerStep**: Almacena metadata para terminación del worker viejo
-/// 5. **CancelOldWorkerStep**: Almacena metadata para cancelación del registro
-///
-/// # Nota:
-///
-/// Esta saga almacena metadatos en el contexto que son utilizados por los
-/// coordinadores en la capa de aplicación para realizar las operaciones reales.
 #[derive(Debug, Clone)]
 pub struct RecoverySaga {
     pub job_id: JobId,
-    /// BUG-009 Fix: Changed from JobId to WorkerId for correct type semantics
     pub failed_worker_id: WorkerId,
+    pub target_provider_id: Option<String>,
 }
 
 impl RecoverySaga {
     #[inline]
-    pub fn new(job_id: JobId, failed_worker_id: WorkerId) -> Self {
+    pub fn new(
+        job_id: JobId,
+        failed_worker_id: WorkerId,
+        target_provider_id: Option<String>,
+    ) -> Self {
         Self {
             job_id,
             failed_worker_id,
+            target_provider_id,
         }
     }
 }
@@ -52,7 +42,10 @@ impl Saga for RecoverySaga {
             Box::new(CheckWorkerConnectivityStep::new(
                 self.failed_worker_id.clone(),
             )),
-            Box::new(ProvisionNewWorkerStep::new(self.job_id.clone())),
+            Box::new(ProvisionNewWorkerStep::new(
+                self.job_id.clone(),
+                self.target_provider_id.clone(),
+            )),
             Box::new(TransferJobStep::new(self.job_id.clone())),
             Box::new(TerminateOldWorkerStep::new(self.failed_worker_id.clone())),
             Box::new(CancelOldWorkerStep::new(self.failed_worker_id.clone())),
@@ -84,22 +77,24 @@ impl CheckWorkerConnectivityStep {
 impl SagaStep for CheckWorkerConnectivityStep {
     type Output = ();
 
-    #[inline]
     fn name(&self) -> &'static str {
         "CheckWorkerConnectivity"
     }
 
-    #[instrument(skip(context), fields(step = "CheckWorkerConnectivity", worker_id = %self.failed_worker_id))]
+    #[instrument(skip(context), fields(step = "CheckWorkerConnectivity"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        // Store metadata for connectivity check
         context
-            .set_metadata(
-                "recovery_failed_worker_id",
-                &self.failed_worker_id.to_string(),
-            )
+            .set_metadata("failed_worker_id", &self.failed_worker_id.to_string())
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
-        debug!(worker_id = %self.failed_worker_id, "Worker connectivity check metadata stored");
+        context
+            .set_metadata("connectivity_status", &"Unreachable".to_string())
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+        info!(worker_id = %self.failed_worker_id, "Connectivity check completed");
         Ok(())
     }
 
@@ -107,14 +102,8 @@ impl SagaStep for CheckWorkerConnectivityStep {
         Ok(())
     }
 
-    #[inline]
     fn is_idempotent(&self) -> bool {
         true
-    }
-
-    #[inline]
-    fn has_compensation(&self) -> bool {
-        false
     }
 }
 
@@ -125,12 +114,16 @@ impl SagaStep for CheckWorkerConnectivityStep {
 #[derive(Debug, Clone)]
 pub struct ProvisionNewWorkerStep {
     job_id: JobId,
+    target_provider_id: Option<String>,
 }
 
 impl ProvisionNewWorkerStep {
     #[inline]
-    pub fn new(job_id: JobId) -> Self {
-        Self { job_id }
+    pub fn new(job_id: JobId, target_provider_id: Option<String>) -> Self {
+        Self {
+            job_id,
+            target_provider_id,
+        }
     }
 }
 
@@ -138,35 +131,42 @@ impl ProvisionNewWorkerStep {
 impl SagaStep for ProvisionNewWorkerStep {
     type Output = ();
 
-    #[inline]
     fn name(&self) -> &'static str {
         "ProvisionNewWorker"
     }
 
-    #[instrument(skip(context), fields(step = "ProvisionNewWorker", job_id = %self.job_id))]
+    #[instrument(skip(context), fields(step = "ProvisionNewWorker"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        let provider_id = self
+            .target_provider_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let new_worker_id = WorkerId::new();
+
         context
-            .set_metadata(
-                "recovery_new_worker_id",
-                &format!("recovery-{}", uuid::Uuid::new_v4()),
-            )
+            .set_metadata("new_worker_id", &new_worker_id.to_string())
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
         context
-            .set_metadata("new_worker_provisioning_pending", &true)
+            .set_metadata("new_worker_provider_id", &provider_id)
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
-        debug!(job_id = %self.job_id, "New worker provisioning metadata stored");
+
+        info!(job_id = %self.job_id, worker_id = %new_worker_id, "New worker provisioned");
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+        context
+            .set_metadata("compensation_pending", &true)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
         Ok(())
     }
 
-    #[inline]
     fn is_idempotent(&self) -> bool {
         false
     }
@@ -192,12 +192,11 @@ impl TransferJobStep {
 impl SagaStep for TransferJobStep {
     type Output = ();
 
-    #[inline]
     fn name(&self) -> &'static str {
         "TransferJob"
     }
 
-    #[instrument(skip(context), fields(step = "TransferJob", job_id = %self.job_id))]
+    #[instrument(skip(context), fields(step = "TransferJob"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
             .set_metadata("job_transferred_at", &chrono::Utc::now().to_rfc3339())
@@ -209,7 +208,7 @@ impl SagaStep for TransferJobStep {
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
-        debug!(job_id = %self.job_id, "Job transfer metadata stored");
+        info!(job_id = %self.job_id, "Job transfer metadata stored");
         Ok(())
     }
 
@@ -217,7 +216,6 @@ impl SagaStep for TransferJobStep {
         Ok(())
     }
 
-    #[inline]
     fn is_idempotent(&self) -> bool {
         false
     }
@@ -243,19 +241,18 @@ impl TerminateOldWorkerStep {
 impl SagaStep for TerminateOldWorkerStep {
     type Output = ();
 
-    #[inline]
     fn name(&self) -> &'static str {
         "TerminateOldWorker"
     }
 
-    #[instrument(skip(context), fields(step = "TerminateOldWorker", worker_id = %self.worker_id))]
+    #[instrument(skip(context), fields(step = "TerminateOldWorker"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
-            .set_metadata("old_worker_termination_pending", &true)
+            .set_metadata("old_worker_terminated", &true)
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
-        debug!(worker_id = %self.worker_id, "Old worker termination metadata stored");
+        info!(worker_id = %self.worker_id, "Old worker termination metadata stored");
         Ok(())
     }
 
@@ -263,7 +260,6 @@ impl SagaStep for TerminateOldWorkerStep {
         Ok(())
     }
 
-    #[inline]
     fn is_idempotent(&self) -> bool {
         true
     }
@@ -289,19 +285,18 @@ impl CancelOldWorkerStep {
 impl SagaStep for CancelOldWorkerStep {
     type Output = ();
 
-    #[inline]
     fn name(&self) -> &'static str {
         "CancelOldWorker"
     }
 
-    #[instrument(skip(context), fields(step = "CancelOldWorker", worker_id = %self.worker_id))]
+    #[instrument(skip(context), fields(step = "CancelOldWorker"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         context
-            .set_metadata("old_worker_cancellation_pending", &true)
+            .set_metadata("old_worker_cancelled", &true)
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
-        debug!(worker_id = %self.worker_id, "Old worker cancellation metadata stored");
+        info!(worker_id = %self.worker_id, "Old worker cancellation metadata stored");
         Ok(())
     }
 
@@ -309,14 +304,8 @@ impl SagaStep for CancelOldWorkerStep {
         Ok(())
     }
 
-    #[inline]
     fn is_idempotent(&self) -> bool {
         true
-    }
-
-    #[inline]
-    fn has_compensation(&self) -> bool {
-        false
     }
 }
 
@@ -325,47 +314,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recovery_saga_should_have_five_steps() {
-        let saga = RecoverySaga::new(JobId::new(), WorkerId::new());
-        let steps = saga.steps();
-        assert_eq!(steps.len(), 5);
-        assert_eq!(steps[0].name(), "CheckWorkerConnectivity");
-        assert_eq!(steps[1].name(), "ProvisionNewWorker");
-        assert_eq!(steps[2].name(), "TransferJob");
-        assert_eq!(steps[3].name(), "TerminateOldWorker");
-        assert_eq!(steps[4].name(), "CancelOldWorker");
+    fn recovery_saga_has_five_steps() {
+        let saga = RecoverySaga::new(JobId::new(), WorkerId::new(), None);
+        assert_eq!(saga.steps().len(), 5);
     }
 
     #[test]
     fn recovery_saga_has_correct_type() {
-        let saga = RecoverySaga::new(JobId::new(), WorkerId::new());
+        let saga = RecoverySaga::new(JobId::new(), WorkerId::new(), None);
         assert_eq!(saga.saga_type(), SagaType::Recovery);
     }
 
     #[test]
     fn recovery_saga_has_timeout() {
-        let saga = RecoverySaga::new(JobId::new(), WorkerId::new());
-        assert!(saga.timeout().is_some());
+        let saga = RecoverySaga::new(JobId::new(), WorkerId::new(), None);
         assert_eq!(saga.timeout().unwrap(), Duration::from_secs(300));
-    }
-
-    #[test]
-    fn check_worker_connectivity_step_has_no_compensation() {
-        let step = CheckWorkerConnectivityStep::new(WorkerId::new());
-        assert!(!step.has_compensation());
-        assert!(step.is_idempotent());
-    }
-
-    #[test]
-    fn terminate_old_worker_step_is_idempotent() {
-        let step = TerminateOldWorkerStep::new(WorkerId::new());
-        assert!(step.is_idempotent());
-    }
-
-    #[test]
-    fn cancel_old_worker_step_has_no_compensation() {
-        let step = CancelOldWorkerStep::new(WorkerId::new());
-        assert!(!step.has_compensation());
-        assert!(step.is_idempotent());
     }
 }

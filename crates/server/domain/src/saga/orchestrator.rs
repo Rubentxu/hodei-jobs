@@ -373,7 +373,11 @@ where
 
                 Box::new(ExecutionSaga::new(job_id))
             }
-            SagaType::Recovery => Box::new(RecoverySaga::new(JobId::new(), WorkerId::new())),
+            SagaType::Recovery => Box::new(RecoverySaga::new(JobId::new(), WorkerId::new(), None)),
+            SagaType::Cancellation | SagaType::Timeout | SagaType::Cleanup => {
+                // TODO: Implement these saga types
+                todo!("Saga type not yet implemented in reactive orchestrator")
+            }
         };
 
         // Execute with a clone of the context
@@ -1043,6 +1047,8 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             SagaState::InProgress,
+            1,
+            None,
         );
 
         let result = orchestrator.execute_saga(&saga, context).await;

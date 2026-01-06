@@ -749,8 +749,9 @@ mod tests {
         let steps = saga.steps();
         assert_eq!(steps.len(), 4);
         assert_eq!(steps[0].name(), "ValidateProviderCapacity");
-        assert_eq!(steps[1].name(), "CreateInfrastructure");
-        assert_eq!(steps[2].name(), "RegisterWorker");
+        // EPIC-46 GAP-06: RegisterWorkerStep executes BEFORE CreateInfrastructureStep
+        assert_eq!(steps[1].name(), "RegisterWorker");
+        assert_eq!(steps[2].name(), "CreateInfrastructure");
         assert_eq!(steps[3].name(), "PublishProvisionedEvent");
     }
 

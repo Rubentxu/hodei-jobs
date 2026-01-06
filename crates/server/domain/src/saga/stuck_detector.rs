@@ -112,13 +112,21 @@ impl<R: SagaRepository + Send + Sync> StuckSagaDetector for InMemoryStuckSagaDet
         let now = chrono::Utc::now();
 
         // Query pending sagas that are stuck
-        let pending_sagas = self
-            .repository
-            .find_pending_sagas()
-            .await
-            .map_err(|e| StuckSagaDetectorError::RepositoryError {
-                message: e.to_string(),
-            })?;
+        // Query pending sagas that are stuck
+        // Combine sagas in Pending, InProgress, and Compensating states
+        let mut pending_sagas = Vec::new();
+        
+        let in_progress = self.repository.find_by_state(SagaState::InProgress).await
+            .map_err(|e| StuckSagaDetectorError::RepositoryError { message: format!("{:?}", e) })?;
+        pending_sagas.extend(in_progress);
+
+        let compensating = self.repository.find_by_state(SagaState::Compensating).await
+             .map_err(|e| StuckSagaDetectorError::RepositoryError { message: format!("{:?}", e) })?;
+        pending_sagas.extend(compensating);
+
+        let pending = self.repository.find_by_state(SagaState::Pending).await
+             .map_err(|e| StuckSagaDetectorError::RepositoryError { message: format!("{:?}", e) })?;
+        pending_sagas.extend(pending);
 
         for saga_ctx in pending_sagas {
             let elapsed = now - saga_ctx.started_at;
@@ -185,7 +193,7 @@ impl<R: SagaRepository + Send + Sync> StuckSagaDetector for InMemoryStuckSagaDet
             .find_by_id(saga_id)
             .await
             .map_err(|e| StuckSagaDetectorError::RepositoryError {
-                message: e.to_string(),
+                message: format!("{:?}", e),
             })?
             .ok_or_else(|| StuckSagaDetectorError::SagaNotFound {
                 saga_id: saga_id.clone(),
@@ -204,11 +212,11 @@ impl<R: SagaRepository + Send + Sync> StuckSagaDetector for InMemoryStuckSagaDet
             updated_ctx.error_message = Some("Marked as failed by stuck saga detector".to_string());
 
             self.repository
-                .update(&updated_ctx)
+                .update_state(&saga_id, SagaState::Failed, updated_ctx.error_message)
                 .await
                 .map_err(|e| StuckSagaDetectorError::RecoveryFailed {
                     saga_id: saga_id.clone(),
-                    message: e.to_string(),
+                    message: format!("{:?}", e),
                 })?;
 
             info!(saga_id = %saga_id, "Stuck saga marked as failed");
@@ -220,11 +228,11 @@ impl<R: SagaRepository + Send + Sync> StuckSagaDetector for InMemoryStuckSagaDet
                 Some("Compensation timed out - marked as failed by stuck saga detector".to_string());
 
             self.repository
-                .update(&updated_ctx)
+                .update_state(&saga_id, SagaState::Failed, updated_ctx.error_message)
                 .await
                 .map_err(|e| StuckSagaDetectorError::RecoveryFailed {
                     saga_id: saga_id.clone(),
-                    message: e.to_string(),
+                    message: format!("{:?}", e),
                 })?;
 
             info!(

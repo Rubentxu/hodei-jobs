@@ -15,7 +15,7 @@ use crate::jobs::JobRepository;
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
 use std::time::Duration;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 // ============================================================================
 // ExecutionSaga

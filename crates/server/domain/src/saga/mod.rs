@@ -16,12 +16,15 @@
 pub mod cancellation;
 pub mod cleanup;
 pub mod engine_config;
+pub mod errors; // EPIC-46 GAP-21: Strongly typed error enums
+pub mod event_handlers; // EPIC-46 GAP-10/11: Reactive event handlers
 pub mod execution;
 pub mod metrics;
 pub mod orchestrator;
 pub mod provisioning;
 pub mod recovery;
 pub mod repository;
+pub mod retry_policy; // EPIC-46 GAP-25: RetryPolicy with exponential backoff
 pub mod stuck_detector;
 pub mod timeout;
 pub mod types;
@@ -32,11 +35,29 @@ pub use types::{
     SagaServices, SagaState, SagaStep, SagaType,
 };
 
+// Re-exports from errors module (EPIC-46 GAP-21)
+pub use errors::{
+    CancellationSagaError, CleanupSagaError, ExecutionSagaError, IntoSagaCoreError,
+    ProvisioningSagaError, RecoverySagaError, SagaCoreError, TimeoutSagaError,
+};
+
+// Re-exports from event_handlers module (EPIC-46 GAP-10/11)
+pub use event_handlers::{
+    HandlerResult, LoggingHandler, MetricsRecordingHandler, NotificationType, SagaAction,
+    SagaEventHandler, SagaEventHandlerBuilder, SagaEventHandlerRegistry, SagaLifecycleEvent,
+};
+
+// Re-exports from retry_policy module (EPIC-46 GAP-25)
+pub use retry_policy::{
+    RetryOutcome, RetryPolicy, RetryPolicyBuilder, RetryResult, RetryableOperation,
+    execute_with_retry,
+};
+
 // Re-exports from repository module
 pub use repository::{SagaRepository, SagaStepData, SagaStepId, SagaStepState};
 
 // Re-exports from metrics module
-pub use metrics::{NoOpSagaMetrics, SagaMetrics};
+pub use metrics::{InMemorySagaMetrics, NoOpSagaMetrics, SagaConcurrencyMetrics, SagaMetrics};
 
 // Re-exports from engine_config module
 pub use engine_config::{SagaEngineConfig, SagaFeature};
