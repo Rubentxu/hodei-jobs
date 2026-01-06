@@ -211,7 +211,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         &self,
         provider_id: &ProviderId,
     ) -> Result<Option<hodei_server_domain::providers::ProviderConfig>> {
-        let provider = self.get_provider(provider_id).await?;
+        let _provider = self.get_provider(provider_id).await?;
         // Convert WorkerProvider to ProviderConfig if possible
         // For now, return None as we need additional conversion logic
         Ok(None)

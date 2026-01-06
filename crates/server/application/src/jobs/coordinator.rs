@@ -16,18 +16,15 @@ use crate::jobs::dispatcher::JobDispatcher;
 use crate::jobs::worker_monitor::WorkerMonitor;
 use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::{DomainEvent, TerminationReason};
+use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::workers::WorkerRegistry;
-use hodei_shared::event_topics::ALL_EVENTS;
 use hodei_shared::event_topics::job_topics;
-use hodei_shared::event_topics::worker_topics;
-use sqlx::PgPool;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Trait for event subscription with checkpointing support
 ///
@@ -147,7 +144,7 @@ impl JobCoordinator {
     async fn start_reactive_event_processing(&mut self) -> anyhow::Result<()> {
         use hodei_server_domain::shared_kernel::JobState;
         let event_bus = self.event_bus.clone();
-        let job_dispatcher = self.job_dispatcher.clone();
+        let _job_dispatcher = self.job_dispatcher.clone();
 
         // EPIC-43: DISABLED - JobQueued events now processed by ExecutionSaga only
         // Keeping code commented for reference during migration
@@ -181,7 +178,7 @@ impl JobCoordinator {
                 )
             })?;
 
-        let dispatcher = self.job_dispatcher.clone();
+        let _dispatcher = self.job_dispatcher.clone();
         let event_bus_for_cleanup = event_bus.clone();
         let worker_registry = self.worker_registry.clone();
 
@@ -241,8 +238,8 @@ impl JobCoordinator {
                                     job_id,
                                     new_state,
                                     old_state,
-                                    correlation_id,
-                                    actor,
+                                    correlation_id: _,
+                                    actor: _,
                                     ..
                                 } = event
                                 {

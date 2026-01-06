@@ -11,13 +11,11 @@
 //! See unit tests for complete usage examples.
 
 use crate::providers::ProviderRegistry;
-use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
-use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulerConfig;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::jobs::{JobQueue, JobRepository, JobsFilter};
+use hodei_server_domain::jobs::{JobQueue, JobRepository};
 use hodei_server_domain::workers::WorkerRegistry;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -207,7 +205,7 @@ mod tests {
     use async_trait::async_trait;
     use hodei_server_domain::event_bus::{EventBus, EventBusError};
     use hodei_server_domain::events::DomainEvent;
-    use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
+    use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobsFilter};
     use hodei_server_domain::shared_kernel::{
         DomainError, JobId, JobState, ProviderId, WorkerId, WorkerState,
     };

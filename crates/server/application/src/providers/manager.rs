@@ -3,7 +3,7 @@ use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobQueue;
-use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_server_domain::shared_kernel::{DomainError, Result};
 use hodei_shared::event_topics::ALL_EVENTS;
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};

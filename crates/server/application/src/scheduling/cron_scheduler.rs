@@ -9,16 +9,15 @@
 
 use chrono::{DateTime, Utc};
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::{
-    JobExecutionStatus, JobSpec, JobTemplate, JobTemplateId, TriggerType,
+    JobExecutionStatus, JobTemplate, JobTemplateId, TriggerType,
 };
-use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_server_domain::shared_kernel::{JobId, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tracing::{debug, error, info};
+use tracing::info;
 use uuid::Uuid;
 
 /// Configuration for the Cron Scheduler Service

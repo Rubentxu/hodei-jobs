@@ -13,13 +13,12 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::aggregate::JobSpec;
 use hodei_server_domain::jobs::templates::{
-    JobExecution, JobExecutionRepository, JobExecutionStatus, JobTemplate, JobTemplateId,
-    JobTemplateRepository, ScheduledJobRepository, TriggerType,
+    JobExecution, JobExecutionRepository, JobTemplate,
+    JobTemplateRepository, ScheduledJobRepository,
 };
-use hodei_server_domain::shared_kernel::{JobId, Result};
+use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use tracing::{debug, info, instrument};
-use uuid::Uuid;
 
 /// Handler for CreateTemplateCommand
 #[derive(Clone)]

@@ -1,9 +1,8 @@
 //! Fail Job Use Case
 use chrono::Utc;
-use hodei_server_domain::events::{DomainEvent, EventMetadata};
-use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::OutboxEventInsert;
-use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
+use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

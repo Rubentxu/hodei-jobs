@@ -7,11 +7,10 @@ use crate::saga::recovery_saga::DynRecoverySagaCoordinator;
 use crate::workers::pulse::WorkerPulseService;
 use crate::workers::termination::WorkerTerminationService;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId};
 use hodei_server_domain::workers::{WorkerRegistry, WorkerSpec};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 
 pub use super::lifecycle::WorkerLifecycleConfig;
 

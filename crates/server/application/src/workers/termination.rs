@@ -1,8 +1,8 @@
 //! Worker Termination Service
 use chrono::Utc;
 use hodei_server_domain::events::{DomainEvent, TerminationReason};
-use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
-use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId, WorkerState};
+use hodei_server_domain::outbox::OutboxEventInsert;
+use hodei_server_domain::shared_kernel::{ProviderId, Result, WorkerId, WorkerState};
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
 use std::time::Duration;

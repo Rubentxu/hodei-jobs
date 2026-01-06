@@ -3,7 +3,6 @@
 //! Responsible for subscribing to domain events and triggering job scheduling.
 //! Follows Single Responsibility Principle: only handles event subscription.
 
-use async_trait::async_trait;
 use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;

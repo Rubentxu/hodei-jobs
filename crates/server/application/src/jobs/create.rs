@@ -2,8 +2,8 @@
 // UC-001: Create Job
 // UC-002: Execute Next Job
 
-use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobSpec, JobsFilter};
-use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobSpec};
+use hodei_server_domain::shared_kernel::{DomainError, JobId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -445,6 +445,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream::BoxStream;
     use hodei_server_domain::event_bus::{EventBus, EventBusError};
+    use hodei_server_domain::jobs::JobsFilter;
     use hodei_server_domain::shared_kernel::{JobState, Result};
     use std::sync::{Arc, Mutex};
 
@@ -457,6 +458,12 @@ mod tests {
         }
         async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> {
             Ok(None)
+        }
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            Ok(0)
         }
         async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
             Ok(vec![])
@@ -476,15 +483,6 @@ mod tests {
         async fn update(&self, _job: &Job) -> Result<()> {
             Ok(())
         }
-
-        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
-            Ok(vec![])
-        }
-
-        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
-            Ok(0)
-        }
-
         async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
@@ -626,6 +624,12 @@ mod tests {
         async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> {
             Ok(self.job.lock().unwrap().clone())
         }
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            Ok(0)
+        }
         async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
             Ok(vec![])
         }
@@ -643,6 +647,9 @@ mod tests {
         }
         async fn update(&self, job: &Job) -> Result<()> {
             *self.job.lock().unwrap() = Some(job.clone());
+            Ok(())
+        }
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
     }

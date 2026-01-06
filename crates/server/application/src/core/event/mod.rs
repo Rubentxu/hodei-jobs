@@ -2,8 +2,6 @@
 //!
 //! Provides event publishing infrastructure for the application layer.
 
-use async_trait::async_trait;
-use futures::stream::BoxStream;
 use hodei_server_domain::events::DomainEvent;
 use std::fmt::Debug;
 use std::sync::Arc;

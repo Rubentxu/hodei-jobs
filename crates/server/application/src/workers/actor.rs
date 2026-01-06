@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId, WorkerState};
-use hodei_server_domain::workers::{Worker, WorkerHandle, WorkerSpec};
+use hodei_server_domain::workers::{WorkerHandle, WorkerSpec};
 
 /// Errors from WorkerSupervisor operations
 #[derive(Debug, Error)]

@@ -11,15 +11,12 @@ use crate::jobs::template::queries::{
     TemplateSummary, UpcomingExecutionSummary, ValidateCronQuery,
 };
 use crate::jobs::template::read_models::{ExecutionReadModelPort, TemplateReadModelPort};
-use hodei_server_domain::jobs::aggregate::JobSpec;
 use hodei_server_domain::jobs::templates::{
     JobExecutionRepository, JobTemplateRepository, ScheduledJobRepository,
 };
-use hodei_server_domain::shared_kernel::{JobId, Result};
-use std::collections::HashMap;
+use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use tracing::{debug, instrument};
-use uuid::Uuid;
 
 /// Handler for GetTemplateQuery
 #[derive(Clone)]
@@ -237,7 +234,7 @@ impl QueryHandler<ListScheduledJobsQuery> for ListScheduledJobsHandler {
         let scheduled_jobs: Vec<hodei_server_domain::jobs::templates::ScheduledJob> = Vec::new();
 
         // Apply filters
-        if let Some(template_id) = query.template_id {
+        if let Some(_template_id) = query.template_id {
             // scheduled_jobs.retain(|s| s.template_id == template_id);
         }
         if let Some(_enabled) = query.enabled {
@@ -277,7 +274,7 @@ impl QueryHandler<ValidateCronQuery> for ValidateCronHandler {
 
         match cron::Schedule::from_str(&query.cron_expression) {
             Ok(schedule) => {
-                let now = Utc::now();
+                let _now = Utc::now();
                 let next_executions: Vec<DateTime<Utc>> = schedule.upcoming(Utc).take(10).collect();
 
                 let next_execution = next_executions.first().cloned();

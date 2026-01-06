@@ -18,7 +18,6 @@ use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::{JobQueue, JobRepository};
-use hodei_server_domain::shared_kernel::Result;
 use hodei_server_domain::workers::WorkerRegistry;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -55,7 +54,7 @@ impl JobController {
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
-        pool: PgPool,
+        _pool: PgPool,
     ) -> Self {
         info!("Initializing JobController with specialized components");
 

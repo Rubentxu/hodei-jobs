@@ -2,7 +2,7 @@
 // Queries: Get Job Status
 
 use hodei_server_domain::jobs::JobRepository;
-use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_server_domain::shared_kernel::{DomainError, JobId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

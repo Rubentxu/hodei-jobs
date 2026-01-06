@@ -2,12 +2,10 @@
 //!
 //! Coordinates worker provisioning using the saga pattern with automatic compensation.
 
-use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{
-    ProvisioningSaga, Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
-    SagaServices,
+    ProvisioningSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaServices,
 };
 use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::{WorkerProvisioning, WorkerRegistry, WorkerSpec};
@@ -481,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_error() {
-        let result = DynProvisioningSagaCoordinatorBuilder::<TestSagaOrchestrator>::new().build();
+        let result = DynProvisioningSagaCoordinatorBuilder::new().build();
         assert!(result.is_err());
         match result {
             Err(DynProvisioningSagaCoordinatorBuilderError::MissingField(_)) => {}

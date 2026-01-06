@@ -301,7 +301,7 @@ impl QueueJobUseCase {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use hodei_server_domain::jobs::{Job, JobRepository, JobRepositoryTx};
+    use hodei_server_domain::jobs::{Job, JobRepository, JobRepositoryTx, JobsFilter};
     use hodei_server_domain::shared_kernel::JobState;
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
@@ -317,6 +317,14 @@ mod tests {
 
         async fn find_by_id(&self, _job_id: &JobId) -> Result<Option<Job>> {
             Ok(None)
+        }
+
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            Ok(0)
         }
 
         async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
@@ -340,6 +348,10 @@ mod tests {
         }
 
         async fn update(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
     }

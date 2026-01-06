@@ -6,7 +6,7 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::request_context::RequestContext;
-use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
+use hodei_server_domain::shared_kernel::{DomainError, JobId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

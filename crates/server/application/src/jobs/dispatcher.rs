@@ -15,7 +15,7 @@
 //! - Orquestación de saga → ExecutionSagaDispatcher
 
 use crate::providers::ProviderRegistry;
-use crate::saga::dispatcher_saga::{DynExecutionSagaDispatcher, ExecutionSagaDispatcher};
+use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
 use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
@@ -28,7 +28,7 @@ use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };
-use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId};
 use hodei_server_domain::workers::health::WorkerHealthService;
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
 use hodei_shared::states::JobState;
@@ -36,7 +36,7 @@ use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{Level, debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 /// Job Dispatcher
@@ -1070,7 +1070,7 @@ impl JobDispatcher {
                 Ok(_) => {
                     // Fallback to traditional dispatch
                     info!("📤 JobDispatcher: Using legacy dispatch for job {}", job_id);
-                    let mut job = self
+                    let _job = self
                         .job_repository
                         .find_by_id(job_id)
                         .await

@@ -11,7 +11,6 @@
 //! 3. Finds the worker that executed/was assigned to the job
 //! 4. Emits WorkerEphemeralTerminating event for lifecycle manager to process
 
-use async_trait::async_trait;
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
@@ -19,7 +18,7 @@ use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_server_domain::workers::{WorkerFilter, WorkerRegistry};
 use hodei_shared::states::JobState;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use super::event_subscriber::EventHandler;
 
@@ -56,7 +55,7 @@ impl EventHandler for JobCompletionWorkerCleanupHandler {
         event: DomainEvent,
     ) -> anyhow::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Only handle JobStatusChanged events
-        let (job_id, new_state, correlation_id, actor) = match event {
+        let (job_id, new_state, correlation_id, _actor) = match event {
             DomainEvent::JobStatusChanged {
                 job_id,
                 new_state,

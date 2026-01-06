@@ -5,13 +5,11 @@ use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
+use hodei_server_domain::jobs::{JobQueue, JobRepository};
 use hodei_server_domain::outbox::{OutboxError, OutboxRepository};
 use hodei_server_domain::scheduling::SchedulerConfig;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
-use hodei_server_domain::workers::health::WorkerHealthService;
 use std::sync::Arc;
 
 pub struct SagaOnlyJobDispatcher {

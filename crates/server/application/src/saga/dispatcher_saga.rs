@@ -4,7 +4,7 @@
 
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{
-    ExecutionSaga, Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaStep,
+    ExecutionSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
 };
 use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
@@ -82,7 +82,7 @@ impl DynExecutionSagaDispatcher {
     ) -> ExecutionSagaResult<SagaExecutionResult> {
         info!(job_id = %job_id, worker_id = %worker_id, "📦 Starting execution saga");
 
-        let job = self
+        let _job = self
             .job_repository
             .find_by_id(job_id)
             .await
@@ -105,7 +105,7 @@ impl DynExecutionSagaDispatcher {
             })?;
 
         let saga_id = SagaId::new();
-        let saga_id_clone = saga_id.clone();
+        let _saga_id_clone = saga_id.clone();
         let mut context = SagaContext::new(
             saga_id,
             hodei_server_domain::saga::SagaType::Execution,
@@ -291,7 +291,7 @@ where
     ) -> ExecutionSagaResult<SagaExecutionResult> {
         info!(job_id = %job_id, worker_id = %worker_id, "📦 Starting execution saga");
 
-        let job = self
+        let _job = self
             .job_repository
             .find_by_id(job_id)
             .await

@@ -12,14 +12,17 @@
 //!    - ImagePullFailed/InvalidConfiguration → Mark job as Failed (config error)
 //!    - Other → Retry with backoff
 
-use async_trait::async_trait;
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
-use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
 use hodei_shared::states::{JobState, ProvisioningFailureReason};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Maximum provisioning retries per provider
 const MAX_PROVISIONING_RETRIES: u32 = 2;
@@ -375,8 +378,11 @@ use crate::jobs::event_subscriber::EventHandler;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::jobs::{Job, JobState, JobsFilter};
-    use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
+    use hodei_server_domain::jobs::{Job, JobsFilter};
+    use hodei_server_domain::shared_kernel::{
+        DomainError, JobId, JobState, ProviderId, Result, WorkerId, WorkerState,
+    };
+    use hodei_shared::states::JobState as ProvisioningJobState;
     use uuid::Uuid;
 
     // Mock implementations for testing
@@ -405,7 +411,7 @@ mod tests {
         async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
             Ok(None)
         }
-        async fn count_by_state(&self, _state: JobState) -> Result<u64> {
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
             Ok(0)
         }
         async fn delete(&self, _job_id: &JobId) -> Result<()> {
@@ -425,29 +431,45 @@ mod tests {
     impl OutboxRepository for MockOutboxRepository {
         type Error = OutboxError;
 
-        async fn insert_events(&self, _events: &[OutboxEventInsert]) -> Result<(), Self::Error> {
+        async fn insert_events(
+            &self,
+            _events: &[OutboxEventInsert],
+        ) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
         async fn get_pending_events(
             &self,
             _limit: usize,
             _max_retries: i32,
-        ) -> Result<Vec<hodei_server_domain::outbox::OutboxEventView>, Self::Error> {
+        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, Self::Error>
+        {
             Ok(vec![])
         }
-        async fn mark_published(&self, _event_ids: &[Uuid]) -> Result<(), Self::Error> {
+        async fn mark_published(
+            &self,
+            _event_ids: &[Uuid],
+        ) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
-        async fn mark_failed(&self, _event_id: &Uuid, _error: &str) -> Result<(), Self::Error> {
+        async fn mark_failed(
+            &self,
+            _event_id: &Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
-        async fn exists_by_idempotency_key(&self, _key: &str) -> Result<bool, Self::Error> {
+        async fn exists_by_idempotency_key(
+            &self,
+            _key: &str,
+        ) -> std::result::Result<bool, Self::Error> {
             Ok(false)
         }
-        async fn count_pending(&self) -> Result<u64, Self::Error> {
+        async fn count_pending(&self) -> std::result::Result<u64, Self::Error> {
             Ok(0)
         }
-        async fn get_stats(&self) -> Result<hodei_server_domain::outbox::OutboxStats, Self::Error> {
+        async fn get_stats(
+            &self,
+        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, Self::Error> {
             Ok(hodei_server_domain::outbox::OutboxStats {
                 pending_count: 0,
                 published_count: 0,
@@ -458,20 +480,21 @@ mod tests {
         async fn cleanup_published_events(
             &self,
             _older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> std::result::Result<u64, Self::Error> {
             Ok(0)
         }
         async fn cleanup_failed_events(
             &self,
             _max_retries: i32,
             _older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> std::result::Result<u64, Self::Error> {
             Ok(0)
         }
         async fn find_by_id(
             &self,
             _id: Uuid,
-        ) -> Result<Option<hodei_server_domain::outbox::OutboxEventView>, Self::Error> {
+        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, Self::Error>
+        {
             Ok(None)
         }
     }

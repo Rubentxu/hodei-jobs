@@ -4,7 +4,6 @@
 //! No infrastructure calls, no provisioning, no cleanup.
 
 use chrono::{DateTime, Utc};
-use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::shared_kernel::{JobId, Result, WorkerId, WorkerState};
 use hodei_server_domain::workers::Worker;
 use hodei_server_domain::workers::WorkerRegistry;

@@ -10,16 +10,14 @@
 //! 3. If retry_count < MAX_DISPATCH_RETRIES: emit JobRequeued for retry
 //! 4. If max retries reached: mark job as Failed
 
-use async_trait::async_trait;
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::jobs::JobsFilter;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
-use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
+use hodei_server_domain::shared_kernel::JobId;
 use hodei_shared::states::{DispatchFailureReason, JobState};
 use std::result::Result;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use super::event_subscriber::EventHandler;
 
@@ -102,7 +100,7 @@ impl DispatchFailureHandler {
         backoff_secs: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let idempotency_key = format!("job-requeued-{}-{}", job_id.0, next_retry);
-        let now = Utc::now();
+        let _now = Utc::now();
 
         let event = OutboxEventInsert::for_job(
             job_id.0,
@@ -196,7 +194,7 @@ impl DispatchFailureHandler {
 mod tests {
     use super::*;
     use hodei_server_domain::jobs::{Job, JobsFilter};
-    use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
+    use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
     use hodei_shared::states::{DispatchFailureReason, JobState};
     use uuid::Uuid;
 
@@ -376,7 +374,7 @@ mod tests {
 
         // Event with max retries reached
         let event = DomainEvent::JobDispatchFailed {
-            job_id,
+            job_id: job_id.clone(),
             worker_id,
             failure_reason: DispatchFailureReason::CommunicationTimeout { timeout_ms: 5000 },
             retry_count: MAX_DISPATCH_RETRIES, // Exactly max retries

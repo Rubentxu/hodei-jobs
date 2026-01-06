@@ -1,12 +1,11 @@
 // Provider Bootstrap Service
 // Carga providers desde configuración YAML al arranque
 
-use async_trait::async_trait;
 use hodei_server_domain::providers::{
     DockerConfig, FargateConfig, KubernetesConfig, LambdaConfig, ProviderConfig,
-    ProviderConfigRepository, ProviderTypeConfig, ValidationConfig, ValidationReport,
+    ProviderConfigRepository, ProviderTypeConfig, ValidationReport,
 };
-use hodei_server_domain::shared_kernel::{DomainError, ProviderId, ProviderStatus, Result};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId, Result};
 use hodei_server_domain::workers::ProviderType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::warn;
 
 /// Configuration for bootstrap of providers
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,7 +225,7 @@ impl ProviderBootstrap {
     async fn register_provider_from_definition(
         &self,
         def: &ProviderDefinition,
-        bootstrap_config: &ProviderBootstrapConfig,
+        _bootstrap_config: &ProviderBootstrapConfig,
     ) -> Result<ProviderConfig> {
         // Check if provider already exists
         if self.repository.exists_by_name(&def.name).await? {

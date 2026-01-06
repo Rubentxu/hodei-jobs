@@ -9,9 +9,9 @@ use crate::{
 };
 use hodei_server_domain::{
     event_bus::EventBus,
-    jobs::{Job, JobQueue, JobRepository, JobsFilter},
+    jobs::{Job, JobQueue, JobRepository},
     scheduling::{ProviderInfo, SchedulingContext, SchedulingDecision},
-    shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId},
+    shared_kernel::{DomainError, JobId, ProviderId, WorkerId},
     workers::WorkerProvider,
     workers::WorkerSpec,
     workers::{WorkerRegistry, WorkerRegistryStats},
@@ -121,7 +121,7 @@ impl JobOrchestrator {
 
         for (provider_id, provider) in providers.iter() {
             let health = provider.health_check().await;
-            let health_score = match health {
+            let _health_score = match health {
                 Ok(hodei_server_domain::workers::HealthStatus::Healthy) => 1.0,
                 Ok(hodei_server_domain::workers::HealthStatus::Degraded { .. }) => 0.5,
                 _ => 0.0,
@@ -333,8 +333,8 @@ mod tests {
     use futures::stream::BoxStream;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::events::DomainEvent;
-    use hodei_server_domain::jobs::JobSpec;
-    use hodei_server_domain::shared_kernel::JobState;
+    use hodei_server_domain::jobs::{JobSpec, JobsFilter};
+    use hodei_server_domain::shared_kernel::{JobState, Result};
     use std::collections::HashMap as StdHashMap;
     use std::collections::VecDeque;
     use std::sync::Mutex;

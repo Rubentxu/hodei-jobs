@@ -8,26 +8,23 @@
 //! - Worker provisioning via Saga pattern (US-2.2)
 //! - Worker recovery via Saga pattern (US-4.2)
 
-use crate::saga::provisioning_saga::{
-    DynProvisioningSagaCoordinator, DynProvisioningSagaCoordinatorBuilder,
-    ProvisioningSagaCoordinatorConfig, ProvisioningSagaError,
-};
-use crate::saga::recovery_saga::{
-    DynRecoverySagaCoordinator, RecoverySagaCoordinatorConfig, RecoverySagaError,
-};
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+
+use crate::saga::provisioning_saga::{DynProvisioningSagaCoordinator, ProvisioningSagaError};
+use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaError};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use hodei_server_domain::{
     event_bus::EventBus,
-    events::{DomainEvent, TerminationReason},
+    events::DomainEvent,
     outbox::{OutboxError, OutboxEventInsert, OutboxRepository},
-    saga::SagaOrchestrator,
     shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId, WorkerState},
     workers::WorkerProvider,
     workers::health::WorkerHealthService,
     workers::provider_api::{
-        HealthStatus, WorkerCost, WorkerEligibility, WorkerHealth, WorkerInfrastructureEvent,
-        WorkerLifecycle, WorkerLogs, WorkerMetrics, WorkerProviderIdentity,
+        HealthStatus, WorkerInfrastructureEvent, WorkerLifecycle, WorkerProviderIdentity,
     },
     workers::{Worker, WorkerFilter, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
@@ -237,7 +234,7 @@ impl WorkerLifecycleManager {
     /// Uses Transactional Outbox pattern when available for consistency.
     pub async fn run_reconciliation(&self) -> Result<ReconciliationResult> {
         let mut result = ReconciliationResult::default();
-        let now = Utc::now();
+        let _now = Utc::now();
 
         // Find workers with stale heartbeats (haven't reported in heartbeat_timeout)
         let stale_workers = self
@@ -896,7 +893,6 @@ impl WorkerLifecycleManager {
     /// This handles WorkerEphemeralTerminating events reactively
     async fn start_domain_event_monitoring(&self) {
         use futures::StreamExt;
-        use hodei_server_domain::events::DomainEvent;
 
         info!("👂 WorkerLifecycleManager: Starting domain event monitoring");
 
@@ -982,7 +978,7 @@ impl WorkerLifecycleManager {
     async fn perform_worker_cleanup(
         &self,
         worker_id: &WorkerId,
-        provider_id: &ProviderId,
+        _provider_id: &ProviderId,
     ) -> Result<()> {
         // Get the worker from registry
         let worker = match self.registry.get(worker_id).await? {
@@ -1463,13 +1459,17 @@ mod tests {
     use super::*;
     use crate::WorkerProvisioningService;
     use crate::provisioning::ProvisioningResult;
+    use crate::saga::provisioning_saga::ProvisioningSagaCoordinatorConfig;
     use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
     use futures::stream::BoxStream;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::saga::{
         Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
     };
-    use hodei_server_domain::workers::{ProviderType, WorkerHandle};
+    use hodei_server_domain::workers::{
+        ProviderType, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLogs,
+        WorkerMetrics, WorkerProvisioning,
+    };
     use std::collections::HashMap as StdHashMap;
     use std::sync::Mutex;
     use tokio::sync::RwLock as TokioRwLock;
@@ -1738,13 +1738,25 @@ mod tests {
             Ok(worker)
         }
 
+        async fn save(&self, _worker: &Worker) -> Result<()> {
+            Ok(())
+        }
+
         async fn unregister(&self, worker_id: &WorkerId) -> Result<()> {
             self.workers.write().await.remove(worker_id);
             Ok(())
         }
 
+        async fn find_by_id(&self, worker_id: &WorkerId) -> Result<Option<Worker>> {
+            Ok(self.workers.read().await.get(worker_id).cloned())
+        }
+
         async fn get(&self, worker_id: &WorkerId) -> Result<Option<Worker>> {
             Ok(self.workers.read().await.get(worker_id).cloned())
+        }
+
+        async fn get_by_job_id(&self, _job_id: &JobId) -> Result<Option<Worker>> {
+            Ok(None)
         }
 
         async fn find(
@@ -1752,6 +1764,19 @@ mod tests {
             _filter: &hodei_server_domain::workers::WorkerFilter,
         ) -> Result<Vec<Worker>> {
             Ok(self.workers.read().await.values().cloned().collect())
+        }
+
+        async fn find_ready_worker(
+            &self,
+            _filter: Option<&hodei_server_domain::workers::WorkerFilter>,
+        ) -> Result<Option<Worker>> {
+            Ok(self
+                .workers
+                .read()
+                .await
+                .values()
+                .find(|w| w.state().can_accept_jobs() && w.current_job_id().is_none())
+                .cloned())
         }
 
         async fn find_available(&self) -> Result<Vec<Worker>> {
@@ -1768,10 +1793,6 @@ mod tests {
 
         async fn find_by_provider(&self, _provider_id: &ProviderId) -> Result<Vec<Worker>> {
             Ok(vec![])
-        }
-
-        async fn get_by_job_id(&self, _job_id: &JobId) -> Result<Option<Worker>> {
-            Ok(None)
         }
 
         async fn update_state(&self, worker_id: &WorkerId, state: WorkerState) -> Result<()> {
@@ -1793,9 +1814,28 @@ mod tests {
             Ok(())
         }
 
+        async fn update_heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
+            if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
+                worker.update_heartbeat();
+            }
+            Ok(())
+        }
+
         async fn heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
             if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
                 worker.update_heartbeat();
+            }
+            Ok(())
+        }
+
+        async fn mark_busy(&self, worker_id: &WorkerId, job_id: Option<JobId>) -> Result<()> {
+            if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
+                if let Some(jid) = job_id {
+                    worker.assign_job(jid).map_err(|e| {
+                        tracing::error!("Failed to mark worker {} as Busy: {}", worker_id, e);
+                        e
+                    })?;
+                }
             }
             Ok(())
         }
@@ -2355,6 +2395,40 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl WorkerProvisioning for MockWorkerProvisioningService {
+        async fn provision_worker(
+            &self,
+            provider_id: &ProviderId,
+            spec: WorkerSpec,
+            job_id: JobId,
+        ) -> Result<hodei_server_domain::workers::WorkerProvisioningResult> {
+            let handle = WorkerHandle::new(
+                WorkerId::new(),
+                format!("test-resource-{}", job_id.0),
+                hodei_server_domain::workers::ProviderType::Docker,
+                provider_id.clone(),
+            );
+            let worker = Worker::new(handle.clone(), spec);
+            self.provisioned_workers.lock().unwrap().push(worker);
+            Ok(hodei_server_domain::workers::WorkerProvisioningResult::new(
+                handle.worker_id.clone(),
+                provider_id.clone(),
+                job_id,
+            ))
+        }
+
+        async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+            let mut workers = self.provisioned_workers.lock().unwrap();
+            workers.retain(|w| w.id() != worker_id);
+            Ok(())
+        }
+
+        async fn is_provider_available(&self, _provider_id: &ProviderId) -> Result<bool> {
+            Ok(*self.available.lock().unwrap())
+        }
+    }
+
     #[tokio::test]
     async fn test_is_saga_provisioning_disabled_by_default() {
         // GIVEN: Un WorkerLifecycleManager sin coordinador de saga
@@ -2390,6 +2464,9 @@ mod tests {
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
             orchestrator,
             provisioning_service,
+            registry.clone(),
+            event_bus.clone(),
+            None,
             Some(saga_config),
         ));
 
@@ -2463,6 +2540,9 @@ mod tests {
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
             orchestrator,
             provisioning_service,
+            registry.clone(),
+            event_bus.clone(),
+            None,
             Some(saga_config),
         ));
 
@@ -2510,6 +2590,9 @@ mod tests {
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
             orchestrator,
             provisioning_service,
+            registry.clone(),
+            event_bus.clone(),
+            None,
             Some(saga_config),
         ));
 

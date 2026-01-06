@@ -1,7 +1,6 @@
 //! Complete Job Use Case
 use chrono::Utc;
-use hodei_server_domain::events::{DomainEvent, EventMetadata};
-use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::OutboxEventInsert;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobResult, WorkerId};
 use serde::{Deserialize, Serialize};

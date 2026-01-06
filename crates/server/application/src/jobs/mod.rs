@@ -32,7 +32,6 @@ pub use create::*;
 pub use dispatch_failure_handler::*;
 pub use dispatcher::*;
 pub use event_router::*;
-pub use event_subscriber::*;
 pub use fail_job::*;
 pub use job_completion_handler::*;
 pub use orchestrator::*;

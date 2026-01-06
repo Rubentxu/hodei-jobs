@@ -12,14 +12,12 @@
 //!    - NoMatchingProvider: Mark job as failed (config error)
 //!    - ConstraintsUnsatisfiable: Mark job as failed
 
-use async_trait::async_trait;
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
-use hodei_server_domain::shared_kernel::{JobId, ProviderId};
+use hodei_server_domain::shared_kernel::JobId;
 use hodei_shared::states::{JobState, SchedulingFailureReason};
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Maximum scheduling retries with backpressure

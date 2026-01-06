@@ -17,7 +17,7 @@
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
-use hodei_server_domain::shared_kernel::{Result, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::{WorkerId, WorkerState};
 use hodei_server_domain::workers::WorkerRegistry;
 use hodei_server_domain::workers::health::{WorkerHealthService, WorkerHealthStatus};
 use std::sync::Arc;

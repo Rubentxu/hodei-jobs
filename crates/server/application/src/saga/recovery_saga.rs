@@ -3,9 +3,9 @@
 //! Coordinates worker recovery using the saga pattern with automatic compensation.
 
 use hodei_server_domain::saga::{
-    RecoverySaga, Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    RecoverySaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
 };
-use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;

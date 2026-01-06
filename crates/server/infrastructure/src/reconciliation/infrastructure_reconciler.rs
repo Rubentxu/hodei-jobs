@@ -233,7 +233,10 @@ impl InfrastructureReconciler {
     }
 
     /// Process TERMINATED workers to find zombies (infrastructure still exists)
-    async fn process_zombies(&self, result: &mut ReconciliationResult) -> Result<(), OutboxError> {
+    async fn process_zombies(
+        &self,
+        result: &mut ReconciliationResult,
+    ) -> std::result::Result<(), OutboxError> {
         let terminated_workers = self.find_terminated_workers().await?;
 
         if terminated_workers.is_empty() {
@@ -296,7 +299,10 @@ impl InfrastructureReconciler {
     }
 
     /// Process BUSY workers to find ghosts (infrastructure no longer exists)
-    async fn process_ghosts(&self, result: &mut ReconciliationResult) -> Result<(), OutboxError> {
+    async fn process_ghosts(
+        &self,
+        result: &mut ReconciliationResult,
+    ) -> std::result::Result<(), OutboxError> {
         let busy_workers = self.find_busy_workers().await?;
 
         if busy_workers.is_empty() {
@@ -394,7 +400,7 @@ impl InfrastructureReconciler {
     }
 
     /// Recovers a job from a ghost worker
-    async fn recover_job(&self, job_id: &Uuid) -> Result<(), OutboxError> {
+    async fn recover_job(&self, job_id: &Uuid) -> std::result::Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
         // Update job state back to PENDING
@@ -442,7 +448,10 @@ impl InfrastructureReconciler {
     }
 
     /// Terminates a ghost worker
-    async fn terminate_ghost_worker(&self, worker: &Worker) -> Result<(), OutboxError> {
+    async fn terminate_ghost_worker(
+        &self,
+        worker: &Worker,
+    ) -> std::result::Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
         // Update worker status (already TERMINATED, just ensure it)
@@ -469,7 +478,10 @@ impl InfrastructureReconciler {
     }
 
     /// Emits event when zombie is destroyed
-    async fn emit_zombie_destroyed_event(&self, worker: &Worker) -> Result<(), OutboxError> {
+    async fn emit_zombie_destroyed_event(
+        &self,
+        worker: &Worker,
+    ) -> std::result::Result<(), OutboxError> {
         let mut tx = self.pool.begin().await?;
 
         let outbox_event = OutboxEventInsert::for_worker(
@@ -499,7 +511,7 @@ impl InfrastructureReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::jobs::JobsFilter;
+    use hodei_server_domain::jobs::{Job, JobsFilter};
 
     #[tokio::test]
     async fn test_config_defaults() {
