@@ -34,6 +34,9 @@ pub enum OutboxError {
 
     #[error("Infrastructure error: {message}")]
     InfrastructureError { message: String },
+
+    #[error("Event bus error: {0}")]
+    EventBus(String),
 }
 
 /// Type of aggregate for an outbox event

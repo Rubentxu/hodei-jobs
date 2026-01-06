@@ -57,7 +57,7 @@ pub trait EventPublisher: Send + Sync {
     type Error: std::fmt::Display + Send + Sync;
 
     /// Publish a domain event
-    async fn publish(&self, event: &DomainEvent) -> Result<(), Self::Error>;
+    async fn publish(&self, event: &DomainEvent) -> Result<(), OutboxError>;
 }
 
 /// EventBus implementation that implements EventPublisher
@@ -75,8 +75,11 @@ impl EventBusPublisher {
 impl EventPublisher for EventBusPublisher {
     type Error = crate::event_bus::EventBusError;
 
-    async fn publish(&self, event: &DomainEvent) -> Result<(), Self::Error> {
-        self.event_bus.publish(event).await
+    async fn publish(&self, event: &DomainEvent) -> Result<(), OutboxError> {
+        self.event_bus
+            .publish(event)
+            .await
+            .map_err(|e| OutboxError::EventBus(e.to_string()))
     }
 }
 
@@ -92,7 +95,7 @@ pub struct TransactionalOutbox<R> {
 
 impl<R> TransactionalOutbox<R>
 where
-    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    R: OutboxRepository + Send + Sync,
 {
     /// Create a new TransactionalOutbox
     pub fn new(outbox_repository: Arc<R>, polling_interval: Duration) -> Self {
@@ -110,7 +113,7 @@ where
 
 impl<R> TransactionalOutbox<R>
 where
-    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    R: OutboxRepository + Send + Sync,
 {
     /// Publish a domain event using the transactional outbox pattern
     ///
@@ -185,7 +188,7 @@ pub struct OutboxPoller<R, P, D = ()> {
 
 impl<R, P> OutboxPoller<R, P>
 where
-    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    R: OutboxRepository + Send + Sync,
     P: EventPublisher + Send + Sync,
 {
     /// Create a new OutboxPoller
@@ -215,7 +218,7 @@ where
 /// OutboxPoller without DLQ - basic implementation
 impl<R, P> OutboxPoller<R, P, ()>
 where
-    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    R: OutboxRepository + Send + Sync,
     P: EventPublisher + Send + Sync,
 {
     /// Run the poller loop
@@ -358,7 +361,7 @@ where
 /// EPIC-31 US-31.4: OutboxPoller with DLQ integration
 impl<R, P, D> OutboxPoller<R, P, D>
 where
-    R: OutboxRepository<Error: Into<OutboxError>> + Send + Sync,
+    R: OutboxRepository + Send + Sync,
     P: EventPublisher + Send + Sync,
     D: DlqRepository + Send + Sync,
 {
@@ -522,7 +525,7 @@ mod tests {
     impl EventPublisher for MockEventPublisher {
         type Error = String;
 
-        async fn publish(&self, event: &DomainEvent) -> Result<(), Self::Error> {
+        async fn publish(&self, event: &DomainEvent) -> Result<(), OutboxError> {
             self.published_events.lock().unwrap().push(event.clone());
             Ok(())
         }
@@ -543,9 +546,7 @@ mod tests {
 
     #[async_trait]
     impl OutboxRepository for MockOutboxRepository {
-        type Error = OutboxError;
-
-        async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), Self::Error> {
+        async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), OutboxError> {
             let mut vec = self.events.lock().unwrap();
             for event in events {
                 vec.push(crate::outbox::OutboxEventView {
@@ -571,7 +572,7 @@ mod tests {
             &self,
             limit: usize,
             _max_retries: i32,
-        ) -> Result<Vec<crate::outbox::OutboxEventView>, Self::Error> {
+        ) -> Result<Vec<crate::outbox::OutboxEventView>, OutboxError> {
             let vec = self.events.lock().unwrap();
             Ok(vec
                 .iter()
@@ -581,7 +582,7 @@ mod tests {
                 .collect())
         }
 
-        async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), Self::Error> {
+        async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), OutboxError> {
             let mut vec = self.events.lock().unwrap();
             for id in event_ids {
                 if let Some(event) = vec.iter_mut().find(|e| &e.id == id) {
@@ -592,7 +593,7 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), Self::Error> {
+        async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError> {
             let mut vec = self.events.lock().unwrap();
             if let Some(event) = vec.iter_mut().find(|e| &e.id == event_id) {
                 event.status = OutboxStatus::Failed;
@@ -602,16 +603,16 @@ mod tests {
             Ok(())
         }
 
-        async fn exists_by_idempotency_key(&self, _key: &str) -> Result<bool, Self::Error> {
+        async fn exists_by_idempotency_key(&self, _key: &str) -> Result<bool, OutboxError> {
             Ok(false)
         }
 
-        async fn count_pending(&self) -> Result<u64, Self::Error> {
+        async fn count_pending(&self) -> Result<u64, OutboxError> {
             let vec = self.events.lock().unwrap();
             Ok(vec.iter().filter(|e| e.is_pending()).count() as u64)
         }
 
-        async fn get_stats(&self) -> Result<crate::outbox::OutboxStats, Self::Error> {
+        async fn get_stats(&self) -> Result<crate::outbox::OutboxStats, OutboxError> {
             let vec = self.events.lock().unwrap();
             let pending_count = vec.iter().filter(|e| e.is_pending()).count() as u64;
             Ok(crate::outbox::OutboxStats {
@@ -625,7 +626,7 @@ mod tests {
         async fn cleanup_published_events(
             &self,
             _older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> Result<u64, OutboxError> {
             Ok(0)
         }
 
@@ -633,14 +634,14 @@ mod tests {
             &self,
             _max_retries: i32,
             _older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> Result<u64, OutboxError> {
             Ok(0)
         }
 
         async fn find_by_id(
             &self,
             _id: Uuid,
-        ) -> Result<Option<crate::outbox::OutboxEventView>, Self::Error> {
+        ) -> Result<Option<crate::outbox::OutboxEventView>, OutboxError> {
             Ok(None)
         }
     }

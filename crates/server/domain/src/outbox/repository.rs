@@ -13,9 +13,6 @@ use uuid::Uuid;
 /// used in the Transactional Outbox Pattern.
 #[async_trait::async_trait]
 pub trait OutboxRepository {
-    /// Error type for repository operations
-    type Error: From<OutboxError> + std::fmt::Debug + Send + Sync;
-
     /// Insert events into the outbox table
     ///
     /// This should be called within a database transaction to ensure
@@ -25,14 +22,14 @@ pub trait OutboxRepository {
     /// * `events` - Slice of events to insert
     ///
     /// # Returns
-    /// * `Result<(), Self::Error>` - Success or error
+    /// * `Result<(), OutboxError>` - Success or error
     ///
     /// # Errors
     /// * Returns an error if:
     ///   - Database operation fails
     ///   - Duplicate idempotency key is detected
     ///   - Transaction rollback occurs
-    async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), Self::Error>;
+    async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), OutboxError>;
 
     /// Retrieve pending events for publication
     ///
@@ -44,12 +41,12 @@ pub trait OutboxRepository {
     /// * `max_retries` - Maximum retry count to include (events above this are skipped)
     ///
     /// # Returns
-    /// * `Result<Vec<OutboxEventView>, Self::Error>` - List of pending events
+    /// * `Result<Vec<OutboxEventView>, OutboxError>` - List of pending events
     async fn get_pending_events(
         &self,
         limit: usize,
         max_retries: i32,
-    ) -> Result<Vec<OutboxEventView>, Self::Error>;
+    ) -> Result<Vec<OutboxEventView>, OutboxError>;
 
     /// Mark events as published
     ///
@@ -59,8 +56,8 @@ pub trait OutboxRepository {
     /// * `event_ids` - IDs of events to mark as published
     ///
     /// # Returns
-    /// * `Result<(), Self::Error>` - Success or error
-    async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), Self::Error>;
+    /// * `Result<(), OutboxError>` - Success or error
+    async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), OutboxError>;
 
     /// Mark an event as failed
     ///
@@ -72,8 +69,8 @@ pub trait OutboxRepository {
     /// * `error` - Error message describing the failure
     ///
     /// # Returns
-    /// * `Result<(), Self::Error>` - Success or error
-    async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), Self::Error>;
+    /// * `Result<(), OutboxError>` - Success or error
+    async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError>;
 
     /// Check if an idempotency key already exists
     ///
@@ -83,24 +80,24 @@ pub trait OutboxRepository {
     /// * `idempotency_key` - The idempotency key to check
     ///
     /// # Returns
-    /// * `Result<bool, Self::Error>` - True if exists, false otherwise
-    async fn exists_by_idempotency_key(&self, idempotency_key: &str) -> Result<bool, Self::Error>;
+    /// * `Result<bool, OutboxError>` - True if exists, false otherwise
+    async fn exists_by_idempotency_key(&self, idempotency_key: &str) -> Result<bool, OutboxError>;
 
     /// Count pending events
     ///
     /// Useful for monitoring and alerting.
     ///
     /// # Returns
-    /// * `Result<u64, Self::Error>` - Count of pending events
-    async fn count_pending(&self) -> Result<u64, Self::Error>;
+    /// * `Result<u64, OutboxError>` - Count of pending events
+    async fn count_pending(&self) -> Result<u64, OutboxError>;
 
     /// Get statistics about outbox events
     ///
     /// Returns counts by status for monitoring purposes.
     ///
     /// # Returns
-    /// * `Result<OutboxStats, Self::Error>` - Statistics
-    async fn get_stats(&self) -> Result<OutboxStats, Self::Error>;
+    /// * `Result<OutboxStats, OutboxError>` - Statistics
+    async fn get_stats(&self) -> Result<OutboxStats, OutboxError>;
 
     /// Delete published events older than the specified duration
     ///
@@ -111,11 +108,11 @@ pub trait OutboxRepository {
     /// * `older_than` - Delete events older than this duration
     ///
     /// # Returns
-    /// * `Result<u64, Self::Error>` - Number of events deleted
+    /// * `Result<u64, OutboxError>` - Number of events deleted
     async fn cleanup_published_events(
         &self,
         older_than: std::time::Duration,
-    ) -> Result<u64, Self::Error>;
+    ) -> Result<u64, OutboxError>;
 
     /// Delete failed events that have exceeded max retry attempts
     ///
@@ -126,12 +123,12 @@ pub trait OutboxRepository {
     /// * `older_than` - Only delete if also older than this duration
     ///
     /// # Returns
-    /// * `Result<u64, Self::Error>` - Number of events deleted
+    /// * `Result<u64, OutboxError>` - Number of events deleted
     async fn cleanup_failed_events(
         &self,
         max_retries: i32,
         older_than: std::time::Duration,
-    ) -> Result<u64, Self::Error>;
+    ) -> Result<u64, OutboxError>;
 
     /// Archive old events to a separate table (optional implementation)
     ///
@@ -142,11 +139,11 @@ pub trait OutboxRepository {
     /// * `older_than` - Archive events older than this duration
     ///
     /// # Returns
-    /// * `Result<u64, Self::Error>` - Number of events archived
+    /// * `Result<u64, OutboxError>` - Number of events archived
     async fn archive_old_events(
         &self,
         older_than: std::time::Duration,
-    ) -> Result<u64, Self::Error> {
+    ) -> Result<u64, OutboxError> {
         // Default: just cleanup published events
         self.cleanup_published_events(older_than).await
     }
@@ -159,8 +156,8 @@ pub trait OutboxRepository {
     /// * `id` - The event ID to find
     ///
     /// # Returns
-    /// * `Result<Option<OutboxEventView>, Self::Error>` - The event if found
-    async fn find_by_id(&self, id: Uuid) -> Result<Option<OutboxEventView>, Self::Error>;
+    /// * `Result<Option<OutboxEventView>, OutboxError>` - The event if found
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<OutboxEventView>, OutboxError>;
 }
 
 /// Outbox Repository with Transaction Support
@@ -182,7 +179,7 @@ pub trait OutboxRepositoryTx {
     /// * `events` - Events to insert
     ///
     /// # Returns
-    /// * `std::result::Result<(), Self::Error>` - Success or error
+    /// * `std::result::Result<(), OutboxError>` - Success or error
     ///
     /// # Errors
     /// * Transaction errors, duplicate idempotency keys, etc.
@@ -190,7 +187,7 @@ pub trait OutboxRepositoryTx {
         &self,
         tx: &mut PgTransaction<'_>,
         events: &[OutboxEventInsert],
-    ) -> std::result::Result<(), Self::Error>;
+    ) -> std::result::Result<(), OutboxError>;
 
     /// Check if an idempotency key exists within a transaction.
     ///
@@ -202,12 +199,12 @@ pub trait OutboxRepositoryTx {
     /// * `idempotency_key` - The key to check
     ///
     /// # Returns
-    /// * `std::result::Result<bool, Self::Error>` - True if exists
+    /// * `std::result::Result<bool, OutboxError>` - True if exists
     async fn exists_by_idempotency_key_with_tx(
         &self,
         tx: &mut PgTransaction<'_>,
         idempotency_key: &str,
-    ) -> std::result::Result<bool, Self::Error>;
+    ) -> std::result::Result<bool, OutboxError>;
 }
 
 /// Statistics about outbox events
@@ -261,9 +258,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl OutboxRepository for MockOutboxRepository {
-        type Error = OutboxError;
-
-        async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), Self::Error> {
+        async fn insert_events(&self, events: &[OutboxEventInsert]) -> Result<(), OutboxError> {
             let mut vec = self.events.lock().unwrap();
             for event in events {
                 if let Some(ref key) = event.idempotency_key {
@@ -294,7 +289,7 @@ mod tests {
             &self,
             limit: usize,
             _max_retries: i32,
-        ) -> Result<Vec<OutboxEventView>, Self::Error> {
+        ) -> Result<Vec<OutboxEventView>, OutboxError> {
             let vec = self.events.lock().unwrap();
             Ok(vec
                 .iter()
@@ -304,7 +299,7 @@ mod tests {
                 .collect())
         }
 
-        async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), Self::Error> {
+        async fn mark_published(&self, event_ids: &[Uuid]) -> Result<(), OutboxError> {
             let mut vec = self.events.lock().unwrap();
             for id in event_ids {
                 if let Some(event) = vec.iter_mut().find(|e| &e.id == id) {
@@ -315,7 +310,7 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), Self::Error> {
+        async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError> {
             let mut vec = self.events.lock().unwrap();
             if let Some(event) = vec.iter_mut().find(|e| &e.id == event_id) {
                 event.status = crate::outbox::OutboxStatus::Failed;
@@ -325,19 +320,19 @@ mod tests {
             Ok(())
         }
 
-        async fn exists_by_idempotency_key(&self, key: &str) -> Result<bool, Self::Error> {
+        async fn exists_by_idempotency_key(&self, key: &str) -> Result<bool, OutboxError> {
             let vec = self.events.lock().unwrap();
             Ok(vec
                 .iter()
                 .any(|e| e.idempotency_key.as_deref() == Some(key)))
         }
 
-        async fn count_pending(&self) -> Result<u64, Self::Error> {
+        async fn count_pending(&self) -> Result<u64, OutboxError> {
             let vec = self.events.lock().unwrap();
             Ok(vec.iter().filter(|e| e.is_pending()).count() as u64)
         }
 
-        async fn get_stats(&self) -> Result<OutboxStats, Self::Error> {
+        async fn get_stats(&self) -> Result<OutboxStats, OutboxError> {
             let vec = self.events.lock().unwrap();
             let pending_count = vec.iter().filter(|e| e.is_pending()).count() as u64;
             let published_count = vec.iter().filter(|e| e.is_published()).count() as u64;
@@ -363,7 +358,7 @@ mod tests {
         async fn cleanup_published_events(
             &self,
             older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> Result<u64, OutboxError> {
             let mut vec = self.events.lock().unwrap();
             let now = chrono::Utc::now();
             let threshold = now - chrono::Duration::from_std(older_than).unwrap_or_default();
@@ -378,7 +373,7 @@ mod tests {
             &self,
             max_retries: i32,
             older_than: std::time::Duration,
-        ) -> Result<u64, Self::Error> {
+        ) -> Result<u64, OutboxError> {
             let mut vec = self.events.lock().unwrap();
             let now = chrono::Utc::now();
             let threshold = now - chrono::Duration::from_std(older_than).unwrap_or_default();
@@ -393,7 +388,7 @@ mod tests {
             Ok(deleted)
         }
 
-        async fn find_by_id(&self, id: uuid::Uuid) -> Result<Option<OutboxEventView>, Self::Error> {
+        async fn find_by_id(&self, id: uuid::Uuid) -> Result<Option<OutboxEventView>, OutboxError> {
             let vec = self.events.lock().unwrap();
             Ok(vec.iter().find(|e| e.id == id).cloned())
         }
