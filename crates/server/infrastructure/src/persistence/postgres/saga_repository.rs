@@ -299,7 +299,8 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         let row: Option<SagaDbRow> = sqlx::query_as(
             r#"
             SELECT id, saga_type, state, correlation_id, actor, started_at,
-                   completed_at, error_message, metadata, created_at, updated_at
+                   completed_at, error_message, metadata, created_at, updated_at,
+                   version, trace_parent
             FROM sagas WHERE id = $1
             "#,
         )
@@ -320,7 +321,8 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         let rows: Vec<SagaDbRow> = sqlx::query_as(
             r#"
             SELECT id, saga_type, state, correlation_id, actor, started_at,
-                   completed_at, error_message, metadata, created_at, updated_at
+                   completed_at, error_message, metadata, created_at, updated_at,
+                   version, trace_parent
             FROM sagas WHERE saga_type = $1
             ORDER BY started_at DESC
             "#,
@@ -350,7 +352,8 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         let rows: Vec<SagaDbRow> = sqlx::query_as(
             r#"
             SELECT id, saga_type, state, correlation_id, actor, started_at,
-                   completed_at, error_message, metadata, created_at, updated_at
+                   completed_at, error_message, metadata, created_at, updated_at,
+                   version, trace_parent
             FROM sagas WHERE state = $1
             ORDER BY started_at DESC
             "#,
@@ -374,7 +377,8 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         let rows: Vec<SagaDbRow> = sqlx::query_as(
             r#"
             SELECT id, saga_type, state, correlation_id, actor, started_at,
-                   completed_at, error_message, metadata, created_at, updated_at
+                   completed_at, error_message, metadata, created_at, updated_at,
+                   version, trace_parent
             FROM sagas WHERE correlation_id = $1
             ORDER BY started_at DESC
             "#,

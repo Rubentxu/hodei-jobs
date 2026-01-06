@@ -136,6 +136,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_connections = env::var("HODEI_DB_MAX_CONNECTIONS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(50); // Increased from 10 to handle multiple NATS subscribers
+
+    let min_connections = env::var("HODEI_DB_MIN_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(10);
 
     let connection_timeout = env::var("HODEI_DB_CONNECTION_TIMEOUT_SECS")
@@ -144,15 +149,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(30));
 
-    // Create shared Postgres Pool
+    // Create shared Postgres Pool with optimized settings for high concurrency
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
+        .min_connections(min_connections) // Maintain ready connections
         .acquire_timeout(connection_timeout)
+        .idle_timeout(Duration::from_secs(600)) // Recycle idle connections after 10 min
+        .max_lifetime(Duration::from_secs(1800)) // Recycle connections after 30 min
         .connect(&db_url)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
 
-    info!("Connected to database");
+    info!(
+        "Connected to database (pool: min={}, max={})",
+        min_connections, max_connections
+    );
 
     // Create Arc wrapper for components that need it
     let pool_arc = Arc::new(pool.clone());

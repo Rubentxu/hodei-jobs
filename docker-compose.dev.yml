@@ -76,77 +76,77 @@ services:
         limits:
           memory: 256M
 
-  # ===========================================================================
-  # Hodei gRPC Server (Backend API) - Development
-  # ===========================================================================
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: hodei-jobs-server:dev
-    container_name: hodei-jobs-api
-    restart: unless-stopped
-    environment:
-      # Database
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      SERVER_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei_jobs
+  # # ===========================================================================
+  # # Hodei gRPC Server (Backend API) - Development
+  # # ===========================================================================
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   image: hodei-jobs-server:dev
+  #   container_name: hodei-jobs-api
+  #   restart: unless-stopped
+  #   environment:
+  #     # Database
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: postgres
+  #     SERVER_DATABASE_URL: postgres://postgres:postgres@postgres:5432/hodei_jobs
 
-      # Server configuration
-      HODEI_DEV_MODE: "1"
-      GRPC_PORT: "50051"
+  #     # Server configuration
+  #     HODEI_DEV_MODE: "1"
+  #     GRPC_PORT: "50051"
 
-      # Docker provider
-      HODEI_DOCKER_ENABLED: "1"
-      HODEI_DOCKER_NETWORK: "hodei-workers"
+  #     # Docker provider
+  #     HODEI_DOCKER_ENABLED: "1"
+  #     HODEI_DOCKER_NETWORK: "hodei-workers"
 
-      # Worker connectivity - CRITICAL for worker→server communication
-      # Workers use this to connect back to the server
-      # HODEI_SERVER_HOST: Used by server for provisioning config
-      # HODEI_SERVER_ADDRESS: Set by providers in worker environment
-      HODEI_SERVER_HOST: "0.0.0.0"
-      HODEI_SERVER_ADDRESS: "host.docker.internal"
+  #     # Worker connectivity - CRITICAL for worker→server communication
+  #     # Workers use this to connect back to the server
+  #     # HODEI_SERVER_HOST: Used by server for provisioning config
+  #     # HODEI_SERVER_ADDRESS: Set by providers in worker environment
+  #     HODEI_SERVER_HOST: "0.0.0.0"
+  #     HODEI_SERVER_ADDRESS: "host.docker.internal"
 
-      # Job controller
-      HODEI_JOB_CONTROLLER_ENABLED: "1"
-      HODEI_JOB_CONTROLLER_INTERVAL_MS: "500"
+  #     # Job controller
+  #     HODEI_JOB_CONTROLLER_ENABLED: "1"
+  #     HODEI_JOB_CONTROLLER_INTERVAL_MS: "500"
 
-      # Worker image for provisioning
-      HODEI_WORKER_IMAGE: "hodei-jobs-worker:latest"
+  #     # Worker image for provisioning
+  #     HODEI_WORKER_IMAGE: "hodei-jobs-worker:latest"
 
-      # NATS Event Bus Configuration (Production-Ready Event-Driven)
-      HODEI_NATS_ENABLED: "1"
-      HODEI_NATS_URLS: "nats://nats:4222"
+  #     # NATS Event Bus Configuration (Production-Ready Event-Driven)
+  #     HODEI_NATS_ENABLED: "1"
+  #     HODEI_NATS_URLS: "nats://nats:4222"
 
-      # Logging
-      RUST_LOG: ${RUST_LOG:-debug}
-    ports:
-      - "50051:50051"
-    volumes:
-      # Docker socket for worker provisioning
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget --no-verbose --tries=1 --spider http://localhost:50051/health || exit 1",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    networks:
-      - hodei-internal
-      - hodei-workers
-    deploy:
-      resources:
-        limits:
-          memory: 1G
+  #     # Logging
+  #     RUST_LOG: ${RUST_LOG:-debug}
+  #   ports:
+  #     - "50051:50051"
+  #   volumes:
+  #     # Docker socket for worker provisioning
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     nats:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test:
+  #       [
+  #         "CMD-SHELL",
+  #         "wget --no-verbose --tries=1 --spider http://localhost:50051/health || exit 1",
+  #       ]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 15s
+  #   networks:
+  #     - hodei-internal
+  #     - hodei-workers
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
 
 # Named volumes for persistent development data
 volumes:
@@ -159,7 +159,6 @@ volumes:
 networks:
   hodei-internal:
     driver: bridge
-    internal: true
   hodei-workers:
     driver: bridge
     name: hodei-workers-dev

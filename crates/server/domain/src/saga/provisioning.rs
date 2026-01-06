@@ -81,13 +81,13 @@ impl Saga for ProvisioningSaga {
     fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
         vec![
             Box::new(ValidateProviderCapacityStep::new(self.provider_id.clone())),
-            // EPIC-46 GAP-06: RegisterWorkerStep must execute BEFORE CreateInfrastructureStep
-            // to ensure the worker actor is registered before infrastructure sends heartbeats
-            Box::new(RegisterWorkerStep::new()),
+            // CreateInfrastructureStep creates the Docker container with OTP token
+            // The ephemeral worker will self-register when it starts up
             Box::new(CreateInfrastructureStep::new(
                 self.provider_id.clone(),
                 self.spec.clone(),
             )),
+            // RegisterWorkerStep is NOT needed - workers self-register via OTP on startup
             Box::new(PublishProvisionedEventStep::new()),
         ]
     }
@@ -630,12 +630,13 @@ impl SagaStep for PublishProvisionedEventStep {
 
         // Get required metadata from context
         // get_metadata returns Option<SagaResult<V>>, need to handle both None and Err cases
+        // Use worker_id from CreateInfrastructureStep (not registered_worker_id since workers self-register)
         let worker_id_str = context
-            .get_metadata::<String>("registered_worker_id")
+            .get_metadata::<String>("worker_id")
             .and_then(|result| result.ok())
             .ok_or_else(|| SagaError::StepFailed {
                 step: self.name().to_string(),
-                message: "registered_worker_id not found in context".to_string(),
+                message: "worker_id not found in context".to_string(),
                 will_compensate: true,
             })?;
 

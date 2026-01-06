@@ -19,6 +19,7 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::workers::WorkerRegistry;
 use hodei_shared::event_topics::job_topics;
+use hodei_shared::event_topics::worker_topics;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -138,25 +139,19 @@ impl JobCoordinator {
     /// Uses the basic EventBus subscribe method. For production with checkpointing,
     /// inject a PersistentEventSubscriber implementation.
     ///
-    /// EPIC-43: ⚠️ JobQueued and WorkerReady subscriptions are DISABLED
-    /// These events are now processed exclusively by ExecutionSagaConsumer.
-    /// JobCoordinator only handles cleanup events (JobStatusChanged).
+    /// EPIC-43: JobQueued triggers ProvisioningSaga, WorkerReady triggers pending job dispatch
     async fn start_reactive_event_processing(&mut self) -> anyhow::Result<()> {
         use hodei_server_domain::shared_kernel::JobState;
         let event_bus = self.event_bus.clone();
-        let _job_dispatcher = self.job_dispatcher.clone();
+        let job_dispatcher = self.job_dispatcher.clone();
 
-        // EPIC-43: DISABLED - JobQueued events now processed by ExecutionSaga only
-        // Keeping code commented for reference during migration
-        /*
+        // Subscribe to JobQueued events - triggers ProvisioningSaga
         let mut job_queue_stream = event_bus
             .subscribe(job_topics::QUEUED)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to {}: {}", job_topics::QUEUED, e))?;
-        */
 
-        // EPIC-43: DISABLED - WorkerReady events now processed by ExecutionSaga only
-        /*
+        // Subscribe to WorkerReady events - dispatch pending jobs
         let mut worker_ready_stream =
             event_bus
                 .subscribe(worker_topics::READY)
@@ -164,7 +159,6 @@ impl JobCoordinator {
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to subscribe to {}: {}", worker_topics::READY, e)
                 })?;
-        */
 
         // EPIC-32: Subscribe to JobStatusChanged for worker cleanup
         let mut job_status_stream = event_bus
@@ -178,7 +172,7 @@ impl JobCoordinator {
                 )
             })?;
 
-        let _dispatcher = self.job_dispatcher.clone();
+        let dispatcher = self.job_dispatcher.clone();
         let event_bus_for_cleanup = event_bus.clone();
         let worker_registry = self.worker_registry.clone();
 
@@ -188,8 +182,7 @@ impl JobCoordinator {
 
             loop {
                 tokio::select! {
-                    // EPIC-43: DISABLED - JobQueued processing removed
-                    /*
+                    // EPIC-43: Process JobQueued events for automatic provisioning
                     event_result = job_queue_stream.next() => {
                         match event_result {
                             Some(Ok(event)) => {
@@ -207,10 +200,8 @@ impl JobCoordinator {
                             }
                         }
                     }
-                    */
 
-                    // EPIC-43: DISABLED - WorkerReady processing removed
-                    /*
+                    // EPIC-43: Process WorkerReady events for pending job dispatch
                     event_result = worker_ready_stream.next() => {
                         match event_result {
                             Some(Ok(event)) => {
@@ -228,7 +219,6 @@ impl JobCoordinator {
                             }
                         }
                     }
-                    */
 
                     // EPIC-32: Process JobStatusChanged for worker cleanup
                     event_result = job_status_stream.next() => {

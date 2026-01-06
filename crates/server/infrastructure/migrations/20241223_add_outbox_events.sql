@@ -2,7 +2,7 @@
 -- Date: 2024-12-23
 -- Purpose: Solve dual-write problem between database and event bus
 
-CREATE TABLE outbox_events (
+CREATE TABLE IF NOT EXISTS outbox_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Event identity
