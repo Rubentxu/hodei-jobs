@@ -80,7 +80,7 @@ pub struct WorkerAgentServiceImpl {
     /// Event Bus para publicar eventos de dominio (legacy, used by OutboxRelay)
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
     /// Outbox Repository para patrón Transactional Outbox
-    outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+    outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
     /// EPIC-42: WorkerSupervisorActor handle for lock-free worker management
     /// When Some, worker operations are routed through the Actor
     supervisor_handle: Option<WorkerSupervisorHandle>,
@@ -196,7 +196,7 @@ impl WorkerAgentServiceImpl {
     /// Add outbox repository for transactional event publishing
     pub fn with_outbox_repository(
         mut self,
-        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         self.outbox_repository = Some(outbox_repository);
         self
@@ -250,7 +250,7 @@ impl WorkerAgentServiceImpl {
         token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
         log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
-        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
@@ -290,7 +290,7 @@ impl WorkerAgentServiceImpl {
 
     fn outbox_repository(
         &self,
-    ) -> Option<&Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>> {
+    ) -> Option<&Arc<dyn OutboxRepository + Send + Sync>> {
         self.outbox_repository.as_ref()
     }
 

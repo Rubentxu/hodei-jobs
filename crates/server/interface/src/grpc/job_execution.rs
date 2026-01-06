@@ -46,7 +46,7 @@ pub struct JobExecutionServiceImpl {
     >,
     /// Outbox repository for emitting events (EPIC-26)
     outbox_repository: Option<
-        Arc<dyn hodei_server_domain::outbox::OutboxRepository<Error = OutboxError> + Send + Sync>,
+        Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>,
     >,
     /// Event bus for publishing domain events
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
@@ -83,7 +83,7 @@ impl JobExecutionServiceImpl {
         >,
         outbox_repository: Option<
             Arc<
-                dyn hodei_server_domain::outbox::OutboxRepository<Error = OutboxError>
+                dyn hodei_server_domain::outbox::OutboxRepository
                     + Send
                     + Sync,
             >,
@@ -105,7 +105,7 @@ impl JobExecutionServiceImpl {
     pub fn set_outbox_repository(
         &mut self,
         outbox_repository: Arc<
-            dyn hodei_server_domain::outbox::OutboxRepository<Error = OutboxError> + Send + Sync,
+            dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync,
         >,
     ) {
         self.outbox_repository = Some(outbox_repository);
