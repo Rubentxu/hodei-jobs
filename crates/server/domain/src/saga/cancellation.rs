@@ -54,7 +54,7 @@ impl CancellationSaga {
 
 impl Saga for CancellationSaga {
     fn saga_type(&self) -> SagaType {
-        SagaType::Execution // Reuse Execution type for cancellation
+        SagaType::Cancellation // EPIC-46 GAP-07: Use dedicated Cancellation type
     }
 
     fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {

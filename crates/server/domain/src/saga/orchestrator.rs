@@ -6,7 +6,7 @@ use super::{
     ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaError,
     SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository, SagaState, SagaType,
 };
-use crate::shared_kernel::{JobId, ProviderId};
+use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::WorkerSpec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -373,7 +373,7 @@ where
 
                 Box::new(ExecutionSaga::new(job_id))
             }
-            SagaType::Recovery => Box::new(RecoverySaga::new(JobId::new(), JobId::new())),
+            SagaType::Recovery => Box::new(RecoverySaga::new(JobId::new(), WorkerId::new())),
         };
 
         // Execute with a clone of the context

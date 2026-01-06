@@ -131,6 +131,9 @@ impl fmt::Display for SagaId {
 /// - **Provisioning**: Worker creation and registration
 /// - **Execution**: Job dispatch and execution
 /// - **Recovery**: Worker failure recovery and job reassignment
+/// - **Cancellation**: Job cancellation workflow (EPIC-46 GAP-07)
+/// - **Timeout**: Job timeout handling (EPIC-46 GAP-08)
+/// - **Cleanup**: Resource cleanup and maintenance (EPIC-46 GAP-09)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SagaType {
     /// Saga for provisioning workers
@@ -139,6 +142,12 @@ pub enum SagaType {
     Execution,
     /// Saga for recovering from worker failures
     Recovery,
+    /// Saga for cancelling jobs (EPIC-46 GAP-07)
+    Cancellation,
+    /// Saga for handling job timeouts (EPIC-46 GAP-08)
+    Timeout,
+    /// Saga for resource cleanup (EPIC-46 GAP-09)
+    Cleanup,
 }
 
 impl SagaType {
@@ -149,6 +158,9 @@ impl SagaType {
             SagaType::Provisioning => "PROVISIONING",
             SagaType::Execution => "EXECUTION",
             SagaType::Recovery => "RECOVERY",
+            SagaType::Cancellation => "CANCELLATION",
+            SagaType::Timeout => "TIMEOUT",
+            SagaType::Cleanup => "CLEANUP",
         }
     }
 
@@ -168,6 +180,24 @@ impl SagaType {
     #[inline]
     pub fn is_recovery(&self) -> bool {
         matches!(self, SagaType::Recovery)
+    }
+
+    /// Returns true if this saga type is cancellation (EPIC-46 GAP-07)
+    #[inline]
+    pub fn is_cancellation(&self) -> bool {
+        matches!(self, SagaType::Cancellation)
+    }
+
+    /// Returns true if this saga type is timeout (EPIC-46 GAP-08)
+    #[inline]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, SagaType::Timeout)
+    }
+
+    /// Returns true if this saga type is cleanup (EPIC-46 GAP-09)
+    #[inline]
+    pub fn is_cleanup(&self) -> bool {
+        matches!(self, SagaType::Cleanup)
     }
 }
 
@@ -376,6 +406,7 @@ pub trait SagaStep: Send + Sync {
 /// Carries metadata and state through the saga's execution,
 /// including correlation IDs, actor information, and step outputs.
 /// EPIC-45 Gap 6: Added state field for reactive processor
+/// EPIC-46 GAP-02: Added version for Optimistic Locking and trace_parent for distributed tracing
 #[derive(Clone)]
 pub struct SagaContext {
     /// Unique identifier for this saga instance
@@ -403,6 +434,10 @@ pub struct SagaContext {
     pub services: Option<Arc<SagaServices>>,
     /// EPIC-45 Gap 6: Current saga state
     pub state: SagaState,
+    /// EPIC-46 GAP-02: Version for Optimistic Locking concurrency control
+    pub version: u64,
+    /// EPIC-46 GAP-14: W3C Trace Context for distributed tracing propagation
+    pub trace_parent: Option<String>,
 }
 
 impl SagaContext {
@@ -427,11 +462,15 @@ impl SagaContext {
             error_message: None,
             services: None,
             state: SagaState::Pending,
+            version: 0,
+            trace_parent: None,
         }
     }
 
     /// Creates a fully initialized SagaContext from persisted data.
     /// EPIC-45 Gap 6: Added state parameter
+    /// EPIC-46 GAP-02: Added version parameter
+    /// EPIC-46 GAP-14: Added trace_parent parameter
     #[inline]
     pub fn from_persistence(
         saga_id: SagaId,
@@ -444,6 +483,8 @@ impl SagaContext {
         metadata: std::collections::HashMap<String, serde_json::Value>,
         error_message: Option<String>,
         state: SagaState,
+        version: u64,
+        trace_parent: Option<String>,
     ) -> Self {
         Self {
             saga_id,
@@ -458,6 +499,8 @@ impl SagaContext {
             error_message,
             services: None,
             state,
+            version,
+            trace_parent,
         }
     }
 
@@ -554,6 +597,8 @@ impl SagaContext {
 /// during execution. These services are injected at runtime and are not
 /// persisted with the saga context.
 ///
+/// EPIC-46 GAP-20: Extended with additional services for complete saga support.
+///
 /// # Example
 ///
 /// ```ignore
@@ -577,6 +622,8 @@ pub struct SagaServices {
     /// Provisioning sagas will inject this service to enable real infrastructure
     /// creation within saga steps.
     pub provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
+    /// EPIC-46 GAP-20: Saga orchestrator for nested saga execution
+    pub orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
 }
 
 impl SagaServices {
@@ -593,6 +640,26 @@ impl SagaServices {
             event_bus,
             job_repository,
             provisioning_service,
+            orchestrator: None, // EPIC-46 GAP-20: Default to None for backward compatibility
+        }
+    }
+
+    /// Creates a new SagaServices instance with orchestrator support.
+    /// EPIC-46 GAP-20: Full constructor with all services.
+    #[inline]
+    pub fn with_orchestrator(
+        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
+        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
+        orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
+    ) -> Self {
+        Self {
+            provider_registry,
+            event_bus,
+            job_repository,
+            provisioning_service,
+            orchestrator,
         }
     }
 
@@ -613,6 +680,12 @@ impl SagaServices {
     #[inline]
     pub fn has_provisioning_service(&self) -> bool {
         self.provisioning_service.is_some()
+    }
+
+    /// Returns true if an orchestrator is available (EPIC-46 GAP-20).
+    #[inline]
+    pub fn has_orchestrator(&self) -> bool {
+        self.orchestrator.is_some()
     }
 }
 

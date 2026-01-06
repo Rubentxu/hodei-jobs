@@ -90,8 +90,8 @@ impl DynRecoverySagaCoordinator {
             .set_metadata("failed_worker_id", &failed_worker_id.to_string())
             .ok();
 
-        let saga_failed_worker_id = JobId(failed_worker_id.0);
-        let saga = RecoverySaga::new(job_id.clone(), saga_failed_worker_id);
+        // BUG-009 Fix: WorkerId is now correctly typed in RecoverySaga
+        let saga = RecoverySaga::new(job_id.clone(), failed_worker_id.clone());
 
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
@@ -237,8 +237,8 @@ where
             .set_metadata("failed_worker_id", &failed_worker_id.to_string())
             .ok();
 
-        let saga_failed_worker_id = JobId(failed_worker_id.0);
-        let saga = RecoverySaga::new(job_id.clone(), saga_failed_worker_id);
+        // BUG-009 Fix: WorkerId is now correctly typed in RecoverySaga
+        let saga = RecoverySaga::new(job_id.clone(), failed_worker_id.clone());
 
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {

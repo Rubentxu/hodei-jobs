@@ -3,7 +3,7 @@
 //! Saga para la recuperación de workers fallidos y reassignación de jobs.
 
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
-use crate::shared_kernel::JobId;
+use crate::shared_kernel::{JobId, WorkerId};
 use std::time::Duration;
 use tracing::{debug, instrument};
 
@@ -28,12 +28,13 @@ use tracing::{debug, instrument};
 #[derive(Debug, Clone)]
 pub struct RecoverySaga {
     pub job_id: JobId,
-    pub failed_worker_id: JobId,
+    /// BUG-009 Fix: Changed from JobId to WorkerId for correct type semantics
+    pub failed_worker_id: WorkerId,
 }
 
 impl RecoverySaga {
     #[inline]
-    pub fn new(job_id: JobId, failed_worker_id: JobId) -> Self {
+    pub fn new(job_id: JobId, failed_worker_id: WorkerId) -> Self {
         Self {
             job_id,
             failed_worker_id,
@@ -69,12 +70,12 @@ impl Saga for RecoverySaga {
 
 #[derive(Debug, Clone)]
 pub struct CheckWorkerConnectivityStep {
-    failed_worker_id: JobId,
+    failed_worker_id: WorkerId,
 }
 
 impl CheckWorkerConnectivityStep {
     #[inline]
-    pub fn new(failed_worker_id: JobId) -> Self {
+    pub fn new(failed_worker_id: WorkerId) -> Self {
         Self { failed_worker_id }
     }
 }
@@ -228,12 +229,12 @@ impl SagaStep for TransferJobStep {
 
 #[derive(Debug, Clone)]
 pub struct TerminateOldWorkerStep {
-    worker_id: JobId,
+    worker_id: WorkerId,
 }
 
 impl TerminateOldWorkerStep {
     #[inline]
-    pub fn new(worker_id: JobId) -> Self {
+    pub fn new(worker_id: WorkerId) -> Self {
         Self { worker_id }
     }
 }
@@ -274,12 +275,12 @@ impl SagaStep for TerminateOldWorkerStep {
 
 #[derive(Debug, Clone)]
 pub struct CancelOldWorkerStep {
-    worker_id: JobId,
+    worker_id: WorkerId,
 }
 
 impl CancelOldWorkerStep {
     #[inline]
-    pub fn new(worker_id: JobId) -> Self {
+    pub fn new(worker_id: WorkerId) -> Self {
         Self { worker_id }
     }
 }
@@ -325,7 +326,7 @@ mod tests {
 
     #[test]
     fn recovery_saga_should_have_five_steps() {
-        let saga = RecoverySaga::new(JobId::new(), JobId::new());
+        let saga = RecoverySaga::new(JobId::new(), WorkerId::new());
         let steps = saga.steps();
         assert_eq!(steps.len(), 5);
         assert_eq!(steps[0].name(), "CheckWorkerConnectivity");
@@ -337,33 +338,33 @@ mod tests {
 
     #[test]
     fn recovery_saga_has_correct_type() {
-        let saga = RecoverySaga::new(JobId::new(), JobId::new());
+        let saga = RecoverySaga::new(JobId::new(), WorkerId::new());
         assert_eq!(saga.saga_type(), SagaType::Recovery);
     }
 
     #[test]
     fn recovery_saga_has_timeout() {
-        let saga = RecoverySaga::new(JobId::new(), JobId::new());
+        let saga = RecoverySaga::new(JobId::new(), WorkerId::new());
         assert!(saga.timeout().is_some());
         assert_eq!(saga.timeout().unwrap(), Duration::from_secs(300));
     }
 
     #[test]
     fn check_worker_connectivity_step_has_no_compensation() {
-        let step = CheckWorkerConnectivityStep::new(JobId::new());
+        let step = CheckWorkerConnectivityStep::new(WorkerId::new());
         assert!(!step.has_compensation());
         assert!(step.is_idempotent());
     }
 
     #[test]
     fn terminate_old_worker_step_is_idempotent() {
-        let step = TerminateOldWorkerStep::new(JobId::new());
+        let step = TerminateOldWorkerStep::new(WorkerId::new());
         assert!(step.is_idempotent());
     }
 
     #[test]
     fn cancel_old_worker_step_has_no_compensation() {
-        let step = CancelOldWorkerStep::new(JobId::new());
+        let step = CancelOldWorkerStep::new(WorkerId::new());
         assert!(!step.has_compensation());
         assert!(step.is_idempotent());
     }

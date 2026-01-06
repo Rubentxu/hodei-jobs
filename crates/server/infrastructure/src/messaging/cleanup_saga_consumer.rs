@@ -368,8 +368,8 @@ where
             .ok();
 
         // Create cleanup/recovery saga (using Recovery saga for cleanup)
-        // Use placeholder failed_worker_id (stored as JobId per domain) for cleanup scenarios
-        let dummy_failed_worker_id = JobId::new();
+        // BUG-009 Fix: failed_worker_id is now correctly typed as WorkerId
+        let dummy_failed_worker_id = WorkerId::new();
         let saga =
             hodei_server_domain::saga::RecoverySaga::new(job_id.clone(), dummy_failed_worker_id);
 
@@ -426,9 +426,9 @@ where
             .ok();
 
         // Create recovery saga for worker cleanup
-        // Note: failed_worker_id is stored as JobId in RecoverySaga per domain design
+        // BUG-009 Fix: failed_worker_id is now correctly typed as WorkerId
         let dummy_job_id = JobId::new();
-        let saga = hodei_server_domain::saga::RecoverySaga::new(dummy_job_id, JobId::new());
+        let saga = hodei_server_domain::saga::RecoverySaga::new(dummy_job_id, WorkerId::new());
 
         // Execute saga
         match self.orchestrator.execute_saga(&saga, context).await {

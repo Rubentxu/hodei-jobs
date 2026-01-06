@@ -97,7 +97,7 @@ impl CleanupSaga {
 
 impl Saga for CleanupSaga {
     fn saga_type(&self) -> SagaType {
-        SagaType::Recovery // Reuse Recovery type for cleanup
+        SagaType::Cleanup // EPIC-46 GAP-09: Use dedicated Cleanup type
     }
 
     fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {

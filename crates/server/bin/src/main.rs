@@ -972,7 +972,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // EPIC-42: Start reactive signal consumer if reactive mode is enabled
     // This provides immediate saga execution upon signal, with safety net polling
     let mut reactive_processor_guard: Option<tokio::task::JoinHandle<()>> = None;
-    let mut use_polling = true;
+    // EPIC-46 GAP-16: Default to reactive mode (EDA pure architecture)
+    let mut use_polling = false;
 
     if reactive_mode {
         info!("🚀 Starting Reactive Saga Processor (signal-based execution)...");
@@ -1056,8 +1057,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "  ✓ ReactiveSagaProcessor started (safety net active)"
         );
     } else {
-        info!("⚠️ Reactive saga processing disabled, using legacy polling mode");
-        info!("  ℹ️  Enable with: export HODEI_SAGA_REACTIVE_MODE=true");
+        // EPIC-46 GAP-16: Polling is now fallback mode, not default
+        info!("ℹ️ Reactive saga processing disabled, falling back to legacy polling mode");
+        info!("  ℹ️  Enable reactive mode with: export HODEI_SAGA_REACTIVE_MODE=true");
+        use_polling = true; // Enable polling as fallback when reactive mode is off
     }
 
     // EPIC-33/EPIC-42: Start Saga Poller (only if not using reactive mode)

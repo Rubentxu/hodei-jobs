@@ -57,7 +57,7 @@ impl TimeoutSaga {
 
 impl Saga for TimeoutSaga {
     fn saga_type(&self) -> SagaType {
-        SagaType::Execution
+        SagaType::Timeout // EPIC-46 GAP-08: Use dedicated Timeout type
     }
 
     fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {

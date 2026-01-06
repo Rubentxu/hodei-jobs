@@ -81,11 +81,13 @@ impl Saga for ProvisioningSaga {
     fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
         vec![
             Box::new(ValidateProviderCapacityStep::new(self.provider_id.clone())),
+            // EPIC-46 GAP-06: RegisterWorkerStep must execute BEFORE CreateInfrastructureStep
+            // to ensure the worker actor is registered before infrastructure sends heartbeats
+            Box::new(RegisterWorkerStep::new()),
             Box::new(CreateInfrastructureStep::new(
                 self.provider_id.clone(),
                 self.spec.clone(),
             )),
-            Box::new(RegisterWorkerStep::new()),
             Box::new(PublishProvisionedEventStep::new()),
         ]
     }

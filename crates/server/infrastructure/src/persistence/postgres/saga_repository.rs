@@ -9,7 +9,7 @@ use hodei_server_domain::saga::{
     SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository as SagaRepositoryTrait,
     SagaResult, SagaState, SagaStep, SagaStepData, SagaStepId, SagaStepState, SagaType,
 };
-use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::WorkerSpec;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -72,6 +72,10 @@ struct SagaDbRow {
     completed_at: Option<DateTime<Utc>>,
     error_message: Option<String>,
     metadata: serde_json::Value,
+    // EPIC-46 GAP-02: Optimistic Locking field
+    version: i64,
+    // EPIC-46 GAP-14: W3C Trace Context
+    trace_parent: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -88,6 +92,8 @@ impl sqlx::FromRow<'_, PgRow> for SagaDbRow {
             completed_at: row.try_get("completed_at")?,
             error_message: row.try_get("error_message")?,
             metadata: row.try_get("metadata")?,
+            version: row.try_get("version")?,
+            trace_parent: row.try_get("trace_parent")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
@@ -156,6 +162,7 @@ impl From<SagaDbRow> for SagaContext {
         let metadata: std::collections::HashMap<String, serde_json::Value> =
             serde_json::from_value(row.metadata).unwrap_or_default();
 
+        // EPIC-46 GAP-02: Include version and trace_parent in from_persistence
         // Use from_persistence constructor
         SagaContext::from_persistence(
             hodei_server_domain::saga::SagaId(row.id),
@@ -168,6 +175,8 @@ impl From<SagaDbRow> for SagaContext {
             metadata,
             row.error_message,
             saga_state,
+            row.version as u64, // EPIC-46 GAP-02: Optimistic Locking version
+            row.trace_parent,   // EPIC-46 GAP-14: W3C Trace Context
         )
     }
 }
@@ -739,11 +748,13 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         _instance_id: &str,
     ) -> Result<Vec<SagaContext>, Self::Error> {
         // EPIC-45 Gap 5: Include stuck sagas (IN_PROGRESS > 5 min ago, COMPENSATING)
+        // EPIC-46 GAP-02: Include version and trace_parent columns
         // Use FOR UPDATE SKIP LOCKED to atomically claim sagas without blocking
         let rows = sqlx::query_as::<_, SagaDbRow>(
             r#"
             SELECT id, saga_type, state, correlation_id, actor, started_at,
-                   metadata, error_message, completed_at, created_at, updated_at
+                   metadata, error_message, completed_at, created_at, updated_at,
+                   version, trace_parent
             FROM sagas
             WHERE state = 'PENDING'
                OR (state = 'IN_PROGRESS' AND updated_at < NOW() - INTERVAL '5 minutes')
@@ -817,6 +828,8 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
                     metadata,
                     row.error_message,
                     SagaState::Pending, // Default state for query
+                    row.version as u64, // EPIC-46 GAP-02: Optimistic Locking version
+                    row.trace_parent,   // EPIC-46 GAP-14: W3C Trace Context
                 )
             })
             .collect())
@@ -1238,7 +1251,8 @@ where
             }
             SagaType::Recovery => {
                 // Recovery sagas would need additional context
-                Box::new(RecoverySaga::new(JobId::new(), JobId::new()))
+                // BUG-009 Fix: WorkerId is now correctly typed in RecoverySaga
+                Box::new(RecoverySaga::new(JobId::new(), WorkerId::new()))
             }
         };
 

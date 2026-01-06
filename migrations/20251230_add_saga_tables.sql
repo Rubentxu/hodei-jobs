@@ -2,9 +2,10 @@
 -- Supports Job Provisioning, Execution, and Recovery sagas
 
 -- Main saga instances table
+-- EPIC-46: Extended with new saga types (CANCELLATION, TIMEOUT, CLEANUP)
 CREATE TABLE IF NOT EXISTS sagas (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    saga_type VARCHAR(20) NOT NULL CHECK (saga_type IN ('PROVISIONING', 'EXECUTION', 'RECOVERY')),
+    saga_type VARCHAR(20) NOT NULL CHECK (saga_type IN ('PROVISIONING', 'EXECUTION', 'RECOVERY', 'CANCELLATION', 'TIMEOUT', 'CLEANUP')),
     state VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'IN_PROGRESS', 'COMPENSATING', 'COMPLETED', 'FAILED', 'CANCELLED')),
     correlation_id VARCHAR(255),
     actor VARCHAR(255),
@@ -12,6 +13,10 @@ CREATE TABLE IF NOT EXISTS sagas (
     completed_at TIMESTAMPTZ,
     error_message TEXT,
     metadata JSONB DEFAULT '{}',
+    -- EPIC-46 GAP-02: Optimistic Locking field for concurrency control
+    version BIGINT NOT NULL DEFAULT 0,
+    -- W3C Trace Context propagation for distributed tracing
+    trace_parent VARCHAR(55),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

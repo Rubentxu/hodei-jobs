@@ -22,6 +22,7 @@ pub mod orchestrator;
 pub mod provisioning;
 pub mod recovery;
 pub mod repository;
+pub mod stuck_detector;
 pub mod timeout;
 pub mod types;
 
@@ -76,6 +77,12 @@ pub use timeout::{
 pub use cleanup::{
     CleanupSaga, IdentifyOrphanedJobsStep, IdentifyUnhealthyWorkersStep, PublishCleanupMetricsStep,
     ResetOrphanedJobsStep,
+};
+
+// Re-exports from stuck_detector module (EPIC-46 GAP-12)
+pub use stuck_detector::{
+    InMemoryStuckSagaDetector, StuckSagaDetector, StuckSagaDetectorConfig, StuckSagaDetectorError,
+    StuckSagaInfo,
 };
 
 // Idempotency helpers
