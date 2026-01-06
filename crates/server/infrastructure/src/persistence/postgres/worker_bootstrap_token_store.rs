@@ -1,16 +1,18 @@
 //! PostgreSQL Worker Bootstrap Token Store Implementation
 //!
 //! Implements the WorkerBootstrapTokenStore trait using PostgreSQL as the backend.
+//!
+//! # Pool Management
+//!
+//! This store expects a `PgPool` to be passed in via `new()`.
+//! The pool should be created using `DatabasePool` for consistent configuration.
 
-use crate::persistence::postgres::DatabaseConfig;
 use hodei_server_domain::shared_kernel::DomainError;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 
 use async_trait::async_trait;
 use hodei_server_domain::iam::{OtpToken, WorkerBootstrapTokenStore};
 use hodei_server_domain::shared_kernel::{Result, WorkerId};
-use std::time::Duration;
 use tracing::info;
 
 /// PostgreSQL-backed Worker Bootstrap Token Store
@@ -20,20 +22,13 @@ pub struct PostgresWorkerBootstrapTokenStore {
 }
 
 impl PostgresWorkerBootstrapTokenStore {
+    /// Create new store with existing pool
+    ///
+    /// The pool should be created centrally (e.g., using `DatabasePool`)
+    /// to ensure consistent configuration across all repositories.
+    #[inline]
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
-    }
-
-    pub async fn connect(config: &DatabaseConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .acquire_timeout(config.connection_timeout)
-            .connect(&config.url)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to connect to database: {}", e),
-            })?;
-        Ok(Self { pool })
     }
 
     /// Run database migrations for the token store

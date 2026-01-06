@@ -1,15 +1,18 @@
 //! PostgreSQL Provider Config Repository
 //!
 //! Persistent repository implementation for provider configurations based on PostgreSQL
+//!
+//! # Pool Management
+//!
+//! This repository expects a `PgPool` to be passed in via `new()`.
+//! The pool should be created using `DatabasePool` for consistent configuration.
 
 use hodei_server_domain::providers::config::{
     ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
 };
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, ProviderStatus, Result};
 use sqlx::Row;
-use sqlx::postgres::{PgPool, PgPoolOptions};
-
-use super::DatabaseConfig;
+use sqlx::postgres::PgPool;
 
 /// PostgreSQL Provider Config Repository
 #[derive(Clone)]
@@ -18,23 +21,19 @@ pub struct PostgresProviderConfigRepository {
 }
 
 impl PostgresProviderConfigRepository {
+    /// Create new repository with existing pool
+    ///
+    /// The pool should be created centrally (e.g., using `DatabasePool`)
+    /// to ensure consistent configuration across all repositories.
+    #[inline]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    pub async fn connect(config: &DatabaseConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .acquire_timeout(config.connection_timeout)
-            .connect(&config.url)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to connect to database: {}", e),
-            })?;
-
-        Ok(Self { pool })
-    }
-
+    /// Run migrations to create provider config tables
+    ///
+    /// DEPRECATED: Migrations are now handled by the central MigrationService.
+    /// This method is kept for backwards compatibility but does nothing.
     pub async fn run_migrations(&self) -> Result<()> {
         // Migrations are now handled by the central MigrationService
         // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations

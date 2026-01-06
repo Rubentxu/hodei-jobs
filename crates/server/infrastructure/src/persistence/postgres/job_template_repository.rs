@@ -1,6 +1,11 @@
 //! PostgreSQL JobTemplate Repository
 //!
 //! Persistent repository implementation for JobTemplates based on PostgreSQL
+//!
+//! # Pool Management
+//!
+//! This repository expects a `PgPool` to be passed in via `new()`.
+//! The pool should be created using `DatabasePool` for consistent configuration.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -19,21 +24,12 @@ pub struct PostgresJobTemplateRepository {
 
 impl PostgresJobTemplateRepository {
     /// Create new repository with existing pool
+    ///
+    /// The pool should be created centrally (e.g., using `DatabasePool`)
+    /// to ensure consistent configuration across all repositories.
+    #[inline]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    /// Create repository connecting to database
-    pub async fn connect(url: &str) -> Result<Self> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(10)
-            .connect(url)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to connect to database: {}", e),
-            })?;
-
-        Ok(Self { pool })
     }
 }
 

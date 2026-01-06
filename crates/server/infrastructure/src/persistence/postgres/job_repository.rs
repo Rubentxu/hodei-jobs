@@ -1,32 +1,17 @@
 //! PostgreSQL Job Repository
 //!
 //! Persistent repository implementation for Jobs based on PostgreSQL
+//!
+//! # Pool Management
+//!
+//! This repository expects a `PgPool` to be passed in via `new()`.
+//! The pool should be created using `DatabasePool` for consistent configuration.
 
 use hodei_server_domain::jobs::{Job, JobsFilter};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use hodei_shared::states::JobState;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
-use sqlx::postgres::PgPoolOptions;
-use std::time::Duration;
-
-/// Database configuration
-#[derive(Debug, Clone)]
-pub struct DatabaseConfig {
-    pub url: String,
-    pub max_connections: u32,
-    pub connection_timeout: Duration,
-}
-
-impl DatabaseConfig {
-    pub fn new(url: String, max_connections: u32, connection_timeout: Duration) -> Self {
-        Self {
-            url,
-            max_connections,
-            connection_timeout,
-        }
-    }
-}
 
 /// PostgreSQL Job Repository
 #[derive(Clone)]
@@ -36,22 +21,12 @@ pub struct PostgresJobRepository {
 
 impl PostgresJobRepository {
     /// Create new repository with existing pool
+    ///
+    /// The pool should be created centrally (e.g., using `DatabasePool`)
+    /// to ensure consistent configuration across all repositories.
+    #[inline]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    /// Create repository connecting to database
-    pub async fn connect(config: &DatabaseConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .acquire_timeout(config.connection_timeout)
-            .connect(&config.url)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to connect to database: {}", e),
-            })?;
-
-        Ok(Self { pool })
     }
 
     /// Run migrations to create job tables

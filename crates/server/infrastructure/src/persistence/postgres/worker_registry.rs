@@ -1,10 +1,14 @@
 //! PostgreSQL Worker Registry Implementation
 //!
 //! Implements the WorkerRegistry trait using PostgreSQL as the backend.
+//!
+//! # Pool Management
+//!
+//! This registry expects a `PgPool` to be passed in via `new()`.
+//! The pool should be created using `DatabasePool` for consistent configuration.
 
 use sqlx::{Pool, Postgres, Row};
 
-use super::DatabaseConfig;
 use async_trait::async_trait;
 use hodei_server_domain::shared_kernel::{
     DomainError, JobId, ProviderId, Result, WorkerId, WorkerState,
@@ -21,20 +25,13 @@ pub struct PostgresWorkerRegistry {
 }
 
 impl PostgresWorkerRegistry {
+    /// Create new registry with existing pool
+    ///
+    /// The pool should be created centrally (e.g., using `DatabasePool`)
+    /// to ensure consistent configuration across all repositories.
+    #[inline]
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
-    }
-
-    pub async fn connect(config: &DatabaseConfig) -> Result<Self> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .acquire_timeout(config.connection_timeout)
-            .connect(&config.url)
-            .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!("Failed to connect to database: {}", e),
-            })?;
-        Ok(Self { pool })
     }
 
     /// Run database migrations for the worker registry
