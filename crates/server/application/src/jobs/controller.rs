@@ -18,6 +18,7 @@ use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::{JobQueue, JobRepository};
+use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::workers::WorkerRegistry;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -51,6 +52,9 @@ impl JobController {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<
+            dyn OutboxRepository + Send + Sync,
+        >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
@@ -67,7 +71,7 @@ impl JobController {
             scheduler_config,
             worker_command_sender,
             event_bus.clone(),
-            None, // outbox_repository - can be configured later
+            outbox_repository, // Mandatory outbox repository
             provisioning_service.clone(),
             execution_saga_dispatcher,
             provisioning_saga_coordinator,

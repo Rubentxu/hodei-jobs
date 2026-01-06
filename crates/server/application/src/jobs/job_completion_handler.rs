@@ -32,14 +32,14 @@ pub struct JobCompletionWorkerCleanupHandler {
     /// Worker registry to find workers for completed jobs
     worker_registry: Arc<dyn WorkerRegistry>,
     /// Outbox repository to persist cleanup events
-    outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+    outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
 }
 
 impl JobCompletionWorkerCleanupHandler {
     /// Create a new handler
     pub fn new(
         worker_registry: Arc<dyn WorkerRegistry>,
-        outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+        outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
     ) -> Self {
         Self {
             worker_registry,

@@ -55,8 +55,8 @@ pub struct JobDispatcher {
     scheduler: SchedulingService,
     worker_command_sender: Arc<dyn WorkerCommandSender>,
     event_bus: Arc<dyn EventBus>,
-    outbox_repository: Option<
-        Arc<dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError> + Send + Sync>,
+    outbox_repository: Arc<
+        dyn OutboxRepository + Send + Sync,
     >,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
     worker_health_service: Arc<WorkerHealthService>,
@@ -81,13 +81,11 @@ impl JobDispatcher {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
-        outbox_repository: Option<
-            Arc<
-                dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError>
+        outbox_repository: Arc<
+                dyn OutboxRepository
                     + Send
                     + Sync,
             >,
-        >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
@@ -120,7 +118,7 @@ impl JobDispatcher {
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<
-            dyn OutboxRepository<Error = hodei_server_domain::outbox::OutboxError> + Send + Sync,
+            dyn OutboxRepository + Send + Sync,
         >,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
@@ -134,7 +132,7 @@ impl JobDispatcher {
             scheduler: SchedulingService::new(scheduler_config),
             worker_command_sender,
             event_bus,
-            outbox_repository: Some(outbox_repository),
+            outbox_repository,
             provisioning_service,
             worker_health_service: Arc::new(WorkerHealthService::builder().build()),
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -728,64 +726,37 @@ impl JobDispatcher {
         // Generate idempotency key for JobAssigned to prevent duplicates
         let idempotency_key = format!("job-assigned-{}-{}", job.id.0, worker_id.0);
 
-        // Try to publish via outbox first (if available)
-        if let Some(ref outbox_repo) = self.outbox_repository {
-            let event = OutboxEventInsert::for_job(
-                job.id.0,
-                "JobAssigned".to_string(),
-                serde_json::json!({
-                    "job_id": job.id.0.to_string(),
-                    "worker_id": worker_id.0.to_string(),
-                    "occurred_at": Utc::now().to_rfc3339()
-                }),
-                Some(serde_json::json!({
-                    "source": "JobDispatcher",
-                    "correlation_id": metadata.correlation_id,
-                    "actor": metadata.actor.or(Some("system:job_dispatcher".to_string()))
-                })),
-                Some(idempotency_key),
+        // Publish via mandatory outbox
+        let event = OutboxEventInsert::for_job(
+            job.id.0,
+            "JobAssigned".to_string(),
+            serde_json::json!({
+                "job_id": job.id.0.to_string(),
+                "worker_id": worker_id.0.to_string(),
+                "occurred_at": Utc::now().to_rfc3339()
+            }),
+            Some(serde_json::json!({
+                "source": "JobDispatcher",
+                "correlation_id": metadata.correlation_id,
+                "actor": metadata.actor.or(Some("system:job_dispatcher".to_string()))
+            })),
+            Some(idempotency_key),
+        );
+
+        if let Err(e) = self.outbox_repository.insert_events(&[event]).await {
+            error!(
+                error = %e,
+                job_id = %job.id,
+                event = "JobAssigned",
+                "❌ JobDispatcher: Failed to insert JobAssigned event into outbox"
             );
-
-            if let Err(e) = outbox_repo.insert_events(&[event]).await {
-                error!(
-                    error = %e,
-                    job_id = %job.id,
-                    event = "JobAssigned",
-                    "❌ JobDispatcher: Failed to insert JobAssigned event into outbox"
-                );
-                // Continue anyway, job is already dispatched
-            } else {
-                debug!(
-                    job_id = %job.id,
-                    event = "JobAssigned",
-                    "📢 JobDispatcher: JobAssigned event inserted into outbox"
-                );
-            }
+            // Continue anyway, job is already dispatched
         } else {
-            // Fallback to direct event bus publishing (legacy mode)
-            let assigned_event = DomainEvent::JobAssigned {
-                job_id: job.id.clone(),
-                worker_id: worker_id.clone(),
-                occurred_at: Utc::now(),
-                correlation_id: metadata.correlation_id,
-                actor: metadata.actor.or(Some("system:job_dispatcher".to_string())),
-            };
-
-            if let Err(e) = self.event_bus.publish(&assigned_event).await {
-                error!(
-                    error = %e,
-                    job_id = %job.id,
-                    event = "JobAssigned",
-                    "❌ JobDispatcher: Failed to publish JobAssigned event"
-                );
-                // Continue anyway, job is already dispatched
-            } else {
-                debug!(
-                    job_id = %job.id,
-                    event = "JobAssigned",
-                    "📢 JobDispatcher: JobAssigned event published"
-                );
-            }
+            debug!(
+                job_id = %job.id,
+                event = "JobAssigned",
+                "📢 JobDispatcher: JobAssigned event inserted into outbox"
+            );
         }
 
         info!(

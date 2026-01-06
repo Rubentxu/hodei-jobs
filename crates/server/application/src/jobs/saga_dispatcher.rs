@@ -20,7 +20,7 @@ pub struct SagaOnlyJobDispatcher {
     scheduler: SchedulingService,
     worker_command_sender: Arc<dyn WorkerCommandSender>,
     event_bus: Arc<dyn EventBus>,
-    outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+    outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
     execution_saga_dispatcher: Arc<DynExecutionSagaDispatcher>,
     provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
 }
@@ -34,7 +34,7 @@ impl SagaOnlyJobDispatcher {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
-        outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+        outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
         execution_saga_dispatcher: Arc<DynExecutionSagaDispatcher>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     ) -> Self {

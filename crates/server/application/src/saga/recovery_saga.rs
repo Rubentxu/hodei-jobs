@@ -49,6 +49,8 @@ pub type RecoverySagaResult<T = ()> = std::result::Result<T, RecoverySagaError>;
 pub struct DynRecoverySagaCoordinator {
     orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
     config: RecoverySagaCoordinatorConfig,
+    /// Optional target provider for recovery (EPIC-46 GAP-05)
+    pub target_provider_id: Option<String>,
 }
 
 impl DynRecoverySagaCoordinator {
@@ -56,10 +58,12 @@ impl DynRecoverySagaCoordinator {
     pub fn new(
         orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
         config: Option<RecoverySagaCoordinatorConfig>,
+        target_provider_id: Option<String>,
     ) -> Self {
         Self {
             orchestrator,
             config: config.unwrap_or_default(),
+            target_provider_id,
         }
     }
 
@@ -91,7 +95,11 @@ impl DynRecoverySagaCoordinator {
             .ok();
 
         // BUG-009 Fix: WorkerId is now correctly typed in RecoverySaga
-        let saga = RecoverySaga::new(job_id.clone(), failed_worker_id.clone());
+        let saga = RecoverySaga::new(
+            job_id.clone(),
+            failed_worker_id.clone(),
+            self.target_provider_id.clone(),
+        );
 
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
@@ -171,7 +179,11 @@ impl DynRecoverySagaCoordinatorBuilder {
             .orchestrator
             .ok_or_else(|| DynRecoverySagaCoordinatorBuilderError::MissingField("orchestrator"))?;
 
-        Ok(DynRecoverySagaCoordinator::new(orchestrator, self.config))
+        Ok(DynRecoverySagaCoordinator::new(
+            orchestrator,
+            self.config,
+            None,
+        ))
     }
 }
 
@@ -188,16 +200,23 @@ where
 {
     orchestrator: Arc<OR>,
     config: RecoverySagaCoordinatorConfig,
+    /// Optional target provider for recovery (EPIC-46 GAP-05)
+    pub target_provider_id: Option<String>,
 }
 
 impl<OR> RecoverySagaCoordinator<OR>
 where
     OR: SagaOrchestrator,
 {
-    pub fn new(orchestrator: Arc<OR>, config: Option<RecoverySagaCoordinatorConfig>) -> Self {
+    pub fn new(
+        orchestrator: Arc<OR>,
+        config: Option<RecoverySagaCoordinatorConfig>,
+        target_provider_id: Option<String>,
+    ) -> Self {
         Self {
             orchestrator,
             config: config.unwrap_or_default(),
+            target_provider_id,
         }
     }
 
@@ -238,7 +257,11 @@ where
             .ok();
 
         // BUG-009 Fix: WorkerId is now correctly typed in RecoverySaga
-        let saga = RecoverySaga::new(job_id.clone(), failed_worker_id.clone());
+        let saga = RecoverySaga::new(
+            job_id.clone(),
+            failed_worker_id.clone(),
+            self.target_provider_id.clone(),
+        );
 
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
@@ -289,6 +312,7 @@ where
 {
     orchestrator: Option<Arc<OR>>,
     config: Option<RecoverySagaCoordinatorConfig>,
+    target_provider_id: Option<String>,
 }
 
 impl<OR: SagaOrchestrator> RecoverySagaCoordinatorBuilder<OR> {
@@ -296,6 +320,7 @@ impl<OR: SagaOrchestrator> RecoverySagaCoordinatorBuilder<OR> {
         Self {
             orchestrator: None,
             config: None,
+            target_provider_id: None,
         }
     }
 
@@ -309,6 +334,11 @@ impl<OR: SagaOrchestrator> RecoverySagaCoordinatorBuilder<OR> {
         self
     }
 
+    pub fn with_target_provider_id(mut self, provider_id: String) -> Self {
+        self.target_provider_id = Some(provider_id);
+        self
+    }
+
     pub fn build(
         self,
     ) -> std::result::Result<RecoverySagaCoordinator<OR>, RecoverySagaCoordinatorBuilderError> {
@@ -316,7 +346,11 @@ impl<OR: SagaOrchestrator> RecoverySagaCoordinatorBuilder<OR> {
             .orchestrator
             .ok_or_else(|| RecoverySagaCoordinatorBuilderError::MissingField("orchestrator"))?;
 
-        Ok(RecoverySagaCoordinator::new(orchestrator, self.config))
+        Ok(RecoverySagaCoordinator::new(
+            orchestrator,
+            self.config,
+            self.target_provider_id,
+        ))
     }
 }
 
@@ -442,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_saga_execution_success() {
         let orchestrator = Arc::new(TestSagaOrchestrator::new());
-        let coordinator = DynRecoverySagaCoordinator::new(orchestrator, None);
+        let coordinator = DynRecoverySagaCoordinator::new(orchestrator, None, None);
 
         let job_id = JobId::new();
         let worker_id = WorkerId::new();
@@ -460,7 +494,7 @@ mod tests {
         orchestrator.set_should_fail(true);
         let orchestrator = Arc::new(orchestrator);
 
-        let coordinator = DynRecoverySagaCoordinator::new(orchestrator, None);
+        let coordinator = DynRecoverySagaCoordinator::new(orchestrator, None, None);
 
         let job_id = JobId::new();
         let worker_id = WorkerId::new();
