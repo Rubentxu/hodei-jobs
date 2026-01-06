@@ -87,8 +87,8 @@ pub struct WorkerLifecycleManager {
     providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
     config: WorkerLifecycleConfig,
     event_bus: Arc<dyn EventBus>,
-    /// Optional outbox repository for transactional event publishing
-    outbox_repository: Option<Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>>,
+    /// Mandatory outbox repository for transactional event publishing
+    outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     health_service: Arc<WorkerHealthService>,
     /// US-2.2: Saga coordinator for worker provisioning with automatic compensation
     provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
@@ -102,13 +102,14 @@ impl WorkerLifecycleManager {
         providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
         config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         Self {
             registry,
             providers,
             config: config.clone(),
             event_bus,
-            outbox_repository: None,
+            outbox_repository,
             health_service: Arc::new(
                 WorkerHealthService::builder()
                     .with_heartbeat_timeout(config.heartbeat_timeout)
@@ -117,38 +118,6 @@ impl WorkerLifecycleManager {
             provisioning_saga_coordinator: None,
             recovery_saga_coordinator: None,
         }
-    }
-
-    /// Create with outbox repository for transactional event publishing
-    pub fn with_outbox_repository(
-        registry: Arc<dyn WorkerRegistry>,
-        providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
-        config: WorkerLifecycleConfig,
-        event_bus: Arc<dyn EventBus>,
-        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
-    ) -> Self {
-        Self {
-            registry,
-            providers,
-            config: config.clone(),
-            event_bus,
-            outbox_repository: Some(outbox_repository),
-            health_service: Arc::new(
-                WorkerHealthService::builder()
-                    .with_heartbeat_timeout(config.heartbeat_timeout)
-                    .build(),
-            ),
-            provisioning_saga_coordinator: None,
-            recovery_saga_coordinator: None,
-        }
-    }
-
-    /// Set outbox repository after construction
-    pub fn set_outbox_repository(
-        &mut self,
-        outbox_repository: Arc<dyn OutboxRepository<Error = OutboxError> + Send + Sync>,
-    ) {
-        self.outbox_repository = Some(outbox_repository);
     }
 
     /// Set provisioning saga coordinator (US-2.2)
@@ -334,50 +303,32 @@ impl WorkerLifecycleManager {
         let now = Utc::now();
         let worker_id = worker.id();
 
-        if let Some(outbox_repo) = &self.outbox_repository {
-            let event = OutboxEventInsert::for_worker(
+        let event = OutboxEventInsert::for_worker(
+            worker_id.0,
+            "WorkerHeartbeatMissed".to_string(),
+            serde_json::json!({
+                "worker_id": worker_id.0.to_string(),
+                "last_heartbeat": worker.updated_at().to_rfc3339(),
+                "current_job_id": job_id.0.to_string(),
+                "detected_at": now.to_rfc3339()
+            }),
+            Some(serde_json::json!({
+                "source": "WorkerLifecycleManager",
+                "reconciliation_run": true
+            })),
+            Some(format!(
+                "heartbeat-missed-{}-{}",
                 worker_id.0,
-                "WorkerHeartbeatMissed".to_string(),
-                serde_json::json!({
-                    "worker_id": worker_id.0.to_string(),
-                    "last_heartbeat": worker.updated_at().to_rfc3339(),
-                    "current_job_id": job_id.0.to_string(),
-                    "detected_at": now.to_rfc3339()
-                }),
-                Some(serde_json::json!({
-                    "source": "WorkerLifecycleManager",
-                    "reconciliation_run": true
-                })),
-                Some(format!(
-                    "heartbeat-missed-{}-{}",
-                    worker_id.0,
-                    now.timestamp()
-                )),
-            );
+                now.timestamp()
+            )),
+        );
 
-            outbox_repo.insert_events(&[event]).await.map_err(|e| {
-                DomainError::InfrastructureError {
-                    message: format!("Failed to insert outbox event: {:?}", e),
-                }
+        self.outbox_repository
+            .insert_events(&[event])
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to insert outbox event: {:?}", e),
             })?;
-        } else {
-            // Legacy: Direct event publishing
-            let event = DomainEvent::WorkerStatusChanged {
-                worker_id: worker_id.clone(),
-                old_status: worker.state().clone(),
-                new_status: WorkerState::Terminated,
-                occurred_at: now,
-                correlation_id: None,
-                actor: Some("lifecycle-reconciliation".to_string()),
-            };
-
-            self.event_bus
-                .publish(&event)
-                .await
-                .map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to publish event: {}", e),
-                })?;
-        }
 
         Ok(())
     }
@@ -387,48 +338,29 @@ impl WorkerLifecycleManager {
         let now = Utc::now();
         let worker_id = worker.id();
 
-        if let Some(outbox_repo) = &self.outbox_repository {
-            let event = OutboxEventInsert::for_job(
-                job_id.0,
-                "JobReassignmentRequired".to_string(),
-                serde_json::json!({
-                    "job_id": job_id.0.to_string(),
-                    "failed_worker_id": worker_id.0.to_string(),
-                    "reason": "worker_heartbeat_timeout",
-                    "occurred_at": now.to_rfc3339()
-                }),
-                Some(serde_json::json!({
-                    "source": "WorkerLifecycleManager",
-                    "reconciliation_run": true,
-                    "worker_last_heartbeat": worker.updated_at().to_rfc3339()
-                })),
-                Some(format!("job-reassign-{}-{}", job_id.0, now.timestamp())),
-            );
+        let event = OutboxEventInsert::for_job(
+            job_id.0,
+            "JobReassignmentRequired".to_string(),
+            serde_json::json!({
+                "job_id": job_id.0.to_string(),
+                "failed_worker_id": worker_id.0.to_string(),
+                "reason": "worker_heartbeat_timeout",
+                "occurred_at": now.to_rfc3339()
+            }),
+            Some(serde_json::json!({
+                "source": "WorkerLifecycleManager",
+                "reconciliation_run": true,
+                "worker_last_heartbeat": worker.updated_at().to_rfc3339()
+            })),
+            Some(format!("job-reassign-{}-{}", job_id.0, now.timestamp())),
+        );
 
-            outbox_repo.insert_events(&[event]).await.map_err(|e| {
-                DomainError::InfrastructureError {
-                    message: format!("Failed to insert outbox event: {:?}", e),
-                }
+        self.outbox_repository
+            .insert_events(&[event])
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to insert outbox event: {:?}", e),
             })?;
-        } else {
-            // Legacy: Direct event publishing - emit JobStatusChanged to Failed
-            use hodei_server_domain::shared_kernel::JobState;
-            let event = DomainEvent::JobStatusChanged {
-                job_id: job_id.clone(),
-                old_state: JobState::Running,
-                new_state: JobState::Failed,
-                occurred_at: now,
-                correlation_id: None,
-                actor: Some("lifecycle-reconciliation".to_string()),
-            };
-
-            self.event_bus
-                .publish(&event)
-                .await
-                .map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to publish event: {}", e),
-                })?;
-        }
 
         Ok(())
     }
@@ -443,51 +375,34 @@ impl WorkerLifecycleManager {
     ) -> Result<()> {
         let now = Utc::now();
 
-        if let Some(outbox_repo) = &self.outbox_repository {
-            let event = OutboxEventInsert::for_worker(
+        let event = OutboxEventInsert::for_worker(
+            worker_id.0,
+            "WorkerStatusChanged".to_string(),
+            serde_json::json!({
+                "worker_id": worker_id.0.to_string(),
+                "old_status": format!("{:?}", old_state),
+                "new_status": format!("{:?}", new_state),
+                "reason": reason,
+                "occurred_at": now.to_rfc3339()
+            }),
+            Some(serde_json::json!({
+                "source": "WorkerLifecycleManager",
+                "transition_reason": reason
+            })),
+            Some(format!(
+                "worker-status-{}-{}-{}",
                 worker_id.0,
-                "WorkerStatusChanged".to_string(),
-                serde_json::json!({
-                    "worker_id": worker_id.0.to_string(),
-                    "old_status": format!("{:?}", old_state),
-                    "new_status": format!("{:?}", new_state),
-                    "reason": reason,
-                    "occurred_at": now.to_rfc3339()
-                }),
-                Some(serde_json::json!({
-                    "source": "WorkerLifecycleManager",
-                    "transition_reason": reason
-                })),
-                Some(format!(
-                    "worker-status-{}-{}-{}",
-                    worker_id.0,
-                    format!("{:?}", new_state),
-                    now.timestamp()
-                )),
-            );
+                format!("{:?}", new_state),
+                now.timestamp()
+            )),
+        );
 
-            outbox_repo.insert_events(&[event]).await.map_err(|e| {
-                DomainError::InfrastructureError {
-                    message: format!("Failed to insert outbox event: {:?}", e),
-                }
+        self.outbox_repository
+            .insert_events(&[event])
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to insert outbox event: {:?}", e),
             })?;
-        } else {
-            let event = DomainEvent::WorkerStatusChanged {
-                worker_id: worker_id.clone(),
-                old_status: old_state,
-                new_status: new_state,
-                occurred_at: now,
-                correlation_id: None,
-                actor: Some("lifecycle-reconciliation".to_string()),
-            };
-
-            self.event_bus
-                .publish(&event)
-                .await
-                .map_err(|e| DomainError::InfrastructureError {
-                    message: format!("Failed to publish event: {}", e),
-                })?;
-        }
 
         Ok(())
     }
@@ -601,27 +516,25 @@ impl WorkerLifecycleManager {
 
     /// Emit WorkerEphemeralIdle event when worker exceeds idle timeout (EPIC-26 US-26.7)
     async fn emit_worker_idle_event(&self, worker: &Worker) {
-        if let Some(outbox_repo) = &self.outbox_repository {
-            let event = OutboxEventInsert::for_worker(
-                worker.id().0,
-                "WorkerEphemeralIdle".to_string(),
-                serde_json::json!({
-                    "worker_id": worker.id().0.to_string(),
-                    "provider_id": worker.provider_id().0.to_string(),
-                    "idle_since": worker.last_heartbeat().to_rfc3339(),
-                    "idle_timeout_secs": worker.idle_timeout_secs(),
-                    "current_job_id": worker.current_job_id().map(|j| j.0.to_string())
-                }),
-                Some(serde_json::json!({
-                    "source": "WorkerLifecycleManager",
-                    "event": "idle_timeout_detected"
-                })),
-                Some(format!("worker-idle-{}", worker.id().0)),
-            );
+        let event = OutboxEventInsert::for_worker(
+            worker.id().0,
+            "WorkerEphemeralIdle".to_string(),
+            serde_json::json!({
+                "worker_id": worker.id().0.to_string(),
+                "provider_id": worker.provider_id().0.to_string(),
+                "idle_since": worker.last_heartbeat().to_rfc3339(),
+                "idle_timeout_secs": worker.idle_timeout_secs(),
+                "current_job_id": worker.current_job_id().map(|j| j.0.to_string())
+            }),
+            Some(serde_json::json!({
+                "source": "WorkerLifecycleManager",
+                "event": "idle_timeout_detected"
+            })),
+            Some(format!("worker-idle-{}", worker.id().0)),
+        );
 
-            if let Err(e) = outbox_repo.insert_events(&[event]).await {
-                warn!("Failed to insert WorkerEphemeralIdle event: {:?}", e);
-            }
+        if let Err(e) = self.outbox_repository.insert_events(&[event]).await {
+            warn!("Failed to insert WorkerEphemeralIdle event: {:?}", e);
         }
     }
 
@@ -1303,31 +1216,29 @@ impl WorkerLifecycleManager {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        if let Some(outbox_repo) = &self.outbox_repository {
-            let event = OutboxEventInsert::for_worker(
-                orphan.worker_id.0,
-                "OrphanWorkerDetected".to_string(),
-                serde_json::json!({
-                    "worker_id": orphan.worker_id.0.to_string(),
-                    "provider_id": provider_id.0.to_string(),
-                    "last_seen": orphan.last_seen.to_rfc3339(),
-                    "orphaned_duration_secs": orphaned_duration,
-                    "detection_method": "reconciliation"
-                }),
-                Some(serde_json::json!({
-                    "source": "WorkerLifecycleManager",
-                    "provider_resource_id": orphan.provider_resource_id
-                })),
-                Some(format!(
-                    "orphan-detected-{}-{}",
-                    provider_id.0,
-                    now.timestamp()
-                )),
-            );
+        let event = OutboxEventInsert::for_worker(
+            orphan.worker_id.0,
+            "OrphanWorkerDetected".to_string(),
+            serde_json::json!({
+                "worker_id": orphan.worker_id.0.to_string(),
+                "provider_id": provider_id.0.to_string(),
+                "last_seen": orphan.last_seen.to_rfc3339(),
+                "orphaned_duration_secs": orphaned_duration,
+                "detection_method": "reconciliation"
+            }),
+            Some(serde_json::json!({
+                "source": "WorkerLifecycleManager",
+                "provider_resource_id": orphan.provider_resource_id
+            })),
+            Some(format!(
+                "orphan-detected-{}-{}",
+                provider_id.0,
+                now.timestamp()
+            )),
+        );
 
-            if let Err(e) = outbox_repo.insert_events(&[event]).await {
-                warn!("Failed to insert OrphanWorkerDetected event: {:?}", e);
-            }
+        if let Err(e) = self.outbox_repository.insert_events(&[event]).await {
+            warn!("Failed to insert OrphanWorkerDetected event: {:?}", e);
         }
     }
 
@@ -1335,42 +1246,40 @@ impl WorkerLifecycleManager {
     async fn emit_garbage_collection_completed(&self, result: &OrphanCleanupResult) {
         let now = Utc::now();
 
-        if let Some(outbox_repo) = &self.outbox_repository {
-            // Get provider IDs scanned
-            let provider_ids: Vec<String> = self
-                .providers
-                .read()
-                .await
-                .keys()
-                .map(|p| p.0.to_string())
-                .collect();
+        // Get provider IDs scanned
+        let provider_ids: Vec<String> = self
+            .providers
+            .read()
+            .await
+            .keys()
+            .map(|p| p.0.to_string())
+            .collect();
 
-            // Generate a unique ID for this GC event
-            let gc_event_id = provider_ids
-                .first()
-                .map(|p| uuid::Uuid::parse_str(p).unwrap_or_else(|_| uuid::Uuid::new_v4()))
-                .unwrap_or_else(uuid::Uuid::new_v4);
+        // Generate a unique ID for this GC event
+        let gc_event_id = provider_ids
+            .first()
+            .map(|p| uuid::Uuid::parse_str(p).unwrap_or_else(|_| uuid::Uuid::new_v4()))
+            .unwrap_or_else(uuid::Uuid::new_v4);
 
-            let event = OutboxEventInsert::for_worker(
-                gc_event_id,
-                "GarbageCollectionCompleted".to_string(),
-                serde_json::json!({
-                    "scanned_providers": provider_ids,
-                    "orphaned_workers_found": result.orphans_detected,
-                    "orphaned_workers_cleaned": result.orphans_cleaned,
-                    "errors": result.errors,
-                    "duration_ms": result.duration_ms
-                }),
-                Some(serde_json::json!({
-                    "source": "WorkerLifecycleManager",
-                    "event": "orphan_gc"
-                })),
-                Some(format!("gc-completed-{}", now.timestamp())),
-            );
+        let event = OutboxEventInsert::for_worker(
+            gc_event_id,
+            "GarbageCollectionCompleted".to_string(),
+            serde_json::json!({
+                "scanned_providers": provider_ids,
+                "orphaned_workers_found": result.orphans_detected,
+                "orphaned_workers_cleaned": result.orphans_cleaned,
+                "errors": result.errors,
+                "duration_ms": result.duration_ms
+            }),
+            Some(serde_json::json!({
+                "source": "WorkerLifecycleManager",
+                "event": "orphan_gc"
+            })),
+            Some(format!("gc-completed-{}", now.timestamp())),
+        );
 
-            if let Err(e) = outbox_repo.insert_events(&[event]).await {
-                warn!("Failed to insert GarbageCollectionCompleted event: {:?}", e);
-            }
+        if let Err(e) = self.outbox_repository.insert_events(&[event]).await {
+            warn!("Failed to insert GarbageCollectionCompleted event: {:?}", e);
         }
     }
 }
@@ -1710,6 +1619,87 @@ mod tests {
         }
     }
 
+    struct MockOutboxRepository;
+
+    #[async_trait::async_trait]
+    impl OutboxRepository for MockOutboxRepository {
+        async fn insert_events(
+            &self,
+            _events: &[OutboxEventInsert],
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn get_pending_events(
+            &self,
+            _limit: usize,
+            _max_retries: i32,
+        ) -> std::result::Result<Vec<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
+        {
+            Ok(vec![])
+        }
+
+        async fn mark_published(
+            &self,
+            _ids: &[uuid::Uuid],
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn mark_failed(
+            &self,
+            _event_id: &uuid::Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn exists_by_idempotency_key(
+            &self,
+            _key: &str,
+        ) -> std::result::Result<bool, OutboxError> {
+            Ok(false)
+        }
+
+        async fn count_pending(&self) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn get_stats(
+            &self,
+        ) -> std::result::Result<hodei_server_domain::outbox::OutboxStats, OutboxError> {
+            Ok(hodei_server_domain::outbox::OutboxStats {
+                pending_count: 0,
+                published_count: 0,
+                failed_count: 0,
+                oldest_pending_age_seconds: None,
+            })
+        }
+
+        async fn cleanup_published_events(
+            &self,
+            _older_than: std::time::Duration,
+        ) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn cleanup_failed_events(
+            &self,
+            _max_retries: i32,
+            _older_than: std::time::Duration,
+        ) -> std::result::Result<u64, OutboxError> {
+            Ok(0)
+        }
+
+        async fn find_by_id(
+            &self,
+            _id: uuid::Uuid,
+        ) -> std::result::Result<Option<hodei_server_domain::outbox::OutboxEventView>, OutboxError>
+        {
+            Ok(None)
+        }
+    }
+
     struct MockWorkerRegistry {
         workers: Arc<TokioRwLock<StdHashMap<WorkerId, Worker>>>,
     }
@@ -1944,7 +1934,10 @@ mod tests {
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
         let providers = Arc::new(RwLock::new(StdHashMap::new()));
-        let _manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let _manager =
+            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
     }
 
     #[tokio::test]
@@ -1953,7 +1946,10 @@ mod tests {
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
         let providers = Arc::new(RwLock::new(StdHashMap::new()));
-        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager =
+            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
 
         assert!(manager.should_scale_up(1).await);
     }
@@ -1984,7 +1980,15 @@ mod tests {
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
 
-        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         // Crear workers en diferentes estados (todos con el mismo provider_id que el mock)
         // EPIC-26 US-26.7: Ready worker con idle_timeout=0 para que se termine inmediatamente
@@ -2092,7 +2096,15 @@ mod tests {
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
 
-        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         // Crear 5 workers Ready con el mismo provider_id
         // EPIC-26 US-26.7: idle_timeout=0 para que se terminen inmediatamente
@@ -2157,7 +2169,15 @@ mod tests {
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
 
-        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         // Crear workers en estado Ready con el mismo provider_id
         // EPIC-26 US-26.7: idle_timeout=0 para que se terminen inmediatamente
@@ -2240,7 +2260,7 @@ mod tests {
             &self,
             saga: &dyn Saga,
             context: SagaContext,
-        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
+        ) -> std::result::Result<SagaExecutionResult, DomainError> {
             let saga_type = saga.saga_type().as_str().to_string();
             self.executed_sagas.lock().unwrap().push(saga_type.clone());
 
@@ -2274,7 +2294,7 @@ mod tests {
         async fn execute(
             &self,
             context: &SagaContext,
-        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
+        ) -> std::result::Result<SagaExecutionResult, DomainError> {
             // Create a mock saga based on type and execute
             let saga_type_str = context.saga_type.as_str().to_string();
             self.executed_sagas
@@ -2311,11 +2331,11 @@ mod tests {
         async fn get_saga(
             &self,
             _saga_id: &SagaId,
-        ) -> std::result::Result<Option<SagaContext>, Self::Error> {
+        ) -> std::result::Result<Option<SagaContext>, DomainError> {
             Ok(None)
         }
 
-        async fn cancel_saga(&self, _saga_id: &SagaId) -> std::result::Result<(), Self::Error> {
+        async fn cancel_saga(&self, _saga_id: &SagaId) -> std::result::Result<(), DomainError> {
             Ok(())
         }
     }
@@ -2437,7 +2457,10 @@ mod tests {
         let event_bus = Arc::new(MockEventBus::new());
         let providers = Arc::new(RwLock::new(StdHashMap::new()));
 
-        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager =
+            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
 
         // THEN: is_saga_provisioning_enabled debe retornar false
         assert!(
@@ -2470,7 +2493,15 @@ mod tests {
             Some(saga_config),
         ));
 
-        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let mut manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         // WHEN: Se setea el coordinator
         manager.set_provisioning_saga_coordinator(coordinator);
@@ -2500,13 +2531,21 @@ mod tests {
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
 
-        let manager = WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
         let job_id = JobId::new();
 
         // WHEN: Se llama provision_worker
-        let result = manager.provision_worker(&provider_id, spec, job_id).await;
+        let result: Result<Worker> = manager.provision_worker(&provider_id, spec, job_id).await;
 
         // THEN: Debe usar legacy provisioning (el worker debe ser registrado)
         assert!(result.is_ok(), "Legacy provisioning should succeed");
@@ -2546,8 +2585,15 @@ mod tests {
             Some(saga_config),
         ));
 
-        let mut manager =
-            WorkerLifecycleManager::new(registry.clone(), providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let mut manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
         manager.set_provisioning_saga_coordinator(coordinator);
 
         let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
@@ -2596,7 +2642,15 @@ mod tests {
             Some(saga_config),
         ));
 
-        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let mut manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
         manager.set_provisioning_saga_coordinator(coordinator);
 
         let spec = WorkerSpec::new("test-image".to_string(), "test-endpoint".to_string());
@@ -2627,7 +2681,10 @@ mod tests {
         let event_bus = Arc::new(MockEventBus::new());
         let providers = Arc::new(RwLock::new(StdHashMap::new()));
 
-        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager =
+            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
 
         // THEN: is_saga_recovery_enabled debe retornar false
         assert!(
@@ -2654,9 +2711,18 @@ mod tests {
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
             orchestrator,
             Some(saga_config),
+            None,
         ));
 
-        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let mut manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         // WHEN: Se setea el coordinator
         manager.set_recovery_saga_coordinator(coordinator);
@@ -2676,7 +2742,10 @@ mod tests {
         let event_bus = Arc::new(MockEventBus::new());
         let providers = Arc::new(RwLock::new(StdHashMap::new()));
 
-        let manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let manager =
+            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
 
         let job_id = JobId::new();
         let worker_id = WorkerId::new();
@@ -2709,9 +2778,18 @@ mod tests {
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
             orchestrator,
             Some(saga_config),
+            None,
         ));
 
-        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let mut manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
         manager.set_recovery_saga_coordinator(coordinator);
 
         let job_id = JobId::new();
@@ -2742,9 +2820,18 @@ mod tests {
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
             orchestrator,
             Some(saga_config),
+            None,
         ));
 
-        let mut manager = WorkerLifecycleManager::new(registry, providers, config, event_bus);
+        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+            Arc::new(MockOutboxRepository);
+        let mut manager = WorkerLifecycleManager::new(
+            registry.clone(),
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
         manager.set_recovery_saga_coordinator(coordinator);
 
         let job_id = JobId::new();
