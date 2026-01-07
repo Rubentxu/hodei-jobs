@@ -55,14 +55,26 @@
 - Eliminar definiciones duplicadas de `hodei_all_in_one.proto`
 - Esto requeriría migración de clientes y versión major
 
-### Fase 3: Unificación de Paquetes 🔲 PENDIENTE
+### Fase 3: Unificación de Paquetes 🚧 EN PROGRESO
 
-**Estado**: Pendiente para versión futura (v1.0.0).
+**Estado**: En progreso - Creado `hodei.v1.proto` unificado.
 
-**Criterios para iniciar**:
-- [ ] Problemas sostenidos con imports cruzados
-- [ ] Demanda de clientes para paquete unificado
-- [ ] Disponibilidad para migración completa
+**Archivos añadidos**:
+- ✅ `proto/hodei.v1.proto` - Nuevo archivo unificado con todos los tipos
+- ✅ `proto/src/generated/hodei.v1.rs` - Código Rust generado (~119KB)
+- ✅ `proto/build.rs` - Actualizado para compilar el nuevo proto
+
+**Criterios completados**:
+- [x] Crear nuevo archivo `hodei.v1.proto` con todas las definiciones
+- [x] Actualizar `build.rs` para compilar el nuevo proto
+- [x] Generar código Rust (`hodei.v1.rs`)
+
+**Próximos pasos (requieren cambios breaking)**:
+- [ ] Actualizar todos los archivos Rust para usar `hodei.v1` en lugar de paquetes individuales
+- [ ] Actualizar clientes gRPC para usar nuevo paquete
+- [ ] Release v1.0.0 con cambios breaking
+
+**Nota**: Los archivos proto existentes (`common.proto`, `worker_agent.proto`, etc.) se mantienen para compatibilidad durante la transición.
 
 ---
 
