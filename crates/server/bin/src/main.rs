@@ -139,11 +139,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("🔓 Development mode ENABLED");
     }
 
+    info!("🔍 DEBUG: Reading database configuration...");
     // Database configuration
     let db_url = env::var("SERVER_DATABASE_URL")
         .or_else(|_| env::var("HODEI_DATABASE_URL"))
         .or_else(|_| env::var("DATABASE_URL"))
         .map_err(|_| anyhow::anyhow!("Missing database URL"))?;
+
+    info!(
+        "🔍 DEBUG: Database URL obtained: {}",
+        db_url.split('@').last().unwrap_or("unknown")
+    );
 
     let max_connections = env::var("HODEI_DB_MAX_CONNECTIONS")
         .ok()
@@ -161,7 +167,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(30));
 
+    info!(
+        "🔍 DEBUG: Creating database pool (max={}, min={}, timeout={}s)...",
+        max_connections,
+        min_connections,
+        connection_timeout.as_secs()
+    );
     // Create shared Postgres Pool with optimized settings for high concurrency
+    info!("🔍 DEBUG: Attempting database connection...");
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
         .min_connections(min_connections) // Maintain ready connections
@@ -173,23 +186,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
 
     info!(
-        "Connected to database (pool: min={}, max={})",
+        "✅ Connected to database (pool: min={}, max={})",
         min_connections, max_connections
     );
 
+    info!("🔍 DEBUG: Creating Arc wrapper for pool...");
     // Create Arc wrapper for components that need it
     let pool_arc = Arc::new(pool.clone());
+
+    info!("🔍 DEBUG: Initializing log persistence configuration...");
 
     // Initialize log persistence configuration
     let server_config =
         config::ServerConfig::new().map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
     let persistence_config = server_config.to_log_persistence_config();
 
+    info!("🔍 DEBUG: Creating storage backend...");
+
     // Create storage backend (agnostic - local, S3, etc.)
     let storage_backend: Box<dyn LogStorage> = LogStorageFactory::create(&persistence_config);
 
+    info!("🔍 DEBUG: Creating log storage repository...");
     // Create log storage repository
     let log_storage_repo = Arc::new(LogStorageRepository::new(pool.clone()));
+
+    info!("🔍 DEBUG: Setting up log finalization callback...");
 
     // Create callback to save log references to database
     let log_repo_for_callback = log_storage_repo.clone();
@@ -1369,6 +1390,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_jetstream(&nats_jetstream)
         .with_orchestrator(orchestrator.clone())
         .with_worker_registry(worker_registry.clone())
+        .with_outbox_repository(outbox_repository.clone())
         .with_config(OrphanWorkerDetectorConsumerConfig {
             consumer_name: "orphan-worker-detector".to_string(),
             stream_prefix: "HODEI".to_string(),

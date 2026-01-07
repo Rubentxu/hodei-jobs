@@ -146,11 +146,14 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             .issue(&worker_id, self.config.otp_ttl)
             .await?;
 
-        // Create a mutable copy of the spec with OTP token in environment
+        // Create a mutable copy of the spec with OTP token and job_id in environment
         let mut spec_with_env = spec.clone();
         spec_with_env
             .environment
             .insert("HODEI_OTP_TOKEN".to_string(), otp_token.to_string());
+        spec_with_env
+            .environment
+            .insert("HODEI_JOB_ID".to_string(), job_id.to_string());
 
         info!("Generated OTP for worker {}, creating container", worker_id);
 
@@ -161,13 +164,20 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             }
         })?;
 
-        // Register in registry with job association
-        let worker = self.registry.register(handle, spec, job_id).await?;
+        // DO NOT register in registry here - worker will self-register via gRPC with OTP
+        // When the worker starts, it will:
+        // 1. Call register() gRPC endpoint with the OTP token
+        // 2. Server validates OTP and registers worker in registry
+        // 3. Server publishes WorkerRegistered event
+        // 4. ProvisioningSaga continues with next steps
 
-        info!("Worker {} provisioned successfully with OTP", worker_id);
+        info!(
+            "Worker {} infrastructure provisioned successfully. Worker will self-register with OTP.",
+            worker_id
+        );
 
         Ok(ProvisioningResult::new(
-            worker.id().clone(),
+            worker_id.clone(),
             otp_token.to_string(),
             provider_id.clone(),
         ))

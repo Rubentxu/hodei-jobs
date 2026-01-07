@@ -614,6 +614,9 @@ async fn register_worker(
             return Err("Shutdown triggered".into());
         }
 
+        // Read job_id from environment variable (set by provisioning service)
+        let job_id = std::env::var("HODEI_JOB_ID").ok();
+
         let request = RegisterWorkerRequest {
             auth_token: config.auth_token.clone(),
             worker_info: Some(WorkerInfo {
@@ -641,6 +644,8 @@ async fn register_worker(
                 start_time: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
             }),
             session_id: session_id.clone().unwrap_or_default(),
+            timeout_config: None,
+            job_id,
         };
 
         match client.register(request).await {

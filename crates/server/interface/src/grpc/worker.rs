@@ -288,9 +288,7 @@ impl WorkerAgentServiceImpl {
         self.job_repository.as_ref()
     }
 
-    fn outbox_repository(
-        &self,
-    ) -> Option<&Arc<dyn OutboxRepository + Send + Sync>> {
+    fn outbox_repository(&self) -> Option<&Arc<dyn OutboxRepository + Send + Sync>> {
         self.outbox_repository.as_ref()
     }
 
@@ -319,6 +317,7 @@ impl WorkerAgentServiceImpl {
         &self,
         worker_id_str: &str,
         worker_info: &WorkerInfo,
+        job_id_from_token: Option<JobId>,
     ) -> Result<(), Status> {
         let worker_id = Self::parse_worker_uuid(worker_id_str)?;
 
@@ -349,8 +348,36 @@ impl WorkerAgentServiceImpl {
                             worker_id
                         );
 
-                        // A. Recover provider_id from database if possible
-                        let provider_id = ProviderId::new(); // Will be corrected when JobDispatcher processes
+                        // A. Recover provider_id from database if worker already exists
+                        let provider_id = if let Some(ref registry) = self.worker_registry {
+                            match registry.get(&worker_id).await {
+                                Ok(Some(existing_worker)) => {
+                                    info!(
+                                        "✅ Found existing worker {} in database with provider_id: {}",
+                                        worker_id,
+                                        existing_worker.handle().provider_id
+                                    );
+                                    existing_worker.handle().provider_id.clone()
+                                }
+                                Ok(None) => {
+                                    warn!(
+                                        "⚠️ Worker {} not found in database, creating new provider_id",
+                                        worker_id
+                                    );
+                                    ProviderId::new()
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ Failed to query worker {} from database: {:?}. Using new provider_id",
+                                        worker_id, e
+                                    );
+                                    ProviderId::new()
+                                }
+                            }
+                        } else {
+                            warn!("WorkerRegistry not available, creating new provider_id");
+                            ProviderId::new()
+                        };
 
                         // B. Build WorkerHandle from worker info
                         let resource_id = worker_info.name.clone();
@@ -390,8 +417,9 @@ impl WorkerAgentServiceImpl {
 
                                 // BUG-001 FIX: Persist worker to PostgreSQL via WorkerRegistry
                                 if let Some(ref registry) = self.worker_registry {
+                                    let job_id = job_id_from_token.unwrap_or_else(JobId::new);
                                     match registry
-                                        .register(handle.clone(), spec.clone(), JobId::new())
+                                        .register(handle.clone(), spec.clone(), job_id)
                                         .await
                                     {
                                         Ok(worker) => {
@@ -888,6 +916,8 @@ impl WorkerAgentServiceImpl {
     /// Valida un OTP token
     ///
     /// En modo desarrollo (HODEI_DEV_MODE=1), acepta tokens con prefijo "dev-"
+    /// Validate OTP token (PRD v6.0)
+    /// Returns worker_id
     async fn validate_otp(
         &self,
         token: &str,
@@ -900,7 +930,7 @@ impl WorkerAgentServiceImpl {
             cfg!(debug_assertions) && std::env::var("HODEI_DEV_MODE").unwrap_or_default() == "1";
 
         if dev_mode && (token.is_empty() || token.starts_with("dev-")) {
-            info!(
+            warn!(
                 "Development mode: accepting token for worker {}",
                 worker_id_from_request
             );
@@ -1071,30 +1101,23 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 "🔐 WorkerAgentService::register: Validating OTP token for worker {}...",
                 worker_id
             );
-            let validated_worker_id = match self.validate_otp(&req.auth_token, &worker_id).await {
-                Ok(id) => {
-                    info!(
-                        "✅ WorkerAgentService::register: OTP validation SUCCESSFUL for worker {}",
-                        id
-                    );
-                    id
-                }
-                Err(e) => {
-                    error!(
-                        "❌ WorkerAgentService::register: OTP validation FAILED for worker {}: {}",
-                        worker_id, e
-                    );
-                    return Err(e);
-                }
-            };
+            let validated_worker_id = self.validate_otp(&req.auth_token, &worker_id).await?;
 
             info!(
-                "✅ WorkerAgentService::register: Worker {} validated, proceeding with registration",
+                "✅ WorkerAgentService::register: OTP validation SUCCESSFUL for worker {}",
                 validated_worker_id
             );
 
-            // Pass worker_info for JIT registration if needed
-            self.on_worker_registered(&validated_worker_id, &worker_info)
+            // job_id comes from the bootstrap token, not from the request
+            let job_id_from_request = None;
+
+            info!(
+                "✅ WorkerAgentService::register: Worker {} validated, proceeding with registration (job_id: {:?})",
+                validated_worker_id, job_id_from_request
+            );
+
+            // Pass worker_info and job_id for JIT registration if needed
+            self.on_worker_registered(&validated_worker_id, &worker_info, job_id_from_request)
                 .await?;
         } else {
             info!(
