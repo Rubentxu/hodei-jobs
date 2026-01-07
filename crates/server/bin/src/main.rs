@@ -1289,9 +1289,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 Starting NATS ExecutionSagaConsumer for reactive job processing");
 
     // Create ExecutionSagaConsumer for event-driven saga triggering
+    let nats_client_clone = nats_client.clone();
+    let nats_jetstream_clone = nats_jetstream.clone();
     let exec_consumer = ExecutionSagaConsumerBuilder::new()
-        .with_client(nats_client)
-        .with_jetstream(nats_jetstream)
+        .with_client(nats_client_clone)
+        .with_jetstream(nats_jetstream_clone)
         .with_orchestrator(orchestrator.clone())
         .with_job_repository(job_repository.clone())
         .with_worker_registry(worker_registry.clone())

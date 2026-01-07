@@ -742,18 +742,17 @@ mod tests {
     }
 
     #[test]
-    fn provisioning_saga_should_have_four_steps() {
+    fn provisioning_saga_should_have_three_steps() {
         let spec = create_test_worker_spec();
         let provider_id = ProviderId::new();
         let saga = ProvisioningSaga::new(spec, provider_id);
 
         let steps = saga.steps();
-        assert_eq!(steps.len(), 4);
+        assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].name(), "ValidateProviderCapacity");
-        // EPIC-46 GAP-06: RegisterWorkerStep executes BEFORE CreateInfrastructureStep
-        assert_eq!(steps[1].name(), "RegisterWorker");
-        assert_eq!(steps[2].name(), "CreateInfrastructure");
-        assert_eq!(steps[3].name(), "PublishProvisionedEvent");
+        // EPIC-46 GAP-06: RegisterWorkerStep removed - workers self-register via OTP on startup
+        assert_eq!(steps[1].name(), "CreateInfrastructure");
+        assert_eq!(steps[2].name(), "PublishProvisionedEvent");
     }
 
     #[test]

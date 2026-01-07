@@ -82,6 +82,8 @@ pub mod worker_topics {
     pub const RECONNECTED: &str = "hodei.events.workers.workerreconnected";
     /// WorkerHeartbeat event subject
     pub const HEARTBEAT: &str = "hodei.events.workers.workerheartbeat";
+    /// WorkerHeartbeatMissed event subject
+    pub const HEARTBEAT_MISSED: &str = "hodei.events.workers.workerheartbeatmissed";
     /// WorkerSelfTerminated event subject
     pub const SELF_TERMINATED: &str = "hodei.events.workers.workerselfterminated";
     /// WorkerRecoveryFailed event subject

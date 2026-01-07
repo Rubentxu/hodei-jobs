@@ -10,12 +10,15 @@ pub mod cleanup_saga_consumer;
 pub mod execution_saga_consumer;
 pub mod nats;
 pub mod nats_outbox_relay;
+pub mod orphan_worker_detector_consumer;
 pub mod outbox_adapter;
 pub mod outbox_relay;
 pub mod postgres;
 pub mod reactive_outbox_relay;
 pub mod resilient_subscriber;
 pub mod saga_consumer;
+pub mod worker_disconnection_handler_consumer;
+pub mod worker_ephemeral_terminating_consumer;
 
 pub use cleanup_saga_consumer::{
     CleanupSagaConsumer, CleanupSagaConsumerBuilder, CleanupSagaConsumerConfig,
