@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=hodei_all_in_one.proto");
-    println!("cargo:rerun-if-changed=hodei.v1.proto");
     println!("cargo:rerun-if-changed=provider_management.proto");
     println!("cargo:rerun-if-changed=worker_agent.proto");
     println!("cargo:rerun-if-changed=job_templates.proto");
@@ -18,8 +17,7 @@ fn main() {
         .file_descriptor_set_path(&descriptor_path)
         .compile_protos(
             &[
-                "hodei.v1.proto",         // NEW: Unified package
-                "hodei_all_in_one.proto", // Keep for backward compatibility during transition
+                "hodei_all_in_one.proto",
                 "provider_management.proto",
                 "worker_agent.proto",
                 "job_templates.proto",
