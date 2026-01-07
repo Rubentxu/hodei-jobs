@@ -24,6 +24,12 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = "0.12"
 
+# OpenTelemetry Integration (EPIC-54)
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
+
 # Outbox Pattern
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }

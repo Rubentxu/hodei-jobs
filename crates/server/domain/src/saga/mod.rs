@@ -91,7 +91,7 @@ pub use cancellation::{
 
 // Re-exports from timeout module
 pub use timeout::{
-    CleanupWorkerStep, MarkJobFailedStep, TerminateWorkerStep as TimeoutTerminateWorkerStep,
+    MarkJobFailedStep, ReleaseWorkerStep as TimeoutReleaseWorkerStep, TerminateWorkerStep,
     TimeoutSaga, ValidateTimeoutStep,
 };
 

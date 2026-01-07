@@ -13,6 +13,8 @@
 pub mod event_bus;
 pub mod outbox;
 pub mod shared_kernel;
+pub mod telemetry;
+pub mod testing;
 
 // Bounded Contexts
 pub mod audit;
