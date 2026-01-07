@@ -34,7 +34,7 @@ message WorkerFilterResult {
     hodei.common.WorkerId worker_id = 1;
     bool passes_filters = 2;
     repeated string failed_reasons = 3;
-    hodei.common.ResourceAllocation estimated_allocation = 4;
+    hodei.job.ResourceAllocation estimated_allocation = 4;
     map<string, string> filter_metadata = 5;
 }
 
@@ -43,7 +43,7 @@ message WorkerScoreResult {
     hodei.common.WorkerId worker_id = 1;
     double score = 2;  // 0-100
     repeated ScoringBreakdown scoring_breakdown = 3;
-    hodei.common.ResourceAllocation final_allocation = 4;
+    hodei.job.ResourceAllocation final_allocation = 4;
     string selected_reason = 5;
 }
 
@@ -236,7 +236,7 @@ message RebalanceLoadResponse {
 }
 
 // Streaming para decisiones de scheduling
-message SchedulingDecisionStream {
+message SchedulingDecisionMessage {
     SchedulingDecision decision = 1;
     string event_type = 2;  // job_scheduled, scheduling_failed, worker_assigned
     google.protobuf.Timestamp timestamp = 3;
@@ -247,26 +247,26 @@ service SchedulerService {
     // Scheduling principal
     rpc ScheduleJob(ScheduleJobRequest) returns (ScheduleJobResponse);
     rpc FindAvailableWorkers(FindAvailableWorkersRequest) returns (FindAvailableWorkersResponse);
-    
+
     // Gestión de queues
     rpc GetJobQueueInfo(JobQueueInfoRequest) returns (JobQueueInfoResponse);
     rpc RequeueJob(RequeueJobRequest) returns (RequeueJobResponse);
-    
+
     // Gestión de scheduler
     rpc RegisterScheduler(RegisterSchedulerRequest) returns (RegisterSchedulerResponse);
     rpc GetSchedulerStatus(SchedulerStatusRequest) returns (SchedulerStatusResponse);
     rpc UpdateSchedulerConfig(UpdateSchedulerConfigRequest) returns (UpdateSchedulerConfigResponse);
-    
+
     // Plugins
     rpc RegisterPlugin(RegisterPluginRequest) returns (RegisterPluginResponse);
     rpc GetRegisteredPlugins(GetPluginsRequest) returns (GetPluginsResponse);
-    
+
     // Preemption y rebalance
     rpc PreemptJobs(PreemptJobsRequest) returns (PreemptJobsResponse);
     rpc RebalanceLoad(RebalanceLoadRequest) returns (RebalanceLoadResponse);
-    
+
     // Streaming
-    rpc SchedulingDecisionStream(DecisionStreamRequest) returns (stream SchedulingDecisionStream);
+    rpc SchedulingDecisionStream(DecisionStreamRequest) returns (stream SchedulingDecisionMessage);
 }
 
 message JobQueueInfoRequest {

@@ -26,30 +26,30 @@ message TimeSeries {
 message SystemMetrics {
     hodei.common.WorkerId worker_id = 1;
     google.protobuf.Timestamp timestamp = 2;
-    
+
     // CPU metrics
     double cpu_usage_percent = 3;
     double cpu_cores_used = 4;
     double cpu_cores_total = 5;
     repeated double cpu_cores_per_process = 6;  // Top procesos por uso de CPU
-    
+
     // Memory metrics
     int64 memory_used_bytes = 7;
     int64 memory_total_bytes = 8;
     double memory_usage_percent = 9;
     repeated ProcessMemoryInfo process_memory = 10;  // Memoria por proceso
-    
+
     // Disk metrics
     int64 disk_used_bytes = 11;
     int64 disk_total_bytes = 12;
     double disk_usage_percent = 13;
     repeated DiskUsageInfo disk_usage = 14;  // Uso por filesystem
-    
+
     // Network metrics (opcional)
     int64 network_bytes_sent = 15;
     int64 network_bytes_recv = 16;
     double network_usage_percent = 17;
-    
+
     // Load metrics
     double load_average_1min = 18;
     double load_average_5min = 19;
@@ -78,21 +78,21 @@ message JobExecutionMetrics {
     hodei.common.ExecutionId execution_id = 1;
     hodei.common.JobId job_id = 2;
     google.protobuf.Timestamp timestamp = 3;
-    
+
     // Execution progress
     int32 progress_percentage = 4;
     string current_stage = 5;
-    
+
     // Resource usage during execution
     double cpu_usage_percent = 6;
     int64 memory_used_bytes = 7;
     int64 disk_io_bytes = 8;
     int64 network_io_bytes = 9;
-    
+
     // Performance metrics
     google.protobuf.Duration execution_duration = 10;
     google.protobuf.Duration estimated_remaining = 11;
-    
+
     // Stage-specific metrics
     map<string, StageMetrics> stage_metrics = 12;
 }
@@ -169,7 +169,7 @@ message RealTimeMetricsRequest {
     int32 max_points = 4;  // Máximo número de puntos a mantener
 }
 
-message RealTimeMetricsStream {
+message RealTimeMetricsMessage {
     SystemMetrics system_metrics = 1;
     repeated JobExecutionMetrics job_metrics = 2;
     google.protobuf.Timestamp stream_timestamp = 3;
@@ -264,16 +264,16 @@ service MetricsService {
     rpc GetSystemMetrics(GetSystemMetricsRequest) returns (GetSystemMetricsResponse);
     rpc GetJobExecutionMetrics(GetJobExecutionMetricsRequest) returns (GetJobExecutionMetricsResponse);
     rpc GetAggregatedMetrics(GetAggregatedMetricsRequest) returns (GetAggregatedMetricsResponse);
-    
+
     // Streaming de métricas
-    rpc RealTimeMetricsStream(RealTimeMetricsRequest) returns (stream RealTimeMetricsStream);
-    
+    rpc RealTimeMetricsStream(RealTimeMetricsRequest) returns (stream RealTimeMetricsMessage);
+
     // Métricas históricas
     rpc GetHistoricalMetrics(GetHistoricalMetricsRequest) returns (GetHistoricalMetricsResponse);
-    
+
     // Salud del sistema
     rpc GetHealthMetrics(GetHealthMetricsRequest) returns (GetHealthMetricsResponse);
-    
+
     // Alertas
     rpc CreateAlert(CreateAlertRequest) returns (CreateAlertResponse);
     rpc GetAlerts(GetAlertsRequest) returns (GetAlertsResponse);

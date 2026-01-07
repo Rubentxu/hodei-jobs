@@ -355,6 +355,11 @@ pub struct RegisterWorkerRequest {
     /// Optional: for reconnection
     #[prost(string, tag = "3")]
     pub session_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "4")]
+    pub timeout_config: ::core::option::Option<::prost_types::Timestamp>,
+    /// Job ID this worker is provisioned for
+    #[prost(string, optional, tag = "5")]
+    pub job_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RegisterWorkerResponse {

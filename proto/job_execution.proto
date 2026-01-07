@@ -270,7 +270,7 @@ message CancelJobResponse {
 }
 
 // Stream para eventos de ejecución
-message ExecutionEventStream {
+message ExecutionEventMessage {
     DomainEvent event = 1;
 }
 
@@ -304,7 +304,7 @@ service JobExecutionService {
 
     // Eventos y streaming
     rpc GetExecutionEvents(GetExecutionEventsRequest) returns (GetExecutionEventsResponse);
-    rpc ExecutionEventStream(stream ExecutionEventRequest) returns (stream ExecutionEventStream);
+    rpc ExecutionEventStream(stream ExecutionEventRequest) returns (stream ExecutionEventMessage);
 }
 
 message ExecutionEventRequest {

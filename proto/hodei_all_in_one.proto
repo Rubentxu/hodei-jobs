@@ -245,6 +245,8 @@ message RegisterWorkerRequest {
     string auth_token = 1;           // OTP token for authentication
     WorkerInfo worker_info = 2;
     string session_id = 3;           // Optional: for reconnection
+    google.protobuf.Timestamp timeout_config = 4;
+    optional string job_id = 5;      // Job ID this worker is provisioned for
 }
 
 message RegisterWorkerResponse {
