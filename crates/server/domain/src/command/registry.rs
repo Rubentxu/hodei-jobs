@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// Storage for handlers keyed by command TypeId.
 #[derive(Debug, Default)]
 pub struct HandlerRegistry {
-    handlers: HashMap<TypeId, HandlerBox>,
+    handlers: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl HandlerRegistry {
@@ -18,13 +18,25 @@ impl HandlerRegistry {
         }
     }
 
-    pub fn register<C: Command + 'static, H: CommandHandler<C> + 'static>(
+    pub fn register<C: Command + 'static, H: CommandHandler<C> + Send + Sync + 'static>(
         &mut self,
-        handler: Arc<H>,
+        handler: H,
     ) {
         let type_id = TypeId::of::<C>();
         let boxed: Box<dyn Any + Send + Sync> = Box::new(handler);
         self.handlers.insert(type_id, boxed);
+    }
+
+    /// Get a handler for a specific command type.
+    pub fn get_handler<C: Command + 'static>(&self) -> Option<&Box<dyn Any + Send + Sync>> {
+        let type_id = TypeId::of::<C>();
+        self.handlers.get(&type_id)
+    }
+
+    /// Check if a handler is registered for a command type.
+    pub fn has_handler<C: Command + 'static>(&self) -> bool {
+        let type_id = TypeId::of::<C>();
+        self.handlers.contains_key(&type_id)
     }
 
     pub fn len(&self) -> usize {

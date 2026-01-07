@@ -31,7 +31,7 @@ enum CommandMessage {
 /// In-memory command bus implementation.
 #[derive(Debug)]
 pub struct InMemoryCommandBus {
-    pub registry: Arc<parking_lot::Mutex<HandlerRegistry>>,
+    pub registry: Arc<Mutex<HandlerRegistry>>,
     tx: mpsc::Sender<CommandMessage>,
     pub idempotency: Arc<Mutex<InMemoryIdempotencyChecker>>,
     shutdown_rx: Option<oneshot::Receiver<()>>,
@@ -44,7 +44,7 @@ impl InMemoryCommandBus {
 
     pub fn with_config(config: CommandBusConfig) -> Self {
         let (tx, rx) = mpsc::channel(config.queue_depth);
-        let registry = Arc::new(parking_lot::Mutex::new(HandlerRegistry::new()));
+        let registry = Arc::new(Mutex::new(HandlerRegistry::new()));
         let idempotency = Arc::new(Mutex::new(InMemoryIdempotencyChecker::new()));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -76,7 +76,7 @@ impl InMemoryCommandBus {
     #[cfg(test)]
     pub fn new_test() -> Self {
         let (tx, _rx) = mpsc::channel(100);
-        let registry = Arc::new(parking_lot::Mutex::new(HandlerRegistry::new()));
+        let registry = Arc::new(Mutex::new(HandlerRegistry::new()));
         let idempotency = Arc::new(Mutex::new(InMemoryIdempotencyChecker::new()));
 
         Self {
@@ -114,7 +114,7 @@ impl CommandBus for InMemoryCommandBus {
 
     async fn register_handler<H, C>(&mut self, _handler: H)
     where
-        H: CommandHandler<C>,
+        H: CommandHandler<C> + Send + Sync + 'static,
         C: Command,
     {
     }
@@ -123,26 +123,26 @@ impl CommandBus for InMemoryCommandBus {
 /// In-memory idempotency checker.
 #[derive(Debug, Default)]
 pub struct InMemoryIdempotencyChecker {
-    processed: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
+    processed: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl InMemoryIdempotencyChecker {
     pub fn new() -> Self {
         Self {
-            processed: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
+            processed: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
     pub async fn is_duplicate(&self, key: &str) -> bool {
-        self.processed.lock().contains(key)
+        self.processed.lock().await.contains(key)
     }
 
     pub async fn mark_processed(&self, key: &str) {
-        self.processed.lock().insert(key.to_string());
+        self.processed.lock().await.insert(key.to_string());
     }
 
     pub async fn clear(&self) {
-        self.processed.lock().clear();
+        self.processed.lock().await.clear();
     }
 }
 
