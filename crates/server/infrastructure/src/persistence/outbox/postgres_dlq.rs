@@ -1,13 +1,9 @@
-
 //! PostgreSQL DLQ Repository
 //!
 //! SQLx-based implementation of DlqRepository for PostgreSQL.
 
 use hodei_server_domain::outbox::{
-    dlq_model::DlqEntry,
-    dlq_repository::DlqRepository,
-    dlq_stats::DlqStats,
-    OutboxError,
+    OutboxError, dlq_model::DlqEntry, dlq_repository::DlqRepository, dlq_stats::DlqStats,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -125,7 +121,7 @@ impl DlqRepository for PostgresDlqRepository {
     type Error = PostgresDlqRepositoryError;
 
     async fn insert(&self, entry: &DlqEntry) -> Result<(), Self::Error> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO outbox_dlq (
                 id, original_event_id, aggregate_id, aggregate_type, event_type,
@@ -135,17 +131,17 @@ impl DlqRepository for PostgresDlqRepository {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
             ON CONFLICT (original_event_id) DO NOTHING
             "#,
-            entry.id,
-            entry.original_event_id,
-            entry.aggregate_id,
-            entry.aggregate_type,
-            entry.event_type,
-            entry.payload,
-            entry.metadata,
-            entry.error_message,
-            entry.retry_count,
-            entry.original_created_at
         )
+        .bind(&entry.id)
+        .bind(&entry.original_event_id)
+        .bind(&entry.aggregate_id)
+        .bind(&entry.aggregate_type)
+        .bind(&entry.event_type)
+        .bind(&entry.payload)
+        .bind(&entry.metadata)
+        .bind(&entry.error_message)
+        .bind(entry.retry_count)
+        .bind(&entry.original_created_at)
         .execute(&self.pool)
         .await?;
 
@@ -153,7 +149,7 @@ impl DlqRepository for PostgresDlqRepository {
     }
 
     async fn get_by_id(&self, id: Uuid) -> Result<Option<DlqEntry>, Self::Error> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT id, original_event_id, aggregate_id, aggregate_type, event_type,
                    payload, metadata, error_message, retry_count,
@@ -161,8 +157,8 @@ impl DlqRepository for PostgresDlqRepository {
             FROM outbox_dlq
             WHERE id = $1
             "#,
-            id
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -189,7 +185,7 @@ impl DlqRepository for PostgresDlqRepository {
     }
 
     async fn get_by_event_id(&self, event_id: Uuid) -> Result<Option<DlqEntry>, Self::Error> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT id, original_event_id, aggregate_id, aggregate_type, event_type,
                    payload, metadata, error_message, retry_count,
@@ -197,8 +193,8 @@ impl DlqRepository for PostgresDlqRepository {
             FROM outbox_dlq
             WHERE original_event_id = $1
             "#,
-            event_id
         )
+        .bind(event_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -224,12 +220,8 @@ impl DlqRepository for PostgresDlqRepository {
         }
     }
 
-    async fn get_pending(
-        &self,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<DlqEntry>, Self::Error> {
-        let rows = sqlx::query!(
+    async fn get_pending(&self, limit: usize, offset: usize) -> Result<Vec<DlqEntry>, Self::Error> {
+        let rows = sqlx::query(
             r#"
             SELECT id, original_event_id, aggregate_id, aggregate_type, event_type,
                    payload, metadata, error_message, retry_count,
@@ -239,9 +231,9 @@ impl DlqRepository for PostgresDlqRepository {
             ORDER BY moved_at ASC
             LIMIT $1 OFFSET $2
             "#,
-            limit as i64,
-            offset as i64
         )
+        .bind(limit as i64)
+        .bind(offset as i64)
         .fetch_all(&self.pool)
         .await?;
 
@@ -268,13 +260,8 @@ impl DlqRepository for PostgresDlqRepository {
         Ok(entries)
     }
 
-    async fn resolve(
-        &self,
-        id: Uuid,
-        notes: &str,
-        resolved_by: &str,
-    ) -> Result<(), Self::Error> {
-        sqlx::query!(
+    async fn resolve(&self, id: Uuid, notes: &str, resolved_by: &str) -> Result<(), Self::Error> {
+        sqlx::query(
             r#"
             UPDATE outbox_dlq
             SET resolved_at = NOW(),
@@ -282,10 +269,10 @@ impl DlqRepository for PostgresDlqRepository {
                 resolved_by = $3
             WHERE id = $1
             "#,
-            id,
-            notes,
-            resolved_by
         )
+        .bind(id)
+        .bind(notes)
+        .bind(resolved_by)
         .execute(&self.pool)
         .await?;
 
@@ -294,12 +281,12 @@ impl DlqRepository for PostgresDlqRepository {
 
     async fn requeue(&self, id: Uuid) -> Result<Option<Uuid>, Self::Error> {
         // Get the original event ID first
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT original_event_id FROM outbox_dlq WHERE id = $1
             "#,
-            id
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -307,15 +294,13 @@ impl DlqRepository for PostgresDlqRepository {
             let original_event_id = row.original_event_id;
 
             // Delete from DLQ
-            sqlx::query!(
-                "DELETE FROM outbox_dlq WHERE id = $1",
-                id
-            )
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("DELETE FROM outbox_dlq WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
 
             // Reset the original event for retry
-            sqlx::query!(
+            sqlx::query(
                 r#"
                 UPDATE outbox_events
                 SET status = 'PENDING',
@@ -323,8 +308,8 @@ impl DlqRepository for PostgresDlqRepository {
                     last_error = NULL
                 WHERE id = $1
                 "#,
-                original_event_id
             )
+            .bind(original_event_id)
             .execute(&self.pool)
             .await?;
 
@@ -335,7 +320,7 @@ impl DlqRepository for PostgresDlqRepository {
     }
 
     async fn get_stats(&self) -> Result<DlqStats, Self::Error> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT
                 COUNT(CASE WHEN resolved_at IS NULL THEN 1 END) as pending_count,
@@ -355,26 +340,24 @@ impl DlqRepository for PostgresDlqRepository {
     }
 
     async fn delete(&self, id: Uuid) -> Result<(), Self::Error> {
-        sqlx::query!(
-            "DELETE FROM outbox_dlq WHERE id = $1",
-            id
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("DELETE FROM outbox_dlq WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }
 
     async fn cleanup_resolved(&self, older_than: std::time::Duration) -> Result<u64, Self::Error> {
         let older_than_secs = older_than.as_secs_f64();
-        let result = sqlx::query!(
+        let result = sqlx::query(
             r#"
             DELETE FROM outbox_dlq
             WHERE resolved_at IS NOT NULL
             AND resolved_at < NOW() - make_interval(secs => $1)
             "#,
-            older_than_secs
         )
+        .bind(older_than_secs)
         .execute(&self.pool)
         .await?;
 
@@ -419,7 +402,9 @@ mod tests {
 
         // Run migrations
         let repo = PostgresDlqRepository::new(pool.clone());
-        repo.run_migrations().await.expect("Failed to run migrations");
+        repo.run_migrations()
+            .await
+            .expect("Failed to run migrations");
 
         pool
     }

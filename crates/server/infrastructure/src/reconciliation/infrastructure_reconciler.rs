@@ -361,7 +361,7 @@ impl InfrastructureReconciler {
 
     /// Finds TERMINATED workers
     async fn find_terminated_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT w.id, w.state, w.provider_id, w.provider_resource_id, w.spec,
                    w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat
@@ -370,8 +370,8 @@ impl InfrastructureReconciler {
             ORDER BY w.updated_at ASC
             LIMIT $1
             "#,
-            self.config.batch_size as i64
         )
+        .bind(self.config.batch_size as i64)
         .fetch_all(&self.pool)
         .await?;
 
@@ -382,7 +382,7 @@ impl InfrastructureReconciler {
 
     /// Finds BUSY workers
     async fn find_busy_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT w.id, w.state, w.provider_id, w.provider_resource_id, w.spec,
                    w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat
@@ -391,8 +391,8 @@ impl InfrastructureReconciler {
             ORDER BY w.updated_at ASC
             LIMIT $1
             "#,
-            self.config.batch_size as i64
         )
+        .bind(self.config.batch_size as i64)
         .fetch_all(&self.pool)
         .await?;
 
@@ -404,15 +404,15 @@ impl InfrastructureReconciler {
         let mut tx = self.pool.begin().await?;
 
         // Update job state back to PENDING
-        let affected: sqlx::postgres::PgQueryResult = sqlx::query!(
+        let affected = sqlx::query(
             r#"
             UPDATE jobs
             SET state = 'PENDING',
                 completed_at = NOW()
             WHERE id = $1 AND state = 'RUNNING'
             "#,
-            job_id
         )
+        .bind(job_id)
         .execute(&mut *tx)
         .await?;
 

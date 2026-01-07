@@ -254,17 +254,17 @@ impl OutboxRepository for PostgresOutboxRepository {
     }
 
     async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE outbox_events
             SET status = 'FAILED',
                 retry_count = COALESCE(retry_count, 0) + 1,
-                last_error = $2
-            WHERE id = $1
+                last_error = $1
+            WHERE id = $2
             "#,
-            event_id,
-            error
         )
+        .bind(error)
+        .bind(event_id)
         .execute(&self.pool)
         .await?;
 
@@ -341,14 +341,14 @@ impl OutboxRepository for PostgresOutboxRepository {
         older_than: std::time::Duration,
     ) -> Result<u64, OutboxError> {
         let older_than_secs = older_than.as_secs_f64();
-        let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+        let result = sqlx::query(
             r#"
             DELETE FROM outbox_events
             WHERE status = 'PUBLISHED'
             AND published_at < NOW() - make_interval(secs => $1)
             "#,
-            older_than_secs
         )
+        .bind(older_than_secs)
         .execute(&self.pool)
         .await?;
 
@@ -361,16 +361,16 @@ impl OutboxRepository for PostgresOutboxRepository {
         older_than: std::time::Duration,
     ) -> Result<u64, OutboxError> {
         let older_than_secs = older_than.as_secs_f64();
-        let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+        let result = sqlx::query(
             r#"
             DELETE FROM outbox_events
             WHERE status = 'FAILED'
             AND retry_count >= $1
             AND created_at < NOW() - make_interval(secs => $2)
             "#,
-            max_retries,
-            older_than_secs
         )
+        .bind(max_retries)
+        .bind(older_than_secs)
         .execute(&self.pool)
         .await?;
 

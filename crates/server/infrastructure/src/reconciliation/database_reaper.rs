@@ -282,8 +282,7 @@ impl DatabaseReaper {
 
     /// Finds jobs stuck in RUNNING state beyond the timeout
     async fn find_stuck_jobs(&self) -> Result<Vec<StuckJobRow>, sqlx::Error> {
-        let rows = sqlx::query_as!(
-            StuckJobRow,
+        let rows = sqlx::query_as::<_, StuckJobRow>(
             r#"
             SELECT id, state
             FROM jobs
@@ -292,8 +291,8 @@ impl DatabaseReaper {
             ORDER BY created_at ASC
             LIMIT $1
             "#,
-            self.config.job_timeout.as_secs() as i64
         )
+        .bind(self.config.job_timeout.as_secs() as i64)
         .fetch_all(&self.pool)
         .await?;
 
@@ -302,8 +301,7 @@ impl DatabaseReaper {
 
     /// Finds workers stuck in CREATING state beyond the timeout
     async fn find_stuck_workers(&self) -> Result<Vec<StuckWorkerRow>, sqlx::Error> {
-        let rows = sqlx::query_as!(
-            StuckWorkerRow,
+        let rows = sqlx::query_as::<_, StuckWorkerRow>(
             r#"
             SELECT id, state, provider_id, provider_resource_id, spec
             FROM workers
@@ -312,8 +310,8 @@ impl DatabaseReaper {
             ORDER BY created_at ASC
             LIMIT $1
             "#,
-            self.config.worker_timeout.as_secs() as i64
         )
+        .bind(self.config.worker_timeout.as_secs() as i64)
         .fetch_all(&self.pool)
         .await?;
 
@@ -325,15 +323,15 @@ impl DatabaseReaper {
         let mut tx = self.pool.begin().await?;
 
         // Update job state to FAILED
-        let affected: sqlx::postgres::PgQueryResult = sqlx::query!(
+        let affected = sqlx::query(
             r#"
             UPDATE jobs
             SET state = 'FAILED',
                 completed_at = NOW()
             WHERE id = $1 AND state = 'RUNNING'
             "#,
-            job_id
         )
+        .bind(job_id)
         .execute(&mut *tx)
         .await?;
 
@@ -372,14 +370,14 @@ impl DatabaseReaper {
         let mut tx = self.pool.begin().await?;
 
         // Update worker state to TERMINATED
-        let affected: sqlx::postgres::PgQueryResult = sqlx::query!(
+        let affected = sqlx::query(
             r#"
             UPDATE workers
             SET state = 'TERMINATED'
             WHERE id = $1 AND state = 'CREATING'
             "#,
-            worker.id
         )
+        .bind(worker.id)
         .execute(&mut *tx)
         .await?;
 
