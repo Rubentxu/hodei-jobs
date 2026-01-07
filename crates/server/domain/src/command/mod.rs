@@ -76,7 +76,9 @@ impl CommandMetadataDefault {
 }
 
 /// Marker trait for all commands in the system.
-pub trait Command: Debug + Send + Sync + 'static {
+/// Commands represent atomic business operations that can be dispatched through the Command Bus.
+/// Commands must be Clone to support retry middleware.
+pub trait Command: Debug + Clone + Send + Sync + 'static {
     /// The type returned by the handler when executing this command
     type Output: Send;
 

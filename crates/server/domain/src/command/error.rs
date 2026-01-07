@@ -8,7 +8,12 @@ use thiserror::Error;
 ///
 /// These errors represent different failure modes that can occur
 /// during command processing.
-#[derive(Debug, Error)]
+///
+/// Errors are categorized as:
+/// - **Transient**: Network issues, timeouts, temporary unavailability
+/// - **Validation**: Invalid input, missing required fields (not retryable)
+/// - **Permanent**: Business rule violations, resource not found
+#[derive(Debug, Error, Clone)]
 pub enum CommandError {
     /// Handler not found for the command type
     #[error("Handler not found for command type: {command_type}")]
@@ -25,11 +30,10 @@ pub enum CommandError {
     },
 
     /// Command execution failed
-    #[error("Command execution failed: {source}")]
+    #[error("Command execution failed: {message}")]
     ExecutionFailed {
-        /// The underlying error that caused the failure
-        #[from]
-        source: anyhow::Error,
+        /// Human-readable error message
+        message: String,
     },
 
     /// Command already processed (idempotency check)
@@ -56,6 +60,29 @@ pub enum CommandError {
         /// The timeout duration
         duration: std::time::Duration,
     },
+
+    /// Transient error (network, temporary unavailability)
+    #[error("Transient error: {message}")]
+    Transient {
+        /// Human-readable error message
+        message: String,
+    },
+
+    /// Resource not found
+    #[error("Resource not found: {resource_type}/{resource_id}")]
+    NotFound {
+        /// Type of resource that was not found
+        resource_type: &'static str,
+        /// ID of the resource that was not found
+        resource_id: String,
+    },
+
+    /// Permission denied
+    #[error("Permission denied: {message}")]
+    PermissionDenied {
+        /// Human-readable error message
+        message: String,
+    },
 }
 
 impl CommandError {
@@ -65,6 +92,76 @@ impl CommandError {
             Self::HandlerNotFound { command_type } => Some(command_type),
             Self::HandlerPanicked { command_type } => Some(command_type),
             _ => None,
+        }
+    }
+
+    /// Returns true if this error is transient and may succeed on retry.
+    ///
+    /// Transient errors include:
+    /// - Network timeouts
+    /// - Temporary resource exhaustion
+    /// - Channel closed
+    #[inline]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Timeout { .. } => true,
+            Self::ChannelClosed => true,
+            Self::Transient { .. } => true,
+            Self::ExecutionFailed { message } => {
+                // Check if the error message indicates a transient issue
+                let lower = message.to_lowercase();
+                lower.contains("timeout")
+                    || lower.contains("connection")
+                    || lower.contains("temporary")
+                    || lower.contains("busy")
+                    || lower.contains("unavailable")
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns true if this error is a validation error (not retryable).
+    ///
+    /// Validation errors indicate the command itself is invalid
+    /// and retrying will not help.
+    #[inline]
+    pub fn is_validation(&self) -> bool {
+        matches!(self, Self::ValidationFailed { .. })
+    }
+
+    /// Returns true if this error indicates a permanent failure.
+    ///
+    /// Permanent errors should not be retried as they indicate
+    /// fundamental issues like permission denied or resource not found.
+    #[inline]
+    pub fn is_permanent(&self) -> bool {
+        matches!(
+            self,
+            Self::NotFound { .. }
+                | Self::PermissionDenied { .. }
+                | Self::IdempotencyConflict { .. }
+        )
+    }
+
+    /// Creates an ExecutionFailed error from anyhow::Error.
+    #[inline]
+    pub fn from_anyhow(source: anyhow::Error) -> Self {
+        Self::ExecutionFailed {
+            message: source.to_string(),
+        }
+    }
+
+    /// Converts this error to a transient error if it's not already categorized.
+    ///
+    /// Useful for wrapping external errors into our error type.
+    #[inline]
+    pub fn into_transient(self) -> Self {
+        match self {
+            e if e.is_transient() => e,
+            Self::ExecutionFailed { message } => Self::Transient { message },
+            _ => Self::Transient {
+                message: self.to_string(),
+            },
         }
     }
 }
