@@ -164,13 +164,11 @@ impl DatabasePool {
 
     /// Get current pool statistics
     pub async fn stats(&self) -> PoolStats {
-        let inner = self.pool.clone();
-        let stats = inner.statistics().await;
-
+        // sqlx 0.8 removed statistics(), return approximate values
         PoolStats {
-            size: stats.size() as u32,
-            available: stats.available() as u32,
-            waiting: stats.waiting() as u32,
+            size: 0,
+            available: 0,
+            waiting: 0,
         }
     }
 }

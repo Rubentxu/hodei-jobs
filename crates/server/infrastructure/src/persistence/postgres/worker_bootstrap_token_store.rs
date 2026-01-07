@@ -7,6 +7,8 @@
 //! This store expects a `PgPool` to be passed in via `new()`.
 //! The pool should be created using `DatabasePool` for consistent configuration.
 
+use std::time::Duration;
+
 use hodei_server_domain::shared_kernel::DomainError;
 use sqlx::{Pool, Postgres};
 
