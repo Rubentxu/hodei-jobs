@@ -348,8 +348,14 @@ impl WorkerAgentServiceImpl {
                             worker_id
                         );
 
-                        // A. Recover provider_id from database if worker already exists
-                        let provider_id = if let Some(ref registry) = self.worker_registry {
+                        // A. Recover provider_id from job context or database
+                        // REACTIVE FIX: No fallbacks. If provider_id cannot be recovered from
+                        // a valid context, return an error. This forces state consistency.
+                        let provider_id_result: Result<ProviderId, DomainError> = if let Some(
+                            ref registry,
+                        ) =
+                            self.worker_registry
+                        {
                             match registry.get(&worker_id).await {
                                 Ok(Some(existing_worker)) => {
                                     info!(
@@ -357,26 +363,78 @@ impl WorkerAgentServiceImpl {
                                         worker_id,
                                         existing_worker.handle().provider_id
                                     );
-                                    existing_worker.handle().provider_id.clone()
+                                    Ok(existing_worker.handle().provider_id.clone())
                                 }
                                 Ok(None) => {
-                                    warn!(
-                                        "⚠️ Worker {} not found in database, creating new provider_id",
-                                        worker_id
-                                    );
-                                    ProviderId::new()
+                                    // Worker not in DB - MUST recover provider_id from job context
+                                    if let Some(ref job_id) = job_id_from_token {
+                                        info!(
+                                            "🔄 Worker {} not in DB, recovering provider_id from job {}",
+                                            worker_id, job_id
+                                        );
+                                        if let Some(ref job_repo) = self.job_repository {
+                                            match job_repo.find_by_id(job_id).await {
+                                                Ok(Some(job)) => {
+                                                    job.selected_provider()
+                                                        .cloned()
+                                                        .ok_or_else(|| {
+                                                            DomainError::WorkerProvisioningFailed {
+                                                                message: format!(
+                                                                    "Job {} has no selected_provider - provisioning state inconsistent",
+                                                                    job_id
+                                                                ),
+                                                            }
+                                                        })
+                                                }
+                                                Ok(None) => Err(DomainError::JobNotFound {
+                                                    job_id: job_id.clone(),
+                                                }),
+                                                Err(e) => Err(DomainError::InfrastructureError {
+                                                    message: format!("Failed to query job {}: {}", job_id, e),
+                                                }),
+                                            }
+                                        } else {
+                                            Err(DomainError::InfrastructureError {
+                                                message: "JobRepository not available - cannot recover provider_id".to_string(),
+                                            })
+                                        }
+                                    } else {
+                                        Err(DomainError::WorkerProvisioningFailed {
+                                            message: format!(
+                                                "Worker {} has no job_id and no DB record - provisioning state lost",
+                                                worker_id
+                                            ),
+                                        })
+                                    }
                                 }
-                                Err(e) => {
-                                    error!(
-                                        "❌ Failed to query worker {} from database: {:?}. Using new provider_id",
+                                Err(e) => Err(DomainError::InfrastructureError {
+                                    message: format!(
+                                        "Failed to query worker {} from database: {}",
                                         worker_id, e
-                                    );
-                                    ProviderId::new()
-                                }
+                                    ),
+                                }),
                             }
                         } else {
-                            warn!("WorkerRegistry not available, creating new provider_id");
-                            ProviderId::new()
+                            Err(DomainError::InfrastructureError {
+                                message:
+                                    "WorkerRegistry not available - cannot recover provider_id"
+                                        .to_string(),
+                            })
+                        };
+
+                        // Propagate error if provider_id cannot be recovered
+                        let provider_id = match provider_id_result {
+                            Ok(id) => id,
+                            Err(e) => {
+                                error!(
+                                    "❌ Failed to recover provider_id for worker {}: {:?}",
+                                    worker_id, e
+                                );
+                                return Err(Status::failed_precondition(format!(
+                                    "Worker registration failed: {}",
+                                    e
+                                )));
+                            }
                         };
 
                         // B. Build WorkerHandle from worker info
@@ -1108,8 +1166,25 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 validated_worker_id
             );
 
-            // job_id comes from the bootstrap token, not from the request
-            let job_id_from_request = None;
+            // Extract job_id from request (passed by worker via env var)
+            let job_id_from_request = if let Some(ref jid_str) = req.job_id {
+                if !jid_str.is_empty() {
+                    match Self::parse_job_uuid(jid_str) {
+                        Ok(jid) => {
+                            info!("📋 Extracted job_id from request: {}", jid);
+                            Some(jid)
+                        }
+                        Err(e) => {
+                            warn!("Invalid job_id format in request: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             info!(
                 "✅ WorkerAgentService::register: Worker {} validated, proceeding with registration (job_id: {:?})",
