@@ -61,8 +61,20 @@ use hodei_server_infrastructure::messaging::execution_saga_consumer::{
     ExecutionSagaConsumer, ExecutionSagaConsumerBuilder, ExecutionSagaConsumerConfig,
 };
 use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
+use hodei_server_infrastructure::messaging::orphan_worker_detector_consumer::{
+    OrphanWorkerDetectorConsumer, OrphanWorkerDetectorConsumerBuilder,
+    OrphanWorkerDetectorConsumerConfig,
+};
 use hodei_server_infrastructure::messaging::outbox_relay::OutboxRelay;
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
+use hodei_server_infrastructure::messaging::worker_disconnection_handler_consumer::{
+    WorkerDisconnectionHandlerConsumer, WorkerDisconnectionHandlerConsumerBuilder,
+    WorkerDisconnectionHandlerConsumerConfig,
+};
+use hodei_server_infrastructure::messaging::worker_ephemeral_terminating_consumer::{
+    WorkerEphemeralTerminatingConsumer, WorkerEphemeralTerminatingConsumerBuilder,
+    WorkerEphemeralTerminatingConsumerConfig,
+};
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
 use hodei_server_infrastructure::persistence::postgres::PostgresSagaRepository;
 use hodei_server_infrastructure::persistence::postgres::{
@@ -1340,6 +1352,113 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             }
         };
+
+    // ==========================================================================
+    // EPIC-NEW: Worker Lifecycle Event Consumers
+    // ==========================================================================
+    // These consumers handle worker lifecycle events reactively via NATS JetStream
+
+    // Orphan Worker Detector Consumer
+    // Detects and handles orphaned workers that lost communication with the server
+    info!("🚀 Starting NATS OrphanWorkerDetectorConsumer");
+
+    let orphan_detector = OrphanWorkerDetectorConsumerBuilder::new()
+        .with_client(&nats_client)
+        .with_jetstream(&nats_jetstream)
+        .with_orchestrator(orchestrator.clone())
+        .with_worker_registry(worker_registry.clone())
+        .with_config(OrphanWorkerDetectorConsumerConfig {
+            consumer_name: "orphan-worker-detector".to_string(),
+            stream_prefix: "HODEI".to_string(),
+            orphan_detected_topic: worker_topics::ORPHAN_DETECTED.to_string(),
+            consumer_group: "worker-orphans".to_string(),
+            concurrency: 5,
+            ack_wait: Duration::from_secs(60),
+            max_deliver: 3,
+            orphan_termination_threshold_secs: 300,
+            saga_timeout: Duration::from_secs(120),
+        })
+        .build()
+        .expect("Failed to build OrphanWorkerDetectorConsumer");
+
+    let orphan_detector_guard = orphan_detector.clone();
+    tokio::spawn(async move {
+        info!("🔍 OrphanWorkerDetectorConsumer: Starting NATS consumer");
+        if let Err(e) = orphan_detector_guard.start().await {
+            tracing::error!("OrphanWorkerDetectorConsumer error: {}", e);
+        }
+        info!("🔍 OrphanWorkerDetectorConsumer: Stopped");
+    });
+
+    // Worker Disconnection Handler Consumer
+    // Handles unexpected worker disconnections and triggers appropriate recovery
+    info!("🚀 Starting NATS WorkerDisconnectionHandlerConsumer");
+
+    let disconnection_handler = WorkerDisconnectionHandlerConsumerBuilder::new()
+        .with_client(&nats_client)
+        .with_jetstream(&nats_jetstream)
+        .with_orchestrator(orchestrator.clone())
+        .with_job_repository(job_repository.clone())
+        .with_worker_registry(worker_registry.clone())
+        .with_outbox_repository(outbox_repository.clone())
+        .with_config(WorkerDisconnectionHandlerConsumerConfig {
+            consumer_name: "worker-disconnection-handler".to_string(),
+            stream_prefix: "HODEI".to_string(),
+            disconnected_topic: worker_topics::DISCONNECTED.to_string(),
+            consumer_group: "worker-disconnections".to_string(),
+            concurrency: 10,
+            ack_wait: Duration::from_secs(60),
+            max_deliver: 3,
+            short_timeout_secs: 30,
+            long_timeout_secs: 120,
+            saga_timeout: Duration::from_secs(180),
+        })
+        .build()
+        .expect("Failed to build WorkerDisconnectionHandlerConsumer");
+
+    let disconnection_guard = disconnection_handler.clone();
+    tokio::spawn(async move {
+        info!("🌐 WorkerDisconnectionHandlerConsumer: Starting NATS consumer");
+        if let Err(e) = disconnection_guard.start().await {
+            tracing::error!("WorkerDisconnectionHandlerConsumer error: {}", e);
+        }
+        info!("🌐 WorkerDisconnectionHandlerConsumer: Stopped");
+    });
+
+    // Worker Ephemeral Terminating Consumer
+    // Handles termination of ephemeral workers after job completion
+    info!("🚀 Starting NATS WorkerEphemeralTerminatingConsumer");
+
+    let ephemeral_terminating = WorkerEphemeralTerminatingConsumerBuilder::new()
+        .with_client(&nats_client)
+        .with_jetstream(&nats_jetstream)
+        .with_orchestrator(orchestrator.clone())
+        .with_job_repository(job_repository.clone())
+        .with_worker_registry(worker_registry.clone())
+        .with_outbox_repository(outbox_repository.clone())
+        .with_config(WorkerEphemeralTerminatingConsumerConfig {
+            consumer_name: "worker-ephemeral-terminating".to_string(),
+            stream_prefix: "HODEI".to_string(),
+            terminating_topic: worker_topics::EPHEMERAL_TERMINATING.to_string(),
+            consumer_group: "worker-cleanup".to_string(),
+            concurrency: 10,
+            ack_wait: Duration::from_secs(60),
+            max_deliver: 3,
+            saga_timeout: Duration::from_secs(120),
+        })
+        .build()
+        .expect("Failed to build WorkerEphemeralTerminatingConsumer");
+
+    let ephemeral_guard = ephemeral_terminating.clone();
+    tokio::spawn(async move {
+        info!("🧹 WorkerEphemeralTerminatingConsumer: Starting NATS consumer");
+        if let Err(e) = ephemeral_guard.start().await {
+            tracing::error!("WorkerEphemeralTerminatingConsumer error: {}", e);
+        }
+        info!("🧹 WorkerEphemeralTerminatingConsumer: Stopped");
+    });
+
+    info!("✅ All worker lifecycle consumers started");
 
     // Configure CORS for gRPC-Web
     let cors = CorsLayer::new()
