@@ -15,6 +15,7 @@
 
 pub mod cancellation;
 pub mod cleanup;
+pub mod commands; // Commands for Command Bus pattern
 pub mod engine_config;
 pub mod errors; // EPIC-46 GAP-21: Strongly typed error enums
 pub mod event_handlers; // EPIC-46 GAP-10/11: Reactive event handlers
@@ -108,3 +109,9 @@ pub use stuck_detector::{
 
 // Idempotency helpers
 pub use types::{saga_id_for_job, saga_id_for_provisioning, saga_id_for_recovery};
+
+// Commands re-exports (Épica 52: Saga Refactoring to Use Command Bus)
+pub use commands::{
+    CreateWorkerCommand, CreateWorkerError, CreateWorkerHandler, DestroyWorkerCommand,
+    DestroyWorkerError, DestroyWorkerHandler,
+};

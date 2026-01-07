@@ -16,6 +16,7 @@ pub mod shared_kernel;
 
 // Bounded Contexts
 pub mod audit;
+pub mod command;
 pub mod credentials;
 pub mod iam;
 pub mod jobs;
@@ -33,6 +34,7 @@ pub mod request_context;
 mod tests;
 
 // Re-exports para facilitar el uso de los bounded contexts
+pub use command::*;
 pub use event_bus::*;
 pub use events::*;
 pub use logging::*;
