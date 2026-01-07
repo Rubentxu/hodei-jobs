@@ -1,0 +1,424 @@
+// Hodei Jobs Platform - Unified Protocol Buffer Definitions
+// Package: hodei.v1
+//
+// This file contains all proto definitions for the Hodei Jobs Platform.
+// Provides a unified namespace for all gRPC services.
+//
+// WARNING: This is a breaking change from the previous multi-package structure.
+// Clients must update to use hodei.v1 package.
+
+syntax = "proto3";
+
+package hodei.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// =============================================================================
+// COMMON TYPES - Shared types used across all services
+// =============================================================================
+
+// Unique identifiers
+message JobId {
+    string value = 1;
+}
+
+message WorkerId {
+    string value = 1;
+}
+
+message ProviderId {
+    string value = 1;
+}
+
+message ExecutionId {
+    string value = 1;
+}
+
+// System states
+enum JobStatus {
+    JOB_STATUS_UNSPECIFIED = 0;
+    JOB_STATUS_PENDING = 1;
+    JOB_STATUS_QUEUED = 2;
+    JOB_STATUS_ASSIGNED = 3;
+    JOB_STATUS_RUNNING = 4;
+    JOB_STATUS_COMPLETED = 5;
+    JOB_STATUS_FAILED = 6;
+    JOB_STATUS_CANCELLED = 7;
+    JOB_STATUS_TIMEOUT = 8;
+}
+
+enum WorkerStatus {
+    WORKER_STATUS_UNSPECIFIED = 0;
+    WORKER_STATUS_OFFLINE = 1;
+    WORKER_STATUS_REGISTERING = 2;
+    WORKER_STATUS_AVAILABLE = 3;
+    WORKER_STATUS_BUSY = 4;
+    WORKER_STATUS_DRAINING = 5;
+    WORKER_STATUS_ERROR = 6;
+}
+
+enum ExecutionState {
+    EXECUTION_STATE_UNSPECIFIED = 0;
+    EXECUTION_STATE_CREATED = 1;
+    EXECUTION_STATE_STARTING = 2;
+    EXECUTION_STATE_RUNNING = 3;
+    EXECUTION_STATE_COMPLETING = 4;
+    EXECUTION_STATE_COMPLETED = 5;
+    EXECUTION_STATE_FAILED = 6;
+    EXECUTION_STATE_CANCELLED = 7;
+    EXECUTION_STATE_TIMEOUT = 8;
+}
+
+enum PriorityLevel {
+    PRIORITY_UNSPECIFIED = 0;
+    PRIORITY_LOW = 1;
+    PRIORITY_NORMAL = 2;
+    PRIORITY_HIGH = 3;
+    PRIORITY_CRITICAL = 4;
+}
+
+enum ProviderType {
+    PROVIDER_TYPE_UNSPECIFIED = 0;
+    PROVIDER_TYPE_DOCKER = 1;
+    PROVIDER_TYPE_KUBERNETES = 2;
+    PROVIDER_TYPE_FIRECRACKER = 3;
+}
+
+// Resource definitions
+message ResourceCapacity {
+    double cpu_cores = 1;
+    int64 memory_bytes = 2;
+    int64 disk_bytes = 3;
+    int32 gpu_count = 4;
+    map<string, int64> custom_resources = 5;
+}
+
+message ResourceUsage {
+    double cpu_cores = 1;
+    int64 memory_bytes = 2;
+    int64 disk_bytes = 3;
+    int32 gpu_count = 4;
+    map<string, int64> custom_usage = 5;
+}
+
+message ResourceRequirements {
+    double cpu_cores = 1;
+    int64 memory_bytes = 2;
+    int64 disk_bytes = 3;
+    int32 gpu_count = 4;
+    repeated string gpu_types = 5;
+    map<string, int64> custom_required = 6;
+}
+
+message ResourceAllocation {
+    JobId job_id = 1;
+    WorkerId worker_id = 2;
+    ResourceRequirements requirements = 3;
+    ResourceCapacity allocation = 4;
+    google.protobuf.Timestamp allocated_at = 5;
+}
+
+// Timeout configuration
+message TimeoutConfig {
+    google.protobuf.Duration total_timeout = 1;
+    google.protobuf.Duration idle_timeout = 2;
+    google.protobuf.Duration exec_timeout = 3;
+}
+
+// =============================================================================
+// WORKER AGENT SERVICE - Worker registration and lifecycle
+// =============================================================================
+
+// Worker information sent during registration
+message WorkerInfo {
+    string name = 1;
+    string hostname = 2;
+    string os = 3;
+    string architecture = 4;
+    ResourceCapacity capacity = 5;
+    map<string, string> labels = 6;
+    ProviderType provider_type = 7;
+    string provider_name = 8;
+}
+
+// Request to register a new worker
+message RegisterWorkerRequest {
+    string auth_token = 1;  // OTP bootstrap token
+    WorkerInfo worker_info = 2;
+    string session_id = 3;
+    TimeoutConfig timeout_config = 4;
+    string job_id = 5;  // Optional: Job ID this worker is provisioned for
+}
+
+message RegisterWorkerResponse {
+    WorkerId worker_id = 1;
+    bool success = 2;
+    string message = 3;
+    google.protobuf.Timestamp registered_at = 4;
+}
+
+// Request to unregister a worker
+message UnregisterWorkerRequest {
+    WorkerId worker_id = 1;
+    string reason = 2;
+    bool graceful = 3;
+}
+
+message UnregisterWorkerResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Update worker status
+message UpdateWorkerStatusRequest {
+    WorkerId worker_id = 1;
+    WorkerStatus status = 2;
+    ResourceUsage usage = 3;
+    string message = 4;
+}
+
+message UpdateWorkerStatusResponse {
+    bool success = 1;
+    google.protobuf.Timestamp updated_at = 2;
+}
+
+// Worker Agent Service
+service WorkerAgentService {
+    rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+    rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);
+    rpc UpdateWorkerStatus(UpdateWorkerStatusRequest) returns (UpdateWorkerStatusResponse);
+}
+
+// =============================================================================
+// JOB EXECUTION SERVICE - Job queue and execution
+// =============================================================================
+
+// Job specification
+message JobSpec {
+    string command = 1;
+    repeated string arguments = 2;
+    map<string, string> environment = 3;
+    ResourceRequirements resources = 4;
+    TimeoutConfig timeout = 5;
+    string working_directory = 6;
+    repeated string secrets = 7;
+    repeated string files = 8;
+    string user = 9;
+}
+
+// Request to queue a new job
+message QueueJobRequest {
+    string name = 1;
+    JobSpec spec = 2;
+    string description = 3;
+    PriorityLevel priority = 4;
+    map<string, string> labels = 5;
+    string scheduled_at = 6;  // RFC3339 timestamp
+    int32 max_retries = 7;
+    string execution_id = 8;
+}
+
+message QueueJobResponse {
+    JobId job_id = 1;
+    bool success = 2;
+    string message = 3;
+    google.protobuf.Timestamp queued_at = 4;
+}
+
+// Get job status
+message GetJobStatusRequest {
+    JobId job_id = 1;
+}
+
+message GetJobStatusResponse {
+    JobId job_id = 1;
+    JobStatus status = 2;
+    string message = 3;
+    WorkerId assigned_worker_id = 4;
+    google.protobuf.Timestamp created_at = 5;
+    google.protobuf.Timestamp started_at = 6;
+    google.protobuf.Timestamp completed_at = 7;
+    int32 attempt_count = 8;
+}
+
+// Cancel a job
+message CancelJobRequest {
+    JobId job_id = 1;
+    string reason = 2;
+}
+
+message CancelJobResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Job execution events (for streaming)
+message ExecutionEventMessage {
+    JobId job_id = 1;
+    ExecutionState state = 2;
+    string message = 3;
+    LogEntry log = 4;
+    google.protobuf.Timestamp timestamp = 5;
+}
+
+// Log entry
+message LogEntry {
+    string id = 1;
+    int64 sequence = 2;
+    string level = 3;  // INFO, WARN, ERROR, DEBUG, TRACE
+    string message = 4;
+    google.protobuf.Timestamp timestamp = 5;
+    string source = 6;  // "stdout" or "stderr"
+}
+
+// Job Execution Service
+service JobExecutionService {
+    rpc QueueJob(QueueJobRequest) returns (QueueJobResponse);
+    rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+    rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+}
+
+// =============================================================================
+// SCHEDULER SERVICE - Job scheduling and provider management
+// =============================================================================
+
+// Provider configuration
+message ProviderConfig {
+    ProviderId provider_id = 1;
+    string name = 2;
+    ProviderType type = 3;
+    bool enabled = 4;
+    ResourceCapacity total_capacity = 5;
+    map<string, string> config = 6;
+}
+
+// Scheduling decision
+message SchedulingDecisionMessage {
+    JobId job_id = 1;
+    ProviderId provider_id = 2;
+    string reason = 3;
+    float score = 4;
+    ResourceAllocation allocation = 5;
+}
+
+// Request to get scheduling decision
+message GetSchedulingDecisionRequest {
+    JobId job_id = 1;
+    ResourceRequirements requirements = 2;
+    repeated ProviderId available_providers = 3;
+}
+
+message GetSchedulingDecisionResponse {
+    SchedulingDecisionMessage decision = 1;
+    bool success = 2;
+    string message = 3;
+}
+
+// Scheduler Service
+service SchedulerService {
+    rpc GetSchedulingDecision(GetSchedulingDecisionRequest) returns (GetSchedulingDecisionResponse);
+}
+
+// =============================================================================
+// METRICS SERVICE - Observability and metrics
+// =============================================================================
+
+// Metrics request
+message GetMetricsRequest {
+    string metric_type = 1;  // "jobs", "workers", "providers", "resources"
+    google.protobuf.Timestamp start_time = 2;
+    google.protobuf.Timestamp end_time = 3;
+    map<string, string> filters = 4;
+}
+
+// Metrics response
+message MetricsResponse {
+    repeated MetricPoint points = 1;
+    google.protobuf.Timestamp generated_at = 2;
+}
+
+// Individual metric point
+message MetricPoint {
+    string name = 1;
+    double value = 2;
+    map<string, string> labels = 3;
+    google.protobuf.Timestamp timestamp = 4;
+}
+
+// Real-time metrics stream message
+message RealTimeMetricsMessage {
+    string metric_type = 1;
+    MetricPoint point = 2;
+    repeated MetricPoint history = 3;
+}
+
+// Metrics Service
+service MetricsService {
+    rpc GetMetrics(GetMetricsRequest) returns (MetricsResponse);
+    rpc StreamMetrics(GetMetricsRequest) returns (stream RealTimeMetricsMessage);
+}
+
+// =============================================================================
+// LOG STREAM SERVICE - Batched log streaming
+// =============================================================================
+
+// Request to stream logs
+message StreamLogsRequest {
+    oneof identifier {
+        JobId job_id = 1;
+        WorkerId worker_id = 2;
+        string execution_id = 3;
+    }
+    LogLevel min_level = 4;
+    int64 start_sequence = 5;
+    bool include_timestamps = 6;
+    bool follow = 7;  // Continuously stream new logs
+}
+
+enum LogLevel {
+    LOG_LEVEL_UNSPECIFIED = 0;
+    LOG_LEVEL_DEBUG = 1;
+    LOG_LEVEL_INFO = 2;
+    LOG_LEVEL_WARN = 3;
+    LOG_LEVEL_ERROR = 4;
+}
+
+// Log Stream Service
+service LogStreamService {
+    rpc StreamLogs(StreamLogsRequest) returns (stream LogEntry);
+}
+
+// =============================================================================
+// AUDIT SERVICE - Audit logs
+// =============================================================================
+
+// Audit log entry
+message AuditLogEntry {
+    string id = 1;
+    string correlation_id = 2;
+    string event_type = 3;
+    string payload_json = 4;
+    google.protobuf.Timestamp occurred_at = 5;
+    string actor = 6;
+}
+
+// Audit Service
+service AuditService {
+    rpc GetAuditLogs(GetAuditLogsRequest) returns (GetAuditLogsResponse);
+}
+
+message GetAuditLogsRequest {
+    optional string event_type = 1;
+    optional string actor = 2;
+    google.protobuf.Timestamp start_time = 3;
+    google.protobuf.Timestamp end_time = 4;
+    int32 limit = 5;
+    int32 offset = 6;
+}
+
+message GetAuditLogsResponse {
+    repeated AuditLogEntry logs = 1;
+    int64 total_count = 2;
+    bool has_more = 3;
+}
