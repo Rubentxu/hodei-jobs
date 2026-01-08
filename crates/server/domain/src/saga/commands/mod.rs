@@ -7,6 +7,7 @@ pub mod cancellation;
 pub mod execution;
 pub mod provisioning;
 pub mod recovery;
+pub mod timeout;
 
 pub use cancellation::{
     NotifyWorkerCommand, NotifyWorkerError, NotifyWorkerHandler, NotifyWorkerResult,
@@ -26,4 +27,8 @@ pub use provisioning::{
 pub use recovery::{
     CheckConnectivityCommand, CheckConnectivityResult, DestroyOldWorkerCommand,
     MarkJobForRecoveryCommand, ProvisionNewWorkerCommand, TransferJobCommand,
+};
+pub use timeout::{
+    MarkJobTimedOutCommand, MarkJobTimedOutError, MarkJobTimedOutHandler, MarkJobTimedOutResult,
+    TerminateWorkerCommand, TerminateWorkerError, TerminateWorkerHandler, TerminateWorkerResult,
 };

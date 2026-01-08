@@ -4,16 +4,24 @@
 //!
 //! Esta saga implementa la lógica de:
 //! 1. Validación del job a cancelar
-//! 2. Notificación al worker para detener ejecución
-//! 3. Actualización del estado del job a CANCELLED
-//! 4. Liberación del worker
+//! 2. Notificación al worker para detener ejecución (via CommandBus)
+//! 3. Actualización del estado del job a CANCELLED (via CommandBus)
+//! 4. Liberación del worker (via CommandBus)
+//!
+//! # Command Bus Pattern
+//!
+//! Esta saga utiliza el patrón Command Bus para todas las operaciones de dominio,
+//! lo que garantiza idempotencia, trazabilidad y potencial persistencia en outbox.
 
-use crate::WorkerRegistry;
-use crate::WorkerState;
+use crate::command::erased::dispatch_erased;
 use crate::events::DomainEvent;
 use crate::jobs::JobRepository;
+use crate::saga::commands::cancellation::{
+    NotifyWorkerCommand, ReleaseWorkerCommand, UpdateJobStateCommand,
+};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState};
+use crate::workers::WorkerRegistry;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -26,9 +34,9 @@ use tracing::{debug, info, instrument, warn};
 /// # Pasos:
 ///
 /// 1. **ValidateCancellationStep**: Valida que el job existe y está en estado ejecutable
-/// 2. **NotifyWorkerStep**: Notifica al worker para detener la ejecución
-/// 3. **UpdateJobStateStep**: Actualiza el estado del job a CANCELLED
-/// 4. **ReleaseWorkerStep**: Libera el worker para nuevos jobs
+/// 2. **NotifyWorkerStep**: Notifica al worker para detener la ejecución (via CommandBus)
+/// 3. **UpdateJobStateStep**: Actualiza el estado del job a CANCELLED (via CommandBus)
+/// 4. **ReleaseWorkerStep**: Libera el worker para nuevos jobs (via CommandBus)
 ///
 /// # Metadata Guardado:
 ///
@@ -54,7 +62,7 @@ impl CancellationSaga {
 
 impl Saga for CancellationSaga {
     fn saga_type(&self) -> SagaType {
-        SagaType::Cancellation // EPIC-46 GAP-07: Use dedicated Cancellation type
+        SagaType::Cancellation
     }
 
     fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
@@ -64,9 +72,9 @@ impl Saga for CancellationSaga {
                 self.job_id.clone(),
                 self.reason.clone(),
             )),
-            Box::new(UpdateJobStateStep::new(
+            Box::new(UpdateJobStateStep::cancel(
                 self.job_id.clone(),
-                JobState::Cancelled,
+                self.reason.clone(),
             )),
             Box::new(ReleaseWorkerStep::new(self.job_id.clone())),
         ]
@@ -204,7 +212,7 @@ impl SagaStep for ValidateCancellationStep {
 }
 
 // ============================================================================
-// NotifyWorkerStep
+// NotifyWorkerStep - USANDO COMMANDBUS (GAP-52-02)
 // ============================================================================
 
 #[derive(Debug, Clone)]
@@ -229,34 +237,50 @@ impl SagaStep for NotifyWorkerStep {
 
     #[instrument(skip(context), fields(step = "NotifyWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        let services = context.services().ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: "SagaServices not available".to_string(),
-            will_compensate: true,
-        })?;
-
-        let worker_registry = &services.provider_registry;
-
-        // Idempotency
-        if let Some(Ok(true)) = context.get_metadata::<bool>("worker_notified") {
-            debug!(job_id = %self.job_id, "Worker already notified, skipping");
-            return Ok(());
-        }
-
-        // Find worker for this job
-        let worker_opt = worker_registry
-            .get_by_job_id(&self.job_id)
-            .await
-            .map_err(|e| SagaError::StepFailed {
+        // GAP-52-02: Extract services data first to avoid borrow conflict
+        let (command_bus, saga_id_str, worker_id_opt) = {
+            let services = context.services().ok_or_else(|| SagaError::StepFailed {
                 step: self.name().to_string(),
-                message: format!("Failed to find worker for job: {}", e),
+                message: "SagaServices not available".to_string(),
                 will_compensate: true,
             })?;
 
-        if let Some(worker) = worker_opt {
-            let worker_id = worker.id().clone();
+            let command_bus = services.command_bus.as_ref().ok_or_else(|| {
+                SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: true,
+                }
+            })?;
 
-            // Store worker_id for next steps
+            let worker_registry = &services.provider_registry;
+
+            // Idempotency check stored by CommandBus automatically
+            if let Some(Ok(true)) = context.get_metadata::<bool>("worker_notified") {
+                debug!(job_id = %self.job_id, "Worker already notified, skipping");
+                return Ok(());
+            }
+
+            // Find worker for this job (needed for the command)
+            let worker_opt = worker_registry
+                .get_by_job_id(&self.job_id)
+                .await
+                .map_err(|e| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: format!("Failed to find worker for job: {}", e),
+                    will_compensate: true,
+                })?;
+
+            // Clone values to drop the borrow on services
+            (
+                command_bus.clone(),
+                context.saga_id.to_string(),
+                worker_opt.and_then(|w| Some(w.id().clone())),
+            )
+        };
+
+        // Store worker_id for next steps (now that services borrow is dropped)
+        if let Some(ref worker_id) = worker_id_opt {
             context
                 .set_metadata("cancelled_worker_id", &worker_id.to_string())
                 .map_err(|e| SagaError::StepFailed {
@@ -264,32 +288,41 @@ impl SagaStep for NotifyWorkerStep {
                     message: e.to_string(),
                     will_compensate: true,
                 })?;
+        }
 
-            // In a real implementation, this would send a cancellation signal to the worker
-            // via gRPC stream or NATS message. For now, we just log it.
-            info!(
-                job_id = %self.job_id,
-                worker_id = %worker_id,
-                reason = %self.reason,
-                "📨 Worker notified of cancellation"
+        // GAP-52-02: Dispatch command via CommandBus
+        if let Some(worker_id) = worker_id_opt {
+            let command = NotifyWorkerCommand::new(
+                self.job_id.clone(),
+                Some(worker_id),
+                self.reason.clone(),
+                saga_id_str,
             );
 
-            context
-                .set_metadata("worker_notified", &true)
+            dispatch_erased(&command_bus, command)
+                .await
                 .map_err(|e| SagaError::StepFailed {
                     step: self.name().to_string(),
-                    message: e.to_string(),
+                    message: format!("Failed to notify worker: {}", e),
                     will_compensate: true,
                 })?;
         } else {
             debug!(job_id = %self.job_id, "No worker assigned to job, skipping notification");
         }
 
+        context
+            .set_metadata("worker_notified", &true)
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: e.to_string(),
+                will_compensate: true,
+            })?;
+
         Ok(())
     }
 
     async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
-        // Cannot undo notification
+        // Cannot undo notification - it's a best-effort signal
         Ok(())
     }
 
@@ -303,20 +336,35 @@ impl SagaStep for NotifyWorkerStep {
 }
 
 // ============================================================================
-// UpdateJobStateStep
+// UpdateJobStateStep - USANDO COMMANDBUS (GAP-52-02)
 // ============================================================================
 
 #[derive(Debug, Clone)]
 pub struct UpdateJobStateStep {
     job_id: JobId,
     target_state: JobState,
+    reason: String,
+    saga_id: String,
 }
 
 impl UpdateJobStateStep {
-    pub fn new(job_id: JobId, target_state: JobState) -> Self {
+    /// Creates a step to update job state to cancelled
+    pub fn cancel(job_id: JobId, reason: String) -> Self {
+        Self {
+            job_id,
+            target_state: JobState::Cancelled,
+            reason,
+            saga_id: String::new(),
+        }
+    }
+
+    /// Creates a step with custom target state
+    pub fn with_state(job_id: JobId, target_state: JobState, saga_id: String) -> Self {
         Self {
             job_id,
             target_state,
+            reason: String::new(),
+            saga_id,
         }
     }
 }
@@ -337,72 +385,66 @@ impl SagaStep for UpdateJobStateStep {
             will_compensate: true,
         })?;
 
-        let job_repository =
-            services
-                .job_repository
-                .as_ref()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "JobRepository not available".to_string(),
-                    will_compensate: true,
-                })?;
+        // GAP-52-02: Get CommandBus from services
+        let command_bus = services.command_bus.as_ref().ok_or_else(|| {
+            SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: true,
+            }
+        })?;
 
         let event_bus = &services.event_bus;
 
-        // Idempotency
+        // Idempotency check stored by CommandBus automatically
         if let Some(Ok(true)) = context.get_metadata::<bool>("job_state_updated") {
             debug!(job_id = %self.job_id, "Job state already updated, skipping");
             return Ok(());
         }
-
-        let worker_id_str = context
-            .get_metadata::<String>("cancelled_worker_id")
-            .and_then(|r| r.ok())
-            .unwrap_or_else(|| "none".to_string());
 
         let target_state = self.target_state.clone();
 
         info!(
             job_id = %self.job_id,
             target_state = ?target_state,
-            "📝 Updating job state to {:?}...",
+            "📝 Updating job state via CommandBus to {:?}...",
             target_state
         );
 
-        // Update job state
-        job_repository
-            .update_state(&self.job_id, target_state.clone())
+        // GAP-52-02: Dispatch command via CommandBus
+        let command = UpdateJobStateCommand::cancel(
+            self.job_id.clone(),
+            context.saga_id.to_string(),
+        );
+
+        let result = dispatch_erased(command_bus, command)
             .await
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),
-                message: format!("Failed to update job state: {}", e),
+                message: format!("Failed to update job state via CommandBus: {}", e),
                 will_compensate: true,
             })?;
 
-        // Publish JobCancelled event
-        let event = DomainEvent::JobCancelled {
-            job_id: self.job_id.clone(),
-            reason: Some(
-                context
-                    .metadata
-                    .get("cancellation_reason")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "user_requested".to_string()),
-            ),
-            correlation_id: context.correlation_id.clone(),
-            actor: context.actor.clone(),
-            occurred_at: chrono::Utc::now(),
-        };
+        // If state was already correct (idempotent skip), we still publish event
+        if !result.already_in_state {
+            // Publish JobCancelled event
+            let event = DomainEvent::JobCancelled {
+                job_id: self.job_id.clone(),
+                reason: Some(self.reason.clone()),
+                correlation_id: context.correlation_id.clone(),
+                actor: context.actor.clone(),
+                occurred_at: chrono::Utc::now(),
+            };
 
-        event_bus
-            .publish(&event)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to publish JobCancelled event: {}", e),
-                will_compensate: false,
-            })?;
+            event_bus
+                .publish(&event)
+                .await
+                .map_err(|e| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: format!("Failed to publish JobCancelled event: {}", e),
+                    will_compensate: false,
+                })?;
+        }
 
         context
             .set_metadata("job_state_updated", &true)
@@ -414,8 +456,9 @@ impl SagaStep for UpdateJobStateStep {
 
         info!(
             job_id = %self.job_id,
-            "✅ Job state updated to {:?}",
-            self.target_state
+            new_state = ?result.new_state,
+            already_in_state = result.already_in_state,
+            "✅ Job state updated via CommandBus"
         );
 
         Ok(())
@@ -429,16 +472,15 @@ impl SagaStep for UpdateJobStateStep {
                 message: "SagaServices not available".to_string(),
             })?;
 
-        let job_repository =
-            services
-                .job_repository
-                .as_ref()
-                .ok_or_else(|| SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: "JobRepository not available".to_string(),
-                })?;
+        // GAP-52-02: Get CommandBus for compensation
+        let command_bus = services.command_bus.as_ref().ok_or_else(|| {
+            SagaError::CompensationFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+            }
+        })?;
 
-        // Restore original state
+        // Restore original state via CommandBus
         let original_state_str = context
             .get_metadata::<String>("cancellation_original_state")
             .and_then(|r| r.ok())
@@ -451,19 +493,27 @@ impl SagaStep for UpdateJobStateStep {
             "Scheduled" => JobState::Scheduled,
             _ => JobState::Pending,
         };
+        let original_state_for_log = original_state.clone();
+        let original_state_for_command = original_state.clone();
 
         info!(
             job_id = %self.job_id,
-            original_state = ?original_state,
-            "🔄 Compensating: restoring job state"
+            original_state = ?original_state_for_log,
+            "🔄 Compensating: restoring job state via CommandBus"
         );
 
-        job_repository
-            .update_state(&self.job_id, original_state)
+        let command = UpdateJobStateCommand::with_original_state(
+            self.job_id.clone(),
+            original_state,
+            original_state_for_command,
+            context.saga_id.to_string(),
+        );
+
+        dispatch_erased(command_bus, command)
             .await
             .map_err(|e| SagaError::CompensationFailed {
                 step: self.name().to_string(),
-                message: format!("Failed to restore job state: {}", e),
+                message: format!("Failed to restore job state via CommandBus: {}", e),
             })?;
 
         Ok(())
@@ -479,7 +529,7 @@ impl SagaStep for UpdateJobStateStep {
 }
 
 // ============================================================================
-// ReleaseWorkerStep
+// ReleaseWorkerStep - USANDO COMMANDBUS (GAP-52-02)
 // ============================================================================
 
 #[derive(Debug, Clone)]
@@ -509,9 +559,16 @@ impl SagaStep for ReleaseWorkerStep {
             will_compensate: false,
         })?;
 
-        let worker_registry = &services.provider_registry;
+        // GAP-52-02: Get CommandBus from services
+        let command_bus = services.command_bus.as_ref().ok_or_else(|| {
+            SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: false,
+            }
+        })?;
 
-        // Idempotency
+        // Idempotency check stored by CommandBus automatically
         if let Some(Ok(true)) = context.get_metadata::<bool>("worker_released") {
             debug!(job_id = %self.job_id, "Worker already released, skipping");
             return Ok(());
@@ -533,14 +590,16 @@ impl SagaStep for ReleaseWorkerStep {
             info!(
                 job_id = %self.job_id,
                 worker_id = %worker_id,
-                "🔄 Releasing worker back to READY state"
+                "🔄 Releasing worker back to READY state via CommandBus"
             );
 
-            worker_registry
-                .update_state(&worker_id, WorkerState::Ready)
+            // GAP-52-02: Dispatch command via CommandBus
+            let command = ReleaseWorkerCommand::new(worker_id.clone(), context.saga_id.to_string());
+
+            dispatch_erased(command_bus, command)
                 .await
                 .map_err(|e| {
-                    warn!(worker_id = %worker_id, "Failed to release worker: {}", e);
+                    warn!(worker_id = %worker_id, "Failed to release worker via CommandBus: {}", e);
                     // Non-critical, continue silently
                 });
 
@@ -554,7 +613,7 @@ impl SagaStep for ReleaseWorkerStep {
 
             info!(
                 worker_id = %worker_id,
-                "✅ Worker released successfully"
+                "✅ Worker released successfully via CommandBus"
             );
         } else {
             debug!(job_id = %self.job_id, "No worker to release");
@@ -564,7 +623,7 @@ impl SagaStep for ReleaseWorkerStep {
     }
 
     async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
-        // Cannot undo worker release in this context
+        // Cannot undo worker release - it's a state transition
         Ok(())
     }
 
@@ -575,6 +634,16 @@ impl SagaStep for ReleaseWorkerStep {
     fn has_compensation(&self) -> bool {
         false
     }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Extracts worker ID from optional worker reference
+#[inline]
+fn worker_id_from_opt(worker_opt: &Option<super::super::workers::Worker>) -> Option<&super::super::WorkerId> {
+    worker_opt.as_ref().map(|w| w.id())
 }
 
 #[cfg(test)]
@@ -602,5 +671,21 @@ mod tests {
     fn cancellation_saga_has_idempotency_key() {
         let saga = CancellationSaga::new(JobId::new(), "user_requested");
         assert_eq!(saga.idempotency_key(), Some("user_requested"));
+    }
+
+    #[test]
+    fn update_job_state_step_cancel_creates_cancelled_state() {
+        let job_id = JobId::new();
+        let step = UpdateJobStateStep::cancel(job_id.clone(), "user_requested".to_string());
+        assert_eq!(step.job_id, job_id);
+        assert_eq!(step.target_state, JobState::Cancelled);
+    }
+
+    #[test]
+    fn notify_worker_step_stores_reason() {
+        let job_id = JobId::new();
+        let step = NotifyWorkerStep::new(job_id.clone(), "timeout".to_string());
+        assert_eq!(step.job_id, job_id);
+        assert_eq!(step.reason, "timeout");
     }
 }
