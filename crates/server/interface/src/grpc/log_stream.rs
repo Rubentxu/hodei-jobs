@@ -9,10 +9,10 @@
 //! - Persistent log storage with pluggable backends
 //! - Historical log retrieval from persistent storage
 
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, warn};
@@ -39,12 +39,12 @@ pub struct BufferedLogEntry {
 
 /// Manages log buffers and subscribers for jobs with persistent storage
 pub struct LogStreamService {
-    /// Buffered logs per job (circular buffer)
-    logs: Arc<RwLock<HashMap<String, Vec<BufferedLogEntry>>>>,
-    /// Active subscribers per job
-    subscribers: Arc<RwLock<HashMap<String, Vec<mpsc::Sender<LogEntry>>>>>,
-    /// Sequence counter per job
-    sequences: Arc<RwLock<HashMap<String, u64>>>,
+    /// EPIC-42: Buffered logs per job (circular buffer) - DashMap para concurrencia sin bloqueos
+    logs: Arc<DashMap<String, Vec<BufferedLogEntry>>>,
+    /// EPIC-42: Active subscribers per job - DashMap para concurrencia sin bloqueos
+    subscribers: Arc<DashMap<String, Vec<mpsc::Sender<LogEntry>>>>,
+    /// EPIC-42: Sequence counter per job - DashMap para concurrencia sin bloqueos
+    sequences: Arc<DashMap<String, u64>>,
     /// Persistent log storage backend (optional)
     storage: Option<Box<dyn LogStorage>>,
     /// Callback for when a job log is finalized (to store in DB)
@@ -54,9 +54,9 @@ pub struct LogStreamService {
 impl std::fmt::Debug for LogStreamService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogStreamService")
-            .field("logs", &"<RwLock>")
-            .field("subscribers", &"<RwLock>")
-            .field("sequences", &"<RwLock>")
+            .field("logs", &"<DashMap>")
+            .field("subscribers", &"<DashMap>")
+            .field("sequences", &"<DashMap>")
             .field("storage", &self.storage.as_ref().map(|_| "<LogStorage>"))
             .field(
                 "on_log_finalized",
@@ -76,9 +76,9 @@ impl LogStreamService {
     /// Create new service without persistence
     pub fn new() -> Self {
         Self {
-            logs: Arc::new(RwLock::new(HashMap::new())),
-            subscribers: Arc::new(RwLock::new(HashMap::new())),
-            sequences: Arc::new(RwLock::new(HashMap::new())),
+            logs: Arc::new(DashMap::new()),
+            subscribers: Arc::new(DashMap::new()),
+            sequences: Arc::new(DashMap::new()),
             storage: None,
             on_log_finalized: None,
         }
@@ -91,9 +91,9 @@ impl LogStreamService {
     ) -> Self {
         info!("LogStreamService initialized with persistent storage");
         Self {
-            logs: Arc::new(RwLock::new(HashMap::new())),
-            subscribers: Arc::new(RwLock::new(HashMap::new())),
-            sequences: Arc::new(RwLock::new(HashMap::new())),
+            logs: Arc::new(DashMap::new()),
+            subscribers: Arc::new(DashMap::new()),
+            sequences: Arc::new(DashMap::new()),
             storage: Some(storage),
             on_log_finalized,
         }
@@ -103,10 +103,9 @@ impl LogStreamService {
     pub async fn append_log(&self, entry: LogEntry) {
         let job_id = entry.job_id.clone();
 
-        // Get and increment sequence
+        // EPIC-42: DashMap para incremento de secuencia concurrente
         let sequence = {
-            let mut seqs = self.sequences.write().await;
-            let seq = seqs.entry(job_id.clone()).or_insert(0);
+            let mut seq = self.sequences.entry(job_id.clone()).or_insert(0);
             *seq += 1;
             *seq
         };
@@ -119,10 +118,9 @@ impl LogStreamService {
             sequence,
         };
 
-        // Add to buffer (circular)
+        // EPIC-42: DashMap para buffer circular concurrente
         {
-            let mut logs = self.logs.write().await;
-            let buffer = logs.entry(job_id.clone()).or_insert_with(Vec::new);
+            let mut buffer = self.logs.entry(job_id.clone()).or_insert_with(Vec::new);
 
             if buffer.len() >= LOG_BUFFER_SIZE {
                 buffer.remove(0);
@@ -132,8 +130,7 @@ impl LogStreamService {
 
         // Notify subscribers
         {
-            let subs = self.subscribers.read().await;
-            if let Some(job_subs) = subs.get(&job_id) {
+            if let Some(job_subs) = self.subscribers.get(&job_id) {
                 for tx in job_subs {
                     if let Err(e) = tx.send(entry.clone()).await {
                         warn!(
@@ -186,8 +183,9 @@ impl LogStreamService {
 
         // Register subscriber for new logs
         {
-            let mut subs = self.subscribers.write().await;
-            subs.entry(job_id.to_string())
+            // EPIC-42: DashMap para registro de subscribers concurrente
+            self.subscribers
+                .entry(job_id.to_string())
                 .or_insert_with(Vec::new)
                 .push(tx);
         }
@@ -198,9 +196,8 @@ impl LogStreamService {
 
     /// Get historical logs for a job
     pub async fn get_logs(&self, job_id: &str, limit: Option<usize>) -> Vec<LogEntry> {
-        let logs = self.logs.read().await;
-
-        if let Some(buffer) = logs.get(job_id) {
+        // EPIC-42: DashMap para lectura concurrente
+        if let Some(buffer) = self.logs.get(job_id) {
             let limit = limit.unwrap_or(buffer.len());
             buffer
                 .iter()
@@ -221,9 +218,10 @@ impl LogStreamService {
 
     /// Clear logs for a completed job
     pub async fn clear_logs(&self, job_id: &str) {
-        self.logs.write().await.remove(job_id);
-        self.subscribers.write().await.remove(job_id);
-        self.sequences.write().await.remove(job_id);
+        // EPIC-42: DashMap para limpieza concurrente sin bloqueos
+        self.logs.remove(job_id);
+        self.subscribers.remove(job_id);
+        self.sequences.remove(job_id);
         debug!("Logs cleared for job {}", job_id);
     }
 
@@ -269,7 +267,8 @@ impl LogStreamService {
 
     /// Unsubscribe all subscribers for a job (usually when job completes)
     pub async fn close_subscribers(&self, job_id: &str) {
-        self.subscribers.write().await.remove(job_id);
+        // EPIC-42: DashMap para cierre de subscribers concurrente
+        self.subscribers.remove(job_id);
     }
 
     /// Get buffered logs with sequence info
@@ -279,9 +278,8 @@ impl LogStreamService {
         limit: Option<usize>,
         since_sequence: Option<u64>,
     ) -> Vec<BufferedLogEntry> {
-        let logs = self.logs.read().await;
-
-        if let Some(buffer) = logs.get(job_id) {
+        // EPIC-42: DashMap para lectura concurrente
+        if let Some(buffer) = self.logs.get(job_id) {
             let filtered: Vec<_> = buffer
                 .iter()
                 .filter(|e| since_sequence.map_or(true, |seq| e.sequence > seq))

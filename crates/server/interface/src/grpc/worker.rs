@@ -5,10 +5,10 @@
 //! - WorkerStream bidirectional stream for Worker↔Server communication
 //! - Actor Model integration via WorkerSupervisorHandle (EPIC-42)
 
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
@@ -66,11 +66,14 @@ struct InMemoryOtpState {
 #[derive(Clone)]
 pub struct WorkerAgentServiceImpl {
     /// Legacy in-memory worker registry (used when Actor is disabled)
-    workers: Arc<RwLock<HashMap<String, RegisteredWorker>>>,
+    /// EPIC-42: Usando DashMap para concurrencia sin bloqueos
+    workers: Arc<DashMap<String, RegisteredWorker>>,
     /// Legacy OTP tokens storage (used when persistent store is not available)
-    otp_tokens: Arc<RwLock<HashMap<String, InMemoryOtpState>>>,
+    /// EPIC-42: Usando DashMap para concurrencia sin bloqueos
+    otp_tokens: Arc<DashMap<String, InMemoryOtpState>>,
     /// Legacy channel para enviar comandos a workers conectados
-    worker_channels: Arc<RwLock<HashMap<String, mpsc::Sender<Result<ServerMessage, Status>>>>>,
+    /// EPIC-42: Usando DashMap para concurrencia sin bloqueos
+    worker_channels: Arc<DashMap<String, mpsc::Sender<Result<ServerMessage, Status>>>>,
     /// Worker registry for persistent storage
     worker_registry: Option<Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>>,
     job_repository: Option<Arc<dyn hodei_server_domain::jobs::JobRepository>>,
@@ -94,9 +97,9 @@ impl Default for WorkerAgentServiceImpl {
 impl WorkerAgentServiceImpl {
     pub fn new() -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: None,
             job_repository: None,
             token_store: None,
@@ -967,7 +970,8 @@ impl WorkerAgentServiceImpl {
             created_at: std::time::Instant::now(),
             used: false,
         };
-        self.otp_tokens.write().await.insert(token.clone(), otp);
+        // EPIC-42: DashMap permite escritura concurrente sin bloqueos
+        self.otp_tokens.insert(token.clone(), otp);
         Ok(token)
     }
 
@@ -1009,18 +1013,19 @@ impl WorkerAgentServiceImpl {
             return Ok(worker_id_from_request.to_string());
         }
 
-        let mut tokens = self.otp_tokens.write().await;
+        // EPIC-42: DashMap entry API para modificación atómica
+        let otp = self.otp_tokens.entry(token.to_string()).or_insert_with(|| InMemoryOtpState {
+            token: token.to_string(),
+            worker_id: String::new(),
+            created_at: std::time::Instant::now(),
+            used: true, // Mark as used initially if not found
+        });
 
-        let otp = tokens.get_mut(token).ok_or_else(|| {
-            if dev_mode {
-                warn!("Invalid OTP token in dev mode. Use 'dev-<any>' or set HODEI_DEV_MODE=1");
-            }
-            Status::unauthenticated("Invalid OTP token")
-        })?;
+        let otp = otp.into_mut();
 
         // Token expira en 5 minutos
         if otp.created_at.elapsed() > std::time::Duration::from_secs(300) {
-            tokens.remove(token);
+            self.otp_tokens.remove(token);
             return Err(Status::unauthenticated("OTP token expired"));
         }
 
@@ -1348,11 +1353,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         let mut holder = worker_id_holder.write().await;
                                         if holder.is_none() {
                                             *holder = Some(wid.value.clone());
-                                            // Registrar canal
-                                            worker_channels
-                                                .write()
-                                                .await
-                                                .insert(wid.value.clone(), tx_clone.clone());
+                                            // EPIC-42: DashMap para inserción concurrente
+                                            worker_channels.insert(wid.value.clone(), tx_clone.clone());
                                         }
 
                                         // Enviar ACK
@@ -1617,8 +1619,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                             }
                                         }
 
-                                        // Remove from worker channels
-                                        worker_channels.write().await.remove(&term.worker_id);
+                                        // EPIC-42: DashMap para eliminación concurrente
+                                        worker_channels.remove(&term.worker_id);
 
                                         // Note: The actual worker termination (cleanup) is handled by the provider
                                         // when it detects the worker process has exited
@@ -1648,7 +1650,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             // Cleanup cuando el worker se desconecta
             if let Some(wid) = worker_id_for_cleanup.read().await.clone() {
                 warn!("Worker {} disconnected", wid);
-                worker_channels.write().await.remove(&wid);
+                // EPIC-42: DashMap para eliminación concurrente sin bloqueos
+                worker_channels.remove(&wid);
 
                 // Publish WorkerDisconnected event
                 if let Some(event_bus) = &registry_service.event_bus {
@@ -1685,8 +1688,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             .ok_or_else(|| Status::invalid_argument("worker_id is required"))?
             .value;
 
-        let mut workers = self.workers.write().await;
-        if let Some(worker) = workers.get_mut(&worker_id) {
+        // EPIC-42: DashMap para acceso concurrente sin bloqueos
+        if let Some(mut worker) = self.workers.get_mut(&worker_id) {
             worker.status = req.status;
             Ok(Response::new(UpdateWorkerStatusResponse {
                 success: true,
@@ -1711,9 +1714,9 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
 
         info!("Unregistering worker: {}", worker_id);
 
-        // Remover worker y su canal
-        let removed = self.workers.write().await.remove(&worker_id);
-        self.worker_channels.write().await.remove(&worker_id);
+        // EPIC-42: DashMap para remoción concurrente sin bloqueos
+        let removed = self.workers.remove(&worker_id);
+        self.worker_channels.remove(&worker_id);
 
         // Publish WorkerTerminated event if worker was found
         if removed.is_some() {
