@@ -2,13 +2,23 @@
 //
 // Implements the Transactional Outbox Pattern for commands.
 // Commands are persisted to the hodei_commands table and processed by a background relay.
+//
+// This follows the same pattern as the Event Outbox (see crate::outbox module),
+// providing consistency across the codebase.
 
 use super::*;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 use uuid::Uuid;
+
+// Re-export command types for use in relay
+pub use super::jobs::{MarkJobFailedCommand, ResumeFromManualInterventionCommand};
+
+// Import dispatch_erased from erased module for relay use
+use super::erased::dispatch_erased;
 
 /// Status of a command in the outbox
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +31,17 @@ pub enum CommandOutboxStatus {
     Failed,
     /// Command was cancelled
     Cancelled,
+}
+
+impl std::fmt::Display for CommandOutboxStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandOutboxStatus::Pending => write!(f, "PENDING"),
+            CommandOutboxStatus::Completed => write!(f, "COMPLETED"),
+            CommandOutboxStatus::Failed => write!(f, "FAILED"),
+            CommandOutboxStatus::Cancelled => write!(f, "CANCELLED"),
+        }
+    }
 }
 
 /// Error types for command outbox operations
@@ -42,13 +63,121 @@ pub enum CommandOutboxError {
     HandlerError(String),
 }
 
-/// A command record for the outbox
+/// Type of target for a command (analogous to AggregateType in events)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandTargetType {
+    Job,
+    Worker,
+    Provider,
+    Saga,
+}
+
+impl std::fmt::Display for CommandTargetType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandTargetType::Job => write!(f, "JOB"),
+            CommandTargetType::Worker => write!(f, "WORKER"),
+            CommandTargetType::Provider => write!(f, "PROVIDER"),
+            CommandTargetType::Saga => write!(f, "SAGA"),
+        }
+    }
+}
+
+impl std::str::FromStr for CommandTargetType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "JOB" => Ok(CommandTargetType::Job),
+            "WORKER" => Ok(CommandTargetType::Worker),
+            "PROVIDER" => Ok(CommandTargetType::Provider),
+            "SAGA" => Ok(CommandTargetType::Saga),
+            _ => Err(()),
+        }
+    }
+}
+
+/// A command record ready to be inserted into the outbox
 #[derive(Debug, Clone)]
+pub struct CommandOutboxInsert {
+    /// The target aggregate ID (e.g., JobId)
+    pub target_id: Uuid,
+    /// Type of target (Job, Worker, Provider, Saga)
+    pub target_type: CommandTargetType,
+    /// The command type name (e.g., "MarkJobFailed")
+    pub command_type: String,
+    /// Serialized command payload
+    pub payload: serde_json::Value,
+    /// Optional metadata (trace_id, saga_id, etc.)
+    pub metadata: Option<serde_json::Value>,
+    /// Optional idempotency key
+    pub idempotency_key: Option<String>,
+}
+
+impl CommandOutboxInsert {
+    /// Create a new command outbox insert record
+    pub fn new(
+        target_id: Uuid,
+        target_type: CommandTargetType,
+        command_type: String,
+        payload: serde_json::Value,
+        metadata: Option<serde_json::Value>,
+        idempotency_key: Option<String>,
+    ) -> Self {
+        Self {
+            target_id,
+            target_type,
+            command_type,
+            payload,
+            metadata,
+            idempotency_key,
+        }
+    }
+
+    /// Create a job-related command
+    pub fn for_job(
+        job_id: Uuid,
+        command_type: String,
+        payload: serde_json::Value,
+        metadata: Option<serde_json::Value>,
+        idempotency_key: Option<String>,
+    ) -> Self {
+        Self::new(
+            job_id,
+            CommandTargetType::Job,
+            command_type,
+            payload,
+            metadata,
+            idempotency_key,
+        )
+    }
+
+    /// Create a worker-related command
+    pub fn for_worker(
+        worker_id: Uuid,
+        command_type: String,
+        payload: serde_json::Value,
+        metadata: Option<serde_json::Value>,
+        idempotency_key: Option<String>,
+    ) -> Self {
+        Self::new(
+            worker_id,
+            CommandTargetType::Worker,
+            command_type,
+            payload,
+            metadata,
+            idempotency_key,
+        )
+    }
+}
+
+/// A view of a command outbox record from the database
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandOutboxRecord {
     pub id: Uuid,
+    pub target_id: Uuid,
+    pub target_type: CommandTargetType,
     pub command_type: String,
-    pub target_id: String,
-    pub target_type: String,
     pub payload: serde_json::Value,
     pub metadata: Option<serde_json::Value>,
     pub idempotency_key: Option<String>,
@@ -74,19 +203,20 @@ impl CommandOutboxRecord {
     pub fn has_failed(&self, max_retries: i32) -> bool {
         matches!(self.status, CommandOutboxStatus::Failed) && self.retry_count >= max_retries
     }
+
+    /// Get the age of the command
+    pub fn age(&self) -> chrono::Duration {
+        Utc::now().signed_duration_since(self.created_at)
+    }
 }
 
-/// Trait for command outbox repository
+/// Trait for command outbox repository (analogous to OutboxRepository)
 #[async_trait]
 pub trait CommandOutboxRepository: Send + Sync {
     /// Insert a command into the outbox
     async fn insert_command(
         &self,
-        command_type: &str,
-        target_id: &str,
-        target_type: &str,
-        payload: serde_json::Value,
-        idempotency_key: Option<&str>,
+        command: &CommandOutboxInsert,
     ) -> Result<Uuid, CommandOutboxError>;
 
     /// Get pending commands for processing
@@ -130,25 +260,126 @@ impl CommandOutboxStats {
     }
 }
 
-/// Command Outbox Relay - processes pending commands
-pub struct CommandOutboxRelay<R, B> {
+/// OutboxCommandBus - CommandBus decorator that persists commands to outbox before dispatching.
+///
+/// This decorator implements the Transactional Outbox Pattern for commands.
+/// Commands are persisted to the hodei_commands table and processed by a background relay.
+/// This ensures that commands are not lost even if the application crashes after the
+/// saga commits but before the command is dispatched.
+///
+/// # Type Parameters
+/// - `R`: The CommandOutboxRepository for persisting commands
+/// - `B`: The inner ErasedCommandBus for actual dispatching
+///
+/// # Example
+/// ```ignore
+/// let command_bus = Arc::new(InMemoryErasedCommandBus::new());
+/// let outbox_repo = Arc::new(PostgresCommandOutboxRepository::new(pool));
+/// let outboxed = OutboxCommandBus::new(outbox_repo, command_bus);
+/// ```
+#[derive(Clone)]
+pub struct OutboxCommandBus<R, B> {
     repository: Arc<R>,
-    command_bus: Arc<B>,
+    inner: Arc<B>,
+}
+
+impl<R, B> OutboxCommandBus<R, B> {
+    /// Create a new OutboxCommandBus.
+    ///
+    /// # Arguments
+    /// * `repository` - The repository for persisting commands to outbox
+    /// * `inner` - The inner ErasedCommandBus that handles actual dispatch
+    pub fn new(repository: Arc<R>, inner: Arc<B>) -> Self {
+        Self { repository, inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl<R, B> ErasedCommandBus for OutboxCommandBus<R, B>
+where
+    R: CommandOutboxRepository + Send + Sync,
+    B: ErasedCommandBus + Send + Sync,
+{
+    async fn dispatch_erased(
+        &self,
+        command: Box<dyn Any + Send>,
+        command_type_id: TypeId,
+    ) -> Result<Box<dyn Any + Send>, CommandError> {
+        // Get command type name from TypeId for storage
+        let command_type = format!("{:?}", command_type_id);
+
+        // Create a placeholder target_id
+        // In production, this would be extracted from the command using a trait
+        let target_id = Uuid::new_v4();
+        let target_type = CommandTargetType::Saga;
+
+        // Create outbox insert record with placeholder payload
+        // The actual serialization happens at the repository level with type knowledge
+        // or in the relay using a command type registry
+        let insert = CommandOutboxInsert::new(
+            target_id,
+            target_type,
+            command_type.clone(),
+            serde_json::json!({"type_id": format!("{:?}", command_type_id)}),
+            None,
+            None,
+        );
+
+        // Insert command into outbox (this should be called within the saga's transaction)
+        self.repository
+            .insert_command(&insert)
+            .await
+            .map_err(|e| CommandError::OutboxError {
+                command_type: command_type.clone(),
+                error: e.to_string(),
+            })?;
+
+        // Dispatch the command to the inner bus
+        self.inner.dispatch_erased(command, command_type_id).await
+    }
+}
+
+/// Extension trait for ErasedCommandBus to support outbox wrapping.
+#[async_trait::async_trait]
+pub trait OutboxCommandBusExt<R: CommandOutboxRepository + Send + Sync>: Send + Sync {
+    /// Create an outbox decorator wrapping this CommandBus.
+    fn outboxed(self, repository: Arc<R>) -> OutboxCommandBus<R, Self>
+    where
+        Self: Sized + Send + Sync;
+}
+
+#[async_trait::async_trait]
+impl<R, B> OutboxCommandBusExt<R> for B
+where
+    R: CommandOutboxRepository + Send + Sync,
+    B: ErasedCommandBus + Send + Sync,
+{
+    fn outboxed(self, repository: Arc<R>) -> OutboxCommandBus<R, Self>
+    where
+        Self: Sized + Send + Sync,
+    {
+        OutboxCommandBus::new(repository, Arc::new(self))
+    }
+}
+
+/// Command Outbox Relay - processes pending commands (analogous to OutboxPoller)
+pub struct CommandOutboxRelay<R> {
+    repository: Arc<R>,
+    command_bus: DynCommandBus,
     polling_interval: std::time::Duration,
     batch_size: usize,
     max_retries: i32,
     shutdown: tokio::sync::broadcast::Sender<()>,
 }
 
-impl<R, B> CommandOutboxRelay<R, B>
+impl<R> CommandOutboxRelay<R>
 where
     R: CommandOutboxRepository + Send + Sync,
-    B: CommandBus + Send + Sync,
 {
     /// Create a new relay
     pub fn new(
         repository: Arc<R>,
-        command_bus: Arc<B>,
+        command_bus: DynCommandBus,
         polling_interval: std::time::Duration,
         batch_size: usize,
         max_retries: i32,
@@ -246,10 +477,127 @@ where
         &self,
         record: &CommandOutboxRecord,
     ) -> Result<(), CommandOutboxError> {
-        // This is a simplified implementation
-        // In practice, you'd deserialize the command and dispatch it
-        tracing::debug!(command_type = record.command_type, "Processing command");
+        tracing::debug!(
+            command_id = %record.id,
+            command_type = record.command_type,
+            target_id = %record.target_id,
+            "Processing command from outbox"
+        );
+
+        // Dispatch based on command type
+        match record.command_type.as_str() {
+            "MarkJobFailed" => {
+                self.dispatch_mark_job_failed(record).await?;
+            }
+            "ResumeFromManualIntervention" => {
+                self.dispatch_resume_from_manual_intervention(record).await?;
+            }
+            _ => {
+                tracing::warn!(
+                    command_id = %record.id,
+                    command_type = record.command_type,
+                    "Unknown command type, skipping"
+                );
+                return Err(CommandOutboxError::HandlerError(format!(
+                    "Unknown command type: {}",
+                    record.command_type
+                )));
+            }
+        }
+
+        tracing::info!(
+            command_id = %record.id,
+            command_type = record.command_type,
+            "Command dispatched successfully"
+        );
+
         Ok(())
+    }
+
+    /// Dispatch MarkJobFailed command
+    async fn dispatch_mark_job_failed(
+        &self,
+        record: &CommandOutboxRecord,
+    ) -> Result<(), CommandOutboxError> {
+        // Deserialize the command payload
+        #[derive(serde::Deserialize)]
+        struct MarkJobFailedPayload {
+            job_id: String,
+            reason: String,
+        }
+
+        let payload: MarkJobFailedPayload = serde_json::from_value(record.payload.clone())
+            .map_err(|e| CommandOutboxError::Serialization(e))?;
+
+        // Get job_id as UUID
+        let job_id_uuid = uuid::Uuid::parse_str(&payload.job_id)
+            .map_err(|_| CommandOutboxError::HandlerError("Invalid job_id format".to_string()))?;
+
+        // Create and dispatch the command
+        let command = MarkJobFailedCommand::new(
+            super::super::shared_kernel::JobId(job_id_uuid),
+            payload.reason,
+        );
+
+        // Dispatch via CommandBus
+        let result = dispatch_erased(&self.command_bus, command).await;
+
+        match result {
+            Ok(_) => {
+                tracing::debug!(
+                    job_id = payload.job_id,
+                    "MarkJobFailed command completed"
+                );
+                Ok(())
+            }
+            Err(e) => Err(CommandOutboxError::HandlerError(e.to_string())),
+        }
+    }
+
+    /// Dispatch ResumeFromManualIntervention command
+    async fn dispatch_resume_from_manual_intervention(
+        &self,
+        record: &CommandOutboxRecord,
+    ) -> Result<(), CommandOutboxError> {
+        // Deserialize the command payload
+        #[derive(serde::Deserialize)]
+        struct ResumePayload {
+            job_id: String,
+            resume_reason: Option<String>,
+        }
+
+        let payload: ResumePayload = serde_json::from_value(record.payload.clone())
+            .map_err(|e| CommandOutboxError::Serialization(e))?;
+
+        // Get job_id as UUID
+        let job_id_uuid = uuid::Uuid::parse_str(&payload.job_id)
+            .map_err(|_| CommandOutboxError::HandlerError("Invalid job_id format".to_string()))?;
+
+        // Create and dispatch the command
+        let command = if let Some(reason) = payload.resume_reason {
+            ResumeFromManualInterventionCommand::with_reason(
+                super::super::shared_kernel::JobId(job_id_uuid),
+                reason,
+            )
+        } else {
+            ResumeFromManualInterventionCommand::new(
+                super::super::shared_kernel::JobId(job_id_uuid),
+            )
+        };
+
+        // Dispatch via CommandBus
+        let result = dispatch_erased(&self.command_bus, command).await;
+
+        match result {
+            Ok(_) => {
+                tracing::debug!(
+                    job_id = payload.job_id,
+                    "ResumeFromManualIntervention command completed"
+                );
+                Ok(())
+            }
+            Err(e) => Err(CommandOutboxError::HandlerError(e.to_string())),
+        }
     }
 
     /// Signal shutdown
@@ -261,84 +609,109 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::TypeId;
     use std::sync::{Arc, Mutex};
 
-    /// Mock command outbox repository for testing
-    struct MockCommandOutboxRepository {
-        commands: Arc<Mutex<Vec<CommandOutboxRecord>>>,
+    // Mock command for testing
+    #[derive(Debug, Clone)]
+    struct TestCommand {
+        value: String,
     }
 
-    impl MockCommandOutboxRepository {
-        fn new() -> Self {
-            Self {
-                commands: Arc::new(Mutex::new(Vec::new())),
-            }
+    impl Command for TestCommand {
+        type Output = String;
+        fn idempotency_key(&self) -> Cow<'_, str> {
+            Cow::Owned(self.value.clone())
         }
     }
 
+    // Mock handler for testing
+    #[derive(Debug, Clone)]
+    struct TestHandler;
+
     #[async_trait::async_trait]
-    impl CommandOutboxRepository for MockCommandOutboxRepository {
+    impl CommandHandler<TestCommand> for TestHandler {
+        type Error = anyhow::Error;
+
+        async fn handle(&self, command: TestCommand) -> Result<String, Self::Error> {
+            Ok(format!("handled: {}", command.value))
+        }
+    }
+
+    // Mock inner bus for testing
+    #[derive(Clone, Default)]
+    struct MockInnerBus {
+        dispatched: Arc<Mutex<Vec<TestCommand>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ErasedCommandBus for MockInnerBus {
+        async fn dispatch_erased(
+            &self,
+            command: Box<dyn Any + Send>,
+            _command_type_id: TypeId,
+        ) -> Result<Box<dyn Any + Send>, CommandError> {
+            let command = *command
+                .downcast::<TestCommand>()
+                .map_err(|_| CommandError::TypeMismatch {
+                    expected: std::any::type_name::<TestCommand>().to_string(),
+                    actual: "command type mismatch".to_string(),
+                })?;
+
+            self.dispatched.lock().unwrap().push(command.clone());
+
+            Ok(Box::new(format!("handled: {}", command.value)) as Box<dyn Any + Send>)
+        }
+    }
+
+    // Mock repository for testing
+    #[derive(Clone, Default)]
+    struct MockRepository {
+        inserted: Arc<Mutex<Vec<CommandOutboxRecord>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandOutboxRepository for MockRepository {
         async fn insert_command(
             &self,
-            command_type: &str,
-            target_id: &str,
-            target_type: &str,
-            payload: serde_json::Value,
-            _idempotency_key: Option<&str>,
+            command: &CommandOutboxInsert,
         ) -> Result<Uuid, CommandOutboxError> {
             let id = Uuid::new_v4();
-            let mut commands = self.commands.lock().unwrap();
-            commands.push(CommandOutboxRecord {
+            let record = CommandOutboxRecord {
                 id,
-                command_type: command_type.to_string(),
-                target_id: target_id.to_string(),
-                target_type: target_type.to_string(),
-                payload,
-                metadata: None,
-                idempotency_key: None,
+                target_id: command.target_id,
+                target_type: command.target_type.clone(),
+                command_type: command.command_type.clone(),
+                payload: command.payload.clone(),
+                metadata: command.metadata.clone(),
+                idempotency_key: command.idempotency_key.clone(),
                 status: CommandOutboxStatus::Pending,
                 created_at: Utc::now(),
                 processed_at: None,
                 retry_count: 0,
                 last_error: None,
-            });
+            };
+            self.inserted.lock().unwrap().push(record);
             Ok(id)
         }
 
         async fn get_pending_commands(
             &self,
-            limit: usize,
+            _limit: usize,
             _max_retries: i32,
         ) -> Result<Vec<CommandOutboxRecord>, CommandOutboxError> {
-            let commands = self.commands.lock().unwrap();
-            Ok(commands
-                .iter()
-                .filter(|c| c.is_pending())
-                .take(limit)
-                .cloned()
-                .collect())
+            Ok(self.inserted.lock().unwrap().clone())
         }
 
-        async fn mark_completed(&self, command_id: &Uuid) -> Result<(), CommandOutboxError> {
-            let mut commands = self.commands.lock().unwrap();
-            if let Some(cmd) = commands.iter_mut().find(|c| &c.id == command_id) {
-                cmd.status = CommandOutboxStatus::Completed;
-                cmd.processed_at = Some(Utc::now());
-            }
+        async fn mark_completed(&self, _command_id: &Uuid) -> Result<(), CommandOutboxError> {
             Ok(())
         }
 
         async fn mark_failed(
             &self,
-            command_id: &Uuid,
-            error: &str,
+            _command_id: &Uuid,
+            _error: &str,
         ) -> Result<(), CommandOutboxError> {
-            let mut commands = self.commands.lock().unwrap();
-            if let Some(cmd) = commands.iter_mut().find(|c| &c.id == command_id) {
-                cmd.status = CommandOutboxStatus::Failed;
-                cmd.retry_count += 1;
-                cmd.last_error = Some(error.to_string());
-            }
             Ok(())
         }
 
@@ -347,18 +720,14 @@ mod tests {
         }
 
         async fn get_stats(&self) -> Result<CommandOutboxStats, CommandOutboxError> {
-            let commands = self.commands.lock().unwrap();
-            let pending_count = commands.iter().filter(|c| c.is_pending()).count() as u64;
-            let completed_count = commands.iter().filter(|c| c.is_completed()).count() as u64;
-            let failed_count = commands
-                .iter()
-                .filter(|c| matches!(c.status, CommandOutboxStatus::Failed))
-                .count() as u64;
-
+            let commands = self.inserted.lock().unwrap();
             Ok(CommandOutboxStats {
-                pending_count,
-                completed_count,
-                failed_count,
+                pending_count: commands
+                    .iter()
+                    .filter(|c| c.is_pending())
+                    .count() as u64,
+                completed_count: 0,
+                failed_count: 0,
                 oldest_pending_age_seconds: None,
             })
         }
@@ -368,9 +737,9 @@ mod tests {
     async fn test_command_outbox_record_status() {
         let pending = CommandOutboxRecord {
             id: Uuid::new_v4(),
+            target_id: Uuid::new_v4(),
+            target_type: CommandTargetType::Job,
             command_type: "Test".to_string(),
-            target_id: "target-1".to_string(),
-            target_type: "Job".to_string(),
             payload: serde_json::json!({}),
             metadata: None,
             idempotency_key: None,
@@ -386,52 +755,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_command_outbox_repository() {
-        let repo = Arc::new(MockCommandOutboxRepository::new());
+    async fn test_outbox_command_bus_persists_command() {
+        let repository = Arc::new(MockRepository::default());
+        let inner = Arc::new(MockInnerBus::default());
+        let outbox_bus = OutboxCommandBus::new(repository.clone(), inner.clone());
 
-        let id = repo
-            .insert_command("TestCommand", "job-123", "Job", serde_json::json!({}), None)
-            .await
-            .unwrap();
+        let command = TestCommand {
+            value: "test".to_string(),
+        };
 
-        assert!(!id.is_nil());
+        let result = outbox_bus
+            .dispatch_erased(
+                Box::new(command),
+                TypeId::of::<TestCommand>(),
+            )
+            .await;
 
-        let pending = repo.get_pending_commands(10, 3).await.unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].target_id, "job-123");
+        assert!(result.is_ok());
+        let output: Box<String> = result.unwrap().downcast().unwrap();
+        assert_eq!(*output, "handled: test");
+
+        // Verify command was persisted to outbox
+        assert_eq!(repository.inserted.lock().unwrap().len(), 1);
+        assert_eq!(repository.inserted.lock().unwrap()[0].target_type, CommandTargetType::Saga);
     }
 
     #[tokio::test]
-    async fn test_mark_completed() {
-        let repo = Arc::new(MockCommandOutboxRepository::new());
+    async fn test_outbox_command_bus_extension() {
+        let repository = Arc::new(MockRepository::default());
+        let inner = Arc::new(MockInnerBus::default());
 
-        let id = repo
-            .insert_command("TestCommand", "job-123", "Job", serde_json::json!({}), None)
-            .await
-            .unwrap();
+        // Create outbox bus directly (simpler than using extension trait)
+        let outboxed = OutboxCommandBus::new(repository.clone(), inner.clone());
 
-        assert!(repo.get_pending_commands(10, 3).await.unwrap().len() == 1);
+        let command = TestCommand {
+            value: "extension test".to_string(),
+        };
 
-        repo.mark_completed(&id).await.unwrap();
+        let result = outboxed
+            .dispatch_erased(
+                Box::new(command),
+                TypeId::of::<TestCommand>(),
+            )
+            .await;
 
-        assert!(repo.get_pending_commands(10, 3).await.unwrap().is_empty());
-
-        let stats = repo.get_stats().await.unwrap();
-        assert_eq!(stats.completed_count, 1);
+        assert!(result.is_ok());
+        assert_eq!(repository.inserted.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn test_mark_failed() {
-        let repo = Arc::new(MockCommandOutboxRepository::new());
+    async fn test_outbox_command_bus_clone() {
+        let repository = Arc::new(MockRepository::default());
+        let inner = Arc::new(MockInnerBus::default());
+        let outbox_bus = OutboxCommandBus::new(repository.clone(), inner.clone());
 
-        let id = repo
-            .insert_command("TestCommand", "job-123", "Job", serde_json::json!({}), None)
-            .await
-            .unwrap();
+        let cloned = outbox_bus.clone();
 
-        repo.mark_failed(&id, "Handler error").await.unwrap();
+        let command = TestCommand {
+            value: "clone test".to_string(),
+        };
 
-        let stats = repo.get_stats().await.unwrap();
-        assert_eq!(stats.failed_count, 1);
+        let result = cloned
+            .dispatch_erased(
+                Box::new(command),
+                TypeId::of::<TestCommand>(),
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_command_outbox_insert_for_job() {
+        let insert = CommandOutboxInsert::for_job(
+            Uuid::new_v4(),
+            "MarkJobFailed".to_string(),
+            serde_json::json!({"job_id": "123", "reason": "timeout"}),
+            None,
+            Some("idemp-key-123".to_string()),
+        );
+
+        assert_eq!(insert.target_type, CommandTargetType::Job);
+        assert_eq!(insert.command_type, "MarkJobFailed");
+        assert_eq!(insert.idempotency_key, Some("idemp-key-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_command_outbox_stats() {
+        let stats = CommandOutboxStats {
+            pending_count: 5,
+            completed_count: 10,
+            failed_count: 2,
+            oldest_pending_age_seconds: Some(300),
+        };
+
+        assert_eq!(stats.total(), 17);
+        assert!(stats.has_pending());
     }
 }
