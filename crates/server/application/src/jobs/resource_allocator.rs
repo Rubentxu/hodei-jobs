@@ -95,6 +95,18 @@ impl ResourceAllocator {
             .collect()
     }
 
+    /// Convertir lista de ProviderConfigs (por referencia) a ProviderInfos
+    /// GAP-GO-04: Método adicional para evitar conversión a Arc
+    pub fn configs_to_provider_infos_ref(
+        &self,
+        providers: &[ProviderConfig],
+    ) -> Vec<ProviderInfo> {
+        providers
+            .iter()
+            .map(|p| self.config_to_provider_info(p))
+            .collect()
+    }
+
     /// Convertir un ProviderConfig a ProviderInfo
     pub fn config_to_provider_info(&self, provider: &ProviderConfig) -> ProviderInfo {
         let analysis = self.analyze_provider(provider);

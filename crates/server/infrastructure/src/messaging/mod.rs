@@ -9,6 +9,7 @@
 
 pub mod cleanup_saga_consumer;
 pub mod execution_saga_consumer;
+pub mod event_archiver;
 pub mod hybrid;
 pub mod nats;
 pub mod nats_outbox_relay;
@@ -30,6 +31,7 @@ pub use execution_saga_consumer::{
     ExecutionSagaConsumer, ExecutionSagaConsumerBuilder, ExecutionSagaConsumerConfig,
     ExecutionSagaTriggerResult,
 };
+pub use event_archiver::{EventArchiver, EventArchiverConfig};
 pub use nats::{NatsConfig, NatsEventBus, NatsEventBusMetrics};
 pub use nats_outbox_relay::{
     NatsOutboxRelay, NatsOutboxRelayConfig, NatsOutboxRelayConfigBuilder, NatsOutboxRelayError,

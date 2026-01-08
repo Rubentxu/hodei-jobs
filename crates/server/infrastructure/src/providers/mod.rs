@@ -21,7 +21,7 @@ pub use firecracker::{
 };
 pub use kubernetes::{
     KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesProviderBuilder,
-    KubernetesToleration,
+    KubernetesToleration, PodSecurityStandard,
 };
 pub use kubernetes_health::{
     HealthCheckResult, HealthStatus, KubernetesHealthChecker, KubernetesSLIs, KubernetesSLOs,

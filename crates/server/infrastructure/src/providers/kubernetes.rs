@@ -2,12 +2,12 @@
 //!
 //! Production-ready implementation of WorkerProvider using Kubernetes Pods.
 //! Uses kube-rs for native Kubernetes API interaction.
+//!
+//! Architecture: Pod construction delegated to PodSpecFactory (GAP-GO-04).
 
 use async_trait::async_trait;
 use futures::Stream;
-use k8s_openapi::api::core::v1::{
-    Container, EnvVar, Pod, PodSpec, ResourceRequirements as K8sResourceRequirements,
-};
+use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, ResourceRequirements as K8sResourceRequirements};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::{
     Client, Config,
@@ -26,51 +26,11 @@ use hodei_server_domain::{
     workers::{
         Architecture, CostEstimate, GpuModel, GpuVendor, HealthStatus, JobRequirements, LogEntry,
         LogLevel, ProviderCapabilities, ProviderError, ProviderFeature, ProviderPerformanceMetrics,
-        ProviderType, ResourceLimits, VolumeSpec, WorkerCost, WorkerEligibility, WorkerEventSource,
+        ProviderType, ResourceLimits, WorkerCost, WorkerEligibility, WorkerEventSource,
         WorkerHandle, WorkerHealth, WorkerInfrastructureEvent, WorkerLifecycle, WorkerLogs,
         WorkerMetrics, WorkerProvider, WorkerProviderIdentity, WorkerSpec,
     },
 };
-
-// ============================================================================
-// Helper function for getting Kubernetes config with backwards compatibility
-// ============================================================================
-
-/// Get Kubernetes configuration from WorkerSpec.
-///
-/// This function provides backwards compatibility by checking `provider_config`
-/// first (new Extension Objects pattern), then falling back to `spec.kubernetes`
-/// (deprecated field) for migration support.
-///
-/// Returns a tuple of (custom_labels, annotations, node_selector, service_account)
-fn get_k8s_config_labels<'a>(
-    spec: &'a WorkerSpec,
-) -> (
-    &'a HashMap<String, String>,
-    &'a HashMap<String, String>,
-    &'a HashMap<String, String>,
-    &'a Option<String>,
-) {
-    // Try new Extension Objects pattern first
-    if let Some(ref config) = spec.provider_config {
-        if let Some(k8s_config) = config.as_kubernetes() {
-            return (
-                &k8s_config.custom_labels,
-                &k8s_config.annotations,
-                &k8s_config.node_selector,
-                &k8s_config.service_account,
-            );
-        }
-    }
-
-    // Fall back to deprecated field for backwards compatibility
-    (
-        &spec.kubernetes.custom_labels,
-        &spec.kubernetes.annotations,
-        &spec.kubernetes.node_selector,
-        &spec.kubernetes.service_account,
-    )
-}
 
 // ============================================================================
 // Configuration Types (HU-7.1)
@@ -737,236 +697,23 @@ impl KubernetesProvider {
         format!("hodei-worker-{}", worker_id)
     }
 
-    fn create_pod_spec_with_namespace(
+    /// Create a Pod spec using PodSpecFactory (GAP-GO-04)
+    ///
+    /// This method is kept for backward compatibility with tests.
+    /// Production code should use `create_worker()` which internally uses the factory.
+    pub fn create_pod_spec_with_namespace(
         &self,
         spec: &WorkerSpec,
         otp_token: Option<&str>,
         namespace: &str,
     ) -> Pod {
-        let pod_name = Self::pod_name(&spec.worker_id);
-
-        // Get K8s config (supports both new Extension Objects pattern and deprecated field)
-        let (custom_labels, annotations, _node_selector, _service_account) =
-            get_k8s_config_labels(spec);
-
-        // Build labels
-        let mut labels: BTreeMap<String, String> = self
-            .config
-            .base_labels
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        labels.insert("hodei.io/worker-id".to_string(), spec.worker_id.to_string());
-        labels.insert(
-            "hodei.io/provider-id".to_string(),
-            self.provider_id.to_string(),
+        let build_result = self.pod_spec_factory.build_pod(
+            spec,
+            otp_token,
+            namespace,
+            &self.provider_id.to_string(),
         );
-
-        // Add spec labels
-        for (k, v) in &spec.labels {
-            labels.insert(k.clone(), v.clone());
-        }
-
-        // Add custom labels from Kubernetes config
-        for (k, v) in custom_labels {
-            labels.insert(k.clone(), v.clone());
-        }
-
-        // Build annotations
-        let mut annotations_map: BTreeMap<String, String> = self
-            .config
-            .base_annotations
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        // Add custom annotations from Kubernetes config
-        for (k, v) in annotations {
-            annotations_map.insert(k.clone(), v.clone());
-        }
-
-        // Build environment variables
-        let mut env_vars = vec![
-            EnvVar {
-                name: "HODEI_WORKER_ID".to_string(),
-                value: Some(spec.worker_id.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "HODEI_SERVER_ADDRESS".to_string(),
-                value: Some(spec.server_address.clone()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "HODEI_WORKER_MODE".to_string(),
-                value: Some("ephemeral".to_string()),
-                ..Default::default()
-            },
-        ];
-
-        if let Some(token) = otp_token {
-            env_vars.push(EnvVar {
-                name: "HODEI_OTP_TOKEN".to_string(),
-                value: Some(token.to_string()),
-                ..Default::default()
-            });
-        }
-
-        // Add spec environment variables
-        for (k, v) in &spec.environment {
-            env_vars.push(EnvVar {
-                name: k.clone(),
-                value: Some(v.clone()),
-                ..Default::default()
-            });
-        }
-
-        // Build resource requirements
-        let mut requests = BTreeMap::new();
-        let mut limits = BTreeMap::new();
-
-        // CPU
-        let cpu_cores = spec.resources.cpu_cores;
-        let cpu_request = if cpu_cores > 0.0 {
-            format!("{}m", (cpu_cores * 1000.0) as i64)
-        } else {
-            self.config.default_cpu_request.clone()
-        };
-        let cpu_limit = if cpu_cores > 0.0 {
-            format!("{}m", (cpu_cores * 1000.0) as i64)
-        } else {
-            self.config.default_cpu_limit.clone()
-        };
-        requests.insert("cpu".to_string(), Quantity(cpu_request));
-        limits.insert("cpu".to_string(), Quantity(cpu_limit));
-
-        // Memory
-        let memory_bytes = spec.resources.memory_bytes;
-        let memory_request = if memory_bytes > 0 {
-            format!("{}Mi", memory_bytes / (1024 * 1024))
-        } else {
-            self.config.default_memory_request.clone()
-        };
-        let memory_limit = if memory_bytes > 0 {
-            format!("{}Mi", memory_bytes / (1024 * 1024))
-        } else {
-            self.config.default_memory_limit.clone()
-        };
-        requests.insert("memory".to_string(), Quantity(memory_request));
-        limits.insert("memory".to_string(), Quantity(memory_limit));
-
-        // GPU Resources
-        if spec.resources.gpu_count > 0 {
-            let gpu_resource_name = self.get_gpu_resource_name(&spec.resources.gpu_type);
-            let gpu_count = spec.resources.gpu_count.to_string();
-
-            requests.insert(gpu_resource_name.clone(), Quantity(gpu_count.clone()));
-            limits.insert(gpu_resource_name, Quantity(gpu_count));
-        }
-
-        let resources = K8sResourceRequirements {
-            claims: None,
-            requests: Some(requests),
-            limits: Some(limits),
-        };
-
-        // Build node selector (merge base with Kubernetes config)
-        let node_selector = self.build_node_selector_with_k8s_config(spec);
-
-        // Build tolerations
-        let tolerations = self.build_tolerations(spec);
-
-        // Build volumes
-        let volumes = self.build_volumes(spec);
-
-        // Build volume mounts
-        let volume_mounts = self.build_volume_mounts(spec);
-
-        // Build affinity rules
-        let affinity = self.build_affinity(spec);
-
-        // Build image pull secrets
-        let image_pull_secrets: Option<Vec<k8s_openapi::api::core::v1::LocalObjectReference>> =
-            if self.config.image_pull_secrets.is_empty() {
-                None
-            } else {
-                Some(
-                    self.config
-                        .image_pull_secrets
-                        .iter()
-                        .map(|s| k8s_openapi::api::core::v1::LocalObjectReference {
-                            name: s.clone(),
-                        })
-                        .collect(),
-                )
-            };
-
-        // Build container
-        let container = Container {
-            name: "worker".to_string(),
-            image: Some(spec.image.clone()),
-            env: Some(env_vars),
-            resources: Some(resources),
-            volume_mounts: volume_mounts,
-            security_context: self.build_security_context(),
-            image_pull_policy: Some("IfNotPresent".to_string()),
-            ..Default::default()
-        };
-
-        // Build init containers
-        let init_containers = self.build_init_containers(spec);
-
-        // Build sidecar containers
-        let sidecar_containers = self.build_sidecar_containers(spec);
-
-        // Apply TTL annotation for cleanup - clone annotations before moving
-        let final_annotations: std::collections::BTreeMap<String, String> =
-            if let Some(ttl) = self.config.ttl_seconds_after_finished {
-                let mut ttl_annotations = annotations.clone();
-                ttl_annotations.insert("hodei.io/ttl-after-finished".to_string(), ttl.to_string());
-                ttl_annotations
-            } else {
-                annotations.clone()
-            }
-            .into_iter()
-            .collect();
-
-        // Build Pod with TTL for cleanup
-        let metadata = k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            name: Some(pod_name),
-            namespace: Some(namespace.to_string()),
-            labels: Some(labels),
-            annotations: Some(final_annotations),
-            ..Default::default()
-        };
-
-        Pod {
-            metadata,
-            spec: Some(PodSpec {
-                containers: {
-                    let mut containers = Vec::new();
-                    containers.extend(sidecar_containers);
-                    containers.push(container);
-                    containers
-                },
-                init_containers: Some(init_containers),
-                restart_policy: Some("Never".to_string()),
-                active_deadline_seconds: Some(spec.max_lifetime.as_secs() as i64),
-                service_account_name: spec
-                    .kubernetes
-                    .service_account
-                    .as_ref()
-                    .cloned()
-                    .or_else(|| self.config.service_account.clone()),
-                node_selector,
-                tolerations,
-                affinity: affinity,
-                volumes,
-                image_pull_secrets,
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
+        build_result.pod
     }
 
     /// Map Kubernetes Pod phase to WorkerState (Crash-Only Design)
@@ -996,7 +743,7 @@ impl KubernetesProvider {
             .unwrap_or(false)
     }
 
-    /// Get GPU resource name based on GPU type
+    /// Get GPU resource name based on GPU type (delegated to PodSpecFactory)
     fn get_gpu_resource_name(&self, gpu_type: &Option<String>) -> String {
         match gpu_type.as_deref() {
             Some("nvidia-tesla-v100") | Some("nvidia-tesla-t4") | Some("nvidia-tesla-a100") => {
@@ -1004,368 +751,23 @@ impl KubernetesProvider {
             }
             Some("amd-mi100") | Some("amd-mi200") => "amd.com/gpu".to_string(),
             Some("intel-xe") => "intel.com/xe".to_string(),
-            // Default to nvidia.com/gpu for unknown types
             _ => "nvidia.com/gpu".to_string(),
         }
     }
 
-    /// Build node selector with Kubernetes worker config
-    fn build_node_selector_with_k8s_config(
-        &self,
-        spec: &WorkerSpec,
-    ) -> Option<BTreeMap<String, String>> {
-        let (_custom_labels, _annotations, node_selector, _service_account) =
-            get_k8s_config_labels(spec);
-        let mut selector = BTreeMap::new();
-
-        // Add base node selector from config
-        for (k, v) in &self.config.node_selector {
-            selector.insert(k.clone(), v.clone());
-        }
-
-        // Add Kubernetes-specific node selector
-        for (k, v) in node_selector {
-            selector.insert(k.clone(), v.clone());
-        }
-
-        // Add GPU-specific node selector
-        if spec.resources.gpu_count > 0 {
-            match spec.resources.gpu_type.as_deref() {
-                Some("nvidia-tesla-v100") => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-v100".to_string());
-                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
-                }
-                Some("nvidia-tesla-t4") => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
-                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
-                }
-                Some("nvidia-tesla-a100") => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-a100".to_string());
-                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
-                }
-                Some("amd-mi100") => {
-                    selector.insert("accelerator".to_string(), "amd-mi100".to_string());
-                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
-                }
-                Some("amd-mi200") => {
-                    selector.insert("accelerator".to_string(), "amd-mi200".to_string());
-                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
-                }
-                // Fallback for unknown GPU types
-                _ => {
-                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
-                }
-            }
-        }
-
-        if selector.is_empty() {
-            None
-        } else {
-            Some(selector)
-        }
-    }
-
-    /// Build tolerations with GPU requirements
-    fn build_tolerations(
-        &self,
-        spec: &WorkerSpec,
-    ) -> Option<Vec<k8s_openapi::api::core::v1::Toleration>> {
-        let mut tolerations = Vec::new();
-
-        // Add base tolerations from config
-        for t in &self.config.tolerations {
-            tolerations.push(k8s_openapi::api::core::v1::Toleration {
-                key: t.key.clone(),
-                operator: t.operator.clone(),
-                value: t.value.clone(),
-                effect: t.effect.clone(),
-                toleration_seconds: t.toleration_seconds,
-            });
-        }
-
-        // Add GPU-specific tolerations
-        if spec.resources.gpu_count > 0 {
-            tolerations.push(k8s_openapi::api::core::v1::Toleration {
-                key: Some("nvidia.com/gpu".to_string()),
-                operator: Some("Equal".to_string()),
-                value: Some("true".to_string()),
-                effect: Some("NoSchedule".to_string()),
-                toleration_seconds: None,
-            });
-        }
-
-        if tolerations.is_empty() {
-            None
-        } else {
-            Some(tolerations)
-        }
-    }
-
-    /// Build Kubernetes volumes from WorkerSpec.
-    /// Always includes a default emptyDir tmpfs volume for worker execution
-    /// (needed for /tmp, secrets, and other writable areas when rootfs is read-only).
-    fn build_volumes(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Volume>> {
-        // Always include a default emptyDir tmpfs volume for worker execution
-        let mut volumes = vec![k8s_openapi::api::core::v1::Volume {
-            name: "hodei-tmp".to_string(),
-            empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
-                medium: Some("Memory".to_string()), // tmpfs for better performance
-                size_limit: Some(k8s_openapi::apimachinery::pkg::api::resource::Quantity(
-                    "512Mi".to_string(),
-                )),
-            }),
-            ..Default::default()
-        }];
-
-        // Add volumes from spec
-        for vol_spec in &spec.volumes {
-            match vol_spec {
-                VolumeSpec::Persistent {
-                    name,
-                    claim_name,
-                    read_only: _,
-                } => {
-                    volumes.push(k8s_openapi::api::core::v1::Volume {
-                        name: name.clone(),
-                        persistent_volume_claim: Some(
-                            k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
-                                claim_name: claim_name.clone(),
-                                read_only: None,
-                            },
-                        ),
-                        ..Default::default()
-                    });
-                }
-                VolumeSpec::Ephemeral { name, size_limit } => {
-                    volumes.push(k8s_openapi::api::core::v1::Volume {
-                        name: name.clone(),
-                        empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
-                            medium: None,
-                            size_limit: size_limit.map(|s| {
-                                k8s_openapi::apimachinery::pkg::api::resource::Quantity(format!(
-                                    "{}Mi",
-                                    s / (1024 * 1024)
-                                ))
-                            }),
-                        }),
-                        ..Default::default()
-                    });
-                }
-                VolumeSpec::HostPath {
-                    name,
-                    path,
-                    read_only: _,
-                } => {
-                    volumes.push(k8s_openapi::api::core::v1::Volume {
-                        name: name.clone(),
-                        host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
-                            path: path.clone(),
-                            type_: None,
-                        }),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-
-        Some(volumes)
-    }
-
-    /// Build Kubernetes volume mounts from WorkerSpec.
-    /// Always includes a mount for the default hodei-tmp volume.
-    fn build_volume_mounts(
-        &self,
-        spec: &WorkerSpec,
-    ) -> Option<Vec<k8s_openapi::api::core::v1::VolumeMount>> {
-        // Always include mount for default tmp volume
-        let mut mounts = vec![k8s_openapi::api::core::v1::VolumeMount {
-            name: "hodei-tmp".to_string(),
-            mount_path: "/tmp".to_string(),
-            read_only: Some(false),
-            ..Default::default()
-        }];
-
-        // Add mounts for spec volumes
-        for vol_spec in &spec.volumes {
-            let (name, read_only) = match vol_spec {
-                VolumeSpec::Persistent {
-                    name,
-                    claim_name: _,
-                    read_only,
-                } => (name.clone(), *read_only),
-                VolumeSpec::Ephemeral {
-                    name,
-                    size_limit: _,
-                } => (name.clone(), false),
-                VolumeSpec::HostPath {
-                    name,
-                    path: _,
-                    read_only,
-                } => (name.clone(), *read_only),
-            };
-
-            let mount_name = name.clone();
-            mounts.push(k8s_openapi::api::core::v1::VolumeMount {
-                name,
-                mount_path: format!("/volumes/{}", mount_name),
-                read_only: Some(read_only),
-                sub_path: None,
-                sub_path_expr: None,
-                mount_propagation: None,
-                recursive_read_only: None,
-            });
-        }
-
-        Some(mounts)
-    }
-
-    /// Build Kubernetes affinity from config
-    fn build_affinity(&self, _spec: &WorkerSpec) -> Option<k8s_openapi::api::core::v1::Affinity> {
-        let mut pod_affinity_terms = Vec::new();
-        let mut pod_anti_affinity_terms = Vec::new();
-
-        // Build pod affinity terms
-        if let Some(ref affinities) = self.config.pod_affinity {
-            for affinity in affinities {
-                let label_selector = Some(
-                    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
-                        match_labels: Some(affinity.label_selector.clone()),
-                        match_expressions: None,
-                    },
-                );
-
-                let term = k8s_openapi::api::core::v1::PodAffinityTerm {
-                    label_selector,
-                    namespace_selector: None,
-                    namespaces: None,
-                    topology_key: affinity.topology_key.clone(),
-                    match_label_keys: None,
-                    mismatch_label_keys: None,
-                };
-
-                pod_affinity_terms.push(k8s_openapi::api::core::v1::WeightedPodAffinityTerm {
-                    weight: affinity.weight,
-                    pod_affinity_term: term,
-                });
-            }
-        }
-
-        // Build pod anti-affinity terms
-        if let Some(ref anti_affinities) = self.config.pod_anti_affinity {
-            for anti_affinity in anti_affinities {
-                let label_selector = Some(
-                    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
-                        match_labels: Some(anti_affinity.label_selector.clone()),
-                        match_expressions: None,
-                    },
-                );
-
-                let term = k8s_openapi::api::core::v1::PodAffinityTerm {
-                    label_selector,
-                    namespace_selector: None,
-                    namespaces: None,
-                    topology_key: anti_affinity.topology_key.clone(),
-                    match_label_keys: None,
-                    mismatch_label_keys: None,
-                };
-
-                pod_anti_affinity_terms.push(k8s_openapi::api::core::v1::WeightedPodAffinityTerm {
-                    weight: anti_affinity.weight,
-                    pod_affinity_term: term,
-                });
-            }
-        }
-
-        // Only return affinity if we have rules
-        if pod_affinity_terms.is_empty() && pod_anti_affinity_terms.is_empty() {
-            return None;
-        }
-
-        let affinity = k8s_openapi::api::core::v1::Affinity {
-            node_affinity: None, // Node affinity can be added later
-            pod_affinity: if !pod_affinity_terms.is_empty() {
-                Some(k8s_openapi::api::core::v1::PodAffinity {
-                    required_during_scheduling_ignored_during_execution: None,
-                    preferred_during_scheduling_ignored_during_execution: Some(pod_affinity_terms),
-                })
-            } else {
-                None
-            },
-            pod_anti_affinity: if !pod_anti_affinity_terms.is_empty() {
-                Some(k8s_openapi::api::core::v1::PodAntiAffinity {
-                    required_during_scheduling_ignored_during_execution: None,
-                    preferred_during_scheduling_ignored_during_execution: Some(
-                        pod_anti_affinity_terms,
-                    ),
-                })
-            } else {
-                None
-            },
-        };
-
-        Some(affinity)
-    }
-
-    /// Build Kubernetes SecurityContext from config
-    fn build_security_context(&self) -> Option<k8s_openapi::api::core::v1::SecurityContext> {
-        let sc = &self.config.security_context;
-
-        // Skip security context if using privileged mode
-        if matches!(
-            self.config.pod_security_standard,
-            PodSecurityStandard::Privileged
-        ) {
-            return None;
-        }
-
-        let mut capabilities = None;
-        if !sc.drop_capabilities.is_empty() || !sc.add_capabilities.is_empty() {
-            let mut caps = k8s_openapi::api::core::v1::Capabilities {
-                drop: None,
-                add: None,
-            };
-
-            if !sc.drop_capabilities.is_empty() {
-                caps.drop = Some(
-                    sc.drop_capabilities
-                        .iter()
-                        .map(|c| c.clone().into())
-                        .collect(),
-                );
-            }
-
-            if !sc.add_capabilities.is_empty() {
-                caps.add = Some(
-                    sc.add_capabilities
-                        .iter()
-                        .map(|c| c.clone().into())
-                        .collect(),
-                );
-            }
-
-            capabilities = Some(caps);
-        }
-
-        Some(k8s_openapi::api::core::v1::SecurityContext {
-            allow_privilege_escalation: Some(sc.allow_privilege_escalation),
-            capabilities,
-            privileged: Some(false),
-            read_only_root_filesystem: Some(sc.read_only_root_filesystem),
-            run_as_non_root: Some(sc.run_as_non_root),
-            run_as_user: sc.run_as_user,
-            run_as_group: sc.run_as_group,
-            se_linux_options: None,
-            proc_mount: None,
-            seccomp_profile: sc.seccomp_profile_type.as_ref().map(|p| {
-                k8s_openapi::api::core::v1::SeccompProfile {
-                    type_: p.clone(),
-                    localhost_profile: None,
-                }
-            }),
-            windows_options: None,
-            app_armor_profile: None,
-        })
-    }
+    // =========================================================================
+    // Legacy Pod construction methods - Now delegated to PodSpecFactory
+    // See: crates/server/infrastructure/src/providers/pod_spec_factory.rs
+    // The following methods were removed:
+    // - build_node_selector_with_k8s_config (now in PodSpecFactory::build_node_selector)
+    // - build_tolerations (now in PodSpecFactory::build_tolerations)
+    // - build_volumes (now in PodSpecFactory::build_volumes)
+    // - build_volume_mounts (now in PodSpecFactory::build_volume_mounts)
+    // - build_affinity (now in PodSpecFactory::build_affinity)
+    // - build_security_context (now in PodSpecFactory::build_security_context)
+    // - build_init_containers (now in PodSpecFactory::build_init_containers)
+    // - build_sidecar_containers (now in PodSpecFactory::build_sidecar_containers)
+    // =========================================================================
 
     /// Determine namespace for a worker based on configuration and labels
     fn get_namespace_for_worker(&self, spec: &WorkerSpec) -> String {
@@ -1985,6 +1387,8 @@ fn parse_k8s_log_line(line: &str) -> (chrono::DateTime<chrono::Utc>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::pod_spec_factory::PodSpecFactory;
+    use hodei_server_domain::workers::KubernetesContainer;
 
     #[test]
     fn test_kubernetes_config_default() {
@@ -2163,286 +1567,28 @@ mod tests {
         assert_eq!(resource_name, "nvidia.com/gpu");
     }
 
-    #[tokio::test]
-    async fn test_build_volumes_persistent() {
-        let provider = KubernetesProvider::new().await.unwrap();
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        )
-        .with_volume(VolumeSpec::Persistent {
-            name: "dataset".to_string(),
-            claim_name: "data-pvc".to_string(),
-            read_only: true,
-        });
-
-        let volumes = provider.build_volumes(&spec);
-        assert!(volumes.is_some());
-        let volumes = volumes.unwrap();
-        // 2 volumes: default hodei-tmp + dataset
-        assert_eq!(volumes.len(), 2);
-        assert_eq!(volumes[0].name, "hodei-tmp");
-        assert_eq!(volumes[1].name, "dataset");
-        assert!(volumes[1].persistent_volume_claim.is_some());
-    }
+    // =========================================================================
+    // Tests using PodSpecFactory (GAP-GO-04)
+    // Legacy build_* method tests moved to pod_spec_factory::tests
+    // =========================================================================
 
     #[tokio::test]
-    async fn test_build_volumes_ephemeral() {
-        let provider = KubernetesProvider::new().await.unwrap();
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        )
-        .with_volume(VolumeSpec::Ephemeral {
-            name: "tmp".to_string(),
-            size_limit: Some(1024 * 1024 * 1024), // 1GB
-        });
-
-        let volumes = provider.build_volumes(&spec);
-        assert!(volumes.is_some());
-        let volumes = volumes.unwrap();
-        // 2 volumes: default hodei-tmp + tmp
-        assert_eq!(volumes.len(), 2);
-        assert_eq!(volumes[0].name, "hodei-tmp");
-        assert_eq!(volumes[1].name, "tmp");
-        assert!(volumes[1].empty_dir.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_build_volumes_hostpath() {
-        let provider = KubernetesProvider::new().await.unwrap();
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        )
-        .with_volume(VolumeSpec::HostPath {
-            name: "data".to_string(),
-            path: "/mnt/data".to_string(),
-            read_only: false,
-        });
-
-        let volumes = provider.build_volumes(&spec);
-        assert!(volumes.is_some());
-        let volumes = volumes.unwrap();
-        // 2 volumes: default hodei-tmp + data
-        assert_eq!(volumes.len(), 2);
-        assert_eq!(volumes[0].name, "hodei-tmp");
-        assert_eq!(volumes[1].name, "data");
-        assert!(volumes[1].host_path.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_build_volume_mounts_persistent() {
-        let provider = KubernetesProvider::new().await.unwrap();
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        )
-        .with_volume(VolumeSpec::Persistent {
-            name: "dataset".to_string(),
-            claim_name: "data-pvc".to_string(),
-            read_only: true,
-        });
-
-        let mounts = provider.build_volume_mounts(&spec);
-        assert!(mounts.is_some());
-        let mounts = mounts.unwrap();
-        // 2 mounts: default hodei-tmp + dataset
-        assert_eq!(mounts.len(), 2);
-        assert_eq!(mounts[0].name, "hodei-tmp");
-        assert_eq!(mounts[1].name, "dataset");
-        assert_eq!(mounts[1].mount_path, "/volumes/dataset");
-        assert_eq!(mounts[1].read_only, Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_build_volume_mounts_ephemeral() {
-        let provider = KubernetesProvider::new().await.unwrap();
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        )
-        .with_volume(VolumeSpec::Ephemeral {
-            name: "tmp".to_string(),
-            size_limit: Some(1024 * 1024 * 1024),
-        });
-
-        let mounts = provider.build_volume_mounts(&spec);
-        assert!(mounts.is_some());
-        let mounts = mounts.unwrap();
-        // 2 mounts: default hodei-tmp + tmp
-        assert_eq!(mounts.len(), 2);
-        assert_eq!(mounts[0].name, "hodei-tmp");
-        assert_eq!(mounts[1].name, "tmp");
-        assert_eq!(mounts[1].mount_path, "/volumes/tmp");
-        assert_eq!(mounts[1].read_only, Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_build_volume_mounts_multiple() {
-        let provider = KubernetesProvider::new().await.unwrap();
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        )
-        .with_volume(VolumeSpec::Persistent {
-            name: "dataset".to_string(),
-            claim_name: "data-pvc".to_string(),
-            read_only: true,
-        })
-        .with_volume(VolumeSpec::Ephemeral {
-            name: "tmp".to_string(),
-            size_limit: Some(1024 * 1024 * 1024),
-        });
-
-        let mounts = provider.build_volume_mounts(&spec);
-        assert!(mounts.is_some());
-        let mounts = mounts.unwrap();
-        // 3 mounts: default hodei-tmp + dataset + tmp
-        assert_eq!(mounts.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn test_build_volumes_empty() {
+    async fn test_create_pod_spec_with_factory() {
         let provider = KubernetesProvider::new().await.unwrap();
         let spec = WorkerSpec::new(
             "alpine:latest".to_string(),
             "http://localhost:50051".to_string(),
         );
 
-        let volumes = provider.build_volumes(&spec);
-        // 1 volume: default hodei-tmp
-        assert!(volumes.is_some());
-        assert_eq!(volumes.unwrap().len(), 1);
+        let pod = provider.create_pod_spec_with_namespace(&spec, Some("test-otp"), "default");
 
-        let mounts = provider.build_volume_mounts(&spec);
-        // 1 mount: default hodei-tmp
-        assert!(mounts.is_some());
-        assert_eq!(mounts.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_build_affinity_with_pod_affinity() {
-        let mut config = KubernetesConfig::default();
-        config.pod_affinity = Some(vec![PodAffinityRule {
-            label_selector: BTreeMap::from([
-                ("app".to_string(), "hodei-worker".to_string()),
-                ("role".to_string(), "gpu".to_string()),
-            ]),
-            topology_key: "kubernetes.io/hostname".to_string(),
-            weight: 100,
-        }]);
-
-        let provider = KubernetesProvider::with_config(config).await.unwrap();
-
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        );
-
-        let affinity = provider.build_affinity(&spec);
-        assert!(affinity.is_some());
-
-        let affinity = affinity.unwrap();
-        assert!(affinity.pod_affinity.is_some());
-        assert!(affinity.pod_anti_affinity.is_none());
-
-        let pod_affinity = affinity.pod_affinity.unwrap();
-        assert!(
-            pod_affinity
-                .preferred_during_scheduling_ignored_during_execution
-                .is_some()
-        );
-        let terms = pod_affinity
-            .preferred_during_scheduling_ignored_during_execution
-            .unwrap();
-        assert_eq!(terms.len(), 1);
-        assert_eq!(terms[0].weight, 100);
-    }
-
-    #[tokio::test]
-    async fn test_build_affinity_with_pod_anti_affinity() {
-        let mut config = KubernetesConfig::default();
-        config.pod_anti_affinity = Some(vec![PodAntiAffinityRule {
-            label_selector: BTreeMap::from([("app".to_string(), "hodei-worker".to_string())]),
-            topology_key: "kubernetes.io/hostname".to_string(),
-            weight: 50,
-        }]);
-
-        let provider = KubernetesProvider::with_config(config).await.unwrap();
-
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        );
-
-        let affinity = provider.build_affinity(&spec);
-        assert!(affinity.is_some());
-
-        let affinity = affinity.unwrap();
-        assert!(affinity.pod_affinity.is_none());
-        assert!(affinity.pod_anti_affinity.is_some());
-
-        let pod_anti_affinity = affinity.pod_anti_affinity.unwrap();
-        assert!(
-            pod_anti_affinity
-                .preferred_during_scheduling_ignored_during_execution
-                .is_some()
-        );
-        let terms = pod_anti_affinity
-            .preferred_during_scheduling_ignored_during_execution
-            .unwrap();
-        assert_eq!(terms.len(), 1);
-        assert_eq!(terms[0].weight, 50);
-    }
-
-    #[tokio::test]
-    async fn test_build_affinity_with_both() {
-        let mut config = KubernetesConfig::default();
-        config.pod_affinity = Some(vec![PodAffinityRule {
-            label_selector: BTreeMap::from([("app".to_string(), "hodei-worker".to_string())]),
-            topology_key: "kubernetes.io/hostname".to_string(),
-            weight: 100,
-        }]);
-        config.pod_anti_affinity = Some(vec![PodAntiAffinityRule {
-            label_selector: BTreeMap::from([("app".to_string(), "incompatible".to_string())]),
-            topology_key: "zone".to_string(),
-            weight: 50,
-        }]);
-
-        let provider = KubernetesProvider::with_config(config).await.unwrap();
-
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        );
-
-        let affinity = provider.build_affinity(&spec);
-        assert!(affinity.is_some());
-
-        let affinity = affinity.unwrap();
-        assert!(affinity.pod_affinity.is_some());
-        assert!(affinity.pod_anti_affinity.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_build_affinity_without_rules() {
-        let config = KubernetesConfig::default();
-        let provider = KubernetesProvider::with_config(config).await.unwrap();
-
-        let spec = WorkerSpec::new(
-            "alpine:latest".to_string(),
-            "http://localhost:50051".to_string(),
-        );
-
-        let affinity = provider.build_affinity(&spec);
-        assert!(affinity.is_none());
+        assert!(pod.metadata.name.unwrap().starts_with("hodei-worker-"));
+        assert_eq!(pod.metadata.namespace, Some("default".to_string()));
+        assert!(pod.spec.is_some());
     }
 
     #[tokio::test]
     async fn test_kubernetes_job_specific_config() {
-        use hodei_server_domain::workers::KubernetesContainer;
-
         let config = KubernetesConfig::default();
         let provider = KubernetesProvider::with_config(config).await.unwrap();
 
@@ -2495,7 +1641,7 @@ mod tests {
         // Set service account
         spec = spec.with_kubernetes_service_account("custom-service-account");
 
-        // Create Pod spec
+        // Create Pod spec using factory
         let pod = provider.create_pod_spec_with_namespace(&spec, None, "default");
 
         // Verify custom annotations

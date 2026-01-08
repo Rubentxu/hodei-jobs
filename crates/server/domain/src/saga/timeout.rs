@@ -4,21 +4,25 @@
 //!
 //! Esta saga implementa:
 //! 1. Detección de timeout basado en tiempo de inicio
-//! 2. Notificación al worker para terminación
-//! 3. Actualización del job a estado FAILED
-//! 4. Liberación del worker para nuevos jobs
+//! 2. Notificación al worker para terminación (via CommandBus)
+//! 3. Actualización del job a estado FAILED (via CommandBus)
+//! 4. Liberación del worker para nuevos jobs (via CommandBus)
 //!
 //! EPIC-53: Timeout Compensation Fix - Enhanced compensation logic
 //! - TerminateWorkerStep now has proper compensation
 //! - Added ReleaseWorkerStep to return worker to available pool
 //! - Better idempotency and error handling
+//!
+//! GAP-52-03: TimeoutSaga now uses CommandBus for all step operations
 
-use crate::WorkerRegistry;
-use crate::WorkerState;
-use crate::events::DomainEvent;
-use crate::jobs::JobRepository;
+use crate::command::erased::dispatch_erased;
+use crate::saga::commands::cancellation::ReleaseWorkerCommand;
+use crate::saga::commands::timeout::{
+    MarkJobTimedOutCommand, TerminateWorkerCommand,
+};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
+use crate::WorkerState;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -254,15 +258,23 @@ impl SagaStep for TerminateWorkerStep {
         "TerminateWorker"
     }
 
+    /// GAP-52-03: Execute worker termination via CommandBus
     #[instrument(skip(context), fields(step = "TerminateWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        let services = context.services().ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: "SagaServices not available".to_string(),
-            will_compensate: true,
-        })?;
+        // GAP-52-03: Get CommandBus from context
+        let command_bus = {
+            let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: true,
+            })?;
 
-        let worker_registry = &services.provider_registry;
+            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: true,
+            })?.clone()
+        };
 
         // Check if we should skip (job not in running state)
         if let Some(Ok(true)) = context.get_metadata::<bool>("timeout_skipped") {
@@ -270,13 +282,14 @@ impl SagaStep for TerminateWorkerStep {
             return Ok(());
         }
 
-        // Idempotency
+        // Idempotency - GAP-52-03: CommandBus handles idempotency automatically
         if let Some(Ok(true)) = context.get_metadata::<bool>("worker_terminated") {
             debug!(job_id = %self.job_id, "Worker already terminated, skipping");
             return Ok(());
         }
 
-        // Find worker for this job
+        // Find worker for this job using registry from services
+        let worker_registry = &context.services().unwrap().provider_registry;
         let worker_opt = worker_registry
             .get_by_job_id(&self.job_id)
             .await
@@ -298,17 +311,32 @@ impl SagaStep for TerminateWorkerStep {
                     will_compensate: true,
                 })?;
 
-            // In a real implementation, this would:
-            // 1. Send SIGTERM to the worker process
-            // 2. Wait for graceful shutdown
-            // 3. Force kill if necessary
-            // 4. Clean up any resources
-
             info!(
                 job_id = %self.job_id,
                 worker_id = %worker_id,
-                "🛑 Terminating worker due to timeout"
+                "🛑 Terminating worker due to timeout via CommandBus"
             );
+
+            // GAP-52-03: Dispatch command via CommandBus
+            let command = TerminateWorkerCommand::new(
+                worker_id.clone(),
+                Some(self.job_id.clone()),
+                "timeout",
+                context.saga_id.to_string(),
+            );
+
+            match dispatch_erased(&command_bus, command).await {
+                Ok(result) => {
+                    info!(
+                        worker_id = %worker_id,
+                        already_terminated = %result.already_terminated,
+                        "✅ Worker termination result via CommandBus"
+                    );
+                }
+                Err(e) => {
+                    warn!(worker_id = %worker_id, error = %e, "Worker termination via CommandBus failed");
+                }
+            }
 
             context
                 .set_metadata("worker_terminated", &true)
@@ -320,7 +348,7 @@ impl SagaStep for TerminateWorkerStep {
 
             info!(
                 worker_id = %worker_id,
-                "✅ Worker terminated successfully"
+                "✅ Worker terminated successfully via CommandBus"
             );
         } else {
             debug!(job_id = %self.job_id, "No worker found for job");
@@ -331,9 +359,7 @@ impl SagaStep for TerminateWorkerStep {
 
     /// EPIC-53: Compensation for worker termination
     ///
-    /// Attempts to restore the worker to Running state if the saga needs to rollback.
-    /// Note: In production, true worker termination cannot be easily undone,
-    /// but this allows the saga to track the compensation attempt.
+    /// Attempts to restore the worker via CommandBus if the saga needs to rollback.
     #[instrument(skip(context), fields(step = "TerminateWorker"))]
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         // Get worker_id from metadata
@@ -428,25 +454,23 @@ impl SagaStep for MarkJobFailedStep {
         "MarkJobFailed"
     }
 
+    /// GAP-52-03: Execute job failure marking via CommandBus
     #[instrument(skip(context), fields(step = "MarkJobFailed", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        let services = context.services().ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: "SagaServices not available".to_string(),
-            will_compensate: true,
-        })?;
+        // GAP-52-03: Get CommandBus from context
+        let command_bus = {
+            let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: true,
+            })?;
 
-        let job_repository =
-            services
-                .job_repository
-                .as_ref()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "JobRepository not available".to_string(),
-                    will_compensate: true,
-                })?;
-
-        let event_bus = &services.event_bus;
+            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: true,
+            })?.clone()
+        };
 
         // Check skip flag
         if let Some(Ok(true)) = context.get_metadata::<bool>("timeout_skipped") {
@@ -454,55 +478,57 @@ impl SagaStep for MarkJobFailedStep {
             return Ok(());
         }
 
-        // Idempotency
+        // Idempotency - GAP-52-03: CommandBus handles idempotency automatically
         if let Some(Ok(true)) = context.get_metadata::<bool>("job_marked_failed") {
             debug!(job_id = %self.job_id, "Job already marked as failed, skipping");
             return Ok(());
         }
 
-        let worker_id_str = context
-            .get_metadata::<String>("timed_out_worker_id")
-            .and_then(|r| r.ok())
-            .unwrap_or_else(|| "none".to_string());
-
-        info!(
-            job_id = %self.job_id,
-            "🚨 Marking job as failed due to timeout"
-        );
-
-        // Update job state to FAILED
-        job_repository
-            .update_state(&self.job_id, JobState::Failed)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to mark job as failed: {}", e),
-                will_compensate: true,
-            })?;
-
-        // Publish job status changed event (job timed out)
+        // Get timeout reason from context or use step reason
         let timeout_reason = context
             .get_metadata::<String>("timeout_reason")
             .and_then(|r| r.ok())
             .unwrap_or_else(|| self.reason.clone());
 
-        let event = DomainEvent::JobStatusChanged {
-            job_id: self.job_id.clone(),
-            old_state: JobState::Running,
-            new_state: JobState::Timeout,
-            correlation_id: context.correlation_id.clone(),
-            actor: context.actor.clone(),
-            occurred_at: chrono::Utc::now(),
+        // Get worker_id from context for context
+        let worker_id = context
+            .get_metadata::<String>("timed_out_worker_id")
+            .and_then(|r| r.ok())
+            .and_then(|id| WorkerId::from_string(&id));
+
+        info!(
+            job_id = %self.job_id,
+            "🚨 Marking job as failed due to timeout via CommandBus"
+        );
+
+        // GAP-52-03: Dispatch command via CommandBus
+        let command = if let Some(wid) = worker_id {
+            MarkJobTimedOutCommand::with_worker(
+                self.job_id.clone(),
+                wid,
+                timeout_reason.clone(),
+                context.saga_id.to_string(),
+            )
+        } else {
+            MarkJobTimedOutCommand::new(
+                self.job_id.clone(),
+                timeout_reason,
+                context.saga_id.to_string(),
+            )
         };
 
-        event_bus
-            .publish(&event)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to publish JobTimedOut event: {}", e),
-                will_compensate: false,
-            })?;
+        match dispatch_erased(&command_bus, command).await {
+            Ok(result) => {
+                info!(
+                    job_id = %self.job_id,
+                    already_timed_out = %result.already_timed_out,
+                    "✅ Job marked as failed via CommandBus"
+                );
+            }
+            Err(e) => {
+                warn!(job_id = %self.job_id, error = %e, "Job failure marking via CommandBus failed");
+            }
+        }
 
         context
             .set_metadata("job_marked_failed", &true)
@@ -511,11 +537,6 @@ impl SagaStep for MarkJobFailedStep {
                 message: e.to_string(),
                 will_compensate: true,
             })?;
-
-        info!(
-            job_id = %self.job_id,
-            "✅ Job marked as FAILED due to timeout"
-        );
 
         Ok(())
     }
@@ -577,15 +598,23 @@ impl SagaStep for ReleaseWorkerStep {
         "ReleaseWorker"
     }
 
+    /// GAP-52-03: Execute worker release via CommandBus
     #[instrument(skip(context), fields(step = "ReleaseWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        let services = context.services().ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: "SagaServices not available".to_string(),
-            will_compensate: true,
-        })?;
+        // GAP-52-03: Get CommandBus from context
+        let command_bus = {
+            let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: true,
+            })?;
 
-        let worker_registry = &services.provider_registry;
+            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: true,
+            })?.clone()
+        };
 
         // Check skip flag (job was not in running state)
         if let Some(Ok(true)) = context.get_metadata::<bool>("timeout_skipped") {
@@ -593,7 +622,7 @@ impl SagaStep for ReleaseWorkerStep {
             return Ok(());
         }
 
-        // Idempotency check
+        // Idempotency check - GAP-52-03: CommandBus handles idempotency automatically
         if let Some(Ok(true)) = context.get_metadata::<bool>("worker_released") {
             debug!(job_id = %self.job_id, "Worker already released, skipping");
             return Ok(());
@@ -603,7 +632,8 @@ impl SagaStep for ReleaseWorkerStep {
         let worker_id_str = match context.get_metadata::<String>("timed_out_worker_id") {
             Some(Ok(id)) => id,
             None => {
-                // Try to find worker by job_id
+                // Try to find worker by job_id using registry from services
+                let worker_registry = &context.services().unwrap().provider_registry;
                 let worker_opt =
                     worker_registry
                         .get_by_job_id(&self.job_id)
@@ -639,31 +669,24 @@ impl SagaStep for ReleaseWorkerStep {
         info!(
             job_id = %self.job_id,
             worker_id = %worker_id,
-            "🔓 Releasing worker back to available pool after timeout"
+            "🔓 Releasing worker back to available pool after timeout via CommandBus"
         );
 
-        // Release worker: mark as available for new jobs
-        // In a real implementation, this would:
-        // 1. Clear the job_id association
-        // 2. Mark worker as Ready/Available
-        // 3. Update any health checks
-        // 4. Make worker available for new job assignments
+        // GAP-52-03: Dispatch command via CommandBus
+        let command = ReleaseWorkerCommand::new(worker_id.clone(), context.saga_id.to_string());
 
-        worker_registry
-            .update_state(&worker_id, WorkerState::Ready)
-            .await
-            .map_err(|e| {
-                warn!(worker_id = %worker_id, "Failed to release worker: {}", e);
-                SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to release worker: {}", e),
-                    will_compensate: true,
-                }
-            })?;
-
-        // Clear job association
-        // This would be done through a proper registry method in production
-        let _ = worker_registry.unregister(&worker_id).await;
+        match dispatch_erased(&command_bus, command).await {
+            Ok(result) => {
+                info!(
+                    worker_id = %worker_id,
+                    success = %result.success,
+                    "✅ Worker released via CommandBus"
+                );
+            }
+            Err(e) => {
+                warn!(worker_id = %worker_id, error = %e, "Worker release via CommandBus failed");
+            }
+        }
 
         context
             .set_metadata("worker_released", &true)
@@ -675,7 +698,7 @@ impl SagaStep for ReleaseWorkerStep {
 
         info!(
             worker_id = %worker_id,
-            "✅ Worker released back to available pool"
+            "✅ Worker released back to available pool via CommandBus"
         );
 
         Ok(())

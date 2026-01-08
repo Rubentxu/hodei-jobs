@@ -419,6 +419,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("  ✓ OutboxRelay started (Transactional Outbox Pattern enabled)");
 
+    // Start EventArchiver (Decoupled Audit Log)
+    // Archives all events from NATS to domain_events table
+    use hodei_server_infrastructure::messaging::EventArchiver;
+    let event_archiver = Arc::new(EventArchiver::new(
+        pool.clone(),
+        event_bus.clone(),
+        None, // Default config (hodei.events.>)
+    ));
+    
+    let event_archiver_clone = event_archiver.clone();
+    tokio::spawn(async move {
+        if let Err(e) = event_archiver_clone.run().await {
+            tracing::error!("EventArchiver stopped with error: {}", e);
+        }
+    });
+
+    info!("  ✓ EventArchiver started (Audit Log enabled)");
+
     // Create OutboxEventBus (wraps real bus with outbox pattern)
     // All downstream services use this for reliable event publishing
     let outbox_event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus> =

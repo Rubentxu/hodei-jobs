@@ -18,8 +18,48 @@ use std::collections::{BTreeMap, HashMap};
 
 use hodei_server_domain::workers::{WorkerSpec, VolumeSpec};
 use hodei_server_domain::shared_kernel::WorkerId;
+use super::PodSecurityStandard;
 
-/// Configuración base para construcción de PodSpecs
+/// Security Context configuration
+#[derive(Debug, Clone, Default)]
+pub struct SecurityContextConfig {
+    pub run_as_non_root: bool,
+    pub run_as_user: Option<i64>,
+    pub run_as_group: Option<i64>,
+    pub read_only_root_filesystem: bool,
+    pub allow_privilege_escalation: bool,
+    pub drop_capabilities: Vec<String>,
+    pub add_capabilities: Vec<String>,
+    pub seccomp_profile_type: Option<String>,
+}
+
+/// Pod affinity rule for scheduling
+#[derive(Debug, Clone, Default)]
+pub struct PodAffinityRule {
+    pub label_selector: BTreeMap<String, String>,
+    pub topology_key: String,
+    pub weight: i32,
+}
+
+/// Pod anti-affinity rule for scheduling
+#[derive(Debug, Clone, Default)]
+pub struct PodAntiAffinityRule {
+    pub label_selector: BTreeMap<String, String>,
+    pub topology_key: String,
+    pub weight: i32,
+}
+
+/// Kubernetes toleration for pod scheduling
+#[derive(Debug, Clone, Default)]
+pub struct KubernetesToleration {
+    pub key: Option<String>,
+    pub operator: Option<String>,
+    pub value: Option<String>,
+    pub effect: Option<String>,
+    pub toleration_seconds: Option<i64>,
+}
+
+/// Configuration for the Kubernetes Provider (subset needed by factory)
 #[derive(Debug, Clone)]
 pub struct PodSpecFactoryConfig {
     /// Labels base para todos los pods
@@ -40,10 +80,33 @@ pub struct PodSpecFactoryConfig {
     pub service_account: Option<String>,
     /// Image pull secrets
     pub image_pull_secrets: Vec<String>,
+    /// Node selector for Pod scheduling
+    pub node_selector: HashMap<String, String>,
+    /// Tolerations for Pod scheduling
+    pub tolerations: Vec<KubernetesToleration>,
+    /// Pod affinity rules for co-location
+    pub pod_affinity: Option<Vec<PodAffinityRule>>,
+    /// Pod anti-affinity rules for spread
+    pub pod_anti_affinity: Option<Vec<PodAntiAffinityRule>>,
+    /// Pod Security Standard level
+    pub pod_security_standard: PodSecurityStandard,
+    /// Security Context configuration
+    pub security_context: SecurityContextConfig,
 }
 
 impl Default for PodSpecFactoryConfig {
     fn default() -> Self {
+        let security_context = SecurityContextConfig {
+            run_as_non_root: true,
+            run_as_user: Some(1000),
+            run_as_group: Some(1000),
+            read_only_root_filesystem: true,
+            allow_privilege_escalation: false,
+            drop_capabilities: vec!["ALL".to_string()],
+            add_capabilities: Vec::new(),
+            seccomp_profile_type: Some("RuntimeDefault".to_string()),
+        };
+
         Self {
             base_labels: HashMap::new(),
             base_annotations: HashMap::new(),
@@ -54,6 +117,12 @@ impl Default for PodSpecFactoryConfig {
             ttl_seconds_after_finished: None,
             service_account: None,
             image_pull_secrets: vec![],
+            node_selector: HashMap::new(),
+            tolerations: Vec::new(),
+            pod_affinity: None,
+            pod_anti_affinity: None,
+            pod_security_standard: PodSecurityStandard::Restricted,
+            security_context,
         }
     }
 }
@@ -101,6 +170,43 @@ impl PodSpecFactory {
                 ttl_seconds_after_finished: config.ttl_seconds_after_finished.map(|t| t as i64),
                 service_account: config.service_account.clone(),
                 image_pull_secrets: config.image_pull_secrets.clone(),
+                node_selector: config.node_selector.clone(),
+                tolerations: config.tolerations.iter().map(|t| KubernetesToleration {
+                    key: t.key.clone(),
+                    operator: t.operator.clone(),
+                    value: t.value.clone(),
+                    effect: t.effect.clone(),
+                    toleration_seconds: t.toleration_seconds,
+                }).collect(),
+                pod_affinity: config.pod_affinity.as_ref().map(|affinities| {
+                    affinities.iter().map(|a| PodAffinityRule {
+                        label_selector: a.label_selector.clone(),
+                        topology_key: a.topology_key.clone(),
+                        weight: a.weight,
+                    }).collect()
+                }),
+                pod_anti_affinity: config.pod_anti_affinity.as_ref().map(|anti_affinities| {
+                    anti_affinities.iter().map(|a| PodAntiAffinityRule {
+                        label_selector: a.label_selector.clone(),
+                        topology_key: a.topology_key.clone(),
+                        weight: a.weight,
+                    }).collect()
+                }),
+                pod_security_standard: match config.pod_security_standard {
+                    PodSecurityStandard::Restricted => PodSecurityStandard::Restricted,
+                    PodSecurityStandard::Baseline => PodSecurityStandard::Baseline,
+                    PodSecurityStandard::Privileged => PodSecurityStandard::Privileged,
+                },
+                security_context: SecurityContextConfig {
+                    run_as_non_root: config.security_context.run_as_non_root,
+                    run_as_user: config.security_context.run_as_user,
+                    run_as_group: config.security_context.run_as_group,
+                    read_only_root_filesystem: config.security_context.read_only_root_filesystem,
+                    allow_privilege_escalation: config.security_context.allow_privilege_escalation,
+                    drop_capabilities: config.security_context.drop_capabilities.clone(),
+                    add_capabilities: config.security_context.add_capabilities.clone(),
+                    seccomp_profile_type: config.security_context.seccomp_profile_type.clone(),
+                },
             },
         }
     }
@@ -206,6 +312,20 @@ impl PodSpecFactory {
             labels.insert(k.clone(), v.clone());
         }
 
+        // Add custom labels from provider_config (new pattern)
+        if let Some(ref config) = spec.provider_config {
+            if let Some(k8s_config) = config.as_kubernetes() {
+                for (k, v) in &k8s_config.custom_labels {
+                    labels.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        // Fall back to deprecated spec.kubernetes.custom_labels for backwards compatibility
+        for (k, v) in &spec.kubernetes.custom_labels {
+            labels.insert(k.clone(), v.clone());
+        }
+
         labels
     }
 
@@ -217,13 +337,18 @@ impl PodSpecFactory {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        // Add custom annotations from Kubernetes config
+        // Add custom annotations from provider_config (new pattern)
         if let Some(ref config) = spec.provider_config {
             if let Some(k8s_config) = config.as_kubernetes() {
                 for (k, v) in &k8s_config.annotations {
                     annotations.insert(k.clone(), v.clone());
                 }
             }
+        }
+
+        // Fall back to deprecated spec.kubernetes.annotations for backwards compatibility
+        for (k, v) in &spec.kubernetes.annotations {
+            annotations.insert(k.clone(), v.clone());
         }
 
         annotations
@@ -309,15 +434,94 @@ impl PodSpecFactory {
         }
     }
 
-    fn build_node_selector(&self, _spec: &WorkerSpec) -> Option<BTreeMap<String, String>> {
-        // Node selector from base config only
-        // Advanced node selector would require KubernetesConfigExt extension
-        None
+    fn build_node_selector(&self, spec: &WorkerSpec) -> Option<BTreeMap<String, String>> {
+        let mut selector: BTreeMap<String, String> = BTreeMap::new();
+
+        // Add base node selector from config
+        for (k, v) in &self.config.node_selector {
+            selector.insert(k.clone(), v.clone());
+        }
+
+        // Add Kubernetes-specific node selector from provider_config (new pattern)
+        if let Some(ref config) = spec.provider_config {
+            if let Some(k8s_config) = config.as_kubernetes() {
+                for (k, v) in &k8s_config.node_selector {
+                    selector.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        // Fall back to deprecated spec.kubernetes.node_selector for backwards compatibility
+        for (k, v) in &spec.kubernetes.node_selector {
+            selector.insert(k.clone(), v.clone());
+        }
+
+        // Add GPU-specific node selector
+        if spec.resources.gpu_count > 0 {
+            match spec.resources.gpu_type.as_deref() {
+                Some("nvidia-tesla-v100") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-v100".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("nvidia-tesla-t4") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("nvidia-tesla-a100") => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-a100".to_string());
+                    selector.insert("nvidia.com/gpu".to_string(), "1".to_string());
+                }
+                Some("amd-mi100") => {
+                    selector.insert("accelerator".to_string(), "amd-mi100".to_string());
+                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
+                }
+                Some("amd-mi200") => {
+                    selector.insert("accelerator".to_string(), "amd-mi200".to_string());
+                    selector.insert("amd.com/gpu".to_string(), "1".to_string());
+                }
+                _ => {
+                    selector.insert("accelerator".to_string(), "nvidia-tesla-t4".to_string());
+                }
+            }
+        }
+
+        if selector.is_empty() {
+            None
+        } else {
+            Some(selector)
+        }
     }
 
-    fn build_tolerations(&self, _spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Toleration>> {
-        // Tolerations would require KubernetesConfigExt extension
-        None
+    fn build_tolerations(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Toleration>> {
+        let mut tolerations: Vec<k8s_openapi::api::core::v1::Toleration> = Vec::new();
+
+        // Add base tolerations from config
+        for t in &self.config.tolerations {
+            tolerations.push(k8s_openapi::api::core::v1::Toleration {
+                key: t.key.clone(),
+                operator: t.operator.clone(),
+                value: t.value.clone(),
+                effect: t.effect.clone(),
+                toleration_seconds: t.toleration_seconds,
+            });
+        }
+
+        // Add GPU-specific tolerations
+        if spec.resources.gpu_count > 0 {
+            tolerations.push(k8s_openapi::api::core::v1::Toleration {
+                key: Some("nvidia.com/gpu".to_string()),
+                operator: Some("Equal".to_string()),
+                value: Some("true".to_string()),
+                effect: Some("NoSchedule".to_string()),
+                toleration_seconds: None,
+            });
+        }
+
+        if tolerations.is_empty() {
+            None
+        } else {
+            Some(tolerations)
+        }
     }
 
     fn build_volumes(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Volume>> {
@@ -392,16 +596,141 @@ impl PodSpecFactory {
     }
 
     fn build_affinity(&self, _spec: &WorkerSpec) -> Option<k8s_openapi::api::core::v1::Affinity> {
-        // Affinity configuration would require KubernetesConfigExt extension
-        None
+        let mut pod_affinity_terms = Vec::new();
+        let mut pod_anti_affinity_terms = Vec::new();
+
+        // Build pod affinity terms from config
+        if let Some(ref affinities) = self.config.pod_affinity {
+            for affinity in affinities {
+                let label_selector = Some(
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                        match_labels: Some(affinity.label_selector.clone()),
+                        match_expressions: None,
+                    },
+                );
+
+                let term = k8s_openapi::api::core::v1::PodAffinityTerm {
+                    label_selector,
+                    namespace_selector: None,
+                    namespaces: None,
+                    topology_key: affinity.topology_key.clone(),
+                    match_label_keys: None,
+                    mismatch_label_keys: None,
+                };
+
+                pod_affinity_terms.push(k8s_openapi::api::core::v1::WeightedPodAffinityTerm {
+                    weight: affinity.weight,
+                    pod_affinity_term: term,
+                });
+            }
+        }
+
+        // Build pod anti-affinity terms from config
+        if let Some(ref anti_affinities) = self.config.pod_anti_affinity {
+            for anti_affinity in anti_affinities {
+                let label_selector = Some(
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                        match_labels: Some(anti_affinity.label_selector.clone()),
+                        match_expressions: None,
+                    },
+                );
+
+                let term = k8s_openapi::api::core::v1::PodAffinityTerm {
+                    label_selector,
+                    namespace_selector: None,
+                    namespaces: None,
+                    topology_key: anti_affinity.topology_key.clone(),
+                    match_label_keys: None,
+                    mismatch_label_keys: None,
+                };
+
+                pod_anti_affinity_terms.push(k8s_openapi::api::core::v1::WeightedPodAffinityTerm {
+                    weight: anti_affinity.weight,
+                    pod_affinity_term: term,
+                });
+            }
+        }
+
+        // Only return affinity if we have rules
+        if pod_affinity_terms.is_empty() && pod_anti_affinity_terms.is_empty() {
+            return None;
+        }
+
+        Some(k8s_openapi::api::core::v1::Affinity {
+            node_affinity: None,
+            pod_affinity: if !pod_affinity_terms.is_empty() {
+                Some(k8s_openapi::api::core::v1::PodAffinity {
+                    required_during_scheduling_ignored_during_execution: None,
+                    preferred_during_scheduling_ignored_during_execution: Some(pod_affinity_terms),
+                })
+            } else {
+                None
+            },
+            pod_anti_affinity: if !pod_anti_affinity_terms.is_empty() {
+                Some(k8s_openapi::api::core::v1::PodAntiAffinity {
+                    required_during_scheduling_ignored_during_execution: None,
+                    preferred_during_scheduling_ignored_during_execution: Some(pod_anti_affinity_terms),
+                })
+            } else {
+                None
+            },
+        })
     }
 
     fn build_security_context(&self) -> Option<k8s_openapi::api::core::v1::SecurityContext> {
+        let sc = &self.config.security_context;
+
+        // Skip security context if using privileged mode
+        if matches!(self.config.pod_security_standard, PodSecurityStandard::Privileged) {
+            return None;
+        }
+
+        let mut capabilities = None;
+        if !sc.drop_capabilities.is_empty() || !sc.add_capabilities.is_empty() {
+            let mut caps = k8s_openapi::api::core::v1::Capabilities {
+                drop: None,
+                add: None,
+            };
+
+            if !sc.drop_capabilities.is_empty() {
+                caps.drop = Some(
+                    sc.drop_capabilities
+                        .iter()
+                        .map(|c| c.clone().into())
+                        .collect(),
+                );
+            }
+
+            if !sc.add_capabilities.is_empty() {
+                caps.add = Some(
+                    sc.add_capabilities
+                        .iter()
+                        .map(|c| c.clone().into())
+                        .collect(),
+                );
+            }
+
+            capabilities = Some(caps);
+        }
+
         Some(k8s_openapi::api::core::v1::SecurityContext {
-            run_as_non_root: Some(true),
-            run_as_user: Some(1000),
-            run_as_group: Some(1000),
-            ..Default::default()
+            allow_privilege_escalation: Some(sc.allow_privilege_escalation),
+            capabilities,
+            privileged: Some(false),
+            read_only_root_filesystem: Some(sc.read_only_root_filesystem),
+            run_as_non_root: Some(sc.run_as_non_root),
+            run_as_user: sc.run_as_user,
+            run_as_group: sc.run_as_group,
+            se_linux_options: None,
+            proc_mount: None,
+            seccomp_profile: sc.seccomp_profile_type.as_ref().map(|p| {
+                k8s_openapi::api::core::v1::SeccompProfile {
+                    type_: p.clone(),
+                    localhost_profile: None,
+                }
+            }),
+            windows_options: None,
+            app_armor_profile: None,
         })
     }
 
@@ -425,14 +754,92 @@ impl PodSpecFactory {
         }
     }
 
-    fn build_init_containers(&self, _spec: &WorkerSpec) -> Vec<Container> {
-        // Init containers from config
-        vec![]
+    fn build_init_containers(&self, spec: &WorkerSpec) -> Vec<Container> {
+        spec.kubernetes
+            .init_containers
+            .iter()
+            .map(|k8s_container| self.convert_k8s_container(k8s_container))
+            .collect()
     }
 
-    fn build_sidecar_containers(&self, _spec: &WorkerSpec) -> Vec<Container> {
-        // Sidecar containers from config
-        vec![]
+    fn build_sidecar_containers(&self, spec: &WorkerSpec) -> Vec<Container> {
+        spec.kubernetes
+            .sidecar_containers
+            .iter()
+            .map(|k8s_container| self.convert_k8s_container(k8s_container))
+            .collect()
+    }
+
+    fn convert_k8s_container(&self, k8s_container: &hodei_server_domain::workers::KubernetesContainer) -> Container {
+        let env_vars: Vec<EnvVar> = k8s_container
+            .env
+            .iter()
+            .map(|(k, v)| EnvVar {
+                name: k.clone(),
+                value: Some(v.clone()),
+                ..Default::default()
+            })
+            .collect();
+
+        let volume_mounts: Vec<k8s_openapi::api::core::v1::VolumeMount> = k8s_container
+            .volume_mounts
+            .iter()
+            .map(|vm| k8s_openapi::api::core::v1::VolumeMount {
+                name: vm.name.clone(),
+                mount_path: vm.mount_path.clone(),
+                sub_path: vm.sub_path.clone(),
+                read_only: vm.read_only,
+                sub_path_expr: None,
+                mount_propagation: None,
+                recursive_read_only: None,
+            })
+            .collect();
+
+        let resources = k8s_container.resources.as_ref().map(|req| {
+            let mut requests = BTreeMap::new();
+            let mut limits = BTreeMap::new();
+
+            if req.cpu_cores > 0.0 {
+                let cpu = format!("{}m", (req.cpu_cores * 1000.0) as i64);
+                requests.insert("cpu".to_string(), Quantity(cpu.clone()));
+                limits.insert("cpu".to_string(), Quantity(cpu));
+            }
+
+            if req.memory_bytes > 0 {
+                let memory = format!("{}Mi", req.memory_bytes / (1024 * 1024));
+                requests.insert("memory".to_string(), Quantity(memory.clone()));
+                limits.insert("memory".to_string(), Quantity(memory));
+            }
+
+            K8sResourceRequirements {
+                claims: None,
+                requests: Some(requests),
+                limits: Some(limits),
+            }
+        });
+
+        Container {
+            name: k8s_container.name.clone(),
+            image: Some(k8s_container.image.clone()),
+            command: if k8s_container.command.is_empty() {
+                None
+            } else {
+                Some(k8s_container.command.clone())
+            },
+            args: if k8s_container.args.is_empty() {
+                None
+            } else {
+                Some(k8s_container.args.clone())
+            },
+            env: if env_vars.is_empty() { None } else { Some(env_vars) },
+            env_from: None,
+            ports: None,
+            resources,
+            volume_mounts: if volume_mounts.is_empty() { None } else { Some(volume_mounts) },
+            security_context: None,
+            image_pull_policy: k8s_container.image_pull_policy.clone(),
+            ..Default::default()
+        }
     }
 
     fn build_image_pull_secrets(&self) -> Option<Vec<k8s_openapi::api::core::v1::LocalObjectReference>> {

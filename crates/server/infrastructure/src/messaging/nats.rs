@@ -180,8 +180,6 @@ pub struct NatsEventBus {
     stream_prefix: String,
     /// Consumer state tracking
     state: Arc<Mutex<NatsEventBusState>>,
-    /// Database pool for domain_events persistence
-    pool: Option<Arc<PgPool>>,
 }
 
 #[derive(Debug, Default)]
@@ -302,7 +300,6 @@ impl NatsEventBus {
             config: Arc::new(config),
             stream_prefix: "HODEI".to_string(),
             state: Arc::new(Mutex::new(NatsEventBusState::default())),
-            pool,
         })
     }
 
@@ -564,17 +561,6 @@ impl EventBus for NatsEventBus {
     /// - Database persistence fails (if pool is configured)
     #[instrument(skip(self, event), fields(event_type = ?event.event_type(), aggregate_id = ?event.aggregate_id()))]
     async fn publish(&self, event: &DomainEvent) -> Result<(), EventBusError> {
-        if let Some(ref pool) = self.pool {
-            info!(
-                "[NATS-PUBLISH] Event {} - persisting to domain_events",
-                event.event_type()
-            );
-        } else {
-            warn!(
-                "[NATS-PUBLISH] Event {} - NO pool configured, skipping domain_events persistence",
-                event.event_type()
-            );
-        }
         let subject = Self::event_to_subject(event);
         let envelope = NatsMessageEnvelope::from_domain_event(event);
 
@@ -582,7 +568,7 @@ impl EventBus for NatsEventBus {
             .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
 
         // Clone payload for persistence before it's moved
-        let payload_for_persistence = payload.clone();
+        // let payload_for_persistence = payload.clone();
 
         // Ensure the stream exists before publishing
         let stream_name = self.stream_name_for_subject(&subject);
@@ -622,62 +608,11 @@ impl EventBus for NatsEventBus {
             subject
         );
 
-        // Persist event to domain_events table if pool is configured
-        if let Some(ref pool) = self.pool {
-            info!(
-                "[DOMAIN-EVENTS] Persisting event {} to database",
-                event.event_type()
-            );
-
-            let event_id = uuid::Uuid::new_v4();
-            let occurred_at = event.occurred_at();
-            let event_type = event.event_type();
-            let aggregate_id = event.aggregate_id();
-            let correlation_id = event.correlation_id();
-            let actor = event.actor();
-
-            // Convert payload to JSON Value for insertion
-            let payload_json: serde_json::Value = serde_json::from_slice(&payload_for_persistence)
-                .map_err(|e| EventBusError::SerializationError(e.to_string()))?;
-
-            match sqlx::query(
-                r#"
-                INSERT INTO domain_events
-                (id, occurred_at, event_type, aggregate_id, correlation_id, actor, payload)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                "#,
-            )
-            .bind(event_id)
-            .bind(occurred_at)
-            .bind(event_type)
-            .bind(aggregate_id)
-            .bind(correlation_id)
-            .bind(actor)
-            .bind(payload_json)
-            .execute(pool.as_ref())
-            .await
-            {
-                Ok(_) => {
-                    info!(
-                        "[DOMAIN-EVENTS] ✅ Event {} persisted (id: {})",
-                        event.event_type(),
-                        event_id
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "[DOMAIN-EVENTS] ❌ Failed to persist event {}: {}",
-                        event.event_type(),
-                        e
-                    );
-                }
-            }
-        } else {
-            warn!(
-                "[DOMAIN-EVENTS] No pool configured, skipping persistence for event {}",
-                event.event_type()
-            );
-        }
+        eprintln!(
+            "[NATS-PUBLISH] Successfully published {} to {}",
+            event.event_type(),
+            subject
+        );
 
         Ok(())
     }
