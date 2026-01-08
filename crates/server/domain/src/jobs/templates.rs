@@ -1118,6 +1118,7 @@ fn map_job_state_to_execution_status(state: &crate::shared_kernel::JobState) -> 
         crate::shared_kernel::JobState::Failed => JobExecutionStatus::Failed,
         crate::shared_kernel::JobState::Cancelled => JobExecutionStatus::Failed,
         crate::shared_kernel::JobState::Timeout => JobExecutionStatus::Failed,
+        crate::shared_kernel::JobState::ManualInterventionRequired => JobExecutionStatus::Failed,
     }
 }
 
