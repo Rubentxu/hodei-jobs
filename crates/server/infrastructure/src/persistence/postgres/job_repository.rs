@@ -49,6 +49,7 @@ impl PostgresJobRepository {
             hodei_server_domain::shared_kernel::JobState::Failed => "FAILED".to_string(),
             hodei_server_domain::shared_kernel::JobState::Cancelled => "CANCELLED".to_string(),
             hodei_server_domain::shared_kernel::JobState::Timeout => "TIMEOUT".to_string(),
+            hodei_server_domain::shared_kernel::JobState::ManualInterventionRequired => "MANUAL_INTERVENTION_REQUIRED".to_string(),
         }
     }
 
@@ -62,6 +63,7 @@ impl PostgresJobRepository {
             "FAILED" => hodei_server_domain::shared_kernel::JobState::Failed,
             "CANCELLED" => hodei_server_domain::shared_kernel::JobState::Cancelled,
             "TIMEOUT" => hodei_server_domain::shared_kernel::JobState::Timeout,
+            "MANUAL_INTERVENTION_REQUIRED" => hodei_server_domain::shared_kernel::JobState::ManualInterventionRequired,
             _ => hodei_server_domain::shared_kernel::JobState::Failed,
         }
     }
