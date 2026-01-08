@@ -17,7 +17,7 @@ use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, warn};
 
-use super::super::log_persistence::{LogStorage, LogStorageRef};
+use crate::log_persistence::{LogStorage, LogStorageRef};
 use hodei_jobs::{
     GetLogsRequest, GetLogsResponse, JobLogEntry, LogEntry, SubscribeLogsRequest,
     log_stream_service_server::LogStreamService as LogStreamServiceTrait,

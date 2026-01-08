@@ -4,6 +4,7 @@
 //! - Register RPC with OTP token authentication
 //! - WorkerStream bidirectional stream for Worker↔Server communication
 //! - Actor Model integration via WorkerSupervisorHandle (EPIC-42)
+//! - HeartbeatProcessor and LogIngestor for Single Responsibility (GAP-GO-01)
 
 use dashmap::DashMap;
 use std::pin::Pin;
@@ -23,10 +24,9 @@ use hodei_jobs::{
 
 use crate::grpc::interceptors::RequestContextExt;
 use crate::grpc::log_stream::LogStreamService;
+use crate::grpc::heartbeat_processor::{HeartbeatProcessor, WorkerSupervisorHandle};
+use crate::grpc::log_ingestor::LogIngestor;
 use chrono::Utc;
-use hodei_server_application::workers::actor::{
-    DisconnectionReason, WorkerActorState, WorkerMsg, WorkerSupervisorHandle,
-};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::iam::OtpToken;
@@ -61,8 +61,8 @@ struct InMemoryOtpState {
 /// Implementa el patrón Transactional Outbox para garantizar
 /// consistencia entre actualizaciones de estado y publicación de eventos.
 ///
-/// EPIC-42: Soporta integración con WorkerSupervisorActor para eliminar
-/// contención de bloqueos mediante message-passing.
+/// GAP-GO-01: Delega procesamiento de heartbeats a HeartbeatProcessor
+/// y procesamiento de logs a LogIngestor para Single Responsibility.
 #[derive(Clone)]
 pub struct WorkerAgentServiceImpl {
     /// Legacy in-memory worker registry (used when Actor is disabled)
@@ -84,6 +84,10 @@ pub struct WorkerAgentServiceImpl {
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
     /// Outbox Repository para patrón Transactional Outbox
     outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
+    /// GAP-GO-01: HeartbeatProcessor para procesamiento dedicado de heartbeats
+    heartbeat_processor: Option<Arc<HeartbeatProcessor>>,
+    /// GAP-GO-01: LogIngestor para procesamiento dedicado de logs
+    log_ingestor: Option<Arc<LogIngestor>>,
     /// EPIC-42: WorkerSupervisorActor handle for lock-free worker management
     /// When Some, worker operations are routed through the Actor
     supervisor_handle: Option<WorkerSupervisorHandle>,
@@ -106,11 +110,13 @@ impl WorkerAgentServiceImpl {
             log_service: None,
             event_bus: None,
             outbox_repository: None,
+            heartbeat_processor: None,
+            log_ingestor: None,
             supervisor_handle: None,
         }
     }
 
-    /// EPIC-42: Create service with WorkerSupervisorActor integration
+    /// GAP-GO-01: Create service with HeartbeatProcessor, LogIngestor, and Actor supervisor
     pub fn with_actor_supervisor(
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
@@ -119,6 +125,17 @@ impl WorkerAgentServiceImpl {
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
         supervisor_handle: WorkerSupervisorHandle,
     ) -> Self {
+        // GAP-GO-01: Create HeartbeatProcessor with dependencies
+        let heartbeat_processor = HeartbeatProcessor::new(
+            Some(worker_registry.clone()),
+            Some(event_bus.clone()),
+            None,
+        )
+        .with_supervisor_handle(supervisor_handle.clone());
+
+        // GAP-GO-01: Create LogIngestor
+        let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
+
         Self {
             workers: Arc::new(DashMap::new()),
             otp_tokens: Arc::new(DashMap::new()),
@@ -129,6 +146,8 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            heartbeat_processor: Some(Arc::new(heartbeat_processor)),
+            log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: Some(supervisor_handle),
         }
     }
@@ -157,6 +176,8 @@ impl WorkerAgentServiceImpl {
             log_service: None,
             event_bus: Some(event_bus),
             outbox_repository: None,
+            heartbeat_processor: None,
+            log_ingestor: None,
             supervisor_handle: None,
         }
     }
@@ -166,6 +187,9 @@ impl WorkerAgentServiceImpl {
         log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
+        // GAP-GO-01: Create LogIngestor with log_service
+        let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
+
         Self {
             workers: Arc::new(DashMap::new()),
             otp_tokens: Arc::new(DashMap::new()),
@@ -176,6 +200,8 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            heartbeat_processor: None,
+            log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
         }
     }
@@ -211,6 +237,9 @@ impl WorkerAgentServiceImpl {
         log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
+        // GAP-GO-01: Create LogIngestor with log_service
+        let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
+
         Self {
             workers: Arc::new(DashMap::new()),
             otp_tokens: Arc::new(DashMap::new()),
@@ -221,6 +250,8 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            heartbeat_processor: None,
+            log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
         }
     }
@@ -232,6 +263,9 @@ impl WorkerAgentServiceImpl {
         log_service: Arc<LogStreamService>,
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
+        // GAP-GO-01: Create LogIngestor with log_service
+        let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
+
         Self {
             workers: Arc::new(DashMap::new()),
             otp_tokens: Arc::new(DashMap::new()),
@@ -242,11 +276,14 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: None,
+            heartbeat_processor: None,
+            log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
         }
     }
 
     /// Full constructor with outbox repository support (production-ready)
+    /// GAP-GO-01: Also initializes HeartbeatProcessor and LogIngestor
     pub fn with_all_dependencies(
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
@@ -255,6 +292,14 @@ impl WorkerAgentServiceImpl {
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
+        // GAP-GO-01: Create HeartbeatProcessor and LogIngestor
+        let heartbeat_processor = HeartbeatProcessor::new(
+            Some(worker_registry.clone()),
+            Some(event_bus.clone()),
+            None,
+        );
+        let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
+
         Self {
             workers: Arc::new(DashMap::new()),
             otp_tokens: Arc::new(DashMap::new()),
@@ -265,6 +310,8 @@ impl WorkerAgentServiceImpl {
             log_service: Some(log_service),
             event_bus: Some(event_bus),
             outbox_repository: Some(outbox_repository),
+            heartbeat_processor: Some(Arc::new(heartbeat_processor)),
+            log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
         }
     }
@@ -892,7 +939,18 @@ impl WorkerAgentServiceImpl {
         Ok(())
     }
 
-    async fn on_worker_heartbeat(&self, worker_id: &str) -> Result<(), Status> {
+    async fn on_worker_heartbeat(&self, worker_id: &str, running_job_ids: Vec<String>) -> Result<(), Status> {
+        // GAP-GO-01: Delegate to HeartbeatProcessor if available
+        if let Some(ref processor) = self.heartbeat_processor {
+            debug!("GAP-GO-01: Routing heartbeat through HeartbeatProcessor for {}", worker_id);
+            processor
+                .process_heartbeat(worker_id, running_job_ids)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            return Ok(());
+        }
+
+        // Legacy path: direct processing
         let worker_id = Self::parse_worker_uuid(worker_id)?;
 
         // EPIC-42: Route through Actor if enabled for lock-free heartbeat processing
@@ -1361,8 +1419,9 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         };
                                         let _ = tx_clone.send(Ok(ack)).await;
 
+                                        // GAP-GO-01: Pass running_job_ids to heartbeat processor
                                         let _ =
-                                            registry_service.on_worker_heartbeat(&wid.value).await;
+                                            registry_service.on_worker_heartbeat(&wid.value, hb.running_job_ids.clone()).await;
 
                                         // EPIC-29: Publish WorkerHeartbeat event
                                         if let Some(ref event_bus) = registry_service.event_bus {
@@ -1400,29 +1459,49 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                     }
                                 }
                                 WorkerPayload::Log(log) => {
-                                    // Forward to LogStreamService for client subscribers and persistent storage
+                                    // GAP-GO-01: Delegate to LogIngestor for dedicated log processing
                                     // NOTE: Logs are NOT logged to server console to avoid scalability issues
                                     // with 100+ workers. Logs are streamed to clients and persisted to storage.
-                                    if let Some(ref svc) = log_service {
-                                        let entry = LogEntry {
-                                            job_id: log.job_id,
-                                            line: log.line,
-                                            is_stderr: log.is_stderr,
-                                            timestamp: log.timestamp,
-                                        };
+                                    let entry = LogEntry {
+                                        job_id: log.job_id.clone(),
+                                        line: log.line,
+                                        is_stderr: log.is_stderr,
+                                        timestamp: log.timestamp,
+                                    };
+
+                                    if let Some(ref ingestor) = registry_service.log_ingestor {
+                                        let _ = ingestor.ingest_log(entry).await;
+                                    } else if let Some(ref svc) = log_service {
                                         svc.append_log(entry).await;
                                     }
                                 }
                                 WorkerPayload::LogBatch(batch) => {
-                                    // Process batched logs efficiently
+                                    // GAP-GO-01: Delegate to LogIngestor for efficient batch processing
                                     info!(
                                         "Received log batch for job {}: {} entries",
                                         batch.job_id,
                                         batch.entries.len()
                                     );
 
-                                    // Forward to LogStreamService for client subscribers
-                                    if let Some(ref svc) = log_service {
+                                    // GAP-GO-01: Use LogIngestor for efficient batch processing
+                                    if let Some(ref ingestor) = registry_service.log_ingestor {
+                                        // Convert proto entries to LogEntry
+                                        let entries: Vec<LogEntry> = batch
+                                            .entries
+                                            .into_iter()
+                                            .map(|e| LogEntry {
+                                                job_id: e.job_id,
+                                                line: e.line,
+                                                is_stderr: e.is_stderr,
+                                                timestamp: e.timestamp,
+                                            })
+                                            .collect();
+                                        let batch = crate::grpc::log_ingestor::LogBatch::new(
+                                            batch.job_id,
+                                            entries,
+                                        );
+                                        let _ = ingestor.ingest_log_batch(batch).await;
+                                    } else if let Some(ref svc) = log_service {
                                         for entry in batch.entries {
                                             let log_entry = LogEntry {
                                                 job_id: entry.job_id,
@@ -1448,8 +1527,30 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         }
                                     }
 
-                                    // Finalize and persist log file for completed job
-                                    if let Some(ref svc) = log_service {
+                                    // GAP-GO-01: Finalize logs using LogIngestor or legacy path
+                                    if let Some(ref ingestor) = registry_service.log_ingestor {
+                                        match ingestor.finalize_job_logs(&result.job_id).await {
+                                            Ok(result) => {
+                                                if result.persisted {
+                                                    info!(
+                                                        "✅ Job {} log finalized and persisted: {} bytes",
+                                                        result.job_id, result.size_bytes
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "✅ Job {} completed (no persistent log)",
+                                                        result.job_id
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "⚠️ Failed to finalize log for job {}: {}",
+                                                    result.job_id, e
+                                                );
+                                            }
+                                        }
+                                    } else if let Some(ref svc) = log_service {
                                         match svc.finalize_job_log(&result.job_id).await {
                                             Ok(Some(log_ref)) => {
                                                 info!(
