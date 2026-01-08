@@ -1380,7 +1380,7 @@ mod tests {
         WorkerMetrics, WorkerProvisioning,
     };
     use std::collections::HashMap as StdHashMap;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, RwLock};
     use tokio::sync::RwLock as TokioRwLock;
 
     fn create_test_worker() -> Worker {
@@ -1933,7 +1933,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
         let _manager =
@@ -1945,7 +1945,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
         let manager =
