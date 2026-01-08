@@ -85,6 +85,26 @@ impl PodSpecFactory {
         }
     }
 
+    /// Crear PodSpecFactory desde KubernetesConfig
+    ///
+    /// Este método permite reutilizar la configuración del provider
+    /// para construir PodSpecs de forma consistente.
+    pub fn from_kubernetes_config(config: &super::KubernetesConfig) -> Self {
+        Self {
+            config: PodSpecFactoryConfig {
+                base_labels: config.base_labels.clone(),
+                base_annotations: config.base_annotations.clone(),
+                default_cpu_request: config.default_cpu_request.clone(),
+                default_cpu_limit: config.default_cpu_limit.clone(),
+                default_memory_request: config.default_memory_request.clone(),
+                default_memory_limit: config.default_memory_limit.clone(),
+                ttl_seconds_after_finished: config.ttl_seconds_after_finished.map(|t| t as i64),
+                service_account: config.service_account.clone(),
+                image_pull_secrets: config.image_pull_secrets.clone(),
+            },
+        }
+    }
+
     /// Construir un Pod completo desde WorkerSpec
     pub fn build_pod(
         &self,
@@ -163,6 +183,11 @@ impl PodSpecFactory {
     }
 
     fn pod_name(&self, worker_id: &WorkerId) -> String {
+        format!("hodei-worker-{}", worker_id)
+    }
+
+    /// Generate pod name (public for use by KubernetesProvider)
+    pub fn generate_pod_name(worker_id: &WorkerId) -> String {
         format!("hodei-worker-{}", worker_id)
     }
 

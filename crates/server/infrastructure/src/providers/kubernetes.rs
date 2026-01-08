@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::providers::metrics_collector::ProviderMetricsCollector;
+use crate::providers::pod_spec_factory::PodSpecFactory;
 use hodei_server_domain::{
     shared_kernel::{DomainError, ProviderId, Result, WorkerId, WorkerState},
     workers::{
@@ -596,6 +597,8 @@ pub struct KubernetesProvider {
     capabilities: ProviderCapabilities,
     /// Metrics collector for performance tracking
     metrics_collector: ProviderMetricsCollector,
+    /// PodSpec factory for creating Pod specs (GAP-GO-04)
+    pod_spec_factory: PodSpecFactory,
 }
 
 impl KubernetesProvider {
@@ -611,6 +614,7 @@ impl KubernetesProvider {
         let capabilities = Self::default_capabilities();
         let provider_id = ProviderId::new();
         let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
+        let pod_spec_factory = PodSpecFactory::from_kubernetes_config(&config);
 
         Ok(Self {
             provider_id,
@@ -618,6 +622,7 @@ impl KubernetesProvider {
             config,
             capabilities,
             metrics_collector,
+            pod_spec_factory,
         })
     }
 
@@ -629,6 +634,7 @@ impl KubernetesProvider {
         let client = Self::create_client(&config).await?;
         let capabilities = Self::default_capabilities();
         let metrics_collector = ProviderMetricsCollector::new(provider_id.clone());
+        let pod_spec_factory = PodSpecFactory::from_kubernetes_config(&config);
 
         Ok(Self {
             provider_id,
@@ -636,6 +642,7 @@ impl KubernetesProvider {
             config,
             capabilities,
             metrics_collector,
+            pod_spec_factory,
         })
     }
 
@@ -1641,7 +1648,7 @@ impl WorkerLifecycle for KubernetesProvider {
         }
 
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &namespace);
-        let pod_name = Self::pod_name(&worker_id);
+        let pod_name = PodSpecFactory::generate_pod_name(&worker_id);
 
         // Check if Pod already exists
         if pods
@@ -1661,8 +1668,14 @@ impl WorkerLifecycle for KubernetesProvider {
         // Get OTP token from spec environment if present
         let otp_token = spec.environment.get("HODEI_OTP_TOKEN").map(|s| s.as_str());
 
-        // Create Pod spec
-        let pod = self.create_pod_spec_with_namespace(spec, otp_token, &namespace);
+        // Create Pod spec using PodSpecFactory (GAP-GO-04)
+        let build_result = self.pod_spec_factory.build_pod(
+            spec,
+            otp_token,
+            &namespace,
+            &self.provider_id.to_string(),
+        );
+        let pod = build_result.pod;
 
         // Create Pod
         let created_pod = pods
