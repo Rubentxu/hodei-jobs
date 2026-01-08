@@ -3,6 +3,10 @@
 //! This module defines the fundamental types for orchestrating complex workflows
 //! with automatic compensation (rollback) capabilities.
 
+// ============================================================================
+// Imports
+// ============================================================================
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -598,17 +602,7 @@ impl SagaContext {
 /// persisted with the saga context.
 ///
 /// EPIC-46 GAP-20: Extended with additional services for complete saga support.
-///
-/// # Example
-///
-/// ```ignore
-/// let services = SagaServices::new(
-///     provider_registry,
-///     event_bus,
-///     Some(job_repository),
-///     Some(provisioning_service),  // Optional - only for provisioning sagas
-/// );
-/// ```
+/// EPIC-50: Added CommandBus for saga command dispatch (Type Erasure pattern)
 pub struct SagaServices {
     /// Provider registry for infrastructure operations
     pub provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
@@ -624,6 +618,13 @@ pub struct SagaServices {
     pub provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
     /// EPIC-46 GAP-20: Saga orchestrator for nested saga execution
     pub orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
+    /// EPIC-50: Type-erased CommandBus for dispatching commands from saga steps
+    ///
+    /// Uses the ErasedCommandBus trait with Arc<dyn ErasedCommandBus> to avoid
+    /// the E0038 error (trait not dyn compatible due to generic methods).
+    /// Commands are dispatched using the dispatch_erased function which handles
+    /// the type erasure internally.
+    pub command_bus: Option<crate::command::DynCommandBus>,
 }
 
 impl SagaServices {
@@ -640,7 +641,8 @@ impl SagaServices {
             event_bus,
             job_repository,
             provisioning_service,
-            orchestrator: None, // EPIC-46 GAP-20: Default to None for backward compatibility
+            orchestrator: None,
+            command_bus: None,
         }
     }
 
@@ -660,6 +662,30 @@ impl SagaServices {
             job_repository,
             provisioning_service,
             orchestrator,
+            command_bus: None,
+        }
+    }
+
+    /// Creates a new SagaServices instance with command bus support (EPIC-50).
+    ///
+    /// This constructor includes the type-erased CommandBus for dispatching
+    /// commands from saga steps.
+    #[inline]
+    pub fn with_command_bus(
+        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
+        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
+        orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
+        command_bus: crate::command::DynCommandBus,
+    ) -> Self {
+        Self {
+            provider_registry,
+            event_bus,
+            job_repository,
+            provisioning_service,
+            orchestrator,
+            command_bus: Some(command_bus),
         }
     }
 
@@ -686,6 +712,18 @@ impl SagaServices {
     #[inline]
     pub fn has_orchestrator(&self) -> bool {
         self.orchestrator.is_some()
+    }
+
+    /// Returns true if a command bus is available (EPIC-50).
+    #[inline]
+    pub fn has_command_bus(&self) -> bool {
+        self.command_bus.is_some()
+    }
+
+    /// Gets a reference to the command bus, if available (EPIC-50).
+    #[inline]
+    pub fn command_bus(&self) -> Option<&crate::command::DynCommandBus> {
+        self.command_bus.as_ref()
     }
 }
 
