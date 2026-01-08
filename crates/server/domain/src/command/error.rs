@@ -19,7 +19,16 @@ pub enum CommandError {
     #[error("Handler not found for command type: {command_type}")]
     HandlerNotFound {
         /// The command type that had no handler
-        command_type: &'static str,
+        command_type: String,
+    },
+
+    /// Handler execution returned an error
+    #[error("Handler error for {command_type}: {error}")]
+    HandlerError {
+        /// The command type that had the error
+        command_type: String,
+        /// The error message
+        error: String,
     },
 
     /// Command validation failed
@@ -47,7 +56,7 @@ pub enum CommandError {
     #[error("Handler panicked during command execution: {command_type}")]
     HandlerPanicked {
         /// The command type that caused the panic
-        command_type: &'static str,
+        command_type: String,
     },
 
     /// Channel closed (bus shutdown)
@@ -83,11 +92,29 @@ pub enum CommandError {
         /// Human-readable error message
         message: String,
     },
+
+    /// Type mismatch during command dispatch (internal error)
+    #[error("Type mismatch: expected {expected}, got {actual}")]
+    TypeMismatch {
+        /// Expected type name
+        expected: String,
+        /// Actual type name
+        actual: String,
+    },
+
+    /// Outbox operation error
+    #[error("Outbox error for {command_type}: {error}")]
+    OutboxError {
+        /// The command type that had the error
+        command_type: String,
+        /// The error message
+        error: String,
+    },
 }
 
 impl CommandError {
     /// Get the command type name for HandlerNotFound errors
-    pub fn command_type(&self) -> Option<&'static str> {
+    pub fn command_type(&self) -> Option<&String> {
         match self {
             Self::HandlerNotFound { command_type } => Some(command_type),
             Self::HandlerPanicked { command_type } => Some(command_type),
@@ -107,6 +134,15 @@ impl CommandError {
             Self::Timeout { .. } => true,
             Self::ChannelClosed => true,
             Self::Transient { .. } => true,
+            Self::HandlerError { error, .. } => {
+                // Check if the error message indicates a transient issue
+                let lower = error.to_lowercase();
+                lower.contains("timeout")
+                    || lower.contains("connection")
+                    || lower.contains("temporary")
+                    || lower.contains("busy")
+                    || lower.contains("unavailable")
+            }
             Self::ExecutionFailed { message } => {
                 // Check if the error message indicates a transient issue
                 let lower = message.to_lowercase();

@@ -113,17 +113,28 @@ pub trait CommandBus: Debug + Send + Sync {
 // Re-export submodules
 pub mod bus;
 pub mod error;
+pub mod erased;
 pub mod handler;
+pub mod jobs;
 pub mod middleware;
 pub mod outbox;
 pub mod registry;
 
 pub use bus::{CommandBusConfig, InMemoryCommandBus};
+pub use erased::{
+    DynCommandBus, ErasedCommandBus, ErasedCommandBusExt, InMemoryErasedCommandBus,
+    dispatch_erased,
+};
 pub use error::{CommandError, CommandResult};
 pub use handler::HandlerBox;
+pub use jobs::{
+    MarkJobFailedCommand, MarkJobFailedError, MarkJobFailedHandler, ResumeFromManualInterventionCommand,
+    ResumeFromManualInterventionError, ResumeFromManualInterventionHandler,
+};
 pub use middleware::{LoggingLayer, RetryLayer, TelemetryLayer};
 pub use outbox::{
-    CommandOutboxRecord, CommandOutboxRelay, CommandOutboxRepository, CommandOutboxStats,
-    CommandOutboxStatus,
+    CommandOutboxError, CommandOutboxInsert, CommandOutboxRecord, CommandOutboxRelay,
+    CommandOutboxRepository, CommandOutboxStats, CommandOutboxStatus, CommandTargetType,
+    OutboxCommandBus, OutboxCommandBusExt,
 };
 pub use registry::{HandlerRegistry, InMemoryHandlerStorage};
