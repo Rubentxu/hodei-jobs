@@ -7,6 +7,7 @@ use crate::{
     scheduling::smart_scheduler::{SchedulerConfig, SchedulingService},
     workers::lifecycle::{WorkerLifecycleConfig, WorkerLifecycleManager},
 };
+use dashmap::DashMap;
 use hodei_server_domain::{
     event_bus::EventBus,
     jobs::{Job, JobQueue, JobRepository},
@@ -18,7 +19,6 @@ use hodei_server_domain::{
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Job Orchestrator - Coordina la ejecución de jobs
@@ -28,7 +28,7 @@ pub struct JobOrchestrator {
     registry: Arc<dyn WorkerRegistry>,
     job_repository: Arc<dyn JobRepository>,
     job_queue: Arc<dyn JobQueue>,
-    providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+    providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
     default_worker_spec: WorkerSpec,
 }
 
@@ -47,7 +47,7 @@ impl JobOrchestrator {
             "http://localhost:50051".to_string(),
         );
 
-        let providers = Arc::new(RwLock::new(HashMap::new()));
+        let providers = Arc::new(DashMap::new());
 
         Self {
             scheduler: SchedulingService::new(scheduler_config),
@@ -74,7 +74,7 @@ impl JobOrchestrator {
         self.lifecycle_manager
             .register_provider(provider.clone())
             .await;
-        self.providers.write().await.insert(provider_id, provider);
+        self.providers.insert(provider_id, provider);
     }
 
     /// Submit a job for execution
@@ -119,10 +119,11 @@ impl JobOrchestrator {
         let pending_jobs_count = self.job_queue.len().await?;
         let stats = self.registry.stats().await?;
 
-        let providers = self.providers.read().await;
         let mut available_providers = Vec::new();
 
-        for (provider_id, provider) in providers.iter() {
+        for entry in self.providers.iter() {
+            let provider_id = entry.key();
+            let provider = entry.value();
             let health = provider.health_check().await;
             let _health_score = match health {
                 Ok(hodei_server_domain::workers::HealthStatus::Healthy) => 1.0,
@@ -304,7 +305,7 @@ impl JobOrchestrator {
     pub async fn stats(&self) -> anyhow::Result<OrchestratorStats> {
         let registry_stats = self.registry.stats().await?;
         let queue_depth = self.job_queue.len().await?;
-        let provider_count = self.providers.read().await.len();
+        let provider_count = self.providers.len();
 
         Ok(OrchestratorStats {
             registry_stats,

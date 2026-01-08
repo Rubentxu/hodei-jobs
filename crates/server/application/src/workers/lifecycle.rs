@@ -30,8 +30,8 @@ use hodei_server_domain::{
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
 use hodei_shared::event_topics::worker_topics;
+use dashmap::DashMap;
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Configuration for Worker Lifecycle Manager
@@ -84,7 +84,7 @@ impl Default for WorkerLifecycleConfig {
 #[derive(Clone)]
 pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
-    providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+    providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
     config: WorkerLifecycleConfig,
     event_bus: Arc<dyn EventBus>,
     /// Mandatory outbox repository for transactional event publishing
@@ -99,7 +99,7 @@ pub struct WorkerLifecycleManager {
 impl WorkerLifecycleManager {
     pub fn new(
         registry: Arc<dyn WorkerRegistry>,
-        providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+        providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
         config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
@@ -151,13 +151,13 @@ impl WorkerLifecycleManager {
     pub async fn register_provider(&self, provider: Arc<dyn WorkerProvider>) {
         let provider_id = provider.provider_id().clone();
         info!("Registering provider: {}", provider_id);
-        self.providers.write().await.insert(provider_id, provider);
+        self.providers.insert(provider_id, provider);
     }
 
     /// Unregister a provider
     pub async fn unregister_provider(&self, provider_id: &ProviderId) {
         info!("Unregistering provider: {}", provider_id);
-        self.providers.write().await.remove(provider_id);
+        self.providers.remove(provider_id);
     }
 
     /// Process heartbeat from a worker
@@ -678,13 +678,11 @@ impl WorkerLifecycleManager {
 
     /// Destroy a worker via its provider with retry logic (FIX: Prevents orphaned containers)
     async fn destroy_worker_via_provider(&self, worker: &Worker) -> Result<()> {
-        let providers = self.providers.read().await;
-        let provider =
-            providers
-                .get(worker.provider_id())
-                .ok_or_else(|| DomainError::ProviderNotFound {
-                    provider_id: worker.provider_id().clone(),
-                })?;
+        let provider = self.providers.get(worker.provider_id()).ok_or_else(|| {
+            DomainError::ProviderNotFound {
+                provider_id: worker.provider_id().clone(),
+            }
+        })?;
 
         // Retry with exponential backoff for transient failures
         let max_retries = 3;
@@ -782,9 +780,9 @@ impl WorkerLifecycleManager {
     /// Start monitoring events from all registered providers AND domain events
     /// This enables reactive worker cleanup based on domain events
     pub async fn start_event_monitoring(&self) {
-        let providers = self.providers.read().await;
+        let providers: Vec<_> = self.providers.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
 
-        for (id, provider) in providers.iter() {
+        for (id, provider) in providers {
             let provider = provider.clone();
             let manager = self.clone();
             let provider_id = id.clone();
@@ -1091,54 +1089,58 @@ impl WorkerLifecycleManager {
 
         info!("🔍 Starting orphan worker detection...");
 
-        let providers = self.providers.read().await;
-        let provider_ids: Vec<ProviderId> = providers.keys().cloned().collect();
+        let providers = self.providers.iter();
+        let provider_ids: Vec<ProviderId> = providers.map(|e| e.key().clone()).collect();
 
         for provider_id in provider_ids {
-            if let Some(provider) = providers.get(&provider_id) {
-                match self
-                    .detect_orphans_for_provider(provider, provider_id.clone())
-                    .await
-                {
-                    Ok(orphans) => {
-                        result.providers_scanned += 1;
-                        result.orphans_detected += orphans.len();
+            // Get provider reference for this iteration
+            let provider = match self.providers.get(&provider_id) {
+                Some(p) => p.value().clone(),
+                None => continue,
+            };
 
-                        // Destroy each orphan
-                        for orphan in orphans {
+            match self
+                .detect_orphans_for_provider(&provider, provider_id.clone())
+                .await
+            {
+                Ok(orphans) => {
+                    result.providers_scanned += 1;
+                    result.orphans_detected += orphans.len();
+
+                    // Destroy each orphan
+                    for orphan in orphans {
+                        info!(
+                            "🗑️ Destroying orphan worker {} from provider {}",
+                            orphan.provider_resource_id, provider_id
+                        );
+
+                        // Emit OrphanWorkerDetected event
+                        self.emit_orphan_detected(&orphan, &provider_id).await;
+
+                        if let Err(e) = provider
+                            .destroy_worker_by_id(&orphan.provider_resource_id)
+                            .await
+                        {
+                            warn!(
+                                "Failed to destroy orphan {} from provider {}: {}",
+                                orphan.provider_resource_id, provider_id, e
+                            );
+                            result.errors += 1;
+                        } else {
+                            result.orphans_cleaned += 1;
                             info!(
-                                "🗑️ Destroying orphan worker {} from provider {}",
+                                "✅ Orphan worker {} destroyed from provider {}",
                                 orphan.provider_resource_id, provider_id
                             );
-
-                            // Emit OrphanWorkerDetected event
-                            self.emit_orphan_detected(&orphan, &provider_id).await;
-
-                            if let Err(e) = provider
-                                .destroy_worker_by_id(&orphan.provider_resource_id)
-                                .await
-                            {
-                                warn!(
-                                    "Failed to destroy orphan {} from provider {}: {}",
-                                    orphan.provider_resource_id, provider_id, e
-                                );
-                                result.errors += 1;
-                            } else {
-                                result.orphans_cleaned += 1;
-                                info!(
-                                    "✅ Orphan worker {} destroyed from provider {}",
-                                    orphan.provider_resource_id, provider_id
-                                );
-                            }
                         }
                     }
-                    Err(e) => {
-                        warn!(
-                            "Failed to detect orphans for provider {}: {}",
-                            provider_id, e
-                        );
-                        result.errors += 1;
-                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to detect orphans for provider {}: {}",
+                        provider_id, e
+                    );
+                    result.errors += 1;
                 }
             }
         }
@@ -1249,10 +1251,8 @@ impl WorkerLifecycleManager {
         // Get provider IDs scanned
         let provider_ids: Vec<String> = self
             .providers
-            .read()
-            .await
-            .keys()
-            .map(|p| p.0.to_string())
+            .iter()
+            .map(|e| e.key().0.to_string())
             .collect();
 
         // Generate a unique ID for this GC event
@@ -1970,12 +1970,12 @@ mod tests {
             ..Default::default()
         };
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = Arc::new(DashMap::new());
 
         // Registrar un mock provider para evitar errores en destroy_worker_via_provider
         let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
         let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
-        providers.write().await.insert(
+        providers.insert(
             provider_id.clone(),
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
@@ -2086,12 +2086,12 @@ mod tests {
             ..Default::default()
         };
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = Arc::new(DashMap::new());
 
         // Registrar un mock provider
         let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
         let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
-        providers.write().await.insert(
+        providers.insert(
             provider_id.clone(),
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
@@ -2159,12 +2159,12 @@ mod tests {
             ..Default::default()
         };
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = Arc::new(DashMap::new());
 
         // Registrar un mock provider
         let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
         let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
-        providers.write().await.insert(
+        providers.insert(
             provider_id.clone(),
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
@@ -2559,12 +2559,12 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = Arc::new(DashMap::new());
 
         // Registrar un mock provider
         let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
         let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
-        providers.write().await.insert(
+        providers.insert(
             provider_id.clone(),
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
@@ -2616,12 +2616,12 @@ mod tests {
             ..Default::default()
         };
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = Arc::new(DashMap::new());
 
         // Registrar un mock provider
         let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
         let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
-        providers.write().await.insert(
+        providers.insert(
             provider_id.clone(),
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );

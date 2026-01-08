@@ -2,12 +2,12 @@
 //!
 //! Concrete implementation that uses WorkerLifecycleManager and OTP token store.
 
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use hodei_server_domain::iam::WorkerBootstrapTokenStore;
@@ -71,7 +71,7 @@ pub struct DefaultWorkerProvisioningService {
     /// OTP token store for authentication
     token_store: Arc<dyn WorkerBootstrapTokenStore>,
     /// Available providers
-    providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+    providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
     /// Configuration
     config: ProvisioningConfig,
 }
@@ -80,7 +80,7 @@ impl DefaultWorkerProvisioningService {
     pub fn new(
         registry: Arc<dyn WorkerRegistry>,
         token_store: Arc<dyn WorkerBootstrapTokenStore>,
-        providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+        providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
         config: ProvisioningConfig,
     ) -> Self {
         Self {
@@ -93,13 +93,12 @@ impl DefaultWorkerProvisioningService {
 
     /// Get provider by ID
     async fn get_provider(&self, provider_id: &ProviderId) -> Result<Arc<dyn WorkerProvider>> {
-        let providers = self.providers.read().await;
-        providers
+        self.providers
             .get(provider_id)
-            .cloned()
             .ok_or_else(|| DomainError::ProviderNotFound {
                 provider_id: provider_id.clone(),
             })
+            .map(|p| p.value().clone())
     }
 }
 
@@ -184,14 +183,12 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
     }
 
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
-        let providers = self.providers.read().await;
-
-        let Some(provider) = providers.get(provider_id) else {
+        let Some(provider) = self.providers.get(provider_id) else {
             return Ok(false);
         };
 
         // Check health
-        match provider.health_check().await {
+        match provider.value().health_check().await {
             Ok(hodei_server_domain::workers::HealthStatus::Healthy) => Ok(true),
             Ok(hodei_server_domain::workers::HealthStatus::Degraded { reason }) => {
                 warn!("Provider {} is degraded: {}", provider_id, reason);
@@ -213,8 +210,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
     }
 
     async fn list_providers(&self) -> Result<Vec<ProviderId>> {
-        let providers = self.providers.read().await;
-        Ok(providers.keys().cloned().collect())
+        Ok(self.providers.iter().map(|p| p.key().clone()).collect())
     }
 
     async fn get_provider_config(
