@@ -2,8 +2,14 @@
 //!
 //! Coordinates worker provisioning using the saga pattern with automatic compensation.
 
+use hodei_server_domain::command::{
+    DynCommandBus, ErasedCommandBus, InMemoryErasedCommandBus,
+};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::saga::commands::provisioning::{
+    CreateWorkerCommand, CreateWorkerHandler, DestroyWorkerCommand, DestroyWorkerHandler,
+};
 use hodei_server_domain::saga::{
     ProvisioningSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaServices,
 };
@@ -60,10 +66,12 @@ pub struct DynProvisioningSagaCoordinator {
     event_bus: Arc<dyn EventBus + Send + Sync>,
     /// Optional job repository for SagaServices injection
     job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+    /// CommandBus for saga steps (FIX GAP-60-01: Critical - must be injected)
+    command_bus: DynCommandBus,
 }
 
 impl DynProvisioningSagaCoordinator {
-    /// Create a new DynProvisioningSagaCoordinator
+    /// Create a new DynProvisioningSagaCoordinator with CommandBus
     ///
     /// # Arguments
     /// * `orchestrator` - The saga orchestrator to use
@@ -71,6 +79,7 @@ impl DynProvisioningSagaCoordinator {
     /// * `worker_registry` - Worker registry for saga services
     /// * `event_bus` - Event bus for saga services
     /// * `job_repository` - Optional job repository for saga services
+    /// * `command_bus` - CommandBus for saga command dispatch (GAP-60-01 fix)
     /// * `config` - Optional configuration
     pub fn new(
         orchestrator: Arc<
@@ -82,6 +91,7 @@ impl DynProvisioningSagaCoordinator {
         worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
         job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+        command_bus: DynCommandBus,
         config: Option<ProvisioningSagaCoordinatorConfig>,
     ) -> Self {
         Self {
@@ -91,7 +101,13 @@ impl DynProvisioningSagaCoordinator {
             worker_registry,
             event_bus,
             job_repository,
+            command_bus,
         }
+    }
+
+    /// Create a new builder for DynProvisioningSagaCoordinator
+    pub fn builder() -> DynProvisioningSagaCoordinatorBuilder {
+        DynProvisioningSagaCoordinatorBuilder::new()
     }
 
     #[instrument(skip(self), fields(provider_id = %provider_id, job_id = ?job_id), ret)]
@@ -113,18 +129,20 @@ impl DynProvisioningSagaCoordinator {
         );
 
         // EPIC-45 FIX: Inject SagaServices into context for CreateInfrastructureStep
-        // The provisioning_service needs to be converted to WorkerProvisioning trait
+        // GAP-60-01 FIX: Use with_command_bus to inject the CommandBus
         let provisioning_as_worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
             self.provisioning_service.clone();
 
-        let services = SagaServices::new(
+        let services = SagaServices::with_command_bus(
             self.worker_registry.clone(),
             self.event_bus.clone(),
             self.job_repository.clone(),
             Some(provisioning_as_worker_provisioning),
+            None, // orchestrator
+            self.command_bus.clone(),
         );
         context = context.with_services(Arc::new(services));
-        info!(provider_id = %provider_id, "✅ SagaServices injected into context");
+        info!(provider_id = %provider_id, "✅ SagaServices with CommandBus injected into context");
 
         context
             .set_metadata("provider_id", &provider_id.to_string())
@@ -223,6 +241,8 @@ pub struct DynProvisioningSagaCoordinatorBuilder {
     worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
     event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
     job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+    /// CommandBus for saga steps (GAP-60-01 fix)
+    command_bus: Option<DynCommandBus>,
     config: Option<ProvisioningSagaCoordinatorConfig>,
 }
 
@@ -234,6 +254,7 @@ impl DynProvisioningSagaCoordinatorBuilder {
             worker_registry: None,
             event_bus: None,
             job_repository: None,
+            command_bus: None,
             config: None,
         }
     }
@@ -279,6 +300,12 @@ impl DynProvisioningSagaCoordinatorBuilder {
         self
     }
 
+    /// Set the CommandBus for saga steps (GAP-60-01 fix - REQUIRED)
+    pub fn with_command_bus(mut self, command_bus: DynCommandBus) -> Self {
+        self.command_bus = Some(command_bus);
+        self
+    }
+
     pub fn with_config(mut self, config: ProvisioningSagaCoordinatorConfig) -> Self {
         self.config = Some(config);
         self
@@ -299,6 +326,10 @@ impl DynProvisioningSagaCoordinatorBuilder {
         let event_bus = self
             .event_bus
             .ok_or_else(|| DynProvisioningSagaCoordinatorBuilderError::MissingField("event_bus"))?;
+        // GAP-60-01: command_bus is now required
+        let command_bus = self.command_bus.ok_or_else(|| {
+            DynProvisioningSagaCoordinatorBuilderError::MissingField("command_bus")
+        })?;
 
         Ok(DynProvisioningSagaCoordinator::new(
             orchestrator,
@@ -306,6 +337,7 @@ impl DynProvisioningSagaCoordinatorBuilder {
             worker_registry,
             event_bus,
             self.job_repository,
+            command_bus,
             self.config,
         ))
     }
