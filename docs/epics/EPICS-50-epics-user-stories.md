@@ -27,7 +27,8 @@
 | **Épica 60: SagaServices CommandBus Integration** | ✅ **COMPLETADO** | 1/3 historias | **P0** |
 | **Épica 61: Integration Tests para Command Bus** | ⏳ **Pendiente** | 0/1 historias | **P1** |
 | **Épica 62: Type Erasure Safety Tests** | ✅ **COMPLETADO** | 3/3 historias | **P0** |
-| **Épica 63: Hybrid Outbox Relay (LISTEN/NOTIFY + Polling)** | 🆕 **NUEVA** | 0/8 historias | **P1** |
+| **Épica 63: Hybrid Command Outbox Relay (LISTEN/NOTIFY + Polling)** | 🆕 **NUEVA** | 0/8 historias | **P1** |
+| **Épica 64: Unified Hybrid Outbox Architecture** | 🆕 **NUEVA** | 0/8 historias | **P1** |
 
 ---
 
@@ -62,10 +63,11 @@
 11. [Épica 60: SagaServices CommandBus Integration](#épica-60-sagaservices-commandbus-integration)
 12. [Épica 61: Integration Tests para Command Bus](#épica-61-integration-tests-para-command-bus)
 13. [Épica 62: Type Erasure Safety Tests](#épica-62-type-erasure-safety-tests)
-14. [**Épica 63: Hybrid Outbox Relay (LISTEN/NOTIFY + Polling)**](#épica-63-hybrid-outbox-relay-listennotify--polling) 🆕
-15. [Apéndice A: Priorización General](#apéndice-a-priorización-general)
-16. [Apéndice B: Dependencias entre Épicas](#apéndice-b-dependencias-entre-épicas)
-17. [Apéndice C: Plan de Implementación](#apéndice-c-plan-de-implementación)
+14. [**Épica 63: Hybrid Command Outbox Relay**](#épica-63-hybrid-outbox-relay-listennotify--polling) 🆕
+15. [**Épica 64: Unified Hybrid Outbox Architecture**](#épica-64-unified-hybrid-outbox-architecture) 🆕
+16. [Apéndice A: Priorización General](#apéndice-a-priorización-general)
+17. [Apéndice B: Dependencias entre Épicas](#apéndice-b-dependencias-entre-épicas)
+18. [Apéndice C: Plan de Implementación](#apéndice-c-plan-de-implementación)
 
 ---
 
@@ -1131,6 +1133,32 @@ Integrar OpenTelemetry en el Command Bus y Sagas para tener observabilidad compl
 **Épica 63 desbloquea:**
 - Épica 51 (Transactional Outbox Pattern) - Completará
 - Épica 61 (Integration Tests)
+
+---
+
+### Épica 64: Unified Hybrid Outbox Architecture (Nueva Dependencia)
+
+```
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │ Épica 63     │────▶│ Épica 64 🆕  │────▶│ Épica 51     │
+  │ Command Out  │     │ Unified      │     │ Outbox       │
+  └──────────────┘     │ Architecture │     │ (Completo)   │
+                       └──────┬───────┘     └──────────────┘
+                              │
+                              ▼
+                       ┌──────────────┐
+                       │ Shared       │
+                       │ Components   │
+                       └──────────────┘
+```
+
+**Dependencias de Épica 64:**
+- ✅ Épica 63 (Hybrid Command Outbox) - En progreso
+- ✅ Event Outbox existente - Completado
+
+**Épica 64 desbloquea:**
+- 100% reutilización de código entre Command y Event outboxes
+- 68% reducción de código duplicado
 
 ---
 
