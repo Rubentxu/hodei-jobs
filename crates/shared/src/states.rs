@@ -3,6 +3,15 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Estados posibles de un job
+///
+/// # Estados de Intervención Manual
+///
+/// El estado `ManualInterventionRequired` fue añadido para manejar situaciones
+/// donde un job no puede continuar automáticamente y requiere acción de un operador.
+/// Esto es especialmente útil para:
+/// - Timeouts donde el recovery automático no es posible
+/// - Jobs huérfanos (worker perdido, sin modo de recovery)
+/// - Errores de infraestructura que requieren atención
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum JobState {
     Pending,
@@ -13,30 +22,28 @@ pub enum JobState {
     Failed,
     Cancelled,
     Timeout,
+    /// El job requiere intervención manual para continuar
+    /// Este estado permite que un operador analice y tome decisiones
+    ManualInterventionRequired,
 }
 
 impl JobState {
     /// Valida si una transición de estado es válida según el State Machine del dominio
     ///
-    /// Transiciones válidas según la máquina de estados simplificada:
-    /// - Pending → Assigned, Scheduled, Failed, Cancelled, Timeout
-    /// - Assigned → Running, Failed, Timeout, Cancelled
-    /// - Scheduled → Running, Failed, Timeout, Cancelled
-    /// - Running → Succeeded, Failed, Cancelled, Timeout
+    /// Transiciones válidas según la máquina de estados:
+    /// - Pending → Assigned, Scheduled, Failed, Cancelled, Timeout, ManualInterventionRequired
+    /// - Assigned → Running, Failed, Timeout, Cancelled, ManualInterventionRequired
+    /// - Scheduled → Running, Failed, Timeout, Cancelled, ManualInterventionRequired
+    /// - Running → Succeeded, Failed, Cancelled, Timeout, ManualInterventionRequired
+    /// - ManualInterventionRequired → Pending (después de intervención), Failed, Cancelled
     /// - Succeeded, Failed, Cancelled, Timeout → (terminal, no transiciones salientes)
     ///
-    /// # Nota sobre Simplificación de Estados
+    /// # Estados de Intervención Manual
     ///
-    /// Para reducir ambigüedad, se establecen las siguientes semánticas claras:
-    ///
-    /// - **Pending**: Job recién creado, en cola global esperando selección del scheduler
-    /// - **Assigned**: Scheduler seleccionó provider Y worker, recursos reservados (ALTA CONFIANZA)
-    /// - **Scheduled**: Scheduler seleccionó provider, esperando provisioning worker (CONFIANZA MEDIA)
-    /// - **Running**: Worker ejecutando activamente el job
-    /// - **Terminal**: Succeeded, Failed, Cancelled, Timeout (no más transiciones)
-    ///
-    /// **Recomendación**: Usar Assigned para indicar alta confianza de ejecución,
-    /// Scheduled cuando el worker aún no está listo.
+    /// El estado `ManualInterventionRequired` permite:
+    /// - Transicionar desde cualquier estado en progreso
+    /// - Ser retomado a Pending (para reintento)
+    /// - Ser completado manualmente como Failed o Cancelled
     pub fn can_transition_to(&self, new_state: &JobState) -> bool {
         match (self, new_state) {
             // Mismo estado - no es una transición válida
@@ -48,24 +55,33 @@ impl JobState {
             (JobState::Pending, JobState::Failed) => true,
             (JobState::Pending, JobState::Cancelled) => true,
             (JobState::Pending, JobState::Timeout) => true,
+            (JobState::Pending, JobState::ManualInterventionRequired) => true,
 
             // Transiciones válidas desde Assigned (ALTA CONFIANZA)
             (JobState::Assigned, JobState::Running) => true,
             (JobState::Assigned, JobState::Failed) => true,
             (JobState::Assigned, JobState::Timeout) => true,
             (JobState::Assigned, JobState::Cancelled) => true,
+            (JobState::Assigned, JobState::ManualInterventionRequired) => true,
 
             // Transiciones válidas desde Scheduled (CONFIANZA MEDIA)
             (JobState::Scheduled, JobState::Running) => true,
             (JobState::Scheduled, JobState::Failed) => true,
             (JobState::Scheduled, JobState::Timeout) => true,
             (JobState::Scheduled, JobState::Cancelled) => true,
+            (JobState::Scheduled, JobState::ManualInterventionRequired) => true,
 
             // Transiciones válidas desde Running
             (JobState::Running, JobState::Succeeded) => true,
             (JobState::Running, JobState::Failed) => true,
             (JobState::Running, JobState::Cancelled) => true,
             (JobState::Running, JobState::Timeout) => true,
+            (JobState::Running, JobState::ManualInterventionRequired) => true,
+
+            // Transiciones válidas desde ManualInterventionRequired
+            (JobState::ManualInterventionRequired, JobState::Pending) => true,
+            (JobState::ManualInterventionRequired, JobState::Failed) => true,
+            (JobState::ManualInterventionRequired, JobState::Cancelled) => true,
 
             // Todas las demás transiciones son inválidas
             _ => false,
@@ -76,16 +92,29 @@ impl JobState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::Timeout
+            JobState::Succeeded
+                | JobState::Failed
+                | JobState::Cancelled
+                | JobState::Timeout
         )
+        // ManualInterventionRequired NO es terminal - puede volver a Pending
     }
 
     /// Retorna true si el estado está en progreso
     pub fn is_in_progress(&self) -> bool {
         matches!(
             self,
-            JobState::Pending | JobState::Assigned | JobState::Scheduled | JobState::Running
+            JobState::Pending
+                | JobState::Assigned
+                | JobState::Scheduled
+                | JobState::Running
+                | JobState::ManualInterventionRequired
         )
+    }
+
+    /// Retorna true si el job requiere intervención manual
+    pub fn requires_manual_intervention(&self) -> bool {
+        matches!(self, JobState::ManualInterventionRequired)
     }
 
     /// Retorna true si el job está listo para ejecutar (Assigned o Scheduled)
@@ -105,6 +134,7 @@ impl JobState {
             JobState::Failed => "failed",
             JobState::Cancelled => "cancelled",
             JobState::Timeout => "timeout",
+            JobState::ManualInterventionRequired => "manual_intervention",
         }
     }
 }
@@ -120,6 +150,7 @@ impl fmt::Display for JobState {
             JobState::Failed => write!(f, "FAILED"),
             JobState::Cancelled => write!(f, "CANCELLED"),
             JobState::Timeout => write!(f, "TIMEOUT"),
+            JobState::ManualInterventionRequired => write!(f, "MANUAL_INTERVENTION_REQUIRED"),
         }
     }
 }
@@ -137,6 +168,7 @@ impl FromStr for JobState {
             "FAILED" => Ok(JobState::Failed),
             "CANCELLED" => Ok(JobState::Cancelled),
             "TIMEOUT" => Ok(JobState::Timeout),
+            "MANUAL_INTERVENTION_REQUIRED" => Ok(JobState::ManualInterventionRequired),
             _ => Err(format!("Invalid JobState: {}", s)),
         }
     }
@@ -155,6 +187,7 @@ impl TryFrom<i32> for JobState {
             5 => Ok(JobState::Failed),
             6 => Ok(JobState::Cancelled),
             7 => Ok(JobState::Timeout),
+            8 => Ok(JobState::ManualInterventionRequired),
             _ => Err(format!("Invalid JobState value: {}", value)),
         }
     }
@@ -171,6 +204,7 @@ impl From<&JobState> for i32 {
             JobState::Failed => 5,
             JobState::Cancelled => 6,
             JobState::Timeout => 7,
+            JobState::ManualInterventionRequired => 8,
         }
     }
 }

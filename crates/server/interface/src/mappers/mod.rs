@@ -77,6 +77,7 @@ pub fn map_job_state(state: &JobState) -> JobStatus {
         JobState::Failed => JobStatus::Failed,
         JobState::Cancelled => JobStatus::Cancelled,
         JobState::Timeout => JobStatus::Timeout,
+        JobState::ManualInterventionRequired => JobStatus::Failed, // Map to Failed for gRPC compatibility
     }
 }
 
