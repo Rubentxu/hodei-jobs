@@ -36,6 +36,9 @@ futures = { workspace = true }
 # Logging & Tracing
 tracing = { workspace = true }
 
+# Concurrency
+dashmap = "6.1"
+
 # Scheduling
 cron = "0.12"
 
