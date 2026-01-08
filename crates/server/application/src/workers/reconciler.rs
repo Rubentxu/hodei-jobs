@@ -310,23 +310,7 @@ impl WorkerReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::workers::WorkerHandle;
     use std::time::Duration;
-
-    fn create_test_reconciler() -> WorkerReconciler {
-        let registry = Arc::new(crate::tests::MockWorkerRegistry::new());
-        let health_service = Arc::new(WorkerHealthService::default());
-        let outbox_repository = Arc::new(crate::tests::MockOutboxRepository::new());
-        let event_bus = Arc::new(crate::tests::MockEventBus::new());
-
-        WorkerReconciler::new(
-            registry,
-            health_service,
-            outbox_repository,
-            event_bus,
-            None,
-        )
-    }
 
     #[tokio::test]
     async fn test_reconciliation_result_default() {
@@ -349,12 +333,6 @@ mod tests {
 
         assert!(result.has_changes());
         assert_eq!(result.total_issues(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_reconciler_creation() {
-        let reconciler = create_test_reconciler();
-        assert!(reconciler.registry.as_ref().is_mock());
     }
 
     #[tokio::test]

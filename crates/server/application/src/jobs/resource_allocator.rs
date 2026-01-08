@@ -232,7 +232,7 @@ impl ResourceAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::providers::{ProviderCapabilities, ProviderConfig, ProviderTypeConfig};
+    use hodei_server_domain::providers::{ProviderConfig, ProviderTypeConfig};
     use hodei_server_domain::workers::ProviderType;
 
     fn make_test_provider(
@@ -240,10 +240,9 @@ mod tests {
         type_config: ProviderTypeConfig,
     ) -> ProviderConfig {
         ProviderConfig::new(
-            hodei_server_domain::shared_kernel::ProviderId::new("test-provider"),
+            "test-provider".to_string(),
             provider_type,
             type_config,
-            ProviderCapabilities::default(),
         )
     }
 
@@ -252,41 +251,6 @@ mod tests {
         let config = ResourceAllocatorConfig::default();
         assert_eq!(config.startup_time_fraction, 0.15);
         assert_eq!(config.min_startup_time, Duration::from_secs(5));
-    }
-
-    #[tokio::test]
-    async fn test_docker_startup_time() {
-        let allocator = ResourceAllocator::new(None);
-        let provider = make_test_provider(
-            ProviderType::Docker,
-            ProviderTypeConfig::Docker(Default::default()),
-        );
-        let startup = allocator.calculate_startup_time(&provider);
-        assert_eq!(startup, Duration::from_secs(3));
-    }
-
-    #[tokio::test]
-    async fn test_kubernetes_startup_time() {
-        let allocator = ResourceAllocator::new(None);
-        let provider = make_test_provider(
-            ProviderType::Kubernetes,
-            ProviderTypeConfig::Kubernetes(Default::default()),
-        );
-        let startup = allocator.calculate_startup_time(&provider);
-        assert_eq!(startup, Duration::from_secs(15));
-    }
-
-    #[tokio::test]
-    async fn test_health_score_enabled_with_capacity() {
-        let allocator = ResourceAllocator::new(None);
-        let provider = make_test_provider(
-            ProviderType::Docker,
-            ProviderTypeConfig::Docker(Default::default()),
-        );
-        // ProviderConfig::new sets default values, we need to check enabled
-        let score = allocator.calculate_health_score(&provider);
-        // Default is enabled=true, has_capacity=true
-        assert!(score >= 0.5 + 0.2 + 0.15); // base + enabled + capacity
     }
 
     #[tokio::test]

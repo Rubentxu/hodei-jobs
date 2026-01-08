@@ -10,6 +10,7 @@ pub mod kubernetes_health;
 pub mod kubernetes_hpa;
 pub mod kubernetes_metrics;
 pub mod kubernetes_validator;
+pub mod pod_spec_factory;
 
 pub mod metrics_collector;
 
@@ -28,6 +29,7 @@ pub use kubernetes_health::{
 pub use kubernetes_hpa::{HPAConfig, KubernetesHPAManager};
 pub use kubernetes_metrics::KubernetesProviderMetrics;
 pub use kubernetes_validator::KubernetesConnectionValidator;
+pub use pod_spec_factory::{PodSpecFactory, PodSpecFactoryConfig, PodSpecBuildResult};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_worker_provider;
