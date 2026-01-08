@@ -21,7 +21,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use backoff::BackoffConfig;
+//! use hodei_server_infrastructure::messaging::hybrid::BackoffConfig;
 //!
 //! let config = BackoffConfig::standard();
 //!
@@ -189,6 +189,8 @@ impl BackoffConfig {
     /// # Examples
     ///
     /// ```rust
+    /// use hodei_server_infrastructure::messaging::hybrid::BackoffConfig;
+    ///
     /// let config = BackoffConfig::standard();
     ///
     /// // First retry: ~5 seconds ± 10%

@@ -16,15 +16,21 @@
 //!
 //! # Usage
 //!
-//! ```rust
-//! use hodei_server_infrastructure::persistence::postgres::pool::DatabasePool;
+//! ```rust,no_run
+//! use hodei_server_infrastructure::persistence::postgres::pool::{DatabasePool, DatabasePoolConfig};
+//! use hodei_server_infrastructure::persistence::{PostgresJobRepository, PostgresWorkerRegistry};
 //!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let db_url = "postgres://user:pass@localhost/db";
+//! let config = DatabasePoolConfig::default();
 //! // Create pool once in main.rs
-//! let pool = DatabasePool::new(&db_url, 50, 10).await?;
+//! let pool = DatabasePool::new(db_url, config).await?;
 //!
-//! // Pass Arc<PgPool> to all repositories
-//! let job_repo = PostgresJobRepository::new(pool.clone());
-//! let worker_registry = PostgresWorkerRegistry::new(pool.clone());
+//! // Pass PgPool to all repositories
+//! let job_repo = PostgresJobRepository::new(pool.pg_pool());
+//! let worker_registry = PostgresWorkerRegistry::new(pool.pg_pool());
+//! # Ok(())
+//! # }
 //! ```
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

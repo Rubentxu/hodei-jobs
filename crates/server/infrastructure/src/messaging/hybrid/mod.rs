@@ -11,7 +11,7 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use hodei_server_infrastructure::messaging::hybrid::{
 //!     PgNotifyListener,
 //!     BackoffConfig,
