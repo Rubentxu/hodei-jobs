@@ -309,7 +309,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    #[tokio::test]
+    #[test]
     fn test_backoff_standard_defaults() {
         let config = BackoffConfig::standard();
 
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(config.max_retries, 5);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_backoff_aggressive() {
         let config = BackoffConfig::aggressive();
 
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(config.max_retries, 3);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_backoff_conservative() {
         let config = BackoffConfig::conservative();
 
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(config.max_retries, 10);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_calculate_delay_exponential() {
         let config = BackoffConfig::standard();
 
@@ -364,17 +364,18 @@ mod tests {
         assert!(secs3 >= 32 && secs3 <= 48, "Retry 3: expected ~40s, got {}s", secs3);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_calculate_delay_max_cap() {
         let config = BackoffConfig::standard();
 
-        // Large retry count should be capped at max_delay
+        // Large retry count should be capped at max_delay (±jitter)
         let delay = config.calculate_delay(20);
         let secs = delay.num_seconds();
-        assert_eq!(secs, 1800); // Should be capped at 30 minutes
+        // Should be around 1800s (±10% jitter = 180-1800+180 = 1620-1980)
+        assert!(secs >= 1620 && secs <= 1980, "Retry 20: expected ~1800s (±10%), got {}s", secs);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_calculate_delay_jitter_variation() {
         let config = BackoffConfig {
             base_delay_secs: 100,
@@ -397,7 +398,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[test]
     fn test_can_retry() {
         let config = BackoffConfig::standard();
 
@@ -408,7 +409,7 @@ mod tests {
         assert!(!config.can_retry(10));
     }
 
-    #[tokio::test]
+    #[test]
     fn test_next_retry_at() {
         let config = BackoffConfig::standard();
         let now = Utc::now();
@@ -423,7 +424,7 @@ mod tests {
         assert!(diff.num_seconds() >= 4 && diff.num_seconds() <= 6);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_delay_schedule() {
         let config = BackoffConfig {
             base_delay_secs: 5,
@@ -440,7 +441,7 @@ mod tests {
         assert_eq!(schedule[2].num_seconds(), 20);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_total_delay_if_exhausted() {
         let config = BackoffConfig {
             base_delay_secs: 5,
@@ -454,18 +455,18 @@ mod tests {
         assert_eq!(total.num_seconds(), 35);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_display_format() {
         let config = BackoffConfig::standard();
         let display = format!("{}", config);
 
         assert!(display.contains("5s"));
         assert!(display.contains("1800s"));
-        assert!(display.contains("10%"));
+        assert!(display.contains("10.0%"));
         assert!(display.contains("5"));
     }
 
-    #[tokio::test]
+    #[test]
     fn test_backoff_stats() {
         let mut stats = BackoffStats::new();
 
@@ -482,7 +483,7 @@ mod tests {
         assert_eq!(stats.max_retries_hit, 1);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_custom_config() {
         let config = BackoffConfig::new(3, 600, 0.15, 7);
 
@@ -492,7 +493,7 @@ mod tests {
         assert_eq!(config.max_retries, 7);
     }
 
-    #[tokio::test]
+    #[test]
     fn test_serde_serialization() {
         let config = BackoffConfig::standard();
 
