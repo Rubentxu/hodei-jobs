@@ -24,9 +24,10 @@ use hodei_jobs::{
 
 use crate::grpc::interceptors::RequestContextExt;
 use crate::grpc::log_stream::LogStreamService;
-use crate::grpc::heartbeat_processor::{HeartbeatProcessor, WorkerSupervisorHandle};
+use crate::grpc::heartbeat_processor::HeartbeatProcessor;
 use crate::grpc::log_ingestor::LogIngestor;
 use chrono::Utc;
+use hodei_server_application::workers::actor::WorkerSupervisorHandle;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::iam::OtpToken;

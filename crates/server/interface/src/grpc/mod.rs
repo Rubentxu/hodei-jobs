@@ -18,7 +18,7 @@ pub mod worker_command_sender;
 
 pub use audit::AuditServiceImpl;
 pub use correlation::{CORRELATION_ID_HEADER, CorrelationIdManager, RequestCorrelationExt};
-pub use heartbeat_processor::{HeartbeatProcessor, HeartbeatProcessorConfig, HeartbeatResult, WorkerSupervisorHandle};
+pub use heartbeat_processor::{HeartbeatProcessor, HeartbeatProcessorConfig, HeartbeatResult};
 pub use interceptors::context::context_interceptor;
 pub use job_execution::JobExecutionServiceImpl;
 pub use log_ingestor::{LogBatch, LogFinalizationResult, LogIngestionResult, LogIngestor, LogIngestorConfig, LogIngestorMetrics};

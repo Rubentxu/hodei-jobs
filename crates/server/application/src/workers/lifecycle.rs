@@ -1,20 +1,24 @@
 //! Worker Lifecycle Manager
 //!
 //! Servicio de aplicación para gestionar el ciclo de vida de workers:
-//! - Heartbeat monitoring and reconciliation
+//! - Heartbeat monitoring and reconciliation (delegado a WorkerReconciler)
 //! - Auto-scaling basado en demanda
-//! - Terminación de workers idle/unhealthy
+//! - Terminación de workers idle/unhealthy (delegado a WorkerGarbageCollector)
 //! - Job reassignment for failed workers (via Transactional Outbox)
 //! - Worker provisioning via Saga pattern (US-2.2)
 //! - Worker recovery via Saga pattern (US-4.2)
+//!
+//! GAP-GO-02: Delega responsabilidades a WorkerReconciler y WorkerGarbageCollector
 
 #![allow(dead_code)]
 #![allow(unused_variables)]
-#![allow(unused_imports)]
 
 use crate::saga::provisioning_saga::{DynProvisioningSagaCoordinator, ProvisioningSagaError};
 use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaError};
+use crate::workers::garbage_collector::{CleanupResult, GarbageCollectorConfig, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector};
+use crate::workers::reconciler::{ReconciliationResult, WorkerReconciler};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use futures::StreamExt;
 use hodei_server_domain::{
     event_bus::EventBus,
@@ -30,7 +34,6 @@ use hodei_server_domain::{
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
 use hodei_shared::event_topics::worker_topics;
-use dashmap::DashMap;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
 
@@ -75,12 +78,14 @@ impl Default for WorkerLifecycleConfig {
 /// Worker Lifecycle Manager
 ///
 /// Responsibilities:
-/// - Monitor worker health via heartbeats
+/// - Monitor worker health via heartbeats (delegated to WorkerReconciler)
 /// - Auto-scale workers based on demand
-/// - Terminate idle/unhealthy workers
+/// - Terminate idle/unhealthy workers (delegated to WorkerGarbageCollector)
 /// - Provision new workers when needed (Saga-only when configured)
-/// - Reconcile stale worker states and reassign jobs
+/// - Reconcile stale worker states and reassign jobs (delegated to WorkerReconciler)
 /// - Recover failed workers via saga pattern (US-4.2, Saga-only when configured)
+///
+/// GAP-GO-02: Delega responsabilidades a WorkerReconciler y WorkerGarbageCollector
 #[derive(Clone)]
 pub struct WorkerLifecycleManager {
     registry: Arc<dyn WorkerRegistry>,
@@ -90,6 +95,10 @@ pub struct WorkerLifecycleManager {
     /// Mandatory outbox repository for transactional event publishing
     outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     health_service: Arc<WorkerHealthService>,
+    /// GAP-GO-02: Worker reconciler for heartbeat and state reconciliation
+    reconciler: Option<Arc<WorkerReconciler>>,
+    /// GAP-GO-02: Garbage collector for worker cleanup
+    garbage_collector: Option<Arc<WorkerGarbageCollector>>,
     /// US-2.2: Saga coordinator for worker provisioning with automatic compensation
     provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     /// US-4.2: Saga coordinator for worker recovery with automatic compensation
@@ -115,6 +124,36 @@ impl WorkerLifecycleManager {
                     .with_heartbeat_timeout(config.heartbeat_timeout)
                     .build(),
             ),
+            reconciler: None,
+            garbage_collector: None,
+            provisioning_saga_coordinator: None,
+            recovery_saga_coordinator: None,
+        }
+    }
+
+    /// GAP-GO-02: Initialize with WorkerReconciler and WorkerGarbageCollector
+    pub fn with_components(
+        registry: Arc<dyn WorkerRegistry>,
+        providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+        config: WorkerLifecycleConfig,
+        event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+        reconciler: WorkerReconciler,
+        garbage_collector: WorkerGarbageCollector,
+    ) -> Self {
+        Self {
+            registry,
+            providers,
+            config: config.clone(),
+            event_bus,
+            outbox_repository,
+            health_service: Arc::new(
+                WorkerHealthService::builder()
+                    .with_heartbeat_timeout(config.heartbeat_timeout)
+                    .build(),
+            ),
+            reconciler: Some(Arc::new(reconciler)),
+            garbage_collector: Some(Arc::new(garbage_collector)),
             provisioning_saga_coordinator: None,
             recovery_saga_coordinator: None,
         }
@@ -194,6 +233,9 @@ impl WorkerLifecycleManager {
 
     /// Reconcile worker states and handle stale workers with active jobs
     ///
+    /// GAP-GO-02: Delega al WorkerReconciler si está disponible,
+    /// de lo contrario usa la implementación legacy.
+    ///
     /// This method:
     /// 1. Detects workers with stale heartbeats that have assigned jobs
     /// 2. Emits WorkerHeartbeatMissed events for monitoring
@@ -202,10 +244,28 @@ impl WorkerLifecycleManager {
     ///
     /// Uses Transactional Outbox pattern when available for consistency.
     pub async fn run_reconciliation(&self) -> Result<ReconciliationResult> {
-        let mut result = ReconciliationResult::default();
-        let _now = Utc::now();
+        // GAP-GO-02: Delegate to WorkerReconciler if available
+        if let Some(ref reconciler) = self.reconciler {
+            info!("GAP-GO-02: Delegating reconciliation to WorkerReconciler");
+            return reconciler
+                .reconcile()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Reconciliation failed: {}", e),
+                });
+        }
 
-        // Find workers with stale heartbeats (haven't reported in heartbeat_timeout)
+        // Legacy implementation (fallback)
+        self.run_reconciliation_legacy().await
+    }
+
+    /// Legacy reconciliation implementation (used when WorkerReconciler is not configured)
+    async fn run_reconciliation_legacy(&self) -> Result<ReconciliationResult> {
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
+        let mut result = ReconciliationResult::default();
+
+        // Find workers with stale heartbeats
         let stale_workers = self
             .registry
             .find_unhealthy(self.config.heartbeat_timeout)
@@ -228,7 +288,7 @@ impl WorkerLifecycleManager {
                 result.affected_jobs.push(job_id.clone());
 
                 // Emit events for job reassignment
-                if let Err(e) = self.emit_worker_heartbeat_missed(&worker, job_id).await {
+                if let Err(e) = self.emit_worker_heartbeat_missed(&worker, &job_id).await {
                     warn!(
                         "Failed to emit heartbeat missed event for worker {}: {:?}",
                         worker_id, e
@@ -242,7 +302,7 @@ impl WorkerLifecycleManager {
                         worker_id, job_id
                     );
 
-                    if let Err(e) = self.emit_job_reassignment_required(&worker, job_id).await {
+                    if let Err(e) = self.emit_job_reassignment_required(&worker, &job_id).await {
                         warn!(
                             "Failed to emit job reassignment event for job {}: {:?}",
                             job_id, e
@@ -300,6 +360,8 @@ impl WorkerLifecycleManager {
 
     /// Emit WorkerHeartbeatMissed event using outbox or direct publishing
     async fn emit_worker_heartbeat_missed(&self, worker: &Worker, job_id: &JobId) -> Result<()> {
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
         let now = Utc::now();
         let worker_id = worker.id();
 
@@ -335,6 +397,8 @@ impl WorkerLifecycleManager {
 
     /// Emit JobReassignmentRequired event for jobs on dead workers
     async fn emit_job_reassignment_required(&self, worker: &Worker, job_id: &JobId) -> Result<()> {
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
         let now = Utc::now();
         let worker_id = worker.id();
 
@@ -416,10 +480,32 @@ impl WorkerLifecycleManager {
     /// - max_lifetime: Maximum lifetime for any worker
     /// - idle_timeout: Time a worker can be idle before termination
     /// - ttl_after_completion: Grace period after job completion
+    ///
+    /// GAP-GO-02: Delega al WorkerGarbageCollector si está disponible
     pub async fn cleanup_workers(&self) -> Result<CleanupResult> {
+        // GAP-GO-02: Delegate to WorkerGarbageCollector if available
+        if let Some(ref gc) = self.garbage_collector {
+            info!("GAP-GO-02: Delegating cleanup to WorkerGarbageCollector");
+            return gc
+                .cleanup()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Cleanup failed: {}", e),
+                });
+        }
+
+        // Legacy implementation (fallback)
+        self.cleanup_workers_legacy().await
+    }
+
+    /// Legacy cleanup implementation (used when WorkerGarbageCollector is not configured)
+    async fn cleanup_workers_legacy(&self) -> Result<CleanupResult> {
+        use hodei_server_domain::events::DomainEvent;
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
         let mut result = CleanupResult::default();
 
-        // Find potential candidates for termination using TTL policies (EPIC-26 US-26.7)
+        // Find potential candidates for termination using TTL policies
         let all_workers = self.registry.find(&WorkerFilter::new()).await?;
 
         let workers_to_terminate: Vec<_> = all_workers
@@ -486,7 +572,7 @@ impl WorkerLifecycleManager {
             let event = DomainEvent::WorkerEphemeralTerminating {
                 worker_id: worker_id.clone(),
                 provider_id: worker.provider_id().clone(),
-                reason: reason.clone(), // Clone for first use
+                reason: reason.clone(),
                 occurred_at: Utc::now(),
                 correlation_id: None,
                 actor: Some("lifecycle-manager".to_string()),
@@ -1083,7 +1169,29 @@ impl WorkerLifecycleManager {
     /// 2. Filters out workers that are registered in our registry
     /// 3. Marks orphans in the database
     /// 4. Destroys orphan workers via providers
+    /// Detect orphan workers (workers that exist in provider but not in registry)
+    ///
+    /// GAP-GO-02: Delega al WorkerGarbageCollector si está disponible
     pub async fn detect_and_cleanup_orphans(&self) -> Result<OrphanCleanupResult> {
+        // GAP-GO-02: Delegate to WorkerGarbageCollector if available
+        if let Some(ref gc) = self.garbage_collector {
+            info!("GAP-GO-02: Delegating orphan detection to WorkerGarbageCollector");
+            return gc
+                .detect_and_cleanup_orphans()
+                .await
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Orphan detection failed: {}", e),
+                });
+        }
+
+        // Legacy implementation (fallback)
+        self.detect_and_cleanup_orphans_legacy().await
+    }
+
+    /// Legacy orphan detection implementation
+    async fn detect_and_cleanup_orphans_legacy(&self) -> Result<OrphanCleanupResult> {
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
         let mut result = OrphanCleanupResult::default();
         let start_time = Utc::now();
 
@@ -1151,7 +1259,6 @@ impl WorkerLifecycleManager {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // Emit GarbageCollectionCompleted event
         self.emit_garbage_collection_completed(&result).await;
 
         if result.orphans_cleaned > 0 {
@@ -1164,7 +1271,7 @@ impl WorkerLifecycleManager {
         Ok(result)
     }
 
-    /// Detect orphan workers for a specific provider
+    /// Detect orphan workers for a specific provider (legacy)
     async fn detect_orphans_for_provider(
         &self,
         provider: &Arc<dyn WorkerProvider>,
@@ -1197,20 +1304,21 @@ impl WorkerLifecycleManager {
         for pw in provider_workers {
             if !registered_ids.contains(&pw.resource_id) {
                 // This is an orphan
-                let orphan = OrphanWorkerInfo {
-                    worker_id: WorkerId::new(), // Generate new ID for orphan
+                orphans.push(OrphanWorkerInfo {
+                    worker_id: WorkerId::new(),
                     provider_resource_id: pw.resource_id,
                     last_seen: pw.last_seen.unwrap_or_else(Utc::now),
-                };
-                orphans.push(orphan);
+                });
             }
         }
 
         Ok(orphans)
     }
 
-    /// Emit OrphanWorkerDetected event
+    /// Emit OrphanWorkerDetected event (legacy)
     async fn emit_orphan_detected(&self, orphan: &OrphanWorkerInfo, provider_id: &ProviderId) {
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
         let now = Utc::now();
         let orphaned_duration = now
             .signed_duration_since(orphan.last_seen)
@@ -1246,6 +1354,8 @@ impl WorkerLifecycleManager {
 
     /// Emit GarbageCollectionCompleted event
     async fn emit_garbage_collection_completed(&self, result: &OrphanCleanupResult) {
+        use hodei_server_domain::outbox::OutboxEventInsert;
+
         let now = Utc::now();
 
         // Get provider IDs scanned
@@ -1289,78 +1399,6 @@ impl WorkerLifecycleManager {
 pub struct HealthCheckResult {
     pub total_checked: usize,
     pub unhealthy_workers: Vec<WorkerId>,
-}
-
-/// Result of a cleanup run
-#[derive(Debug, Default)]
-pub struct CleanupResult {
-    pub terminated: Vec<WorkerId>,
-    pub failed: Vec<WorkerId>,
-}
-
-/// Result of a reconciliation run
-#[derive(Debug, Default)]
-pub struct ReconciliationResult {
-    /// Workers with stale heartbeats detected
-    pub stale_workers: Vec<WorkerId>,
-    /// Workers marked as unhealthy
-    pub workers_marked_unhealthy: Vec<WorkerId>,
-    /// Jobs affected by stale workers
-    pub affected_jobs: Vec<JobId>,
-    /// Jobs that require reassignment (worker exceeded grace period)
-    pub jobs_requiring_reassignment: Vec<JobId>,
-}
-
-impl ReconciliationResult {
-    /// Check if any action was taken
-    pub fn has_changes(&self) -> bool {
-        !self.stale_workers.is_empty()
-            || !self.workers_marked_unhealthy.is_empty()
-            || !self.jobs_requiring_reassignment.is_empty()
-    }
-
-    /// Get total number of issues detected
-    pub fn total_issues(&self) -> usize {
-        self.stale_workers.len() + self.jobs_requiring_reassignment.len()
-    }
-}
-
-/// Orphan worker info detected from provider (EPIC-26 US-26.6)
-struct OrphanWorkerInfo {
-    worker_id: WorkerId,
-    provider_resource_id: String,
-    last_seen: DateTime<Utc>,
-}
-
-/// Result of orphan worker detection and cleanup (EPIC-26 US-26.6)
-#[derive(Debug, Default)]
-pub struct OrphanCleanupResult {
-    /// Providers scanned for orphans
-    pub providers_scanned: usize,
-    /// Orphan workers detected
-    pub orphans_detected: usize,
-    /// Orphan workers successfully cleaned up
-    pub orphans_cleaned: usize,
-    /// Errors during cleanup
-    pub errors: usize,
-    /// Duration of the cleanup in milliseconds
-    pub duration_ms: u64,
-}
-
-impl OrphanCleanupResult {
-    /// Check if any orphans were found
-    pub fn has_orphans(&self) -> bool {
-        self.orphans_detected > 0
-    }
-
-    /// Get success rate
-    pub fn success_rate(&self) -> f64 {
-        if self.orphans_detected == 0 {
-            100.0
-        } else {
-            (self.orphans_cleaned as f64 / self.orphans_detected as f64) * 100.0
-        }
-    }
 }
 
 #[cfg(test)]

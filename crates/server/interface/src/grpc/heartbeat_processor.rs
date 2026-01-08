@@ -10,6 +10,7 @@
 //! - Transicionar workers de Creating a Ready
 
 use hodei_jobs::AckMessage;
+use hodei_server_application::workers::actor::WorkerSupervisorHandle;
 use hodei_server_domain::{
     event_bus::EventBus,
     events::DomainEvent,
@@ -212,100 +213,6 @@ impl HeartbeatProcessor {
             .map_err(|_| "worker_id must be a UUID".to_string())?;
         Ok(WorkerId(id))
     }
-}
-
-/// Handle para comunicación con WorkerSupervisorActor (EPIC-42)
-#[derive(Clone, Debug)]
-pub struct WorkerSupervisorHandle {
-    sender: mpsc::Sender<SupervisorMsg>,
-}
-
-impl WorkerSupervisorHandle {
-    /// Create new handle with sender
-    pub fn new(sender: mpsc::Sender<SupervisorMsg>) -> Self {
-        Self { sender }
-    }
-
-    /// Send heartbeat to actor
-    pub async fn heartbeat(&self, worker_id: &WorkerId) -> Result<(), String> {
-        let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        let msg = SupervisorMsg::Heartbeat {
-            worker_id: worker_id.clone(),
-            response_tx: resp_tx,
-        };
-
-        self.sender.send(msg).await.map_err(|e| e.to_string())?;
-
-        // Handle the Option<Result<...>> return type from recv()
-        match resp_rx.recv().await {
-            Some(Ok(())) => Ok(()),
-            Some(Err(e)) => Err(e),
-            None => Err("Actor channel closed".to_string()),
-        }
-    }
-
-    /// Register worker in actor
-    pub async fn register(
-        &self,
-        worker_id: WorkerId,
-        provider_id: hodei_server_domain::shared_kernel::ProviderId,
-        handle: hodei_server_domain::workers::WorkerHandle,
-        spec: hodei_server_domain::workers::WorkerSpec,
-    ) -> Result<(), String> {
-        let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        let msg = SupervisorMsg::Register {
-            worker_id,
-            provider_id,
-            handle,
-            spec,
-            response_tx: resp_tx,
-        };
-
-        self.sender.send(msg).await.map_err(|e| e.to_string())?;
-
-        match resp_rx.recv().await {
-            Some(Ok(())) => Ok(()),
-            Some(Err(e)) => Err(e),
-            None => Err("Actor channel closed".to_string()),
-        }
-    }
-
-    /// Unregister worker from actor
-    pub async fn unregister(&self, worker_id: &WorkerId) -> Result<(), String> {
-        let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        let msg = SupervisorMsg::Unregister {
-            worker_id: worker_id.clone(),
-            response_tx: resp_tx,
-        };
-
-        self.sender.send(msg).await.map_err(|e| e.to_string())?;
-
-        match resp_rx.recv().await {
-            Some(Ok(())) => Ok(()),
-            Some(Err(e)) => Err(e),
-            None => Err("Actor channel closed".to_string()),
-        }
-    }
-}
-
-/// Mensajes para WorkerSupervisorActor
-#[derive(Debug)]
-pub enum SupervisorMsg {
-    Heartbeat {
-        worker_id: WorkerId,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
-    Register {
-        worker_id: WorkerId,
-        provider_id: hodei_server_domain::shared_kernel::ProviderId,
-        handle: hodei_server_domain::workers::WorkerHandle,
-        spec: hodei_server_domain::workers::WorkerSpec,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
-    Unregister {
-        worker_id: WorkerId,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
 }
 
 /// Datos serializables para métricas
