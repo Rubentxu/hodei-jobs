@@ -427,7 +427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_bus.clone(),
         None, // Default config (hodei.events.>)
     ));
-    
+
     let event_archiver_clone = event_archiver.clone();
     tokio::spawn(async move {
         if let Err(e) = event_archiver_clone.run().await {
@@ -480,11 +480,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|_| "true".to_string())
             .parse::<bool>()
             .unwrap_or(true),
+        // EPIC-42: Heartbeat timeout tracking
+        heartbeat_timeout: env::var("HODEI_HEARTBEAT_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map(|s| std::time::Duration::from_secs(s))
+            .unwrap_or(std::time::Duration::from_secs(30)),
+        heartbeat_check_interval: env::var("HODEI_HEARTBEAT_CHECK_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map(|s| std::time::Duration::from_secs(s))
+            .unwrap_or(std::time::Duration::from_secs(5)),
+        heartbeat_timeout_tracking: env::var("HODEI_HEARTBEAT_TIMEOUT_TRACKING")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true),
     };
 
     info!(
         max_workers = supervisor_config.max_workers,
         inbox_capacity = supervisor_config.inbox_capacity,
+        heartbeat_timeout_secs = supervisor_config.heartbeat_timeout.as_secs(),
+        heartbeat_check_interval_secs = supervisor_config.heartbeat_check_interval.as_secs(),
+        heartbeat_timeout_tracking = supervisor_config.heartbeat_timeout_tracking,
         "WorkerSupervisor Actor configuration"
     );
 
