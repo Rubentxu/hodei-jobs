@@ -5,9 +5,11 @@
 //! - Outbox pattern for reliable event publishing
 //! - Reactive outbox relay using PostgreSQL LISTEN/NOTIFY
 //! - Saga consumers for event-driven saga execution
+//! - Hybrid outbox components (LISTEN/NOTIFY + polling) for EPIC-64
 
 pub mod cleanup_saga_consumer;
 pub mod execution_saga_consumer;
+pub mod hybrid;
 pub mod nats;
 pub mod nats_outbox_relay;
 pub mod orphan_worker_detector_consumer;
