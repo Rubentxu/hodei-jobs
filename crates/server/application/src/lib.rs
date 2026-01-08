@@ -5,6 +5,9 @@
 // Core Infrastructure (CQRS, Event-Driven)
 pub mod core;
 
+// Command Bus Bootstrap (EPIC-50)
+pub mod command;
+
 // Bounded Contexts
 pub mod audit;
 pub mod credentials;
@@ -25,6 +28,7 @@ pub mod audit_test_helper;
 
 // Re-exports de bounded contexts
 pub use audit::*;
+pub use command::*;
 pub use core::*;
 pub use jobs::*;
 pub use metrics::*;
