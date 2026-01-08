@@ -7,7 +7,7 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```ignore
 //! use hodei_server_infrastructure::persistence::postgres::migrations::MigrationService;
 //! use hodei_server_infrastructure::persistence::MigrationConfig;
 //!

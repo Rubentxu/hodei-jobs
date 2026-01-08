@@ -39,3 +39,6 @@ sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "macros", "c
 
 # NATS Event Bus
 async-nats = "0.35"
+
+# Concurrency
+dashmap = "6.1"

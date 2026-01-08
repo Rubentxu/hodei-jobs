@@ -8,7 +8,7 @@
 use dashmap::DashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc};
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
@@ -120,9 +120,9 @@ impl WorkerAgentServiceImpl {
         supervisor_handle: WorkerSupervisorHandle,
     ) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: Some(worker_registry),
             job_repository: Some(job_repository),
             token_store: Some(token_store),
@@ -148,9 +148,9 @@ impl WorkerAgentServiceImpl {
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: Some(worker_registry),
             job_repository: None,
             token_store: None,
@@ -167,9 +167,9 @@ impl WorkerAgentServiceImpl {
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: Some(worker_registry),
             job_repository: None,
             token_store: None,
@@ -212,9 +212,9 @@ impl WorkerAgentServiceImpl {
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: Some(worker_registry),
             job_repository: Some(job_repository),
             token_store: None,
@@ -233,9 +233,9 @@ impl WorkerAgentServiceImpl {
         event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
     ) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: Some(worker_registry),
             job_repository: Some(job_repository),
             token_store: Some(token_store),
@@ -256,9 +256,9 @@ impl WorkerAgentServiceImpl {
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            otp_tokens: Arc::new(RwLock::new(HashMap::new())),
-            worker_channels: Arc::new(RwLock::new(HashMap::new())),
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
             worker_registry: Some(worker_registry),
             job_repository: Some(job_repository),
             token_store: Some(token_store),
@@ -1014,14 +1014,12 @@ impl WorkerAgentServiceImpl {
         }
 
         // EPIC-42: DashMap entry API para modificación atómica
-        let otp = self.otp_tokens.entry(token.to_string()).or_insert_with(|| InMemoryOtpState {
+        let mut otp = self.otp_tokens.entry(token.to_string()).or_insert_with(|| InMemoryOtpState {
             token: token.to_string(),
             worker_id: String::new(),
             created_at: std::time::Instant::now(),
             used: true, // Mark as used initially if not found
         });
-
-        let otp = otp.into_mut();
 
         // Token expira en 5 minutos
         if otp.created_at.elapsed() > std::time::Duration::from_secs(300) {
@@ -1048,8 +1046,7 @@ impl WorkerAgentServiceImpl {
         worker_id: &str,
         message: ServerMessage,
     ) -> Result<(), Status> {
-        let channels = self.worker_channels.read().await;
-        let sender = channels
+        let sender = self.worker_channels
             .get(worker_id)
             .ok_or_else(|| Status::not_found(format!("Worker {} not connected", worker_id)))?;
 
@@ -1104,8 +1101,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         let (worker_id, session_id, needs_otp_validation, is_reconnection, recovery_failed) =
             if !session_id_req.is_empty() {
                 // Attempt to recover existing session
-                let workers = self.workers.read().await;
-                if let Some(existing) = workers.get(&worker_id_from_request) {
+                if let Some(existing) = self.workers.get(&worker_id_from_request) {
                     if existing.session_id == session_id_req {
                         // Valid session found - skip OTP validation
                         info!(
@@ -1243,8 +1239,6 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             };
 
             self.workers
-                .write()
-                .await
                 .insert(worker_id.clone(), registered);
 
             if let Some(event_bus) = &self.event_bus {
@@ -1329,7 +1323,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
         let (tx, rx) = mpsc::channel::<Result<ServerMessage, Status>>(100);
 
         // Variable para trackear el worker_id de esta conexión
-        let worker_id_holder: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let worker_id_holder: Arc<TokioMutex<Option<String>>> = Arc::new(TokioMutex::new(None));
         let worker_id_for_cleanup = worker_id_holder.clone();
         let worker_id_for_result = worker_id_holder.clone();
 
@@ -1350,7 +1344,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                 WorkerPayload::Heartbeat(hb) => {
                                     if let Some(ref wid) = hb.worker_id {
                                         // Actualizar worker_id si es el primer mensaje
-                                        let mut holder = worker_id_holder.write().await;
+                                        let mut holder = worker_id_holder.lock().await;
                                         if holder.is_none() {
                                             *holder = Some(wid.value.clone());
                                             // EPIC-42: DashMap para inserción concurrente
@@ -1446,7 +1440,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         result.job_id, result.exit_code, result.success
                                     );
 
-                                    if let Some(wid) = worker_id_for_result.read().await.clone() {
+                                    if let Some(wid) = worker_id_for_result.lock().await.clone() {
                                         if let Err(e) =
                                             registry_service.on_job_result(&wid, &result).await
                                         {
@@ -1648,7 +1642,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             }
 
             // Cleanup cuando el worker se desconecta
-            if let Some(wid) = worker_id_for_cleanup.read().await.clone() {
+            if let Some(wid) = worker_id_for_cleanup.lock().await.clone() {
                 warn!("Worker {} disconnected", wid);
                 // EPIC-42: DashMap para eliminación concurrente sin bloqueos
                 worker_channels.remove(&wid);

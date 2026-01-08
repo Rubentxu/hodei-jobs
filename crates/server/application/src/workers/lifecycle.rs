@@ -1366,11 +1366,13 @@ impl OrphanCleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hodei_server_domain::command::InMemoryErasedCommandBus;
     use crate::WorkerProvisioningService;
     use crate::provisioning::ProvisioningResult;
     use crate::saga::provisioning_saga::ProvisioningSagaCoordinatorConfig;
     use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
     use futures::stream::BoxStream;
+    use hodei_server_domain::command::DynCommandBus;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::saga::{
         Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
@@ -1382,6 +1384,16 @@ mod tests {
     use std::collections::HashMap as StdHashMap;
     use std::sync::{Mutex, RwLock};
     use tokio::sync::RwLock as TokioRwLock;
+
+    /// Helper to create test providers map with DashMap
+    fn create_test_providers() -> Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> {
+        Arc::new(DashMap::new())
+    }
+
+    /// Helper to create test command bus
+    fn create_test_command_bus() -> DynCommandBus {
+        Arc::new(InMemoryErasedCommandBus::new())
+    }
 
     fn create_test_worker() -> Worker {
         let spec = WorkerSpec::new(
@@ -2455,7 +2467,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
@@ -2475,7 +2487,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let orchestrator = Arc::new(MockSagaOrchestrator::new());
         let provisioning_service = Arc::new(MockWorkerProvisioningService::new());
@@ -2483,6 +2495,7 @@ mod tests {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
         };
+        let command_bus = create_test_command_bus();
 
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
             orchestrator,
@@ -2490,6 +2503,7 @@ mod tests {
             registry.clone(),
             event_bus.clone(),
             None,
+            command_bus,
             Some(saga_config),
         ));
 
@@ -2521,12 +2535,12 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         // Registrar un mock provider que retorna un worker específico
         let provider_id = hodei_server_domain::shared_kernel::ProviderId::new();
         let mock_provider = Arc::new(MockWorkerProvider::new(provider_id.clone()));
-        providers.write().await.insert(
+        providers.insert(
             provider_id.clone(),
             mock_provider.clone() as Arc<dyn hodei_server_domain::workers::WorkerProvider>,
         );
@@ -2575,6 +2589,7 @@ mod tests {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
         };
+        let command_bus = create_test_command_bus();
 
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
             orchestrator,
@@ -2582,6 +2597,7 @@ mod tests {
             registry.clone(),
             event_bus.clone(),
             None,
+            command_bus,
             Some(saga_config),
         ));
 
@@ -2632,6 +2648,7 @@ mod tests {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
         };
+        let command_bus = create_test_command_bus();
 
         let coordinator = Arc::new(DynProvisioningSagaCoordinator::new(
             orchestrator,
@@ -2639,6 +2656,7 @@ mod tests {
             registry.clone(),
             event_bus.clone(),
             None,
+            command_bus,
             Some(saga_config),
         ));
 
@@ -2679,7 +2697,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
@@ -2699,7 +2717,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator::new());
@@ -2707,9 +2725,15 @@ mod tests {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
         };
+        let command_bus = create_test_command_bus();
 
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
             orchestrator,
+            command_bus,
+            registry.clone(),
+            event_bus.clone(),
+            None,
+            None,
             Some(saga_config),
             None,
         ));
@@ -2740,7 +2764,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
@@ -2766,7 +2790,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator::new());
@@ -2774,9 +2798,15 @@ mod tests {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
         };
+        let command_bus = create_test_command_bus();
 
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
             orchestrator,
+            command_bus,
+            registry.clone(),
+            event_bus.clone(),
+            None,
+            None,
             Some(saga_config),
             None,
         ));
@@ -2808,7 +2838,7 @@ mod tests {
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
-        let providers = Arc::new(RwLock::new(StdHashMap::new()));
+        let providers = create_test_providers();
 
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator::new());
@@ -2816,9 +2846,15 @@ mod tests {
             saga_timeout: Duration::from_secs(300),
             step_timeout: Duration::from_secs(60),
         };
+        let command_bus = create_test_command_bus();
 
         let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
             orchestrator,
+            command_bus,
+            registry.clone(),
+            event_bus.clone(),
+            None,
+            None,
             Some(saga_config),
             None,
         ));

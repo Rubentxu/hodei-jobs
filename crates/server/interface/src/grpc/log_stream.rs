@@ -131,7 +131,7 @@ impl LogStreamService {
         // Notify subscribers
         {
             if let Some(job_subs) = self.subscribers.get(&job_id) {
-                for tx in job_subs {
+                for tx in job_subs.value().iter() {
                     if let Err(e) = tx.send(entry.clone()).await {
                         warn!(
                             error = %e,
@@ -167,9 +167,8 @@ impl LogStreamService {
 
         // Send buffered logs first
         {
-            let logs = self.logs.read().await;
-            if let Some(buffer) = logs.get(job_id) {
-                for entry in buffer {
+            if let Some(buffer) = self.logs.get(job_id) {
+                for entry in buffer.value() {
                     let log_entry = LogEntry {
                         job_id: entry.job_id.clone(),
                         line: entry.line.clone(),
@@ -371,8 +370,7 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
             while let Some(entry) = log_stream.next().await {
                 // Get sequence
                 let seq = {
-                    let seqs = sequences.read().await;
-                    seqs.get(&entry.job_id).copied().unwrap_or(0)
+                    sequences.get(&entry.job_id).map(|s| *s.value()).unwrap_or(0)
                 };
 
                 let log_entry = JobLogEntry {

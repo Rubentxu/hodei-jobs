@@ -749,7 +749,7 @@ mod tests {
     fn release_worker_result_failure() {
         let result = ReleaseWorkerResult::failure("Worker not found");
         assert!(!result.success);
-        assert_eq!(result.new_state, WorkerState::Unknown);
+        assert_eq!(result.new_state, WorkerState::Terminated);
         assert_eq!(result.error_message, Some("Worker not found".to_string()));
     }
 }

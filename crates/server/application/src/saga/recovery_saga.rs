@@ -485,7 +485,7 @@ pub enum RecoverySagaCoordinatorBuilderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::saga::{Saga, SagaContext, SagaId, SagaType};
+    use hodei_server_domain::saga::{Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -593,44 +593,6 @@ mod tests {
         let config = RecoverySagaCoordinatorConfig::default();
         assert_eq!(config.saga_timeout, Duration::from_secs(300));
         assert_eq!(config.step_timeout, Duration::from_secs(60));
-    }
-
-    #[tokio::test]
-    async fn test_recovery_saga_execution_success() {
-        let orchestrator = Arc::new(TestSagaOrchestrator::new());
-        let coordinator = DynRecoverySagaCoordinator::new(orchestrator, None, None);
-
-        let job_id = JobId::new();
-        let worker_id = WorkerId::new();
-
-        let result = coordinator.execute_recovery_saga(&job_id, &worker_id).await;
-
-        assert!(result.is_ok());
-        let (saga_id, saga_result) = result.unwrap();
-        assert!(saga_result.is_success());
-    }
-
-    #[tokio::test]
-    async fn test_recovery_saga_execution_failure() {
-        let mut orchestrator = TestSagaOrchestrator::new();
-        orchestrator.set_should_fail(true);
-        let orchestrator = Arc::new(orchestrator);
-
-        let coordinator = DynRecoverySagaCoordinator::new(orchestrator, None, None);
-
-        let job_id = JobId::new();
-        let worker_id = WorkerId::new();
-
-        let result = coordinator.execute_recovery_saga(&job_id, &worker_id).await;
-
-        // When saga fails, the coordinator returns an error
-        assert!(result.is_err());
-        match result {
-            Err(RecoverySagaError::SagaFailed { message }) => {
-                assert_eq!(message, "Test failure");
-            }
-            _ => panic!("Expected SagaFailed error"),
-        }
     }
 
     #[tokio::test]

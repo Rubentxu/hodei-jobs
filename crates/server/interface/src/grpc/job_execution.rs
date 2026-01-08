@@ -1,5 +1,6 @@
 //! Job Execution gRPC Service Implementation
 
+use dashmap::DashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
@@ -31,8 +32,6 @@ use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
 use hodei_server_domain::workers::WorkerProvider;
 use hodei_server_domain::workers::provider_api::ProviderError;
 use prost_types;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct JobExecutionServiceImpl {
@@ -40,10 +39,8 @@ pub struct JobExecutionServiceImpl {
     cancel_job_usecase: Arc<CancelJobUseCase>,
     job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
     worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
-    /// Providers map for immediate worker cleanup (EPIC-26 US-26.5)
-    providers: Arc<
-        RwLock<HashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
-    >,
+    /// Providers map for immediate worker cleanup (EPIC-26 US-26.5) - DashMap for lock-free concurrency
+    providers: Arc<DashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
     /// Outbox repository for emitting events (EPIC-26)
     outbox_repository: Option<
         Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>,
@@ -64,7 +61,7 @@ impl JobExecutionServiceImpl {
             cancel_job_usecase,
             job_repository,
             worker_registry,
-            providers: Arc::new(RwLock::new(HashMap::new())),
+            providers: Arc::new(DashMap::new()),
             outbox_repository: None,
             event_bus: None,
         }
@@ -76,11 +73,7 @@ impl JobExecutionServiceImpl {
         cancel_job_usecase: Arc<CancelJobUseCase>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
-        providers: Arc<
-            RwLock<
-                HashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>,
-            >,
-        >,
+        providers: Arc<DashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
         outbox_repository: Option<
             Arc<
                 dyn hodei_server_domain::outbox::OutboxRepository
@@ -119,7 +112,7 @@ impl JobExecutionServiceImpl {
     /// Register a provider for worker cleanup
     pub async fn register_provider(&self, provider: Arc<dyn WorkerProvider>) {
         let provider_id = provider.provider_id().clone();
-        self.providers.write().await.insert(provider_id, provider);
+        self.providers.insert(provider_id, provider);
     }
 
     /// Trigger immediate worker cleanup after job completion (EPIC-26 US-26.5)
@@ -241,9 +234,8 @@ impl JobExecutionServiceImpl {
         }
 
         // Destroy worker via provider immediately (FIX: Only unregister on success)
-        let providers = self.providers.read().await;
-        let destroy_result = if let Some(provider) = providers.get(&provider_id) {
-            provider.destroy_worker(worker.handle()).await.map_err(|e| {
+        let destroy_result = if let Some(provider) = self.providers.get(&provider_id) {
+            provider.value().destroy_worker(worker.handle()).await.map_err(|e| {
                 warn!(
                     "Failed to destroy worker {} via provider {}: {}",
                     worker_id, provider_id, e

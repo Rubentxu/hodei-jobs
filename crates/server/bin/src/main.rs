@@ -6,6 +6,7 @@ mod config;
 #[cfg(test)]
 mod tests_integration;
 
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tonic::transport::Server;
 use tonic_reflection::server::Builder as ReflectionBuilder;
 use tonic_web::GrpcWebLayer;
@@ -55,6 +56,7 @@ use hodei_server_infrastructure::persistence::postgres::saga_repository::{
 use hodei_server_domain::providers::ProviderConfigRepository;
 use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
+use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
 
 use hodei_server_infrastructure::messaging::OutboxEventBus;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::{
@@ -521,8 +523,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // EPIC-31: Create providers map early for shared access
     // This is used by JobExecutionService for worker cleanup notifications
-    let providers: Arc<RwLock<HashMap<ProviderId, Arc<dyn WorkerProvider>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    // EPIC-42: DashMap for lock-free concurrency
+    let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> =
+        Arc::new(DashMap::new());
 
     // EPIC-31: Use with_cleanup_support to enable JobQueued event publishing
     // The outbox_event_bus is required for reactive job processing (JobCoordinator)
@@ -741,9 +744,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !providers_map.is_empty() {
                 // EPIC-31: Populate the shared providers map (already created at line 354)
                 // This map is shared between JobExecutionService and other services
-                let mut providers_write = providers.write().await;
-                *providers_write = providers_map;
-                drop(providers_write);
+                // EPIC-42: DashMap for lock-free concurrency - insert each entry
+                for (provider_id, provider) in providers_map {
+                    providers.insert(provider_id, provider);
+                }
 
                 // EPIC-30: Saga Infrastructure - Disabled for now (needs full implementation)
                 info!(
@@ -919,6 +923,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("  ✓ Saga orchestrator initialized with PostgreSQL repository");
 
+    // GAP-60-01: Create CommandBus for saga command dispatch
+    let command_bus: DynCommandBus = Arc::new(InMemoryErasedCommandBus::new());
+
     // Create Provisioning Saga Coordinator (always enabled)
     let config =
         hodei_server_application::saga::provisioning_saga::ProvisioningSagaCoordinatorConfig {
@@ -945,6 +952,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_registry.clone(),
         outbox_event_bus.clone(),
         Some(job_repository.clone()),
+        command_bus.clone(), // GAP-60-01: CommandBus for saga command dispatch
         Some(config),
     ));
 
@@ -993,8 +1001,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let recovery_coordinator = Arc::new(DynRecoverySagaCoordinator::new(
         orchestrator.clone(),
+        command_bus.clone(), // GAP-60-01: CommandBus for saga command dispatch
+        worker_registry.clone(),
+        outbox_event_bus.clone(),
+        Some(job_repository.clone()),
+        None, // provisioning_service
         Some(config),
-        None,
+        None, // target_provider_id
     ));
 
     info!("  ✓ RecoverySagaCoordinator initialized");
