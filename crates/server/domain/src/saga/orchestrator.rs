@@ -3,8 +3,9 @@
 //! Core orchestrator for executing sagas with automatic compensation.
 
 use super::{
-    ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaError,
-    SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository, SagaState, SagaType,
+    CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
+    SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository,
+    SagaState, SagaType, TimeoutSaga,
 };
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::WorkerSpec;
@@ -374,9 +375,97 @@ where
                 Box::new(ExecutionSaga::new(job_id))
             }
             SagaType::Recovery => Box::new(RecoverySaga::new(JobId::new(), WorkerId::new(), None)),
-            SagaType::Cancellation | SagaType::Timeout | SagaType::Cleanup => {
-                // TODO: Implement these saga types
-                todo!("Saga type not yet implemented in reactive orchestrator")
+            // EPIC-50 GAP-MOD-01: Implement Cancellation, Timeout, and Cleanup saga types
+            SagaType::Cancellation => {
+                let job_id_str = context
+                    .metadata
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let job_id = if !job_id_str.is_empty() {
+                    JobId(
+                        uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    return Err(OrchestratorError::PersistenceError {
+                        message: "job_id required for CancellationSaga".to_string(),
+                    });
+                };
+
+                let reason = context
+                    .metadata
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("User requested")
+                    .to_string();
+
+                Box::new(CancellationSaga::new(job_id, reason))
+            }
+            SagaType::Timeout => {
+                let job_id_str = context
+                    .metadata
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let job_id = if !job_id_str.is_empty() {
+                    JobId(
+                        uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    return Err(OrchestratorError::PersistenceError {
+                        message: "job_id required for TimeoutSaga".to_string(),
+                    });
+                };
+
+                let timeout_secs = context
+                    .metadata
+                    .get("timeout_secs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(300) as u64;
+
+                let reason = context
+                    .metadata
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("timeout_exceeded")
+                    .to_string();
+
+                Box::new(TimeoutSaga::new(
+                    job_id,
+                    Duration::from_secs(timeout_secs),
+                    reason,
+                ))
+            }
+            SagaType::Cleanup => {
+                let dry_run = context
+                    .metadata
+                    .get("dry_run")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let unhealthy_threshold_secs = context
+                    .metadata
+                    .get("unhealthy_threshold_secs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(300) as u64;
+
+                let orphaned_threshold_secs = context
+                    .metadata
+                    .get("orphaned_threshold_secs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(600) as u64;
+
+                Box::new(
+                    CleanupSaga::with_thresholds(
+                        Duration::from_secs(unhealthy_threshold_secs),
+                        Duration::from_secs(orphaned_threshold_secs),
+                    )
+                    .with_dry_run(dry_run),
+                )
             }
         };
 

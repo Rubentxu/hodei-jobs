@@ -166,14 +166,35 @@ impl SagaStep for IdentifyUnhealthyWorkersStep {
                     will_compensate: false,
                 })?;
 
-        // Filter for unhealthy workers (no recent heartbeat)
-        // In a real implementation, we would check heartbeat timestamps
-        // For now, we identify workers in unexpected states
+        // EPIC-50 GAP-MOD-02: Filter for unhealthy workers by checking:
+        // 1. Workers stuck in Creating state (possibly failed to start)
+        // 2. Workers with stale heartbeat (no heartbeat for longer than threshold)
+        let now = chrono::Utc::now();
         let unhealthy_workers: Vec<WorkerId> = all_workers
             .iter()
-            .filter(|w| matches!(w.state(), WorkerState::Creating))
+            .filter(|w| {
+                // Check if worker is in unexpected/stuck state
+                let is_stuck_state = matches!(w.state(), WorkerState::Creating);
+
+                // Check if heartbeat is stale (exceeds threshold)
+                let last_hb = w.last_heartbeat();
+                let elapsed = now.signed_duration_since(last_hb);
+                let is_stale_heartbeat = elapsed.to_std()
+                    .map(|d| d > self.threshold)
+                    .unwrap_or(true); // If conversion fails, consider stale
+
+                // Worker is unhealthy if stuck OR has stale heartbeat (and not already terminated)
+                is_stuck_state || (is_stale_heartbeat && !matches!(w.state(), WorkerState::Terminated))
+            })
             .map(|w| w.id().clone())
             .collect();
+
+        debug!(
+            total_workers = %all_workers.len(),
+            unhealthy_count = %unhealthy_workers.len(),
+            threshold_secs = %self.threshold.as_secs(),
+            "Analyzed workers for heartbeat staleness"
+        );
 
         context
             .set_metadata(
