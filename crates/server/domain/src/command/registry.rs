@@ -22,8 +22,16 @@ impl HandlerRegistry {
         &mut self,
         handler: H,
     ) {
+        self.insert::<C, H>(handler);
+    }
+
+    /// Insert a handler for a command type (internal use)
+    pub(crate) fn insert<C: Command + 'static, H: CommandHandler<C> + Send + Sync + 'static>(
+        &mut self,
+        handler: H,
+    ) {
         let type_id = TypeId::of::<C>();
-        let boxed: Box<dyn Any + Send + Sync> = Box::new(handler);
+        let boxed: Box<dyn Any + Send + Sync> = Box::new(Arc::new(handler));
         self.handlers.insert(type_id, boxed);
     }
 

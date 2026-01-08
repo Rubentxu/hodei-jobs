@@ -98,8 +98,10 @@ impl Drop for InMemoryCommandBus {
 impl CommandBus for InMemoryCommandBus {
     async fn dispatch<C: Command>(&self, command: C) -> CommandResult<C::Output> {
         let key = command.idempotency_key();
+        let key_str = key.as_ref();
+
+        // Check idempotency if key is provided
         if !key.is_empty() {
-            let key_str = key.as_ref();
             let idempotency = self.idempotency.lock().await;
             if idempotency.is_duplicate(key_str).await {
                 return Err(CommandError::IdempotencyConflict {
@@ -107,16 +109,47 @@ impl CommandBus for InMemoryCommandBus {
                 });
             }
         }
-        Err(CommandError::HandlerNotFound {
-            command_type: std::any::type_name_of_val(&command),
+
+        // Get handler from registry
+        let registry = self.registry.lock().await;
+        let handler_box = registry.get_handler::<C>().ok_or_else(|| {
+            CommandError::HandlerNotFound {
+                command_type: std::any::type_name::<C>().to_string(),
+            }
+        })?;
+
+        // Downcast handler to correct type
+        use std::any::Any;
+        let handler_any: &dyn Any = &**handler_box;
+        let handler: &Arc<dyn CommandHandler<C, Error = anyhow::Error>> = handler_any
+            .downcast_ref::<Arc<dyn CommandHandler<C, Error = anyhow::Error>>>()
+            .ok_or_else(|| CommandError::HandlerNotFound {
+                command_type: std::any::type_name::<C>().to_string(),
+            })?;
+
+        // Execute handler (clone key for use after handler execution)
+        let key_for_marking = if key.is_empty() { None } else { Some(key_str.to_string()) };
+        let result = handler.handle(command).await;
+
+        // Mark as processed if idempotency key was provided
+        if let Some(key_to_mark) = key_for_marking {
+            let mut idempotency = self.idempotency.lock().await;
+            idempotency.mark_processed(&key_to_mark).await;
+        }
+
+        result.map_err(|e| CommandError::HandlerError {
+            command_type: std::any::type_name::<C>().to_string(),
+            error: format!("{:?}", e),
         })
     }
 
-    async fn register_handler<H, C>(&mut self, _handler: H)
+    async fn register_handler<H, C>(&mut self, handler: H)
     where
         H: CommandHandler<C> + Send + Sync + 'static,
         C: Command,
     {
+        let mut registry = self.registry.lock().await;
+        registry.insert::<C, H>(handler);
     }
 }
 
