@@ -37,9 +37,15 @@ pub enum PathSecurityError {
 /// # Example
 ///
 /// ```
-/// let sandbox = PathSandbox::new("/var/lib/hodei/jobs");
-/// let safe_path = sandbox.validate("/etc/passwd")?; // Returns error
+/// use hodei_worker_infrastructure::executor::{PathSandbox, PathSecurityError};
+///
+/// # fn main() -> Result<(), PathSecurityError> {
+/// // Use a dummy path for testing or create a temp dir
+/// let sandbox = PathSandbox::new("/tmp")?;
+/// // let safe_path = sandbox.validate("/etc/passwd")?; // Returns error
 /// let safe_path = sandbox.validate("job-123")?; // Returns sandbox/job-123
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct PathSandbox {
