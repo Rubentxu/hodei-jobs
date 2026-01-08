@@ -1,6 +1,9 @@
 //! Provider Domain Events Module
 //!
 //! Events related to provider lifecycle: registration, health, and recovery.
+//! This module implements the Providers bounded context for domain events.
+//!
+//! Events are defined in providers/events.rs and re-exported here for consistency.
 
 pub use super::ProviderRegistered;
 pub use super::ProviderUpdated;

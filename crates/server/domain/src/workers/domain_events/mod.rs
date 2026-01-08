@@ -1,10 +1,14 @@
 //! Worker Domain Events Module
 //!
 //! Events related to worker lifecycle: registration, heartbeat, and termination.
+//! This module implements the Workers bounded context for domain events.
+//!
+//! Events are defined in workers/events.rs and re-exported here for consistency.
 
 pub use super::super::events::CleanupReason;
 pub use super::super::events::TerminationReason;
 
+// Re-export all worker events from the main events module
 pub use super::WorkerRegistered;
 pub use super::WorkerStatusChanged;
 pub use super::WorkerTerminated;

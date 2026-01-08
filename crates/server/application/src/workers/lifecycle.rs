@@ -10,12 +10,9 @@
 //!
 //! GAP-GO-02: Delega responsabilidades a WorkerReconciler y WorkerGarbageCollector
 
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use crate::saga::provisioning_saga::{DynProvisioningSagaCoordinator, ProvisioningSagaError};
 use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaError};
-use crate::workers::garbage_collector::{CleanupResult, GarbageCollectorConfig, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector};
+use crate::workers::garbage_collector::{CleanupResult, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector};
 use crate::workers::reconciler::{ReconciliationResult, WorkerReconciler};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -260,6 +257,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Legacy reconciliation implementation (used when WorkerReconciler is not configured)
+    #[deprecated(since = "0.36.0", note = "Use WorkerReconciler instead")]
     async fn run_reconciliation_legacy(&self) -> Result<ReconciliationResult> {
         use hodei_server_domain::outbox::OutboxEventInsert;
 
@@ -499,6 +497,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Legacy cleanup implementation (used when WorkerGarbageCollector is not configured)
+    #[deprecated(since = "0.36.0", note = "Use WorkerGarbageCollector instead")]
     async fn cleanup_workers_legacy(&self) -> Result<CleanupResult> {
         use hodei_server_domain::events::DomainEvent;
         use hodei_server_domain::outbox::OutboxEventInsert;
@@ -738,6 +737,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Legacy recovery method (used when saga coordinator is not configured)
+    #[deprecated(since = "0.36.0", note = "Use RecoverySagaCoordinator instead")]
     async fn recover_worker_legacy(
         &self,
         job_id: &JobId,
@@ -1189,6 +1189,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Legacy orphan detection implementation
+    #[deprecated(since = "0.36.0", note = "Use WorkerGarbageCollector instead")]
     async fn detect_and_cleanup_orphans_legacy(&self) -> Result<OrphanCleanupResult> {
         use hodei_server_domain::outbox::OutboxEventInsert;
 
@@ -1272,6 +1273,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Detect orphan workers for a specific provider (legacy)
+    #[deprecated(since = "0.36.0", note = "Use WorkerGarbageCollector instead")]
     async fn detect_orphans_for_provider(
         &self,
         provider: &Arc<dyn WorkerProvider>,
@@ -1316,6 +1318,7 @@ impl WorkerLifecycleManager {
     }
 
     /// Emit OrphanWorkerDetected event (legacy)
+    #[deprecated(since = "0.36.0", note = "Use WorkerGarbageCollector instead")]
     async fn emit_orphan_detected(&self, orphan: &OrphanWorkerInfo, provider_id: &ProviderId) {
         use hodei_server_domain::outbox::OutboxEventInsert;
 
@@ -1352,7 +1355,8 @@ impl WorkerLifecycleManager {
         }
     }
 
-    /// Emit GarbageCollectionCompleted event
+    /// Emit GarbageCollectionCompleted event (legacy)
+    #[deprecated(since = "0.36.0", note = "Use WorkerGarbageCollector instead")]
     async fn emit_garbage_collection_completed(&self, result: &OrphanCleanupResult) {
         use hodei_server_domain::outbox::OutboxEventInsert;
 
