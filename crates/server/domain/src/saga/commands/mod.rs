@@ -14,7 +14,8 @@ pub use execution::{
 };
 pub use provisioning::{
     CreateWorkerCommand, CreateWorkerError, CreateWorkerHandler, DestroyWorkerCommand,
-    DestroyWorkerError, DestroyWorkerHandler,
+    DestroyWorkerError, DestroyWorkerHandler, UnregisterWorkerCommand, UnregisterWorkerError,
+    UnregisterWorkerHandler,
 };
 pub use recovery::{
     CheckConnectivityCommand, CheckConnectivityResult, DestroyOldWorkerCommand,

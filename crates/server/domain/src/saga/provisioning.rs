@@ -2,8 +2,10 @@
 //!
 //! Saga para el aprovisionamiento de workers on-demand.
 
+use crate::command::erased::dispatch_erased;
 use crate::event_bus::EventBus;
 use crate::events::DomainEvent;
+use crate::saga::commands::{CreateWorkerCommand, DestroyWorkerCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::{WorkerProvisioning, WorkerRegistry, WorkerSpec};
@@ -158,8 +160,8 @@ impl SagaStep for ValidateProviderCapacityStep {
 
 /// Step que crea infraestructura real para un worker.
 ///
-/// Este step utiliza el `WorkerProvisioning` service inyectado en el contexto
-/// para crear infraestructura real. En compensación, destruye el worker creado.
+/// Este step utiliza el `CommandBus` inyectado en el contexto para despachar
+/// comandos de creación de infraestructura.
 ///
 /// # Metadata Guardado
 /// - `worker_id`: ID del worker creado (para compensación)
@@ -200,21 +202,18 @@ impl SagaStep for CreateInfrastructureStep {
 
     #[instrument(skip(context), fields(step = "CreateInfrastructure", provider_id = %self.provider_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        // Get provisioning service from context (clone to avoid borrow conflict)
+        // Get command bus from context
         let services_ref = context
             .services()
             .ok_or_else(|| SagaError::PersistenceError {
                 message: "SagaServices not available in context".to_string(),
             })?;
 
-        let provisioning_service_opt = services_ref.provisioning_service.clone();
-
-        let provisioning_service =
-            provisioning_service_opt
-                .as_ref()
-                .ok_or_else(|| SagaError::PersistenceError {
-                    message: "WorkerProvisioning service not available".to_string(),
-                })?;
+        let command_bus = services_ref.command_bus.as_ref().cloned().ok_or_else(|| {
+            SagaError::PersistenceError {
+                message: "CommandBus not available in SagaServices".to_string(),
+            }
+        })?;
 
         // Idempotency check: skip if already provisioned
         if let Some(Ok(true)) = context.get_metadata::<bool>("worker_provisioning_done") {
@@ -248,16 +247,23 @@ impl SagaStep for CreateInfrastructureStep {
             provider_id = %self.provider_id,
             image = %self.spec.image,
             job_id = %job_id,
-            "🔨 Provisioning worker infrastructure..."
+            "🔨 Provisioning worker infrastructure via CommandBus..."
         );
 
-        // Execute real provisioning
-        let provisioning_result = provisioning_service
-            .provision_worker(&self.provider_id, self.spec.clone(), job_id)
+        // Create the command
+        let command = CreateWorkerCommand::new(
+            self.spec.clone(),
+            self.provider_id.clone(),
+            job_id,
+            context.saga_id.to_string(),
+        );
+
+        // Dispatch command via CommandBus
+        let provisioning_result = dispatch_erased(&command_bus, command)
             .await
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),
-                message: format!("Failed to provision worker: {}", e),
+                message: format!("Failed to dispatch CreateWorkerCommand: {}", e),
                 will_compensate: true,
             })?;
 
@@ -293,13 +299,8 @@ impl SagaStep for CreateInfrastructureStep {
 
     /// Compensates by destroying the worker that was created.
     ///
-    /// This method reads the `worker_id` from the context metadata (which was
-    /// stored during `execute()`) and calls `destroy_worker()` on the
-    /// provisioning service to clean up the infrastructure.
-    ///
-    /// This method is idempotent - calling it multiple times with the same
-    /// worker_id will not cause errors (the second call will simply fail
-    /// because the worker no longer exists).
+    /// This method reads the `worker_id` from the context metadata and
+    /// dispatches a `DestroyWorkerCommand`.
     #[instrument(skip(context), fields(step = "CreateInfrastructure"))]
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         // Get worker_id from metadata
@@ -315,7 +316,7 @@ impl SagaStep for CreateInfrastructureStep {
             }
         };
 
-        // Get provisioning service from context
+        // Get command bus from context
         let services = context
             .services()
             .ok_or_else(|| SagaError::CompensationFailed {
@@ -323,10 +324,10 @@ impl SagaStep for CreateInfrastructureStep {
                 message: "SagaServices not available".to_string(),
             })?;
 
-        let provisioning_service = services.provisioning_service.as_ref().ok_or_else(|| {
+        let command_bus = services.command_bus.as_ref().ok_or_else(|| {
             SagaError::CompensationFailed {
                 step: self.name().to_string(),
-                message: "WorkerProvisioning service not available".to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
             }
         })?;
 
@@ -339,21 +340,28 @@ impl SagaStep for CreateInfrastructureStep {
 
         info!(
             worker_id = %worker_id_str,
-            "🔄 Compensating: destroying worker infrastructure"
+            "🔄 Compensating: dispatching DestroyWorkerCommand"
         );
 
-        // Execute real compensation
-        provisioning_service
-            .destroy_worker(&worker_id)
+        // Create command
+        let command = DestroyWorkerCommand::with_reason(
+            worker_id,
+            self.provider_id.clone(),
+            context.saga_id.to_string(),
+            "Saga compensation",
+        );
+
+        // Dispatch command
+        dispatch_erased(&command_bus, command)
             .await
             .map_err(|e| SagaError::CompensationFailed {
                 step: self.name().to_string(),
-                message: format!("Failed to destroy worker {}: {}", worker_id_str, e),
+                message: format!("Failed to dispatch DestroyWorkerCommand: {}", e),
             })?;
 
         info!(
             worker_id = %worker_id_str,
-            "✅ Worker infrastructure destroyed (compensation complete)"
+            "✅ Worker infrastructure destruction command dispatched"
         );
 
         Ok(())

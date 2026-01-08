@@ -521,35 +521,21 @@ impl SagaStep for MarkJobFailedStep {
     }
 
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
-        let services = context
+        let _services = context
             .services()
             .ok_or_else(|| SagaError::CompensationFailed {
                 step: self.name().to_string(),
                 message: "SagaServices not available".to_string(),
             })?;
 
-        let job_repository =
-            services
-                .job_repository
-                .as_ref()
-                .ok_or_else(|| SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: "JobRepository not available".to_string(),
-                })?;
-
-        // Try to restore job to running state (best effort)
-        info!(job_id = %self.job_id, "Attempting to restore job state");
-
-        job_repository
-            .update_state(&self.job_id, JobState::Running)
-            .await
-            .map_err(|e| {
-                warn!(job_id = %self.job_id, "Failed to restore job state: {}", e);
-                SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to restore job state: {}", e),
-                }
-            })?;
+        // EPIC-53: Corrected compensation logic.
+        // We DO NOT restore the job to Running state because a timeout indicates
+        // the job cannot complete normally. Restoring it would cause an infinite
+        // loop of Timeout -> Compensate -> Running -> Timeout.
+        warn!(
+            job_id = %self.job_id,
+            "Timeout saga compensation: Job will remain in Failed/Timeout state as restoring to Running is semantically incorrect"
+        );
 
         Ok(())
     }

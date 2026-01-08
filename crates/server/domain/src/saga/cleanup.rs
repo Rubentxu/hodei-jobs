@@ -11,8 +11,11 @@
 use crate::ProviderId;
 use crate::WorkerRegistry;
 use crate::WorkerState;
+use crate::command::erased::dispatch_erased;
+use crate::command::jobs::MarkJobFailedCommand;
 use crate::events::DomainEvent;
 use crate::jobs::JobRepository;
+use crate::saga::commands::UnregisterWorkerCommand;
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
 use std::time::Duration;
@@ -376,7 +379,14 @@ impl SagaStep for CleanupUnhealthyWorkersStep {
             will_compensate: false,
         })?;
 
-        let worker_registry = &services.provider_registry;
+        // Clone command_bus Arc to avoid borrowing context immutably while mutating it later
+        let command_bus = services.command_bus.as_ref().cloned().ok_or_else(|| {
+            SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available".to_string(),
+                will_compensate: false,
+            }
+        })?;
 
         // Get list of unhealthy workers
         let worker_ids: Vec<String> = context
@@ -409,13 +419,22 @@ impl SagaStep for CleanupUnhealthyWorkersStep {
 
             let worker_id = WorkerId::from_string(&worker_id_str);
             if let Some(wid) = worker_id {
-                // Unregister the unhealthy worker (non-critical, continue on error)
-                let _ = worker_registry.unregister(&wid).await.map_err(|e| {
-                    warn!(worker_id = %wid, "Failed to unregister worker: {}", e);
-                });
+                // Unregister the unhealthy worker via CommandBus
+                let command = UnregisterWorkerCommand::with_reason(
+                    wid.clone(),
+                    context.saga_id.to_string(),
+                    "Cleanup unhealthy worker",
+                );
 
-                cleaned_count += 1;
-                info!(worker_id = %wid, "Cleaned up unhealthy worker");
+                match dispatch_erased(&command_bus, command).await {
+                    Ok(_) => {
+                        cleaned_count += 1;
+                        info!(worker_id = %wid, "Cleaned up unhealthy worker via CommandBus");
+                    }
+                    Err(e) => {
+                        warn!(worker_id = %wid, "Failed to unregister worker: {}", e);
+                    }
+                }
             }
         }
 
@@ -483,15 +502,14 @@ impl SagaStep for ResetOrphanedJobsStep {
             will_compensate: false,
         })?;
 
-        let job_repository =
-            services
-                .job_repository
-                .as_ref()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "JobRepository not available".to_string(),
-                    will_compensate: true,
-                })?;
+        // Clone command_bus Arc
+        let command_bus = services.command_bus.as_ref().cloned().ok_or_else(|| {
+            SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available".to_string(),
+                will_compensate: false,
+            }
+        })?;
 
         let event_bus = &services.event_bus;
 
@@ -533,30 +551,35 @@ impl SagaStep for ResetOrphanedJobsStep {
                     })?,
                 );
 
-            // Reset job to failed state (non-critical, continue on error)
-            let _ = job_repository
-                .update_state(&job_id, JobState::Failed)
-                .await
-                .map_err(|e| {
+            // Reset job to failed state via CommandBus
+            let command = MarkJobFailedCommand::new(
+                job_id.clone(),
+                "Orphaned job cleanup",
+            );
+
+            match dispatch_erased(&command_bus, command).await {
+                Ok(_) => {
+                    reset_count += 1;
+                    info!(job_id = %job_id, "Reset orphaned job to FAILED via CommandBus");
+
+                    // Publish job status changed event
+                    let event = DomainEvent::JobStatusChanged {
+                        job_id: job_id.clone(),
+                        old_state: JobState::Running,
+                        new_state: JobState::Failed,
+                        correlation_id: context.correlation_id.clone(),
+                        actor: context.actor.clone(),
+                        occurred_at: chrono::Utc::now(),
+                    };
+
+                    let _ = event_bus.publish(&event).await.map_err(|e| {
+                        warn!(job_id = %job_id, "Failed to publish event: {}", e);
+                    });
+                }
+                Err(e) => {
                     warn!(job_id = %job_id, "Failed to reset job: {}", e);
-                });
-
-            // Publish job status changed event
-            let event = DomainEvent::JobStatusChanged {
-                job_id: job_id.clone(),
-                old_state: JobState::Running,
-                new_state: JobState::Failed,
-                correlation_id: context.correlation_id.clone(),
-                actor: context.actor.clone(),
-                occurred_at: chrono::Utc::now(),
-            };
-
-            let _ = event_bus.publish(&event).await.map_err(|e| {
-                warn!(job_id = %job_id, "Failed to publish event: {}", e);
-            });
-
-            reset_count += 1;
-            info!(job_id = %job_id, "Reset orphaned job to FAILED");
+                }
+            }
         }
 
         context

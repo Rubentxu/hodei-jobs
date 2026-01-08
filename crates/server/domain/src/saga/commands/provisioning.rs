@@ -5,7 +5,7 @@
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
-use crate::workers::{WorkerProvisioning, WorkerProvisioningResult, WorkerSpec};
+use crate::workers::{WorkerProvisioning, WorkerProvisioningResult, WorkerRegistry, WorkerSpec};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -251,6 +251,114 @@ where
             .destroy_worker(&command.worker_id)
             .await
             .map_err(|e| DestroyWorkerError::DestructionFailed {
+                worker_id: command.worker_id,
+                source: e,
+            })
+    }
+}
+
+/// Command to unregister a worker from the registry.
+///
+/// This command removes the worker from the active registry.
+/// It is typically used during cleanup or when a worker is destroyed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnregisterWorkerCommand {
+    /// The ID of the worker to unregister
+    pub worker_id: WorkerId,
+    /// The saga that initiated this command
+    pub saga_id: String,
+    /// Optional reason for unregistration
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Optional metadata for tracing
+    #[serde(default)]
+    pub metadata: CommandMetadataDefault,
+}
+
+impl UnregisterWorkerCommand {
+    /// Creates a new UnregisterWorkerCommand.
+    #[inline]
+    pub fn new(worker_id: WorkerId, saga_id: String) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            worker_id,
+            saga_id,
+            reason: None,
+            metadata,
+        }
+    }
+
+    /// Creates a command with a reason.
+    #[inline]
+    pub fn with_reason(
+        worker_id: WorkerId,
+        saga_id: String,
+        reason: impl Into<String>,
+    ) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            worker_id,
+            saga_id,
+            reason: Some(reason.into()),
+            metadata,
+        }
+    }
+}
+
+impl Command for UnregisterWorkerCommand {
+    type Output = ();
+
+    #[inline]
+    fn idempotency_key(&self) -> Cow<'_, str> {
+        Cow::Owned(format!(
+            "{}-unregister-worker-{}",
+            self.saga_id, self.worker_id
+        ))
+    }
+}
+
+/// Error types for UnregisterWorkerHandler.
+#[derive(Debug, thiserror::Error)]
+pub enum UnregisterWorkerError {
+    #[error("Failed to unregister worker {worker_id}: {source}")]
+    UnregistrationFailed {
+        worker_id: WorkerId,
+        source: crate::shared_kernel::DomainError,
+    },
+}
+
+/// Handler for UnregisterWorkerCommand.
+#[derive(Debug)]
+pub struct UnregisterWorkerHandler<R>
+where
+    R: WorkerRegistry + Debug,
+{
+    registry: R,
+}
+
+impl<R> UnregisterWorkerHandler<R>
+where
+    R: WorkerRegistry + Debug,
+{
+    /// Creates a new handler with the given registry.
+    #[inline]
+    pub fn new(registry: R) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait]
+impl<R> CommandHandler<UnregisterWorkerCommand> for UnregisterWorkerHandler<R>
+where
+    R: WorkerRegistry + Debug + Send + Sync + 'static,
+{
+    type Error = UnregisterWorkerError;
+
+    async fn handle(&self, command: UnregisterWorkerCommand) -> Result<(), Self::Error> {
+        self.registry
+            .unregister(&command.worker_id)
+            .await
+            .map_err(|e| UnregisterWorkerError::UnregistrationFailed {
                 worker_id: command.worker_id,
                 source: e,
             })
