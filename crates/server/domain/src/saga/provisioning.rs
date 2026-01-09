@@ -5,7 +5,9 @@
 use crate::command::erased::dispatch_erased;
 use crate::event_bus::EventBus;
 use crate::events::DomainEvent;
-use crate::saga::commands::{CreateWorkerCommand, DestroyWorkerCommand};
+use crate::saga::commands::{
+    CreateWorkerCommand, DestroyWorkerCommand, PublishProvisionedCommand, ValidateProviderCommand,
+};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::events::WorkerProvisioned;
@@ -106,8 +108,8 @@ impl Saga for ProvisioningSaga {
 
 /// Step que valida que el provider tenga capacidad para el worker solicitado.
 ///
-/// Este step almacena el provider_id en el contexto para uso por el coordinador.
-/// La validación real de capacidad se realiza en el coordinador.
+/// Este step despacha ValidateProviderCommand para realizar la validación real
+/// de capacidad, siguiendo el patrón Command Handler.
 #[derive(Debug, Clone)]
 pub struct ValidateProviderCapacityStep {
     provider_id: ProviderId,
@@ -129,20 +131,54 @@ impl SagaStep for ValidateProviderCapacityStep {
 
     #[instrument(skip(context), fields(step = "ValidateProviderCapacity", provider_id = %self.provider_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        // Store provider_id in context for coordinator use
+        // Get command bus from context
+        let services_ref = context
+            .services()
+            .ok_or_else(|| SagaError::PersistenceError {
+                message: "SagaServices not available in context".to_string(),
+            })?;
+
+        let command_bus = services_ref.command_bus.as_ref().cloned().ok_or_else(|| {
+            SagaError::PersistenceError {
+                message: "CommandBus not available in SagaServices".to_string(),
+            }
+        })?;
+
+        // Create ValidateProviderCommand
+        let command = ValidateProviderCommand::new(
+            self.provider_id.clone(),
+            context.saga_id.to_string(),
+        );
+
+        // Dispatch command via CommandBus
+        let capacity_result = dispatch_erased(&command_bus, command)
+            .await
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to validate provider capacity: {}", e),
+                will_compensate: false,
+            })?;
+
+        // Store capacity result in context for coordinator use
         context
-            .set_metadata("saga_provider_id", &self.provider_id.to_string())
+            .set_metadata("provider_has_capacity", &capacity_result.has_capacity)
             .map_err(|e| SagaError::PersistenceError {
                 message: e.to_string(),
             })?;
 
-        debug!(provider_id = %self.provider_id, "Provider capacity validation step completed");
+        context
+            .set_metadata("provider_available_slots", &capacity_result.available_slots)
+            .map_err(|e| SagaError::PersistenceError {
+                message: e.to_string(),
+            })?;
+
+        info!(provider_id = %self.provider_id, has_capacity = %capacity_result.has_capacity, slots = %capacity_result.available_slots, "Provider capacity validation completed");
 
         Ok(())
     }
 
     async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
-        // No compensation needed for validation metadata
+        // Validation is read-only, no compensation needed
         Ok(())
     }
 
@@ -389,9 +425,11 @@ impl SagaStep for CreateInfrastructureStep {
 // PublishProvisionedEventStep
 // ============================================================================
 
-/// Step que publica el evento DomainEvent::WorkerProvisioned.
+/// Step que publica el evento WorkerProvisioned.
 ///
-/// Este step publica el evento de worker provisionado en el EventBus.
+/// Este step despacha PublishProvisionedCommand para realizar la publicación
+/// del evento, siguiendo el patrón Command Handler.
+///
 /// Es el paso final de la saga de aprovisionamiento.
 #[derive(Debug, Clone)]
 pub struct PublishProvisionedEventStep;
@@ -422,16 +460,24 @@ impl SagaStep for PublishProvisionedEventStep {
             return Ok(());
         }
 
-        // Get services from context
-        let services = context.services().ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: "SagaServices not available".to_string(),
-            will_compensate: false,
+        // Get command bus from context
+        let services_ref = context
+            .services()
+            .ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available".to_string(),
+                will_compensate: false,
+            })?;
+
+        let command_bus = services_ref.command_bus.as_ref().cloned().ok_or_else(|| {
+            SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: false,
+            }
         })?;
 
         // Get required metadata from context
-        // get_metadata returns Option<SagaResult<V>>, need to handle both None and Err cases
-        // Use worker_id from CreateInfrastructureStep (not registered_worker_id since workers self-register)
         let worker_id_str = context
             .get_metadata::<String>("worker_id")
             .and_then(|result| result.ok())
@@ -448,14 +494,38 @@ impl SagaStep for PublishProvisionedEventStep {
                 will_compensate: true,
             })?;
 
-        let provider_id_str = context
-            .get_metadata::<String>("provider_id")
-            .and_then(|result| result.ok())
-            .ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "provider_id not found in context".to_string(),
-                will_compensate: true,
-            })?;
+        // Use provider_id from context (set by CreateInfrastructureStep)
+        // First try "provider_id", fallback to "worker_provider_id"
+        let provider_id_str = match context.get_metadata::<String>("provider_id") {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                // Try fallback
+                match context.get_metadata::<String>("worker_provider_id") {
+                    Some(Ok(id)) => id,
+                    Some(Err(_)) => {
+                        return Err(SagaError::StepFailed {
+                            step: self.name().to_string(),
+                            message: "provider_id not found in context".to_string(),
+                            will_compensate: true,
+                        });
+                    }
+                    None => {
+                        return Err(SagaError::StepFailed {
+                            step: self.name().to_string(),
+                            message: "provider_id not found in context".to_string(),
+                            will_compensate: true,
+                        });
+                    }
+                }
+            }
+            None => {
+                return Err(SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "provider_id not found in context".to_string(),
+                    will_compensate: true,
+                });
+            }
+        };
 
         let provider_id =
             ProviderId::from_uuid(uuid::Uuid::parse_str(&provider_id_str).map_err(|e| {
@@ -477,21 +547,18 @@ impl SagaStep for PublishProvisionedEventStep {
             .map(|s| format!("image={}", s))
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Create the WorkerProvisioned event
-        // EPIC-65 Phase 3: Using modular event type
-        let provisioned_event = WorkerProvisioned {
-            worker_id: worker_id.clone(),
-            provider_id: provider_id.clone(),
+        // Create PublishProvisionedCommand
+        let command = PublishProvisionedCommand::with_context(
+            worker_id.clone(),
+            provider_id.clone(),
             spec_summary,
-            correlation_id: context.correlation_id.clone(),
-            actor: context.actor.clone(),
-            occurred_at: chrono::Utc::now(),
-        };
+            context.saga_id.to_string(),
+            context.correlation_id.clone(),
+            context.actor.clone(),
+        );
 
-        // Publish the event
-        services
-            .event_bus
-            .publish(&provisioned_event.into())
+        // Dispatch command via CommandBus
+        dispatch_erased(&command_bus, command)
             .await
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),

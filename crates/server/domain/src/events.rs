@@ -34,6 +34,7 @@ pub enum DomainEvent {
         actor: Option<String>,
     },
     /// Un nuevo worker se ha registrado en el sistema
+    #[deprecated(note = "Use WorkerReady instead - WorkerRegistered doesn't indicate job readiness")]
     WorkerRegistered {
         worker_id: WorkerId,
         provider_id: ProviderId,
