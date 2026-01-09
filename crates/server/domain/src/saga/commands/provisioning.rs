@@ -854,7 +854,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_worker_handler_provisions_worker() {
-        let provisioning = MockWorkerProvisioning;
+        let provisioning = Arc::new(MockWorkerProvisioning);
         let handler = CreateWorkerHandler::new(provisioning);
         let cmd = CreateWorkerCommand::new(
             make_test_worker_spec(),
@@ -897,7 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn destroy_worker_handler_destroys_worker() {
-        let provisioning = MockWorkerProvisioning;
+        let provisioning = Arc::new(MockWorkerProvisioning);
         let handler = DestroyWorkerHandler::new(provisioning);
         let cmd = DestroyWorkerCommand::new(
             WorkerId::new(),

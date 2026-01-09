@@ -92,6 +92,8 @@ pub struct WorkerAgentServiceImpl {
     /// EPIC-42: WorkerSupervisorActor handle for lock-free worker management
     /// When Some, worker operations are routed through the Actor
     supervisor_handle: Option<WorkerSupervisorHandle>,
+    /// Job dispatcher for triggering job dispatch when worker becomes ready
+    job_dispatcher: Option<Arc<hodei_server_application::jobs::dispatcher::JobDispatcher>>,
 }
 
 impl Default for WorkerAgentServiceImpl {
@@ -218,6 +220,7 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: None,
             log_ingestor: None,
             supervisor_handle: None,
+            job_dispatcher: None,
         }
     }
 
@@ -242,6 +245,7 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: None,
             log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
+            job_dispatcher: None,
         }
     }
 
@@ -292,6 +296,7 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: None,
             log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
+            job_dispatcher: None,
         }
     }
 
@@ -318,6 +323,7 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: None,
             log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
+            job_dispatcher: None,
         }
     }
 
@@ -352,6 +358,7 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: Some(Arc::new(heartbeat_processor)),
             log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: None,
+            job_dispatcher: None,
         }
     }
 
@@ -421,7 +428,7 @@ impl WorkerAgentServiceImpl {
                 Ok(_) => {
                     debug!("EPIC-42: Actor updated successfully (Worker existed)");
                     // Worker is known to Actor, we're done
-                    self.emit_worker_events(&worker_id).await?;
+                    self.emit_worker_events(&worker_id, job_id_from_token).await?;
                     return Ok(());
                 }
                 Err(e) => {
@@ -564,7 +571,8 @@ impl WorkerAgentServiceImpl {
 
                                 // BUG-001 FIX: Persist worker to PostgreSQL via WorkerRegistry
                                 if let Some(ref registry) = self.worker_registry {
-                                    let job_id = job_id_from_token.unwrap_or_else(JobId::new);
+                                    // Clone to avoid consuming job_id_from_token for later emit_worker_events call
+                                    let job_id = job_id_from_token.clone().unwrap_or_else(JobId::new);
                                     match registry
                                         .register(handle.clone(), spec.clone(), job_id)
                                         .await
@@ -623,7 +631,7 @@ impl WorkerAgentServiceImpl {
         }
 
         // 2. Emit WorkerRegistered and WorkerReady events (triggers JobDispatcher)
-        self.emit_worker_events(&worker_id, job_id_from_request).await?;
+        self.emit_worker_events(&worker_id, job_id_from_token.clone()).await?;
 
         Ok(())
     }
@@ -1255,6 +1263,9 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             };
 
         // Only validate OTP if needed (no valid session found)
+        // Initialize job_id_from_request with default None
+        let mut job_id_from_request: Option<JobId> = None;
+
         if needs_otp_validation {
             info!(
                 "🔐 WorkerAgentService::register: Validating OTP token for worker {}...",
@@ -1268,23 +1279,18 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             );
 
             // Extract job_id from request (passed by worker via env var)
-            let job_id_from_request = if let Some(ref jid_str) = req.job_id {
+            if let Some(ref jid_str) = req.job_id {
                 if !jid_str.is_empty() {
                     match Self::parse_job_uuid(jid_str) {
                         Ok(jid) => {
                             info!("📋 Extracted job_id from request: {}", jid);
-                            Some(jid)
+                            job_id_from_request = Some(jid);
                         }
                         Err(e) => {
                             warn!("Invalid job_id format in request: {}", e);
-                            None
                         }
                     }
-                } else {
-                    None
                 }
-            } else {
-                None
             };
 
             info!(
@@ -1293,7 +1299,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             );
 
             // Pass worker_info and job_id for JIT registration if needed
-            self.on_worker_registered(&validated_worker_id, &worker_info, job_id_from_request)
+            self.on_worker_registered(&validated_worker_id, &worker_info, job_id_from_request.clone())
                 .await?;
         } else {
             info!(

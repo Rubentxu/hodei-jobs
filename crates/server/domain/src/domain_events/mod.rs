@@ -14,11 +14,9 @@
 //! ## Usage
 //!
 //! ```rust
-//! use hodei_domain::events::{
-//!     jobs::JobCreated,
-//!     workers::WorkerRegistered,
-//!     providers::ProviderHealthChanged,
-//! };
+//! use hodei_server_domain::domain_events::jobs::JobCreated;
+//! use hodei_server_domain::domain_events::workers::WorkerRegistered;
+//! use hodei_server_domain::domain_events::providers::ProviderHealthChanged;
 //! ```
 //!
 //! ## Migration Strategy

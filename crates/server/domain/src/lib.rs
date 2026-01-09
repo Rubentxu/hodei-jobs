@@ -53,10 +53,10 @@ pub mod events_public {
     //!
     //! ```rust
     //! // Legacy usage
-    //! use hodei_domain::events_public::DomainEvent;
+    //! use hodei_server_domain::events_public::DomainEvent;
     //!
     //! // New modular usage
-    //! use hodei_domain::events_public::jobs::JobCreated;
+    //! use hodei_server_domain::events_public::jobs::JobCreated;
     //! ```
 
     pub use crate::domain_events::*;
