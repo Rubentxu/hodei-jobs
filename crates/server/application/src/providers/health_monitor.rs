@@ -409,7 +409,7 @@ pub mod tests {
     use hodei_server_domain::workers::{
         HealthStatus, ProviderCapabilities, ProviderError, ProviderType, WorkerHandle, WorkerSpec,
     };
-    use hodei_server_domain::{DomainEvent, EventBusError};
+    use hodei_server_domain::{DomainEvent, event_bus::EventBusError};
     use std::time::Duration;
 
     pub struct MockEventBus {
