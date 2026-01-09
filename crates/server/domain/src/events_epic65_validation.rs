@@ -278,11 +278,12 @@ mod epic65_validation_tests {
         let correlation_id = Some(Uuid::new_v4().to_string());
         let actor = Some("test".to_string());
 
-        // WorkerRegistered
-        let _: DomainEvent = WorkerRegistered {
+        // WorkerReady (replaces deprecated WorkerRegistered)
+        let _: DomainEvent = WorkerReady {
             worker_id: worker_id.clone(),
             provider_id: provider_id.clone(),
-            occurred_at: now,
+            job_id: None,
+            ready_at: now,
             correlation_id: correlation_id.clone(),
             actor: actor.clone(),
         }

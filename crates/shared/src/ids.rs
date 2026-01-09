@@ -91,7 +91,7 @@ impl From<String> for WorkerId {
 }
 
 /// Identificador de correlación para tracking de operaciones
-#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CorrelationId(pub Uuid);
 
 impl CorrelationId {

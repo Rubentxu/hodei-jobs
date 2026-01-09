@@ -65,16 +65,17 @@ async fn test_worker_lifecycle_events() -> anyhow::Result<()> {
     // 2. Simulate worker lifecycle events
     println!("📡 Publishing worker lifecycle events...");
 
-    // WorkerRegistered event
-    let worker_reg_event = DomainEvent::WorkerRegistered {
+    // WorkerReady event (replaces deprecated WorkerRegistered)
+    let worker_ready_event = DomainEvent::WorkerReady {
         worker_id: WorkerId::new(),
         provider_id: ProviderId::new(),
-        occurred_at: chrono::Utc::now(),
+        job_id: None,
+        ready_at: chrono::Utc::now(),
         correlation_id: None,
         actor: None,
     };
-    event_bus.publish(&worker_reg_event).await?;
-    println!("✓ WorkerRegistered event published");
+    event_bus.publish(&worker_ready_event).await?;
+    println!("✓ WorkerReady event published");
 
     // WorkerProvisioned event
     let worker_prov_event = DomainEvent::WorkerProvisioned {
@@ -123,7 +124,7 @@ async fn test_worker_lifecycle_events() -> anyhow::Result<()> {
         Err(_) => return Err(anyhow::anyhow!("Timeout waiting for event")),
     };
 
-    assert_eq!(received1.event_type(), "WorkerRegistered");
+    assert_eq!(received1.event_type(), "WorkerReady");
     assert_eq!(received2.event_type(), "WorkerProvisioned");
     assert_eq!(received3.event_type(), "WorkerDisconnected");
 

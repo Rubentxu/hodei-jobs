@@ -236,10 +236,11 @@ async fn event_bus_different_event_types() -> anyhow::Result<()> {
             correlation_id: None,
             actor: None,
         },
-        DomainEvent::WorkerRegistered {
+        DomainEvent::WorkerReady {
             worker_id: WorkerId::new(),
             provider_id: ProviderId::new(),
-            occurred_at: Utc::now(),
+            job_id: None,
+            ready_at: Utc::now(),
             correlation_id: None,
             actor: None,
         },
