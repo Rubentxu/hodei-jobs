@@ -359,6 +359,33 @@ The domain layer contains the **business logic and core concepts** of the platfo
 
 **Key Components**:
 
+**Aggregate Root: Job**
+
+**📋 Responsabilidad (SOLID)**:
+- **Single Responsibility Principle (SRP)**: El agregado `Job` es responsable de mantener la consistencia del ciclo de vida de un job. Es el único lugar donde se pueden modificar las invariantes de negocio relacionadas con un job.
+- **Open/Closed Principle (OCP)**: Abierto para extensión (nuevos estados, nuevas validaciones) pero cerrado para modificación (métodos públicos estables).
+
+**🏗️ Ámbito en DDD**: **Bounded Context: Jobs**
+- Es el **Aggregate Root** del contexto de Jobs, lo que significa que:
+- Todas las modificaciones a un Job y sus entidades relacionadas deben pasar por este agregado
+- Garantiza la consistencia transaccional dentro del agregado
+- Implementa las reglas de negocio del dominio
+
+**🔗 Dependencias**:
+- **Internal**: `JobId`, `JobSpec`, `JobState`, `ExecutionContext` (Value Objects del mismo contexto)
+- **No dependencies externas**: Puro dominio, sin dependencias de frameworks o infraestructura
+
+**💡 Motivación**:
+Se creó para encapsular la lógica de negocio completa de un job y garantizar que:
+1. Los jobs siempre transicionan de estado de manera válida
+2. Las invariantes de negocio (ej. max_attempts, timeout) se respeten
+3. Las operaciones atómicas en el agregado sean consistentes
+
+**🎨 Patrones Aplicados**:
+- **Aggregate Pattern**: Agrupa entidades relacionadas bajo un root para garantizar consistencia
+- **Encapsulation**: Los campos son privados, se acceden solo a través de métodos públicos
+- **Invariant Enforcement**: Los métodos públicos aseguran que el estado siempre sea válido
+
 ```rust
 // Aggregate Root
 pub struct Job {
@@ -372,7 +399,39 @@ pub struct Job {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
+```
 
+---
+
+**Value Objects: JobSpec y relacionados**
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Cada Value Object tiene una única responsabilidad: representar un concepto de dominio inmutable y validado.
+- **Liskov Substitution Principle (LSP)**: Los Value Objects son substituibles por igualdad (si tienen mismos valores, son el mismo objeto).
+
+**🏗️ Ámbito en DDD**: **Bounded Context: Jobs**
+- Son componentes internos del agregado Job
+- No tienen identidad propia, se identifican por sus atributos
+- Son inmutables para evitar efectos secundarios
+
+**🔗 Dependencias**:
+- `JobSpec`: Depende de `CommandType`, `JobResources`, `JobPreferences`
+- `CommandType`: Enum de tipos de comandos soportados
+- `JobResources`: Representa requerimientos de recursos computacionales
+
+**💡 Motivación**:
+Se crearon para:
+1. Capturar conceptos de dominio complejos en objetos cohesivos
+2. Evitar **Primitive Obsession** (usar strings, ints en lugar de objetos de dominio)
+3. Garantizar inmutabilidad de configuraciones críticas
+4. Facilitar validaciones en un solo lugar
+
+**🎨 Patrones Aplicados**:
+- **Value Object Pattern**: Objetos sin identidad, definidos por sus atributos
+- **Immutability**: Los objetos no pueden modificarse después de creación
+- **Type Safety**: Enums en lugar de strings para tipos de comandos
+
+```rust
 // Value Objects
 pub struct JobSpec {
     command: CommandType,
@@ -398,7 +457,39 @@ pub struct JobResources {
     gpu_required: bool,
     architecture: String,
 }
+```
 
+---
+
+**Repository Traits: JobRepository y JobQueue**
+
+**📋 Responsabilidad (SOLID)**:
+- **Interface Segregation Principle (ISP)**: Cada trait tiene métodos cohesivos. `JobRepository` para persistencia, `JobQueue` para operaciones de cola. Los clientes no dependen de métodos que no usan.
+- **Dependency Inversion Principle (DIP)**: Las capas superiores dependen de abstracciones (traits), no de implementaciones concretas.
+
+**🏗️ Ámbito en DDD**: **Infrastructure Layer Implementation of Domain Abstractions**
+- Son **puertos** de la arquitectura hexagonal
+- Definen contratos que debe cumplir cualquier implementación de infraestructura
+- Permiten cambiar implementaciones (Postgres, MySQL, en memoria) sin afectar el dominio
+
+**🔗 Dependencias**:
+- **Domain Types**: `Job`, `JobId`, `JobState`, `Result<Job>`
+- **Async Traits**: `#[async_trait]` para métodos asíncronos
+- **Concurrency**: `Send + Sync` para permitir concurrencia segura
+
+**💡 Motivación**:
+Se crearon para:
+1. Separar la lógica de negocio (dominio) de la persistencia (infraestructura)
+2. Permitir múltiples implementaciones (Postgres, en memoria, caching)
+3. Facilitar testing con mocks y fakes
+4. Seguir el patrón Repository para encapsular acceso a datos
+
+**🎨 Patrones Aplicados**:
+- **Repository Pattern**: Abstrae el almacenamiento y recuperación de objetos de dominio
+- **Dependency Inversion**: Depende de abstracciones, no de implementaciones
+- **Interface Segregation**: Interfaces pequeñas y enfocadas
+
+```rust
 // Repository Traits
 #[async_trait]
 pub trait JobRepository: Send + Sync {
@@ -420,7 +511,39 @@ pub trait JobQueue: Send + Sync {
 }
 ```
 
-**Domain Events**:
+**Domain Events: JobEvent**
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Cada variante del enum representa un evento específico que ocurrió en el dominio. El enum como un todo es responsable de representar todos los eventos posibles de jobs.
+- **OCP**: Nuevos eventos pueden agregarse sin modificar el código existente que maneja eventos (mediante pattern matching exhaustivo).
+
+**🏗️ Ámbito en DDD**: **Bounded Context: Jobs - Event Bus**
+- Representa **algo que pasó** en el dominio que es relevante para otras partes del sistema
+- Son inmutables por naturaleza (los hechos del pasado no cambian)
+- Publicados por el agregado cuando ocurren cambios de estado importantes
+
+**🔗 Dependencias**:
+- **Domain Types**: `JobId`, `JobSpec`, `JobState`, `JobExecutionResult`
+- **Serialization**: `#[derive(Serialize, Deserialize)]` para serialización JSON
+- **No dependencies externas**: Solo tipos de dominio
+
+**💡 Motivación**:
+Se creó para:
+1. **Desacoplar bounded contexts**: Los cambios en Jobs no impactan directamente a Workers, Scheduling, etc.
+2. **Implementar Event-Driven Architecture**: Permitir reacción asíncrona a cambios
+3. **Auditoría y tracking**: Historia completa de lo que pasó con cada job
+4. **Integración con sistemas externos**: Notificaciones, logs, métricas
+
+**🎨 Patrones Aplicados**:
+- **Domain Events Pattern**: Captura hechos importantes del dominio
+- **Event Sourcing (parcial)**: Eventos representan cambios de estado
+- **Pub/Sub**: Productores (agregados) publican, consumidores suscriben
+- **Type Safety**: Enum asegura que solo se manejen eventos válidos
+
+**⚠️ Consideraciones de Diseño**:
+- **Connascence of Name**: El nombre del evento debe ser claro y descriptivo
+- **Temporal Coupling**: Los consumidores deben manejar el orden correcto de eventos
+- **Idempotency**: Los manejadores de eventos deben ser idempotentes
 
 ```rust
 pub enum JobEvent {
@@ -451,7 +574,48 @@ pub enum JobEvent {
 
 **Responsibility**: Worker lifecycle management
 
+**🏗️ Ámbito en DDD**: **Bounded Context: Workers**
+- Maneja el ciclo de vida completo de workers (provisioning, registro, ejecución, terminación)
+- Define los contratos para providers de infraestructura
+- Coordina con el contexto de Jobs para asignación de trabajos
+
+**📋 Responsabilidad General (SOLID)**:
+- **SRP**: El contexto está dedicado exclusivamente a la gestión de workers
+- **ISP**: Cada trait tiene métodos cohesivos específicos para su propósito
+- **DIP**: Las capas superiores dependen de abstracciones, no de implementaciones concretas
+
 **Key Components**:
+
+---
+
+**Aggregate Root: Worker**
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: El agregado `Worker` es responsable de mantener la consistencia del estado de un worker durante todo su ciclo de vida.
+- **OCP**: Abierto para agregar nuevos estados o políticas de TTL sin modificar código existente.
+
+**🏗️ Ámbito en DDD**: **Aggregate Root - Workers Context**
+- Es el punto de consistencia para todas las operaciones relacionadas con un worker
+- Garantiza que el estado del worker y sus recursos sean consistentes
+- Coordina transiciones de estado validadas
+
+**🔗 Dependencias**:
+- **Internal**: `WorkerHandle`, `WorkerSpec`, `WorkerState`, `ResourceUsage`, `WorkerTTLConfig`
+- **Cross-context**: `JobId` (referencia opcional al job asignado)
+- **No dependencies externas**: Puro dominio
+
+**💡 Motivación**:
+Se creó para:
+1. Encapsular toda la lógica de estado de un worker en un solo lugar
+2. Implementar máquina de estados robusta para transiciones de worker
+3. Garantizar que el worker no exceda sus límites de recursos
+4. Manejar timeouts y cleanup automático
+
+**🎨 Patrones Aplicados**:
+- **State Machine**: WorkerState define estados válidos y transiciones
+- **Aggregate Pattern**: Garantiza consistencia del worker
+- **Invariant Enforcement**: Los métodos públicos aseguran estado válido
+- **Resource Management**: Tracking de uso de recursos
 
 ```rust
 // Aggregate Root
@@ -466,7 +630,40 @@ pub struct Worker {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
+```
 
+---
+
+**Value Objects: WorkerHandle, WorkerSpec**
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Cada Value Object tiene una única responsabilidad de representar un concepto específico.
+- **LSP**: Los Value Objects son substituibles por igualdad.
+
+**🏗️ Ámbito en DDD**: **Components - Workers Context**
+- Son inmutables por definición
+- No tienen identidad propia, se identifican por sus valores
+- `WorkerHandle`: Identificador único y referencia al provider
+- `WorkerSpec`: Especificación completa de configuración del worker
+
+**🔗 Dependencias**:
+- `WorkerHandle`: `WorkerId`, `ProviderType`, `String`
+- `WorkerSpec`: `ProviderId`, `ProviderType`, `WorkerResources`, `WorkerTTLConfig`
+- **Cross-context**: `JobId` (referencia al job que motivó el provisioning)
+
+**💡 Motivación**:
+Se crearon para:
+1. Capturar la complejidad de configuración de workers en objetos tipados
+2. Evitar Primitive Obsession (no usar strings/HashMaps crudos)
+3. Facilitar validaciones centralizadas de configuraciones
+4. Garantizar inmutabilidad de configuraciones críticas
+
+**🎨 Patrones Aplicados**:
+- **Value Object Pattern**: Objetos sin identidad, definidos por atributos
+- **Type Safety**: Enums en lugar de strings para ProviderType
+- **Builder Pattern**: (implícito) Construcción gradual de specs complejas
+
+```rust
 // Value Objects
 pub struct WorkerHandle {
     worker_id: WorkerId,
@@ -483,7 +680,37 @@ pub struct WorkerSpec {
     ttl_config: WorkerTTLConfig,
     labels: HashMap<String, String>,
 }
+```
 
+---
+
+**Enums: ProviderType y WorkerState**
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Cada enum tiene una única responsabilidad: definir tipos válidos.
+- **OCP**: Nuevos providers o estados pueden agregarse sin modificar código existente (con pattern matching).
+
+**🏗️ Ámbito en DDD**: **Core Types - Workers Context**
+- `ProviderType`: Define los tipos de infraestructura soportados
+- `WorkerState`: Define los estados válidos en la máquina de estados del worker
+
+**🔗 Dependencias**:
+- **No dependencies**: Enums primitivos, sin dependencias externas
+- **Self-referential**: WorkerState puede referenciar a sí mismo en transiciones
+
+**💡 Motivación**:
+Se crearon para:
+1. **Type Safety**: Compilador asegura que solo se usen tipos válidos
+2. **Exhaustive Pattern Matching**: Rust obliga a manejar todos los casos
+3. **Documentación Inline**: Los enums sirven como documentación de dominio
+4. **Prevenir Errores**: No hay strings mágicos, solo tipos válidos
+
+**🎨 Patrones Aplicados**:
+- **Type-safe Enum**: Alternativa a strings mágicos
+- **State Machine**: WorkerState define estados válidos
+- **Strategy Pattern**: ProviderType permite diferentes estrategias de provisioning
+
+```rust
 pub enum ProviderType {
     Docker,
     Kubernetes,
@@ -499,6 +726,7 @@ pub enum WorkerState {
     Terminating,
     Terminated,
 }
+```
 
 // Traits
 #[async_trait]
@@ -838,6 +1066,41 @@ The application layer orchestrates **use cases** using domain logic. It coordina
 
 ### CQRS Infrastructure (`application/src/core/`)
 
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Cada trait tiene una única responsabilidad: `CommandBus` para comandos, `QueryBus` para queries, `Command`/`Query` para tipar mensajes.
+- **ISP**: Los clientes dependen solo de las interfaces que usan (CommandBus o QueryBus, no ambos).
+- **DIP**: Las capas superiores dependen de estas abstracciones, no de implementaciones concretas.
+
+**🏗️ Ámbito en DDD**: **Application Layer - CQRS Pattern**
+- Implementa el patrón **Command Query Responsibility Segregation**
+- Separa operaciones de escritura (comandos) de lectura (queries)
+- Permite optimizar cada lado independientemente (caching, sharding, etc.)
+
+**🔗 Dependencias**:
+- **Domain Types**: `Result<T>` del shared kernel
+- **Concurrency**: `Send + Sync` para thread safety
+- **Generics**: `C: Command`, `Q: Query` para type safety
+- **No dependencies externas**: Puro Rust standard library
+
+**💡 Motivación**:
+Se creó para:
+1. **Implementar CQRS**: Separar claramente comandos y queries
+2. **Type Safety**: Compilador asegura tipos correctos de comandos y resultados
+3. **Extensibilidad**: Fácil agregar nuevos comandos y queries
+4. **Testing**: Mocks simples para CommandBus y QueryBus
+5. **Performance**: Permitir optimizaciones específicas por tipo de operación
+
+**🎨 Patrones Aplicados**:
+- **CQRS Pattern**: Separación de responsabilidad de comandos y queries
+- **Bus Pattern**: Desacoplamiento entre emisor y receptor de mensajes
+- **Generic Programming**: Traits genéricos para type safety en compile-time
+- **Dependency Inversion**: Depende de traits, no de implementaciones
+
+**⚠️ Consideraciones de Diseño**:
+- **Async/Await**: Todos los métodos son asíncronos para no bloquear
+- **Error Handling**: Usa `Result<T>` para errores tipados
+- **Type Erasure**: El trait object permite dispatch dinámico
+
 ```rust
 // Command Bus
 pub trait CommandBus: Send + Sync {
@@ -866,7 +1129,50 @@ pub trait Query: Send + Sync {
 
 ### Job Use Cases (`application/src/jobs/`)
 
+**🏗️ Ámbito en DDD**: **Application Layer - Jobs Context**
+- Orquesta use cases relacionados con jobs
+- Coordina entre bounded contexts (Jobs, Workers, Providers)
+- Implementa flujos de negocio complejos que cruzan agregados
+
+**📋 Responsabilidad General (SOLID)**:
+- **SRP**: Cada Use Case tiene una única responsabilidad (create, dispatch, control)
+- **OCP**: Abierto para extender con nuevos Use Cases sin modificar existentes
+- **DIP**: Depende de abstracciones de dominio, no de implementaciones concretas
+
 #### 1. CreateJobUseCase
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: crear y validar jobs según reglas de negocio.
+- **OCP**: Abierto para agregar nuevas validaciones sin modificar el caso de uso existente.
+- **DIP**: Depende de `JobQueue`, `JobRepository`, `Scheduler`, `EventBus` (abstracciones), no de implementaciones concretas.
+
+**🏗️ Ámbito en DDD**: **Application Layer - Jobs Context**
+- Orquesta la creación de jobs interactuando con múltiples bounded contexts
+- Coordina entre: Jobs (crear), Queue (enqueue), Scheduling (select), Workers (provision)
+
+**🔗 Dependencias**:
+- **Domain (Jobs)**: `JobQueue`, `JobRepository`
+- **Domain (Scheduling)**: `Scheduler`
+- **Domain (Event Bus)**: `EventBus`
+- **Concurrency**: `Arc<T>` para compartir estado entre threads
+
+**💡 Motivación**:
+Se creó para:
+1. **Encapsular flujo de negocio**: Creación de job es más que simple INSERT
+2. **Orquestar múltiples bounded contexts**: Validar, crear, encolar, programar
+3. **Publicar eventos**: Notificar al sistema sobre nuevo job
+4. **Manejar errores**: Traducir errores técnicos a errores de dominio
+
+**🎨 Patrones Aplicados**:
+- **Use Case Pattern**: Encapsula un caso de uso específico del dominio
+- **Orchestration Pattern**: Coordina múltiples bounded contexts
+- **Dependency Injection**: Recibe dependencias por constructor
+- **Event Publishing**: Publica eventos al finalizar para integración
+
+**⚠️ Consideraciones de Diseño**:
+- **Transactional Boundary**: Debe ser transaccional (create + enqueue + publish)
+- **Error Handling**: Debe traducir todos los errores a `Result<Job>`
+- **Validation**: Valida en la aplicación, no en la capa de infraestructura
 
 ```rust
 pub struct CreateJobUseCase {
@@ -883,6 +1189,74 @@ impl CreateJobUseCase {
         // 3. Persist job
         // 4. Publish JobCreated event
         // 5. Trigger provisioning if needed
+    }
+}
+```
+
+---
+
+#### 2. JobController
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: control loop que procesa jobs pendientes continuamente.
+- **OCP**: Abierto para agregar nuevas estrategias de procesamiento sin modificar el loop principal.
+- **DIP**: Depende de abstracciones, no de implementaciones concretas.
+
+**🏗️ Ámbito en DDD**: **Application Layer - Jobs Context**
+- Implementa el **control loop** que mantiene el sistema procesando jobs
+- Coordinador principal entre: Queue, Workers, Dispatcher, Events
+
+**🔗 Dependencias**:
+- **Domain (Jobs)**: `JobQueue`, `JobRepository`
+- **Domain (Workers)**: `WorkerRegistry`
+- **Application**: `JobDispatcher`
+- **Domain (Event Bus)**: `EventBus`
+
+**💡 Motivación**:
+Se creó para:
+1. **Implementar reactor pattern**: Reaccionar continuamente a cambios en cola
+2. **Separar concerns**: Loop control vs lógica de dispatch
+3. **Facilitar testing**: Loop puede testearse aisladamente
+4. **Monitoreo**: Punto central para métricas de procesamiento
+
+**🎨 Patrones Aplicados**:
+- **Controller Pattern**: Controla el flujo principal del sistema
+- **Reactor Pattern**: Reacciona a eventos (jobs en cola)
+- **Async Loop**: Usa `tokio::spawn` para concurrencia no bloqueante
+- **Dependency Injection**: Todas las dependencias inyectadas
+
+**⚠️ Consideraciones de Diseño**:
+- **Backpressure**: Debe manejar cuando no hay workers disponibles
+- **Error Recovery**: Debe recuperar gracefully de errores en el loop
+- **Shutdown Graceful**: Debe poder detenerse limpiamente
+- **Idempotency**: Procesar el mismo job múltiples veces no debe causar problemas
+
+```rust
+pub struct JobController {
+    job_queue: Arc<dyn JobQueue>,
+    job_repository: Arc<dyn JobRepository>,
+    worker_registry: Arc<dyn WorkerRegistry>,
+    dispatcher: Arc<JobDispatcher>,
+    event_bus: Arc<dyn EventBus>,
+}
+
+impl JobController {
+    pub async fn start(&self) -> Result<()> {
+        // Start control loop
+        tokio::spawn(async move {
+            loop {
+                self.process_pending_jobs().await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    async fn process_pending_jobs(&self) -> Result<()> {
+        let pending = self.job_queue.peek().await?;
+        if let Some(job) = pending {
+            self.dispatch_job(job).await?;
+        }
+        Ok(())
     }
 }
 ```
@@ -920,6 +1294,42 @@ impl JobController {
 ```
 
 #### 3. JobDispatcher
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: asignar jobs a workers según políticas de scheduling.
+- **OCP**: Abierto para agregar nuevas estrategias de dispatch sin modificar lógica principal.
+- **DIP**: Depende de abstracciones (`WorkerRegistry`, `JobRepository`, `EventBus`), no de implementaciones concretas.
+
+**🏗️ Ámbito en DDD**: **Application Layer - Cross-Context Coordination**
+- Coordina entre Jobs y Workers bounded contexts
+- Implementa la lógica de **asignación** de jobs a workers
+- Publica eventos para integración con otros contextos
+
+**🔗 Dependencias**:
+- **Domain (Workers)**: `WorkerRegistry`
+- **Domain (Jobs)**: `JobRepository`
+- **Domain (Providers)**: `ProviderRegistry`
+- **Domain (Event Bus)**: `EventBus`
+- **Scheduling**: Algoritmos de selección de worker
+
+**💡 Motivación**:
+Se creó para:
+1. **Separar concerns**: Scheduling es lógica compleja que merece su propio componente
+2. **Encapsular políticas**: Todas las decisiones de asignación en un solo lugar
+3. **Facilitar testing**: Lógica de dispatch puede testearse aisladamente
+4. **Publish events**: Notificar al sistema cuando un job es asignado
+
+**🎨 Patrones Aplicados**:
+- **Dispatcher Pattern**: Asigna jobs a workers según políticas
+- **Strategy Pattern**: Diferentes estrategias de asignación (least loaded, round robin, etc.)
+- **Event Publishing**: Notifica cambios de estado al sistema
+- **Error Handling**: Maneja casos donde no hay workers disponibles
+
+**⚠️ Consideraciones de Diseño**:
+- **Race Conditions**: Debe manejar workers que cambian de estado durante dispatch
+- **Backpressure**: Debe manejar cuando no hay workers disponibles
+- **Timeouts**: Debe implementar timeouts para dispatch
+- **Idempotency**: Dispatch del mismo job multiple veces debe ser idempotente
 
 ```rust
 pub struct JobDispatcher {
@@ -1158,7 +1568,65 @@ The infrastructure layer provides **concrete implementations** of domain and app
 
 ### Persistence (`infrastructure/src/persistence/`)
 
+**🏗️ Ámbito en DDD**: **Infrastructure Layer - Adapters**
+- Implementa los **puertos** definidos en la capa de dominio
+- Es responsable de la persistencia de datos (PostgreSQL, en memoria, etc.)
+- Es un **adapter** que conecta el dominio con tecnologías externas
+
+**📋 Responsabilidad General (SOLID)**:
+- **SRP**: Cada repository es responsable de un solo agregado
+- **OCP**: Abierto para extender con nuevos tipos de persistencia sin modificar dominio
+- **DIP**: Depende de abstracciones de dominio (`JobRepository`, `WorkerRegistry`), no al revés
+
 #### PostgreSQL Repositories
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Cada repository es responsable de persistir un solo tipo de agregado (`Job` o `Worker`).
+- **OCP**: Abierto para agregar nuevos métodos de query sin modificar existentes.
+- **DIP**: Implementa abstracciones de dominio, depende de ellas, no las crea.
+
+**🏗️ Ámbito en DDD**: **Infrastructure Layer - Persistence Adapter**
+- Son implementaciones concretas de los **puertos** definidos en dominio
+- Conectan el dominio puro con la tecnología de base de datos (PostgreSQL)
+- Mapean tipos de dominio a esquemas de base de datos
+
+**🔗 Dependencias**:
+- **Domain**: Implementa `JobRepository`, `WorkerRegistry` (traits de dominio)
+- **External**: `sqlx` (PostgreSQL async client), `PgPool`
+- **Serialization**: `serde_json` para serializar structs complejos a JSON
+- **Concurrency**: `async/await` para operaciones no bloqueantes
+
+**💡 Motivación**:
+Se crearon para:
+1. **Separar dominio de infraestructura**: El dominio no sabe de SQL
+2. **Facilitar testing**: Puedo usar implementaciones en memoria para tests
+3. **Performance**: Aprovechar PostgreSQL features (indexes, transactions, etc.)
+4. **Type Safety**: SQLx genera queries compiladas con type checking
+
+**🎨 Patrones Aplicados**:
+- **Repository Pattern**: Abstrae el almacenamiento y recuperación de objetos de dominio
+- **Adapter Pattern**: Conecta interfaces de dominio con tecnología externa
+- **Data Mapper**: Mapea tipos de dominio a esquema de base de datos
+- **Connection Pooling**: `PgPool` para reuso eficiente de conexiones
+
+**⚠️ Consideraciones de Diseño**:
+- **Upsert**: `ON CONFLICT DO UPDATE` para idempotencia
+- **Async Operations**: Todas las operaciones son asíncronas
+- **Error Handling**: Convierte `sqlx::Error` a `Result<T>` del dominio
+- **JSON Columns**: Usa `JSONB` para tipos complejos (JobSpec, WorkerSpec)
+- **Indexes**: Queries de `find_by_id` usan primary key, `find_available` usa index en `state`
+
+**🔌 Integration con Domain**:
+```mermaid
+graph LR
+    A[Application Layer] -->|Uses| B[JobRepository Trait]
+    B -->|Implemented by| C[PostgresJobRepository]
+    C -->|Persists to| D[(PostgreSQL)]
+    
+    E[Application Layer] -->|Uses| F[WorkerRegistry Trait]
+    F -->|Implemented by| G[PostgresWorkerRegistry]
+    G -->|Persists to| D
+```
 
 ```rust
 // Job Repository
@@ -1428,6 +1896,53 @@ impl OutboxPoller {
 
 #### Docker Provider
 
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: proveer workers usando Docker containers.
+- **OCP**: Abierto para extender (nuevas configuraciones) sin modificar lógica principal.
+- **LSP**: `DockerProvider` es substituible por cualquier implementación de `WorkerProvider`.
+- **ISP**: Solo implementa métodos relevantes del trait `WorkerProvider`.
+
+**🏗️ Ámbito en DDD**: **Infrastructure Layer - Provider Adapter**
+- Es un **adapter** que implementa el puerto `WorkerProvider` definido en dominio
+- Conecta el dominio con la tecnología Docker
+- No contiene lógica de negocio, solo orquestación de Docker API
+
+**🔗 Dependencias**:
+- **Domain**: Implementa `WorkerProvider` trait
+- **Domain Types**: `WorkerSpec`, `WorkerHandle`, `ProviderId`, `ProviderType`
+- **External**: `bollard::Docker` (Docker HTTP API client)
+- **Configuration**: `DockerConfig`
+
+**💡 Motivación**:
+Se creó para:
+1. **Abstraer Docker**: Permitir cambiar de proveedor sin afectar dominio
+2. **Production Ready**: Docker es estable y ampliamente usado
+3. **Development Friendly**: Fácil de usar en local y CI/CD
+4. **Fast Startup**: Containers inician en ~1 segundo
+
+**🎨 Patrones Aplicados**:
+- **Adapter Pattern**: Adapta Docker API a interface de dominio
+- **Factory Pattern**: (implícito) Crea containers desde specs
+- **Resource Management**: Maneja lifecycle de containers (create, start, remove)
+- **Error Translation**: Convierte `bollard::Error` a `ProviderError`
+
+**⚠️ Consideraciones de Diseño**:
+- **Container Naming**: Usa naming convention para identificación
+- **Resource Limits**: Debe respetar specs de recursos del worker
+- **Cleanup**: Debe remover containers siempre, incluso en errores
+- **Network**: Configura networking para worker pueda comunicarse con servidor
+- **Labels**: Usa labels para tracking y filtering
+
+**🔌 Docker Integration Flow**:
+```mermaid
+graph LR
+    A[Application Layer] -->|WorkerProvider trait| B[DockerProvider]
+    B -->|HTTP API| C[Docker Daemon]
+    C -->|Creates| D[Container]
+    D -->|Returns| B
+    B -->|WorkerHandle| A
+```
+
 ```rust
 pub struct DockerProvider {
     client: Docker,
@@ -1476,6 +1991,112 @@ impl WorkerProvider for DockerProvider {
     async fn health_check(&self) -> Result<HealthStatus, ProviderError> {
         self.client.ping().await?;
         Ok(HealthStatus::Healthy)
+    }
+}
+```
+
+---
+
+#### Kubernetes Provider
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: proveer workers usando Kubernetes pods.
+- **OCP**: Abierto para extender (nuevos recursos K8s) sin modificar lógica principal.
+- **LSP**: `KubernetesProvider` es substituible por cualquier implementación de `WorkerProvider`.
+- **ISP**: Solo implementa métodos relevantes del trait `WorkerProvider`.
+
+**🏗️ Ámbito en DDD**: **Infrastructure Layer - Provider Adapter**
+- Es un **adapter** que implementa el puerto `WorkerProvider` definido en dominio
+- Conecta el dominio con Kubernetes API
+- No contiene lógica de negocio, solo orquestación de K8s API
+
+**🔗 Dependencias**:
+- **Domain**: Implementa `WorkerProvider` trait
+- **Domain Types**: `WorkerSpec`, `WorkerHandle`, `ProviderId`, `ProviderType`
+- **External**: `kube::Client` (Kubernetes Rust client)
+- **Configuration**: `KubernetesConfig` (namespace, image pull secrets, etc.)
+
+**💡 Motivación**:
+Se creó para:
+1. **Production Grade**: K8s es estándar para orquestación de containers
+2. **Auto-scaling**: K8s tiene autoscaling nativo (HPA)
+3. **Cloud Native**: Facil integración con cloud providers (GKE, EKS, AKS)
+4. **Multi-tenant**: Namespaces para isolation entre tenants
+
+**🎨 Patrones Aplicados**:
+- **Adapter Pattern**: Adapta K8s API a interface de dominio
+- **Builder Pattern**: (implícito) Construye pods specs desde worker specs
+- **Resource Management**: Maneja lifecycle de pods (create, delete, get status)
+- **State Mapping**: Mapea pod phases a WorkerState
+
+**⚠️ Consideraciones de Diseño**:
+- **Pod Naming**: Usa naming convention consistente
+- **Resource Requests/Limits**: Debe respetar specs de recursos
+- **Namespace**: Operar en namespace aislado para workers
+- **Image Pull Secrets**: Maneja private registries
+- **Probes**: Configurar liveness/readiness probes
+- **Cleanup**: Debe remover pods siempre, incluso en errores
+
+**🔌 Kubernetes Integration Flow**:
+```mermaid
+graph LR
+    A[Application Layer] -->|WorkerProvider trait| B[KubernetesProvider]
+    B -->|K8s API| C[Kubernetes Cluster]
+    C -->|Creates| D[Pod]
+    D -->|Returns| B
+    B -->|WorkerHandle| A
+```
+
+```rust
+pub struct KubernetesProvider {
+    client: Client,
+    config: KubernetesConfig,
+    provider_id: ProviderId,
+}
+
+#[async_trait]
+impl WorkerProvider for KubernetesProvider {
+    async fn create_worker(&self, spec: &WorkerSpec) -> Result<WorkerHandle, ProviderError> {
+        let pod = self.build_pod(spec);
+
+        let created_pod: Pod = self.client
+            .create(&self.config.namespace, &PostParams::default(), &pod)
+            .await?;
+
+        Ok(WorkerHandle {
+            worker_id: WorkerId::new(),
+            provider_type: ProviderType::Kubernetes,
+            provider_execution_id: created_pod.metadata.name.unwrap(),
+            connection_id: None,
+        })
+    }
+
+    async fn destroy_worker(&self, handle: &WorkerHandle) -> Result<(), ProviderError> {
+        self.client
+            .delete(
+                &self.config.namespace,
+                &handle.provider_execution_id,
+                &DeleteParams::default(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    async fn get_worker_status(&self, handle: &WorkerHandle) -> Result<WorkerState, ProviderError> {
+        let pod: Pod = self.client
+            .get(&self.config.namespace, &handle.provider_execution_id)
+            .await?;
+
+        let phase = pod.status.unwrap().phase.unwrap();
+        
+        Ok(match phase.as_str() {
+            "Pending" => WorkerState::Creating,
+            "Running" => WorkerState::Ready,
+            "Succeeded" => WorkerState::Terminated,
+            "Failed" => WorkerState::Terminated,
+            _ => WorkerState::Creating,
+        })
     }
 }
 ```
@@ -1546,7 +2167,64 @@ The interface layer provides **APIs for external clients** (gRPC, REST, WebSocke
 
 ### gRPC Services (`interface/src/grpc/`)
 
+**🏗️ Ámbito en DDD**: **Interface Layer - Adapters**
+- Son **adapters** que exponen la API del sistema al mundo exterior
+- Traducen entre protocolos externos (gRPC) y tipos de dominio
+- No contienen lógica de negocio, solo orquestación y mapeo
+
+**📋 Responsabilidad General (SOLID)**:
+- **SRP**: Cada servicio es responsable de un bounded context (Jobs, Workers, etc.)
+- **OCP**: Abierto para agregar nuevos endpoints sin modificar existentes
+- **DIP**: Depende de use cases y abstracciones, no de implementaciones concretas
+
 #### JobExecutionService
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: exponer API gRPC para operaciones de jobs.
+- **OCP**: Abierto para agregar nuevos métodos de API sin modificar existentes.
+- **LSP**: Cualquier implementación de `JobExecutionService` es substituible.
+- **ISP**: Clientes dependen solo de los métodos que usan.
+
+**🏗️ Ámbito en DDD**: **Interface Layer - Adapter**
+- Es un **adapter** que implementa el contrato gRPC `JobExecutionService`
+- Traduce entre protocol buffers (protobuf) y tipos de dominio
+- Delega lógica de negocio a use cases
+
+**🔗 Dependencias**:
+- **Application**: `CreateJobUseCase`, `CancelJobUseCase`, `GetJobStatusUseCase`
+- **Domain (Event Bus)**: `EventBus`
+- **External**: `tonic::Request`, `tonic::Response`, `tonic::Status`
+- **Concurrency**: `Arc<T>` para compartir estado entre threads
+
+**💡 Motivación**:
+Se creó para:
+1. **Exponer API gRPC**: Protocolo eficiente para comunicación cliente-servidor
+2. **Traducir tipos**: Convertir entre protobuf y tipos de dominio
+3. **Delegar lógica**: No contiene lógica de negocio, solo orquestación
+4. **Error Handling**: Traducir errores de dominio a gRPC status codes
+
+**🎨 Patrones Aplicados**:
+- **Adapter Pattern**: Adapta API gRPC a use cases de aplicación
+- **Mapper Pattern**: Convierte entre tipos de dominio y protobuf
+- **Dependency Injection**: Recibe use cases por constructor
+- **Error Translation**: Convierte `Result<T>` a gRPC `Status`
+
+**⚠️ Consideraciones de Diseño**:
+- **Validation**: Valida requests en la capa de interface (no en dominio)
+- **Error Codes**: Mapea errores de dominio a gRPC status codes apropiados
+- **Idempotency**: APIs deberían ser idempotentes cuando sea posible
+- **Backpressure**: Debe manejar muchas solicitudes concurrentes
+- **Context Propagation**: Debe propagar trace ID entre llamadas
+
+**🔌 gRPC Integration Flow**:
+```mermaid
+graph LR
+    A[gRPC Client] -->|protobuf| B[JobExecutionServiceImpl]
+    B -->|CreateJobCommand| C[CreateJobUseCase]
+    C -->|Job| D[Domain Layer]
+    C -->|JobCreatedEvent| E[Event Bus]
+    B -->|protobuf Response| A
+```
 
 ```rust
 pub struct JobExecutionServiceImpl {
@@ -1563,11 +2241,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
         request: Request<QueueJobRequest>,
     ) -> Result<Response<QueueJobResponse>, Status> {
         let req = request.into_inner();
-
+        
         let cmd = CreateJobCommand::from(req);
         let job = self.create_job_uc.execute(cmd).await
             .map_err(|e| Status::internal(e.to_string()))?;
-
+        
         Ok(Response::new(QueueJobResponse {
             job_id: Some(job.id.into()),
             status: job.state as i32,
@@ -1581,10 +2259,10 @@ impl JobExecutionService for JobExecutionServiceImpl {
     ) -> Result<Response<GetJobStatusResponse>, Status> {
         let req = request.into_inner();
         let job_id = JobId::try_from(req.job_id.ok_or_else(|| Status::invalid_argument("job_id required"))?)?;
-
+        
         let job = self.get_job_status_uc.execute(job_id).await
             .map_err(|e| Status::not_found(e.to_string()))?;
-
+        
         Ok(Response::new(GetJobStatusResponse {
             job_id: Some(job.id.into()),
             status: job.state as i32,
@@ -1593,6 +2271,125 @@ impl JobExecutionService for JobExecutionServiceImpl {
             created_at: Some(job.created_at.into()),
             updated_at: Some(job.updated_at.into()),
         }))
+    }
+}
+```
+
+---
+
+#### WorkerAgentService
+
+**📋 Responsabilidad (SOLID)**:
+- **SRP**: Responsabilidad única: exponer API gRPC para comunicación worker-servidor.
+- **OCP**: Abierto para agregar nuevos métodos de worker sin modificar existentes.
+- **LSP**: Cualquier implementación de `WorkerAgentService` es substituible.
+- **ISP**: Métodos específicos para worker registration y streaming.
+
+**🏗️ Ámbito en DDD**: **Interface Layer - Adapter**
+- Es un **adapter** que implementa el contrato gRPC `WorkerAgentService`
+- Maneja registro de workers con OTP authentication
+- Administra streaming bidireccional para comunicación continua
+
+**🔗 Dependencias**:
+- **Domain (Workers)**: `WorkerRegistry`
+- **Domain (IAM)**: `OtpTokenStore`
+- **Domain (Event Bus)**: `EventBus`
+- **Infrastructure**: `GrpcWorkerCommandSender`
+- **External**: `tonic::Request`, `tonic::Response`, `tokio::sync::mpsc`
+
+**💡 Motivación**:
+Se creó para:
+1. **Exponer API workers**: Protocolo seguro para worker registration
+2. **OTP Authentication**: Implementar autenticación one-time password
+3. **Bidirectional Streaming**: Permitir comunicación continua server↔worker
+4. **Backpressure**: Manejar flujos de alta velocidad con canales limitados
+
+**🎨 Patrones Aplicados**:
+- **Adapter Pattern**: Adapta API gRPC a use cases de workers
+- **Authentication Pattern**: OTP para secure worker registration
+- **Streaming Pattern**: Bidirectional stream para comunicación continua
+- **Backpressure Handling**: Canales `mpsc` con capacidad limitada
+- **Event Publishing**: Publica eventos de worker registration
+
+**⚠️ Consideraciones de Diseño**:
+- **OTP Security**: Tokens de un solo uso, expiran rápidamente
+- **Stream Management**: Debe manejar desconexiones y reconexiones
+- **Backpressure**: Debe aplicar backpressure cuando canal está lleno
+- **Error Recovery**: Debe recuperar gracefully de errores de streaming
+- **Heartbeat**: Implementar heartbeat para detectar workers muertos
+
+**🔌 Worker Integration Flow**:
+```mermaid
+graph TB
+    subgraph "Worker Agent"
+        W[Worker Agent]
+        OTP[OTP Token]
+        W -->|Register with OTP| WS[WorkerAgentService]
+    end
+    
+    subgraph "Server"
+        WS -->|Validate OTP| OTS[OtpTokenStore]
+        WS -->|Register| WR[WorkerRegistry]
+        WS -->|Publish Event| EB[Event Bus]
+    end
+    
+    subgraph "Streaming"
+        WS <-->|Bidirectional Stream| W
+        WS -->|Send Commands| W
+        W -->|Send Heartbeats, Logs| WS
+    end
+```
+
+```rust
+pub struct WorkerAgentServiceImpl {
+    worker_registry: Arc<dyn WorkerRegistry>,
+    otp_store: Arc<dyn OtpTokenStore>,
+    event_bus: Arc<dyn EventBus>,
+    command_sender: Arc<GrpcWorkerCommandSender>,
+}
+
+#[async_trait]
+impl WorkerAgentService for WorkerAgentServiceImpl {
+    async fn register(
+        &self,
+        request: Request<RegisterWorkerRequest>,
+    ) -> Result<Response<RegisterWorkerResponse>, Status> {
+        let req = request.into_inner();
+        
+        // Validate OTP
+        let registration = self.otp_store.validate(&OtpToken(req.auth_token)).await
+            .map_err(|e| Status::unauthenticated(e.to_string()))?;
+        
+        // Register worker
+        let worker = self.worker_registry.register(
+            WorkerHandle::from(req.worker_handle.ok_or_else(|| Status::invalid_argument("worker_handle required"))?),
+            WorkerSpec::from(req.worker_spec.ok_or_else(|| Status::invalid_argument("worker_spec required"))?),
+            registration.job_id,
+        ).await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        
+        // Publish event
+        self.event_bus.publish(WorkerRegisteredEvent {
+            worker_id: worker.handle().worker_id.clone(),
+            provider_id: worker.spec().provider_id.clone(),
+        }).await;
+        
+        // Consume OTP
+        self.otp_store.consume(&OtpToken(req.auth_token)).await;
+        
+        Ok(Response::new(RegisterWorkerResponse {
+            session_id: Some(worker.handle().worker_id.into()),
+            server_config: Some(ServerConfig::default()),
+        }))
+    }
+
+    type WorkerStreamStream = ServerStreaming<ServerMessage>;
+    
+    async fn worker_stream(
+        &self,
+        request: Request<Streaming<WorkerMessage>>,
+    ) -> Result<Response<Self::WorkerStreamStream>, Status> {
+        // Implementación de streaming bidireccional
     }
 }
 ```

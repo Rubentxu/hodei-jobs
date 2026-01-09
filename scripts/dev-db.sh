@@ -43,5 +43,9 @@ docker exec -i hodei-jobs-postgres psql -U postgres -d hodei_jobs < migrations/2
 echo "  → Reactive system..."
 docker exec -i hodei-jobs-postgres psql -U postgres -d hodei_jobs < migrations/20260101_add_reactive_system_tables.sql 2>&1 | grep -v "already exists" || true
 
+# Fix job_queue schema (ensure enqueued_at column exists)
+echo "  → Fix job_queue schema..."
+docker exec -i hodei-jobs-postgres psql -U postgres -d hodei_jobs < migrations/20260109_fix_job_queue_schema.sql 2>&1 | grep -v "already exists" || true
+
 echo ""
 echo "✅ All migrations applied"
