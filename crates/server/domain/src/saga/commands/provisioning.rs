@@ -2,8 +2,6 @@
 //
 // Commands used by the ProvisioningSaga for worker lifecycle management.
 // These commands encapsulate the intent to provision or destroy workers.
-// EPIC-70: Added ValidateProviderCommand and PublishProvisionedCommand
-// for proper pipeline pattern (Event → Step → Command → Handler → Event)
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
@@ -63,9 +61,6 @@ impl ProviderCapacity {
 /// This command encapsulates the intent to check if a provider has
 /// capacity to accept new workers. It follows the pipeline pattern:
 /// Event → Step → Command → Handler → Event
-///
-/// EPIC-70: Addresses SRP violation in ValidateProviderCapacityStep
-/// by extracting business logic into a dedicated command handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidateProviderCommand {
     /// The provider ID to validate
@@ -288,9 +283,6 @@ where
 /// This command encapsulates the intent to announce that a worker
 /// has been successfully provisioned. It follows the pipeline pattern:
 /// Event → Step → Command → Handler → Event
-///
-/// EPIC-70: Addresses SRP violation in PublishProvisionedEventStep
-/// by extracting event publishing into a dedicated command handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishProvisionedCommand {
     /// The worker ID that was provisioned

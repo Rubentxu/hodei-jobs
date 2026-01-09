@@ -627,7 +627,7 @@ pub enum DomainEvent {
 // - **New code**: Can use modular types `JobCreated { ... }.into()`
 //
 // This maintains backward compatibility while enabling the transition to
-// modular event architecture as specified in EPIC-65.
+// modular event architecture.
 
 // Import modular event types from bounded contexts (Phase 1 - Completed)
 use crate::jobs::events::{

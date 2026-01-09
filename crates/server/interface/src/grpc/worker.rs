@@ -404,12 +404,11 @@ impl WorkerAgentServiceImpl {
     /// This method:
     /// 1. Attempts heartbeat through Actor (fast path if Actor has the worker)
     /// 2. If Actor returns WorkerNotFound, performs JIT registration to heal state
-    /// 3. Emits WorkerRegistered and WorkerReady events to trigger job dispatch
+    /// 3. Emits WorkerReady event to trigger job dispatch
     ///
     /// Events emitted:
-    /// - WorkerRegistered: Worker completed initial registration
     /// - WorkerReady: Worker is available for job assignment (triggers dispatch)
-    async fn on_worker_registered(
+    async fn on_worker_ready(
         &self,
         worker_id_str: &str,
         worker_info: &WorkerInfo,
@@ -1288,7 +1287,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
             );
 
             // Pass worker_info and job_id for JIT registration if needed
-            self.on_worker_registered(&validated_worker_id, &worker_info, job_id_from_request.clone())
+            self.on_worker_ready(&validated_worker_id, &worker_info, job_id_from_request.clone())
                 .await?;
         } else {
             info!(

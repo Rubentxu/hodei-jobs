@@ -176,7 +176,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         // When the worker starts, it will:
         // 1. Call register() gRPC endpoint with the OTP token
         // 2. Server validates OTP and registers worker in registry
-        // 3. Server publishes WorkerReady event (replaces deprecated WorkerRegistered)
+        // 3. Server publishes WorkerReady event
         // 4. ProvisioningSaga continues with next steps
 
         info!(

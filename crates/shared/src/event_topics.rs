@@ -60,8 +60,6 @@ pub mod job_topics {
 /// Worker-related event topics
 pub mod worker_topics {
 
-    /// WorkerRegistered event subject
-    pub const REGISTERED: &str = "hodei.events.workers.workerregistered";
     /// WorkerReady event subject (triggers execution saga)
     pub const READY: &str = "hodei.events.workers.workerready";
     /// WorkerReadyForJob event subject

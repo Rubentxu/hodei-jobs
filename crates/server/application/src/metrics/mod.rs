@@ -164,8 +164,8 @@ impl Clone for JobLifecycleMetrics {
 pub struct WorkerLifecycleMetrics {
     /// Total workers created
     workers_created_total: AtomicU64,
-    /// Total workers registered
-    workers_registered_total: AtomicU64,
+    /// Total workers ready (after registration)
+    workers_ready_total: AtomicU64,
     /// Total workers terminated
     workers_terminated_total: AtomicU64,
     /// Total workers failed
@@ -185,7 +185,7 @@ impl WorkerLifecycleMetrics {
     pub fn new() -> Self {
         Self {
             workers_created_total: AtomicU64::new(0),
-            workers_registered_total: AtomicU64::new(0),
+            workers_ready_total: AtomicU64::new(0),
             workers_terminated_total: AtomicU64::new(0),
             workers_failed_total: AtomicU64::new(0),
             workers_in_creating: AtomicU64::new(0),
@@ -203,9 +203,9 @@ impl WorkerLifecycleMetrics {
         self.workers_created_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record worker registered
-    pub fn record_worker_registered(&self) {
-        self.workers_registered_total
+    /// Record worker ready (after registration)
+    pub fn record_worker_ready(&self) {
+        self.workers_ready_total
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -262,8 +262,8 @@ impl WorkerLifecycleMetrics {
     pub fn workers_created_total(&self) -> u64 {
         self.workers_created_total.load(Ordering::Relaxed)
     }
-    pub fn workers_registered_total(&self) -> u64 {
-        self.workers_registered_total.load(Ordering::Relaxed)
+    pub fn workers_ready_total(&self) -> u64 {
+        self.workers_ready_total.load(Ordering::Relaxed)
     }
     pub fn workers_terminated_total(&self) -> u64 {
         self.workers_terminated_total.load(Ordering::Relaxed)
@@ -300,8 +300,8 @@ impl Clone for WorkerLifecycleMetrics {
             workers_created_total: AtomicU64::new(
                 self.workers_created_total.load(Ordering::Relaxed),
             ),
-            workers_registered_total: AtomicU64::new(
-                self.workers_registered_total.load(Ordering::Relaxed),
+            workers_ready_total: AtomicU64::new(
+                self.workers_ready_total.load(Ordering::Relaxed),
             ),
             workers_terminated_total: AtomicU64::new(
                 self.workers_terminated_total.load(Ordering::Relaxed),
@@ -570,9 +570,9 @@ mod tests {
     fn test_worker_metrics() {
         let metrics = WorkerLifecycleMetrics::new();
         metrics.record_worker_created();
-        metrics.record_worker_registered();
+        metrics.record_worker_ready();
         assert_eq!(metrics.workers_created_total(), 1);
-        assert_eq!(metrics.workers_registered_total(), 1);
+        assert_eq!(metrics.workers_ready_total(), 1);
     }
 
     #[test]
