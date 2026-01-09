@@ -623,6 +623,722 @@ pub enum DomainEvent {
     },
 }
 
+// =============================================================================
+// Phase 2: From Implementations for Modular Event Types
+// =============================================================================
+//
+// These implementations allow conversion from modular event structs (Phase 1)
+// to the legacy DomainEvent enum. This enables gradual migration where:
+//
+// - **Existing code**: Continues using `DomainEvent::JobCreated { ... }`
+// - **New code**: Can use modular types `JobCreated { ... }.into()`
+//
+// This maintains backward compatibility while enabling the transition to
+// modular event architecture as specified in EPIC-65.
+
+// Import modular event types from bounded contexts (Phase 1 - Completed)
+use crate::jobs::events::{
+    JobAccepted, JobAssigned, JobCancelled, JobCreated, JobDispatchAcknowledged,
+    JobDispatchFailed, JobExecutionError, JobQueued, JobRetried, JobStatusChanged,
+    RunJobReceived,
+};
+use crate::providers::events::{
+    AutoScalingTriggered, JobQueueDepthChanged, ProviderExecutionError, ProviderHealthChanged,
+    ProviderRecovered, ProviderRegistered, ProviderSelected, ProviderUpdated,
+    SchedulingDecisionFailed,
+};
+use crate::templates::events::{
+    ExecutionRecorded, ScheduledJobCreated, ScheduledJobError, ScheduledJobMissed,
+    ScheduledJobTriggered, TemplateCreated, TemplateDisabled, TemplateRunCreated, TemplateUpdated,
+};
+use crate::workers::events::{
+    GarbageCollectionCompleted, OrphanWorkerDetected, WorkerDisconnected,
+    WorkerEphemeralCleanedUp, WorkerEphemeralCreated, WorkerEphemeralIdle,
+    WorkerEphemeralReady, WorkerEphemeralTerminated, WorkerEphemeralTerminating,
+    WorkerHeartbeat, WorkerProvisioned, WorkerReady, WorkerReadyForJob, WorkerReconnected,
+    WorkerRecoveryFailed, WorkerRegistered, WorkerSelfTerminated, WorkerStateUpdated,
+    WorkerStatusChanged, WorkerTerminated,
+};
+
+// Job Events - From implementations
+impl From<JobCreated> for DomainEvent {
+    fn from(event: JobCreated) -> Self {
+        DomainEvent::JobCreated {
+            job_id: event.job_id,
+            spec: event.spec,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobStatusChanged> for DomainEvent {
+    fn from(event: JobStatusChanged) -> Self {
+        DomainEvent::JobStatusChanged {
+            job_id: event.job_id,
+            old_state: event.old_state,
+            new_state: event.new_state,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobCancelled> for DomainEvent {
+    fn from(event: JobCancelled) -> Self {
+        DomainEvent::JobCancelled {
+            job_id: event.job_id,
+            reason: event.reason,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobRetried> for DomainEvent {
+    fn from(event: JobRetried) -> Self {
+        DomainEvent::JobRetried {
+            job_id: event.job_id,
+            attempt: event.attempt,
+            max_attempts: event.max_attempts,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobAssigned> for DomainEvent {
+    fn from(event: JobAssigned) -> Self {
+        DomainEvent::JobAssigned {
+            job_id: event.job_id,
+            worker_id: event.worker_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobAccepted> for DomainEvent {
+    fn from(event: JobAccepted) -> Self {
+        DomainEvent::JobAccepted {
+            job_id: event.job_id,
+            worker_id: event.worker_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobDispatchAcknowledged> for DomainEvent {
+    fn from(event: JobDispatchAcknowledged) -> Self {
+        DomainEvent::JobDispatchAcknowledged {
+            job_id: event.job_id,
+            worker_id: event.worker_id,
+            acknowledged_at: event.acknowledged_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<RunJobReceived> for DomainEvent {
+    fn from(event: RunJobReceived) -> Self {
+        DomainEvent::RunJobReceived {
+            job_id: event.job_id,
+            worker_id: event.worker_id,
+            received_at: event.received_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobQueued> for DomainEvent {
+    fn from(event: JobQueued) -> Self {
+        DomainEvent::JobQueued {
+            job_id: event.job_id,
+            preferred_provider: event.preferred_provider,
+            job_requirements: event.job_requirements,
+            queued_at: event.queued_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobExecutionError> for DomainEvent {
+    fn from(event: JobExecutionError) -> Self {
+        DomainEvent::JobExecutionError {
+            job_id: event.job_id,
+            worker_id: event.worker_id,
+            failure_reason: event.failure_reason,
+            exit_code: event.exit_code,
+            command: event.command,
+            arguments: event.arguments,
+            working_dir: event.working_dir,
+            execution_time_ms: event.execution_time_ms,
+            suggested_actions: event.suggested_actions,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobDispatchFailed> for DomainEvent {
+    fn from(event: JobDispatchFailed) -> Self {
+        DomainEvent::JobDispatchFailed {
+            job_id: event.job_id,
+            worker_id: event.worker_id,
+            failure_reason: event.failure_reason,
+            retry_count: event.retry_count,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+// Worker Events - From implementations
+impl From<WorkerRegistered> for DomainEvent {
+    fn from(event: WorkerRegistered) -> Self {
+        DomainEvent::WorkerRegistered {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerStatusChanged> for DomainEvent {
+    fn from(event: WorkerStatusChanged) -> Self {
+        DomainEvent::WorkerStatusChanged {
+            worker_id: event.worker_id,
+            old_status: event.old_status,
+            new_status: event.new_status,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerTerminated> for DomainEvent {
+    fn from(event: WorkerTerminated) -> Self {
+        DomainEvent::WorkerTerminated {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            reason: event.reason,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerDisconnected> for DomainEvent {
+    fn from(event: WorkerDisconnected) -> Self {
+        DomainEvent::WorkerDisconnected {
+            worker_id: event.worker_id,
+            last_heartbeat: event.last_heartbeat,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerProvisioned> for DomainEvent {
+    fn from(event: WorkerProvisioned) -> Self {
+        DomainEvent::WorkerProvisioned {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            spec_summary: event.spec_summary,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerReconnected> for DomainEvent {
+    fn from(event: WorkerReconnected) -> Self {
+        DomainEvent::WorkerReconnected {
+            worker_id: event.worker_id,
+            session_id: event.session_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerRecoveryFailed> for DomainEvent {
+    fn from(event: WorkerRecoveryFailed) -> Self {
+        DomainEvent::WorkerRecoveryFailed {
+            worker_id: event.worker_id,
+            invalid_session_id: event.invalid_session_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerReadyForJob> for DomainEvent {
+    fn from(event: WorkerReadyForJob) -> Self {
+        DomainEvent::WorkerReadyForJob {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            capabilities: event.capabilities,
+            tags: event.tags,
+            ready_at: event.ready_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerHeartbeat> for DomainEvent {
+    fn from(event: WorkerHeartbeat) -> Self {
+        DomainEvent::WorkerHeartbeat {
+            worker_id: event.worker_id,
+            state: event.state,
+            load_average: event.load_average,
+            memory_usage_mb: event.memory_usage_mb,
+            current_job_id: event.current_job_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerReady> for DomainEvent {
+    fn from(event: WorkerReady) -> Self {
+        DomainEvent::WorkerReady {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            ready_at: event.ready_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerStateUpdated> for DomainEvent {
+    fn from(event: WorkerStateUpdated) -> Self {
+        DomainEvent::WorkerStateUpdated {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            old_state: event.old_state,
+            new_state: event.new_state,
+            current_job_id: event.current_job_id,
+            last_heartbeat: event.last_heartbeat,
+            capabilities: event.capabilities,
+            metadata: event.metadata,
+            transition_reason: event.transition_reason,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerSelfTerminated> for DomainEvent {
+    fn from(event: WorkerSelfTerminated) -> Self {
+        DomainEvent::WorkerSelfTerminated {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            last_job_id: event.last_job_id,
+            expected_cleanup_ms: event.expected_cleanup_ms,
+            actual_wait_ms: event.actual_wait_ms,
+            worker_state: event.worker_state,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerEphemeralCreated> for DomainEvent {
+    fn from(event: WorkerEphemeralCreated) -> Self {
+        DomainEvent::WorkerEphemeralCreated {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            max_lifetime_secs: event.max_lifetime_secs,
+            ttl_after_completion_secs: event.ttl_after_completion_secs,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerEphemeralReady> for DomainEvent {
+    fn from(event: WorkerEphemeralReady) -> Self {
+        DomainEvent::WorkerEphemeralReady {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerEphemeralTerminating> for DomainEvent {
+    fn from(event: WorkerEphemeralTerminating) -> Self {
+        DomainEvent::WorkerEphemeralTerminating {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            reason: event.reason,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerEphemeralTerminated> for DomainEvent {
+    fn from(event: WorkerEphemeralTerminated) -> Self {
+        DomainEvent::WorkerEphemeralTerminated {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            cleanup_scheduled: event.cleanup_scheduled,
+            ttl_expires_at: event.ttl_expires_at,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerEphemeralCleanedUp> for DomainEvent {
+    fn from(event: WorkerEphemeralCleanedUp) -> Self {
+        DomainEvent::WorkerEphemeralCleanedUp {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            cleanup_reason: event.cleanup_reason,
+            cleanup_duration_ms: event.cleanup_duration_ms,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<OrphanWorkerDetected> for DomainEvent {
+    fn from(event: OrphanWorkerDetected) -> Self {
+        DomainEvent::OrphanWorkerDetected {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            last_seen: event.last_seen,
+            orphaned_duration_secs: event.orphaned_duration_secs,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<GarbageCollectionCompleted> for DomainEvent {
+    fn from(event: GarbageCollectionCompleted) -> Self {
+        DomainEvent::GarbageCollectionCompleted {
+            provider_id: event.provider_id,
+            workers_cleaned: event.workers_cleaned,
+            orphans_detected: event.orphans_detected,
+            errors: event.errors,
+            duration_ms: event.duration_ms,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<WorkerEphemeralIdle> for DomainEvent {
+    fn from(event: WorkerEphemeralIdle) -> Self {
+        DomainEvent::WorkerEphemeralIdle {
+            worker_id: event.worker_id,
+            provider_id: event.provider_id,
+            idle_since: event.idle_since,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+// Provider Events - From implementations
+impl From<ProviderRegistered> for DomainEvent {
+    fn from(event: ProviderRegistered) -> Self {
+        DomainEvent::ProviderRegistered {
+            provider_id: event.provider_id,
+            provider_type: event.provider_type,
+            config_summary: event.config_summary,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ProviderUpdated> for DomainEvent {
+    fn from(event: ProviderUpdated) -> Self {
+        DomainEvent::ProviderUpdated {
+            provider_id: event.provider_id,
+            changes: event.changes,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ProviderHealthChanged> for DomainEvent {
+    fn from(event: ProviderHealthChanged) -> Self {
+        DomainEvent::ProviderHealthChanged {
+            provider_id: event.provider_id,
+            old_status: event.old_status,
+            new_status: event.new_status,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ProviderRecovered> for DomainEvent {
+    fn from(event: ProviderRecovered) -> Self {
+        DomainEvent::ProviderRecovered {
+            provider_id: event.provider_id,
+            previous_status: event.previous_status,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<JobQueueDepthChanged> for DomainEvent {
+    fn from(event: JobQueueDepthChanged) -> Self {
+        DomainEvent::JobQueueDepthChanged {
+            queue_depth: event.queue_depth,
+            threshold: event.threshold,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<AutoScalingTriggered> for DomainEvent {
+    fn from(event: AutoScalingTriggered) -> Self {
+        DomainEvent::AutoScalingTriggered {
+            provider_id: event.provider_id,
+            reason: event.reason,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ProviderSelected> for DomainEvent {
+    fn from(event: ProviderSelected) -> Self {
+        DomainEvent::ProviderSelected {
+            job_id: event.job_id,
+            provider_id: event.provider_id,
+            provider_type: event.provider_type,
+            selection_strategy: event.selection_strategy,
+            effective_cost: event.effective_cost,
+            effective_startup_ms: event.effective_startup_ms,
+            elapsed_ms: event.elapsed_ms,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ProviderExecutionError> for DomainEvent {
+    fn from(event: ProviderExecutionError) -> Self {
+        DomainEvent::ProviderExecutionError {
+            provider_id: event.provider_id,
+            worker_id: event.worker_id,
+            error_type: event.error_type,
+            message: event.message,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<SchedulingDecisionFailed> for DomainEvent {
+    fn from(event: SchedulingDecisionFailed) -> Self {
+        DomainEvent::SchedulingDecisionFailed {
+            job_id: event.job_id,
+            failure_reason: event.failure_reason,
+            attempted_providers: event.attempted_providers,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+// Template Events - From implementations
+impl From<TemplateCreated> for DomainEvent {
+    fn from(event: TemplateCreated) -> Self {
+        DomainEvent::TemplateCreated {
+            template_id: event.template_id,
+            template_name: event.template_name,
+            version: event.version,
+            created_by: event.created_by,
+            spec_summary: event.spec_summary,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<TemplateUpdated> for DomainEvent {
+    fn from(event: TemplateUpdated) -> Self {
+        DomainEvent::TemplateUpdated {
+            template_id: event.template_id,
+            template_name: event.template_name,
+            old_version: event.old_version,
+            new_version: event.new_version,
+            changes: event.changes,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<TemplateDisabled> for DomainEvent {
+    fn from(event: TemplateDisabled) -> Self {
+        DomainEvent::TemplateDisabled {
+            template_id: event.template_id,
+            template_name: event.template_name,
+            version: event.version,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<TemplateRunCreated> for DomainEvent {
+    fn from(event: TemplateRunCreated) -> Self {
+        DomainEvent::TemplateRunCreated {
+            template_id: event.template_id,
+            template_name: event.template_name,
+            execution_id: event.execution_id,
+            job_id: event.job_id,
+            job_name: event.job_name,
+            template_version: event.template_version,
+            execution_number: event.execution_number,
+            triggered_by: event.triggered_by,
+            triggered_by_user: event.triggered_by_user,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ExecutionRecorded> for DomainEvent {
+    fn from(event: ExecutionRecorded) -> Self {
+        DomainEvent::ExecutionRecorded {
+            execution_id: event.execution_id,
+            template_id: event.template_id,
+            job_id: event.job_id,
+            status: event.status,
+            exit_code: event.exit_code,
+            duration_ms: event.duration_ms,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ScheduledJobCreated> for DomainEvent {
+    fn from(event: ScheduledJobCreated) -> Self {
+        DomainEvent::ScheduledJobCreated {
+            scheduled_job_id: event.scheduled_job_id,
+            name: event.name,
+            template_id: event.template_id,
+            cron_expression: event.cron_expression,
+            timezone: event.timezone,
+            created_by: event.created_by,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ScheduledJobTriggered> for DomainEvent {
+    fn from(event: ScheduledJobTriggered) -> Self {
+        DomainEvent::ScheduledJobTriggered {
+            scheduled_job_id: event.scheduled_job_id,
+            name: event.name,
+            template_id: event.template_id,
+            execution_id: event.execution_id,
+            job_id: event.job_id,
+            scheduled_for: event.scheduled_for,
+            triggered_at: event.triggered_at,
+            parameters: event.parameters,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ScheduledJobMissed> for DomainEvent {
+    fn from(event: ScheduledJobMissed) -> Self {
+        DomainEvent::ScheduledJobMissed {
+            scheduled_job_id: event.scheduled_job_id,
+            name: event.name,
+            scheduled_for: event.scheduled_for,
+            detected_at: event.detected_at,
+            reason: event.reason,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
+impl From<ScheduledJobError> for DomainEvent {
+    fn from(event: ScheduledJobError) -> Self {
+        DomainEvent::ScheduledJobError {
+            scheduled_job_id: event.scheduled_job_id,
+            name: event.name,
+            error_message: event.error_message,
+            execution_id: event.execution_id,
+            occurred_at: event.occurred_at,
+            correlation_id: event.correlation_id,
+            actor: event.actor,
+        }
+    }
+}
+
 /// Razón de limpieza de un worker efímero
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CleanupReason {
