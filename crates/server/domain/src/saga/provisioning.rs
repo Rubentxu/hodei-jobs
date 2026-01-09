@@ -8,6 +8,7 @@ use crate::events::DomainEvent;
 use crate::saga::commands::{CreateWorkerCommand, DestroyWorkerCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
+use crate::workers::events::WorkerProvisioned;
 use crate::workers::{WorkerProvisioning, WorkerRegistry, WorkerSpec};
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
@@ -685,7 +686,8 @@ impl SagaStep for PublishProvisionedEventStep {
             .unwrap_or_else(|| "unknown".to_string());
 
         // Create the WorkerProvisioned event
-        let event = DomainEvent::WorkerProvisioned {
+        // EPIC-65 Phase 3: Using modular event type
+        let provisioned_event = WorkerProvisioned {
             worker_id: worker_id.clone(),
             provider_id: provider_id.clone(),
             spec_summary,
@@ -697,7 +699,7 @@ impl SagaStep for PublishProvisionedEventStep {
         // Publish the event
         services
             .event_bus
-            .publish(&event)
+            .publish(&provisioned_event.into())
             .await
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),

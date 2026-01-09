@@ -15,6 +15,7 @@
 
 use crate::command::erased::dispatch_erased;
 use crate::events::DomainEvent;
+use crate::jobs::events::JobCancelled;
 use crate::jobs::JobRepository;
 use crate::saga::commands::cancellation::{
     NotifyWorkerCommand, ReleaseWorkerCommand, UpdateJobStateCommand,
@@ -428,7 +429,8 @@ impl SagaStep for UpdateJobStateStep {
         // If state was already correct (idempotent skip), we still publish event
         if !result.already_in_state {
             // Publish JobCancelled event
-            let event = DomainEvent::JobCancelled {
+            // EPIC-65 Phase 3: Using modular event type
+            let cancelled_event = JobCancelled {
                 job_id: self.job_id.clone(),
                 reason: Some(self.reason.clone()),
                 correlation_id: context.correlation_id.clone(),
@@ -437,7 +439,7 @@ impl SagaStep for UpdateJobStateStep {
             };
 
             event_bus
-                .publish(&event)
+                .publish(&cancelled_event.into())
                 .await
                 .map_err(|e| SagaError::StepFailed {
                     step: self.name().to_string(),
