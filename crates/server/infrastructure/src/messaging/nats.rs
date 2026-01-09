@@ -333,7 +333,7 @@ impl NatsEventBus {
             DomainEvent::JobDispatchAcknowledged { .. } => "jobs",
             DomainEvent::RunJobReceived { .. } => "jobs",
 
-            DomainEvent::WorkerRegistered { .. } => "workers",
+            DomainEvent::WorkerReady { .. } => "workers",
             DomainEvent::WorkerStatusChanged { .. } => "workers",
             DomainEvent::WorkerTerminated { .. } => "workers",
             DomainEvent::WorkerDisconnected { .. } => "workers",

@@ -33,15 +33,6 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
-    /// Un nuevo worker se ha registrado en el sistema
-    #[deprecated(note = "Use WorkerReady instead - WorkerRegistered doesn't indicate job readiness")]
-    WorkerRegistered {
-        worker_id: WorkerId,
-        provider_id: ProviderId,
-        occurred_at: DateTime<Utc>,
-        correlation_id: Option<String>,
-        actor: Option<String>,
-    },
     /// El estado de un worker ha cambiado
     WorkerStatusChanged {
         worker_id: WorkerId,
@@ -658,7 +649,7 @@ use crate::workers::events::{
     WorkerEphemeralCleanedUp, WorkerEphemeralCreated, WorkerEphemeralIdle,
     WorkerEphemeralReady, WorkerEphemeralTerminated, WorkerEphemeralTerminating,
     WorkerHeartbeat, WorkerProvisioned, WorkerReady, WorkerReadyForJob, WorkerReconnected,
-    WorkerRecoveryFailed, WorkerRegistered, WorkerSelfTerminated, WorkerStateUpdated,
+    WorkerRecoveryFailed, WorkerSelfTerminated, WorkerStateUpdated,
     WorkerStatusChanged, WorkerTerminated,
 };
 
@@ -808,18 +799,6 @@ impl From<JobDispatchFailed> for DomainEvent {
 }
 
 // Worker Events - From implementations
-impl From<WorkerRegistered> for DomainEvent {
-    fn from(event: WorkerRegistered) -> Self {
-        DomainEvent::WorkerRegistered {
-            worker_id: event.worker_id,
-            provider_id: event.provider_id,
-            occurred_at: event.occurred_at,
-            correlation_id: event.correlation_id,
-            actor: event.actor,
-        }
-    }
-}
-
 impl From<WorkerStatusChanged> for DomainEvent {
     fn from(event: WorkerStatusChanged) -> Self {
         DomainEvent::WorkerStatusChanged {
@@ -1752,7 +1731,6 @@ impl DomainEvent {
         match self {
             DomainEvent::JobCreated { correlation_id, .. }
             | DomainEvent::JobStatusChanged { correlation_id, .. }
-            | DomainEvent::WorkerRegistered { correlation_id, .. }
             | DomainEvent::WorkerStatusChanged { correlation_id, .. }
             | DomainEvent::ProviderRegistered { correlation_id, .. }
             | DomainEvent::ProviderUpdated { correlation_id, .. }
@@ -1809,7 +1787,6 @@ impl DomainEvent {
         match self {
             DomainEvent::JobCreated { actor, .. }
             | DomainEvent::JobStatusChanged { actor, .. }
-            | DomainEvent::WorkerRegistered { actor, .. }
             | DomainEvent::WorkerStatusChanged { actor, .. }
             | DomainEvent::ProviderRegistered { actor, .. }
             | DomainEvent::ProviderUpdated { actor, .. }
@@ -1866,7 +1843,6 @@ impl DomainEvent {
         match self {
             DomainEvent::JobCreated { occurred_at, .. }
             | DomainEvent::JobStatusChanged { occurred_at, .. }
-            | DomainEvent::WorkerRegistered { occurred_at, .. }
             | DomainEvent::WorkerStatusChanged { occurred_at, .. }
             | DomainEvent::ProviderRegistered { occurred_at, .. }
             | DomainEvent::ProviderUpdated { occurred_at, .. }
@@ -1929,7 +1905,6 @@ impl DomainEvent {
         match self {
             DomainEvent::JobCreated { .. } => "JobCreated",
             DomainEvent::JobStatusChanged { .. } => "JobStatusChanged",
-            DomainEvent::WorkerRegistered { .. } => "WorkerRegistered",
             DomainEvent::WorkerStatusChanged { .. } => "WorkerStatusChanged",
             DomainEvent::WorkerStateUpdated { .. } => "WorkerStateUpdated",
             DomainEvent::ProviderRegistered { .. } => "ProviderRegistered",
@@ -1998,7 +1973,6 @@ impl DomainEvent {
             DomainEvent::JobDispatchAcknowledged { job_id, .. } => job_id.to_string(),
             DomainEvent::RunJobReceived { job_id, .. } => job_id.to_string(),
 
-            DomainEvent::WorkerRegistered { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerStatusChanged { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerTerminated { worker_id, .. } => worker_id.to_string(),
             DomainEvent::WorkerDisconnected { worker_id, .. } => worker_id.to_string(),
@@ -2632,7 +2606,7 @@ mod epic65_validation_tests {
     use crate::workers::events::{
         WorkerDisconnected, WorkerHeartbeat, WorkerProvisioned,
         WorkerReadyForJob, WorkerRecoveryFailed, WorkerReconnected,
-        WorkerRegistered, WorkerTerminated,
+        WorkerTerminated,
     };
     use crate::workers::TerminationReason;
     use chrono::Utc;
@@ -2717,36 +2691,6 @@ mod epic65_validation_tests {
                 assert_eq!(reason, Some("User requested cancellation".to_string()));
             }
             _ => panic!("Expected JobCancelled variant"),
-        }
-    }
-
-    #[test]
-    fn test_worker_registered_conversion() {
-        // GIVEN: Un evento modular WorkerRegistered
-        let worker_id = WorkerId::new();
-        let provider_id = ProviderId::new();
-        let modular_event = WorkerRegistered {
-            worker_id: worker_id.clone(),
-            provider_id: provider_id.clone(),
-            occurred_at: Utc::now(),
-            correlation_id: Some("test-correlation".to_string()),
-            actor: Some("worker-agent".to_string()),
-        };
-
-        // WHEN: Convertimos a DomainEvent
-        let domain_event = super::DomainEvent::from(modular_event);
-
-        // THEN: La conversión preserva IDs
-        match domain_event {
-            super::DomainEvent::WorkerRegistered {
-                worker_id,
-                provider_id,
-                ..
-            } => {
-                assert_eq!(worker_id, worker_id);
-                assert_eq!(provider_id, provider_id);
-            }
-            _ => panic!("Expected WorkerRegistered variant"),
         }
     }
 
@@ -2852,15 +2796,6 @@ mod epic65_validation_tests {
         let now = Utc::now();
         let correlation_id = Some("test-correlation".to_string());
         let actor = Some("test".to_string());
-
-        // WorkerRegistered
-        let _ = super::DomainEvent::from(WorkerRegistered {
-            worker_id: worker_id.clone(),
-            provider_id: provider_id.clone(),
-            occurred_at: now,
-            correlation_id: correlation_id.clone(),
-            actor: actor.clone(),
-        });
 
         // WorkerTerminated
         let _ = super::DomainEvent::from(WorkerTerminated {

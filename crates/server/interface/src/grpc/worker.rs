@@ -630,30 +630,19 @@ impl WorkerAgentServiceImpl {
             }
         }
 
-        // 2. Emit WorkerRegistered and WorkerReady events (triggers JobDispatcher)
+        // Emit WorkerReady event (triggers JobDispatcher)
+        // Note: WorkerRegistered event has been removed in favor of WorkerReady
+        // which indicates the worker is ready for job assignment
         self.emit_worker_events(&worker_id, job_id_from_token.clone()).await?;
 
         Ok(())
     }
 
-    /// Helper to emit WorkerRegistered and WorkerReady events
+    /// Helper to emit WorkerReady event
     /// Also dispatches job if job_id is provided (OTP-based provisioning)
     async fn emit_worker_events(&self, worker_id: &WorkerId, job_id: Option<JobId>) -> Result<(), Status> {
         if let Some(event_bus) = &self.event_bus {
             let now = Utc::now();
-
-            // WorkerRegistered event
-            let event_registered = DomainEvent::WorkerRegistered {
-                worker_id: worker_id.clone(),
-                provider_id: ProviderId::new(),
-                occurred_at: now,
-                correlation_id: None,
-                actor: Some("worker-jit-registration".to_string()),
-            };
-
-            if let Err(e) = event_bus.publish(&event_registered).await {
-                warn!("Failed to publish WorkerRegistered: {}", e);
-            }
 
             // WorkerReady event - Includes job_id for OTP-based provisioning
             // This triggers job dispatch when job_id is present
@@ -1384,18 +1373,19 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                     None
                 };
 
-                let event = DomainEvent::WorkerRegistered {
+                let event = DomainEvent::WorkerReady {
                     worker_id: hodei_server_domain::shared_kernel::WorkerId(
                         uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
                     ),
                     provider_id: provider_id
                         .unwrap_or_else(|| hodei_server_domain::shared_kernel::ProviderId::new()),
-                    occurred_at: Utc::now(),
+                    job_id: None, // WorkerReady without specific job
+                    ready_at: Utc::now(),
                     correlation_id: ctx.correlation_id_owned(),
                     actor: ctx.actor_owned(),
                 };
                 if let Err(e) = event_bus.publish(&event).await {
-                    warn!("Failed to publish WorkerRegistered event: {}", e);
+                    warn!("Failed to publish WorkerReady event: {}", e);
                 }
             }
         }

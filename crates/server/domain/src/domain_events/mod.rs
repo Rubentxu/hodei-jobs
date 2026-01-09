@@ -15,7 +15,7 @@
 //!
 //! ```rust
 //! use hodei_server_domain::domain_events::jobs::JobCreated;
-//! use hodei_server_domain::domain_events::workers::WorkerRegistered;
+//! use hodei_server_domain::domain_events::workers::WorkerReady;
 //! use hodei_server_domain::domain_events::providers::ProviderHealthChanged;
 //! ```
 //!
@@ -49,7 +49,7 @@ pub mod workers {
         WorkerEphemeralCleanedUp, WorkerEphemeralCreated, WorkerEphemeralIdle,
         WorkerEphemeralReady, WorkerEphemeralTerminated, WorkerEphemeralTerminating,
         WorkerHeartbeat, WorkerProvisioned, WorkerReady, WorkerReadyForJob, WorkerReconnected,
-        WorkerRecoveryFailed, WorkerRegistered, WorkerSelfTerminated, WorkerStateUpdated,
+        WorkerRecoveryFailed, WorkerSelfTerminated, WorkerStateUpdated,
         WorkerStatusChanged, WorkerTerminated,
     };
 }

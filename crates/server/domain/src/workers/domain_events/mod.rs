@@ -9,7 +9,6 @@ pub use super::super::events::CleanupReason;
 pub use super::super::events::TerminationReason;
 
 // Re-export all worker events from the main events module
-pub use super::WorkerRegistered;
 pub use super::WorkerStatusChanged;
 pub use super::WorkerTerminated;
 pub use super::WorkerDisconnected;

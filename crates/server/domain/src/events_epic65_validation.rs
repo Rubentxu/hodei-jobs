@@ -12,7 +12,7 @@ mod epic65_validation_tests {
     use crate::shared_kernel::{JobId, JobState};
     use crate::workers::events::{
         WorkerDisconnected, WorkerHeartbeat, WorkerProvisioned, WorkerReadyForJob,
-        WorkerRecoveryFailed, WorkerReconnected, WorkerRegistered, WorkerStatusChanged,
+        WorkerRecoveryFailed, WorkerReconnected, WorkerStatusChanged,
         WorkerTerminated,
     };
     use chrono::Utc;

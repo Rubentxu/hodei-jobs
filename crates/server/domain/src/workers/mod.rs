@@ -26,6 +26,6 @@ pub use self::events::{
     WorkerEphemeralCleanedUp, WorkerEphemeralCreated, WorkerEphemeralIdle,
     WorkerEphemeralReady, WorkerEphemeralTerminated, WorkerEphemeralTerminating,
     WorkerHeartbeat, WorkerProvisioned, WorkerReady, WorkerReadyForJob, WorkerReconnected,
-    WorkerRecoveryFailed, WorkerRegistered, WorkerSelfTerminated, WorkerStateUpdated,
+    WorkerRecoveryFailed, WorkerSelfTerminated, WorkerStateUpdated,
     WorkerStatusChanged, WorkerTerminated,
 };

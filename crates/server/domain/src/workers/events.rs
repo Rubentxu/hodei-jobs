@@ -8,21 +8,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Event published when a new worker registers
-///
-/// DEPRECATED: Use `WorkerReady` instead.
-/// WorkerRegistered only indicates registration but not readiness for jobs.
-/// `WorkerReady` indicates the worker is fully initialized and can receive jobs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[deprecated(note = "Use WorkerReady instead - WorkerRegistered doesn't indicate job readiness")]
-pub struct WorkerRegistered {
-    pub worker_id: WorkerId,
-    pub provider_id: crate::shared_kernel::ProviderId,
-    pub occurred_at: DateTime<Utc>,
-    pub correlation_id: Option<String>,
-    pub actor: Option<String>,
-}
-
 /// Event published when worker state changes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkerStatusChanged {

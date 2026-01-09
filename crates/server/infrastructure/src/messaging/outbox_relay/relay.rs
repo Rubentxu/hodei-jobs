@@ -854,20 +854,21 @@ impl OutboxRelay {
                 })
             }
 
-            "WorkerRegistered" => {
+            "WorkerReady" => {
                 let worker_id = serde_json::from_value::<Uuid>(payload["worker_id"].clone())
                     .map_err(|_| DomainError::InfrastructureError {
-                        message: "Invalid worker_id in WorkerRegistered event".to_string(),
+                        message: "Invalid worker_id in WorkerReady event".to_string(),
                     })?;
                 let provider_id = serde_json::from_value::<Uuid>(payload["provider_id"].clone())
                     .map_err(|_| DomainError::InfrastructureError {
-                        message: "Invalid provider_id in WorkerRegistered event".to_string(),
+                        message: "Invalid provider_id in WorkerReady event".to_string(),
                     })?;
 
-                Ok(DomainEvent::WorkerRegistered {
+                Ok(DomainEvent::WorkerReady {
                     worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
                     provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
-                    occurred_at: event.created_at,
+                    job_id: None, // WorkerReady from legacy registration
+                    ready_at: event.created_at,
                     correlation_id: event.metadata.as_ref().and_then(|m| {
                         m.get("correlation_id")
                             .and_then(|v| v.as_str().map(|s| s.to_string()))
