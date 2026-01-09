@@ -9,7 +9,9 @@
 //! 4. Completación del job
 
 use crate::command::dispatch_erased;
-use crate::saga::commands::execution::{AssignWorkerCommand, CompleteJobCommand, ExecuteJobCommand};
+use crate::saga::commands::execution::{
+    AssignWorkerCommand, CompleteJobCommand, ExecuteJobCommand, ValidateJobCommand,
+};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
 use std::time::Duration;
@@ -128,22 +130,24 @@ impl SagaStep for ValidateJobStep {
 
     #[instrument(skip(context), fields(step = "ValidateJob", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        // Get services from context
-        let services = context.services().ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: "SagaServices not available in context".to_string(),
-            will_compensate: false,
-        })?;
+        // Get command bus from context
+        let services_ref = context
+            .services()
+            .ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: false,
+            })?;
 
-        let job_repository =
-            services
-                .job_repository
-                .as_ref()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "JobRepository service not available".to_string(),
-                    will_compensate: false,
-                })?;
+        let command_bus = services_ref
+            .command_bus
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "CommandBus not available in SagaServices".to_string(),
+                will_compensate: false,
+            })?;
 
         // Idempotency check: skip if already validated
         if let Some(Ok(true)) = context.get_metadata::<bool>("job_validated") {
@@ -151,56 +155,51 @@ impl SagaStep for ValidateJobStep {
             return Ok(());
         }
 
-        info!(job_id = %self.job_id, "🔍 Validating job for execution...");
+        info!(job_id = %self.job_id, "🔍 Validating job for execution via ValidateJobCommand...");
 
-        // Fetch job from repository
-        let job_opt =
-            job_repository
-                .find_by_id(&self.job_id)
-                .await
-                .map_err(|e| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to fetch job from repository: {}", e),
-                    will_compensate: false,
-                })?;
+        // Create and dispatch ValidateJobCommand
+        let command = ValidateJobCommand::new(self.job_id.clone(), context.saga_id.to_string());
 
-        // Validate job exists
-        let job = job_opt.ok_or_else(|| SagaError::StepFailed {
-            step: self.name().to_string(),
-            message: format!("Job {} not found in repository", self.job_id),
-            will_compensate: false,
-        })?;
+        // Dispatch command via CommandBus
+        let validation_result = dispatch_erased(&command_bus, command)
+            .await
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to validate job: {}", e),
+                will_compensate: false,
+            })?;
 
-        // Validate job is in correct state (PENDING for new execution, RUNNING for recovery)
-        let current_state = job.state();
-        let valid_states = [
-            JobState::Pending,
-            JobState::Running,
-            JobState::Assigned,
-            JobState::Scheduled,
-        ];
-
-        if !valid_states.contains(&current_state) {
+        // Check validation result
+        if !validation_result.is_valid {
             return Err(SagaError::StepFailed {
                 step: self.name().to_string(),
-                message: format!(
-                    "Job {} is in state {:?}, expected PENDING, ASSIGNED, SCHEDULED or RUNNING",
-                    self.job_id, current_state
-                ),
+                message: validation_result
+                    .failure_reason
+                    .unwrap_or_else(|| format!("Job {} validation failed", self.job_id)),
                 will_compensate: false,
             });
         }
 
-        // Store original state for potential compensation
+        // Store validation result and original state for subsequent steps
         context
-            .set_metadata("execution_original_state", &format!("{:?}", current_state))
+            .set_metadata("job_validated", &true)
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to store validation status: {}", e),
+                will_compensate: false,
+            })?;
+
+        context
+            .set_metadata(
+                "execution_original_state",
+                &format!("{:?}", validation_result.current_state),
+            )
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),
                 message: format!("Failed to store original state: {}", e),
                 will_compensate: false,
             })?;
 
-        // Store job_id for subsequent steps
         context
             .set_metadata("execution_job_id", &self.job_id.to_string())
             .map_err(|e| SagaError::StepFailed {
@@ -209,20 +208,7 @@ impl SagaStep for ValidateJobStep {
                 will_compensate: false,
             })?;
 
-        // Mark as validated for idempotency
-        context
-            .set_metadata("job_validated", &true)
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to mark job as validated: {}", e),
-                will_compensate: false,
-            })?;
-
-        info!(
-            job_id = %self.job_id,
-            state = ?current_state,
-            "✅ Job validated successfully for execution"
-        );
+        info!(job_id = %self.job_id, state = ?validation_result.current_state, "✅ Job validation successful");
 
         Ok(())
     }
