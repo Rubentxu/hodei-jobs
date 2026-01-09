@@ -300,7 +300,7 @@ db-shell:
         echo "💡 Start it with: just dev-db"; \
         exit 1; \
     fi
-    docker exec -it $$CONTAINER_ID psql -U postgres -d hodei_dev
+    docker exec -it $$CONTAINER_ID psql -U postgres -d hodei_jobs
 
 # Show database status
 db-status:
@@ -315,8 +315,8 @@ db-status:
         echo "💡 Start it with: just dev-db"; \
         exit 1; \
     fi
-    docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as total_jobs FROM jobs;" 2>/dev/null || echo "Database not ready"
-    docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as total_workers FROM workers;" 2>/dev/null || echo "Database not ready"
+    docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_jobs -c "SELECT COUNT(*) as total_jobs FROM jobs" 2>/dev/null || echo "Database not ready"
+    docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_jobs -c "SELECT COUNT(*) as total_workers FROM workers" 2>/dev/null || echo "Database not ready"
 
 # Reset database
 db-reset:
@@ -644,7 +644,7 @@ status:
     @if docker info >/dev/null 2>&1; then \
         CONTAINER_ID=$$(docker ps -q -f name=postgres 2>/dev/null); \
         if [ -n "$$CONTAINER_ID" ]; then \
-            docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT id, state, last_heartbeat FROM workers ORDER BY last_heartbeat DESC LIMIT 5;" 2>/dev/null || echo "Database not accessible"; \
+            docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_jobs -c 'SELECT id, state, last_heartbeat FROM workers ORDER BY last_heartbeat DESC LIMIT 5' 2>/dev/null || echo "Database not accessible"; \
         else \
             echo "⚠️  PostgreSQL container is not running"; \
         fi; \
@@ -656,7 +656,7 @@ status:
     @if docker info >/dev/null 2>&1; then \
         CONTAINER_ID=$$(docker ps -q -f name=postgres 2>/dev/null); \
         if [ -n "$$CONTAINER_ID" ]; then \
-            docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_dev -c "SELECT COUNT(*) as pending_jobs FROM job_queue;" 2>/dev/null || echo "Database not accessible"; \
+            docker exec -t $$CONTAINER_ID psql -U postgres -d hodei_jobs -c 'SELECT COUNT(*) as pending_jobs FROM job_queue' 2>/dev/null || echo "Database not accessible"; \
         else \
             echo "⚠️  PostgreSQL container is not running"; \
         fi; \
@@ -845,17 +845,17 @@ debug-system:
 # Show jobs in PENDING state
 debug-jobs:
     @echo "=== JOBS EN ESTADO PENDING ==="
-    docker exec hodei-jobs-postgres psql -U postgres -c "SELECT id, state, attempts, created_at, EXTRACT(EPOCH FROM (now() - created_at)) as seconds_in_pending FROM jobs WHERE state = 'PENDING' ORDER BY created_at DESC;"
+    docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT id, state, attempts, created_at, EXTRACT(EPOCH FROM (now() - created_at)) as seconds_in_pending FROM jobs WHERE state = '\''PENDING'\'' ORDER BY created_at DESC;'
 
 # Show jobs in queue
 debug-queue:
     @echo "=== JOBS EN COLA ==="
-    docker exec hodei-jobs-postgres psql -U postgres -c "SELECT jq.job_id, jq.enqueued_at, j.state, EXTRACT(EPOCH FROM (now() - jq.enqueued_at)) as seconds_in_queue FROM job_queue jq JOIN jobs j ON jq.job_id = j.id ORDER BY jq.enqueued_at DESC;"
+    docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT jq.job_id, jq.enqueued_at, j.state, EXTRACT(EPOCH FROM (now() - jq.enqueued_at)) as seconds_in_queue FROM job_queue jq JOIN jobs j ON jq.job_id = j.id ORDER BY jq.enqueued_at DESC;'
 
 # Show registered workers
 debug-workers:
     @echo "=== WORKERS REGISTRADOS ==="
-    docker exec hodei-jobs-postgres psql -U postgres -c "SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_since_heartbeat, current_job_id FROM workers ORDER BY last_heartbeat DESC;"
+    docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_since_heartbeat, current_job_id FROM workers ORDER BY last_heartbeat DESC;'
 
 # Detailed job diagnosis
 debug-job job_id:
@@ -884,7 +884,7 @@ watch-jobs:
 
 # Watch workers table (live updates)
 watch-workers:
-    @watch -n 1 "docker exec hodei-jobs-postgres psql -U postgres -c 'SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_ago FROM workers ORDER BY last_heartbeat DESC LIMIT 5;'"
+    @watch -n 1 'docker exec hodei-jobs-postgres psql -U postgres -c "SELECT id, state, last_heartbeat, EXTRACT(EPOCH FROM (now() - last_heartbeat)) as seconds_ago FROM workers ORDER BY last_heartbeat DESC LIMIT 5;"'
 
 # Watch queue length (live updates)
 watch-queue:

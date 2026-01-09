@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS hodei_commands (
     step_order INTEGER,
 
     -- Constraints
-    CONSTRAINT fk_saga FOREIGN KEY (saga_id) REFERENCES hodei_sagas(id) ON DELETE SET NULL
+    CONSTRAINT fk_saga FOREIGN KEY (saga_id) REFERENCES sagas(id) ON DELETE SET NULL
 );
 
 -- Indexes for hodei_commands

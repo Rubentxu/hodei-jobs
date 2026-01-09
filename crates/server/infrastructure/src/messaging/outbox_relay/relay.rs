@@ -803,10 +803,15 @@ impl OutboxRelay {
                     .map_err(|_| DomainError::InfrastructureError {
                         message: "Invalid provider_id in WorkerReady event".to_string(),
                     })?;
+                // job_id is optional (None for generic availability, Some for OTP-based)
+                let job_id = payload.get("job_id").and_then(|v| {
+                    serde_json::from_value::<Uuid>(v.clone()).ok()
+                }).map(|uuid| hodei_server_domain::shared_kernel::JobId(uuid));
 
                 Ok(DomainEvent::WorkerReady {
                     worker_id: hodei_server_domain::shared_kernel::WorkerId(worker_id),
                     provider_id: hodei_server_domain::shared_kernel::ProviderId(provider_id),
+                    job_id,
                     ready_at: event.created_at,
                     correlation_id: event.metadata.as_ref().and_then(|m| {
                         m.get("correlation_id")

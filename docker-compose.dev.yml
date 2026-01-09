@@ -52,6 +52,7 @@ services:
       - --jetstream
       - -sd
       - /data
+      - --http_port=8222
     volumes:
       - nats_dev_data:/data
     healthcheck:

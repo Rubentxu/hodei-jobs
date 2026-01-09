@@ -10,6 +10,10 @@ impl JobId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    pub fn from_string(s: &str) -> Option<Self> {
+        Uuid::parse_str(s).ok().map(Self)
+    }
 }
 
 impl Default for JobId {

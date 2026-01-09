@@ -235,7 +235,15 @@ impl SagaStep for CreateInfrastructureStep {
         }
 
         // Get or create job ID
-        let job_id = self.job_id.clone().unwrap_or_else(JobId::new);
+        // First try to get job_id from context (set by coordinator)
+        let job_id = if let Some(job_id) = self.job_id.clone() {
+            job_id
+        } else if let Some(Ok(job_id_str)) = context.get_metadata::<String>("job_id") {
+            JobId::from_string(&job_id_str).unwrap_or_else(JobId::new)
+        } else {
+            // Fallback: generate new job ID (for ephemeral workers without job)
+            JobId::new()
+        };
 
         // Store job_id for potential compensation
         context
@@ -363,222 +371,6 @@ impl SagaStep for CreateInfrastructureStep {
         info!(
             worker_id = %worker_id_str,
             "✅ Worker infrastructure destruction command dispatched"
-        );
-
-        Ok(())
-    }
-
-    fn is_idempotent(&self) -> bool {
-        true
-    }
-
-    fn has_compensation(&self) -> bool {
-        true
-    }
-}
-
-// ============================================================================
-// RegisterWorkerStep
-// ============================================================================
-
-/// Step que registra un worker en el registro centralizado.
-///
-/// Este step utiliza el `WorkerRegistry` service inyectado en el contexto
-/// para registrar el worker de forma real. En compensación, deregistra el worker.
-///
-/// # Metadata Guardado
-/// - `worker_id`: ID del worker registrado (para compensación)
-/// - `worker_registration_done`: Flag indicando que ya se registró
-/// - `worker_job_id`: Job ID asociado al worker
-#[derive(Debug, Clone)]
-pub struct RegisterWorkerStep;
-
-impl RegisterWorkerStep {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl SagaStep for RegisterWorkerStep {
-    type Output = ();
-
-    fn name(&self) -> &'static str {
-        "RegisterWorker"
-    }
-
-    #[instrument(skip(context), fields(step = "RegisterWorker"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
-        // Get services from context
-        let services = context
-            .services()
-            .ok_or_else(|| SagaError::PersistenceError {
-                message: "SagaServices not available in context".to_string(),
-            })?;
-
-        let provider_registry = &services.provider_registry;
-
-        // Idempotency check: skip if already registered
-        if let Some(Ok(true)) = context.get_metadata::<bool>("worker_registration_done") {
-            info!("Worker already registered (idempotency check), skipping");
-            return Ok(());
-        }
-
-        // Get worker_id from context (set by CreateInfrastructureStep)
-        let worker_id_str = match context.get_metadata::<String>("worker_id") {
-            Some(Ok(id)) => id,
-            None => {
-                return Err(SagaError::PersistenceError {
-                    message: "worker_id not found in context. CreateInfrastructureStep must execute first".to_string(),
-                });
-            }
-            Some(Err(e)) => {
-                return Err(SagaError::PersistenceError {
-                    message: format!("Failed to read worker_id from context: {}", e),
-                });
-            }
-        };
-
-        // Get job_id from context
-        let job_id_str = context
-            .get_metadata::<String>("worker_job_id")
-            .and_then(|r| r.ok())
-            .unwrap_or_else(|| {
-                // Generate a new job ID if not present
-                JobId::new().to_string()
-            });
-
-        // Parse IDs
-        let worker_id =
-            WorkerId::from_string(&worker_id_str).ok_or_else(|| SagaError::PersistenceError {
-                message: format!("Invalid worker_id in context: {}", worker_id_str),
-            })?;
-
-        let job_id =
-            JobId(
-                uuid::Uuid::parse_str(&job_id_str).map_err(|e| SagaError::PersistenceError {
-                    message: format!("Invalid job_id in context: {}", e),
-                })?,
-            );
-
-        // Get worker_spec from context or create default
-        let spec = WorkerSpec::new(
-            context
-                .metadata
-                .get("worker_image")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "hodei-jobs-worker:latest".to_string()),
-            context
-                .metadata
-                .get("worker_server_address")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "http://localhost:50051".to_string()),
-        );
-
-        // Get handle from provider registry using worker_id
-        let worker_handle = provider_registry
-            .get(&worker_id)
-            .await
-            .map_err(|e| SagaError::PersistenceError {
-                message: format!("Failed to get worker handle: {}", e),
-            })?
-            .ok_or_else(|| SagaError::PersistenceError {
-                message: format!("Worker {} not found in provider registry", worker_id),
-            })?
-            .handle()
-            .clone(); // Use accessor method and clone the value
-
-        info!(
-            worker_id = %worker_id,
-            job_id = %job_id,
-            "📝 Registering worker in central registry..."
-        );
-
-        // Register worker in the central registry
-        let worker = provider_registry
-            .register(worker_handle, spec, job_id)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to register worker: {}", e),
-                will_compensate: true,
-            })?;
-
-        // Store worker_id for compensation
-        context
-            .set_metadata("registered_worker_id", &worker.id().to_string())
-            .map_err(|e| SagaError::PersistenceError {
-                message: e.to_string(),
-            })?;
-
-        // Mark as done for idempotency
-        context
-            .set_metadata("worker_registration_done", &true)
-            .map_err(|e| SagaError::PersistenceError {
-                message: e.to_string(),
-            })?;
-
-        info!(
-            worker_id = %worker.id(),
-            state = ?worker.state(),
-            "✅ Worker registered successfully in central registry"
-        );
-
-        Ok(())
-    }
-
-    /// Compensates by unregistering the worker from the central registry.
-    #[instrument(skip(context), fields(step = "RegisterWorker"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
-        // Get registered_worker_id from metadata
-        let worker_id_str = match context.get_metadata::<String>("registered_worker_id") {
-            Some(Ok(id)) => id,
-            None => {
-                info!("No registered_worker_id in context, skipping compensation");
-                return Ok(());
-            }
-            Some(Err(e)) => {
-                warn!("Failed to read registered_worker_id from context: {}", e);
-                return Ok(());
-            }
-        };
-
-        // Get services from context
-        let services = context
-            .services()
-            .ok_or_else(|| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: "SagaServices not available".to_string(),
-            })?;
-
-        let provider_registry = &services.provider_registry;
-
-        // Parse worker_id
-        let worker_id =
-            WorkerId::from_string(&worker_id_str).ok_or_else(|| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: format!("Invalid worker_id in context: {}", worker_id_str),
-            })?;
-
-        info!(
-            worker_id = %worker_id_str,
-            "🔄 Compensating: unregistering worker from central registry"
-        );
-
-        // Unregister worker (idempotent - no error if already unregistered)
-        provider_registry
-            .unregister(&worker_id)
-            .await
-            .map_err(|e| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to unregister worker {}: {}", worker_id_str, e),
-            })?;
-
-        info!(
-            worker_id = %worker_id_str,
-            "✅ Worker unregistered from central registry (compensation complete)"
         );
 
         Ok(())
@@ -778,16 +570,6 @@ mod tests {
         assert!(
             step.has_compensation(),
             "CreateInfrastructureStep now has compensation (EPIC-SAGA-ENGINE)"
-        );
-        assert!(step.is_idempotent());
-    }
-
-    #[test]
-    fn register_worker_step_has_compensation() {
-        let step = RegisterWorkerStep::new();
-        assert!(
-            step.has_compensation(),
-            "RegisterWorkerStep now has compensation to unregister worker on rollback"
         );
         assert!(step.is_idempotent());
     }

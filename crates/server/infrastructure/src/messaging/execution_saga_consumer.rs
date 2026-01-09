@@ -237,12 +237,12 @@ impl ExecutionSagaConsumer {
                 );
                 self.handle_job_queued(job_id).await?;
             }
-            DomainEvent::WorkerReady { worker_id, .. } => {
+            DomainEvent::WorkerReady { worker_id, job_id, .. } => {
                 info!(
-                    "📦 ExecutionSagaConsumer: Received WorkerReady event for worker {}",
-                    worker_id
+                    "📦 ExecutionSagaConsumer: Received WorkerReady event for worker {} (job_id: {:?})",
+                    worker_id, job_id
                 );
-                self.handle_worker_ready(worker_id).await?;
+                self.handle_worker_ready(worker_id, job_id.as_ref()).await?;
             }
             _ => {
                 debug!(
@@ -310,7 +310,9 @@ impl ExecutionSagaConsumer {
     }
 
     /// Handle WorkerReady event - dispatch pending job
-    async fn handle_worker_ready(&self, worker_id: &WorkerId) -> Result<(), DomainError> {
+    /// If job_id is provided in the event, dispatch that specific job (OTP-based)
+    /// Otherwise, find any pending job that matches the worker
+    async fn handle_worker_ready(&self, worker_id: &WorkerId, event_job_id: Option<&JobId>) -> Result<(), DomainError> {
         // Check if worker exists and is in correct state
         let _worker = self
             .worker_registry
@@ -323,7 +325,16 @@ impl ExecutionSagaConsumer {
                 message: format!("Worker {} not found", worker_id),
             })?;
 
-        // Find pending jobs that can be dispatched to this worker
+        // If job_id is provided in the event (OTP-based provisioning), dispatch that specific job
+        if let Some(job_id) = event_job_id {
+            info!(
+                "📦 ExecutionSagaConsumer: Dispatching specific job {} to worker {} (from WorkerReady event)",
+                job_id, worker_id
+            );
+            return self.trigger_execution_saga(job_id, worker_id).await;
+        }
+
+        // No job_id in event - find pending jobs that can be dispatched to this worker
         let pending_jobs = self.job_repository.find_pending().await.map_err(|e| {
             DomainError::InfrastructureError {
                 message: format!("Failed to find pending jobs: {}", e),

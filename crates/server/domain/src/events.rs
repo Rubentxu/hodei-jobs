@@ -214,6 +214,7 @@ pub enum DomainEvent {
     WorkerReady {
         worker_id: WorkerId,
         provider_id: ProviderId,
+        job_id: Option<JobId>,
         ready_at: DateTime<Utc>,
         correlation_id: Option<String>,
         actor: Option<String>,
@@ -927,6 +928,7 @@ impl From<WorkerReady> for DomainEvent {
         DomainEvent::WorkerReady {
             worker_id: event.worker_id,
             provider_id: event.provider_id,
+            job_id: event.job_id,
             ready_at: event.ready_at,
             correlation_id: event.correlation_id,
             actor: event.actor,
@@ -1428,17 +1430,29 @@ impl std::fmt::Display for TerminationReason {
 ///
 /// Reduce Connascence of Position transformando los campos de auditoría
 /// de una tupla repetitiva a un tipo cohesivo.
+///
+/// EPIC-70: Added schema_version for forward/backward compatibility
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventMetadata {
+    /// Schema version for backward/forward compatibility
+    /// Used to handle schema evolution across event consumers
+    #[serde(default = "EventMetadata::current_version")]
+    pub schema_version: String,
     pub correlation_id: Option<String>,
     pub actor: Option<String>,
     pub trace_context: Option<TraceContext>,
 }
 
 impl EventMetadata {
+    /// Current schema version for all events
+    pub fn current_version() -> String {
+        "1.0.0".to_string()
+    }
+
     /// Crea nuevos metadatos de evento
     pub fn new(correlation_id: Option<String>, actor: Option<String>) -> Self {
         Self {
+            schema_version: Self::current_version(),
             correlation_id,
             actor,
             trace_context: None,
@@ -1448,10 +1462,26 @@ impl EventMetadata {
     /// Crea metadatos con correlation_id específico y actor del sistema
     pub fn for_system_event(correlation_id: Option<String>, system_actor: &str) -> Self {
         Self {
+            schema_version: Self::current_version(),
             correlation_id,
             actor: Some(system_actor.to_string()),
             trace_context: None,
         }
+    }
+
+    /// Creates metadata with schema version and correlation
+    pub fn with_correlation(mut self, correlation_id: String) -> Self {
+        self.correlation_id = Some(correlation_id);
+        self
+    }
+
+    /// Creates metadata with schema version and trace
+    pub fn with_trace(mut self, trace_id: String, span_id: Option<String>) -> Self {
+        self.trace_context = Some(TraceContext {
+            trace_id,
+            span_id: span_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+        });
+        self
     }
 
     /// Crea metadatos desde metadata de un job
@@ -1462,6 +1492,7 @@ impl EventMetadata {
     /// 3. Busca `actor` en metadata del job
     pub fn from_job_metadata(metadata: &HashMap<String, String>, job_id: &JobId) -> Self {
         Self {
+            schema_version: Self::current_version(),
             correlation_id: metadata
                 .get("correlation_id")
                 .cloned()
@@ -1474,6 +1505,7 @@ impl EventMetadata {
     /// Crea metadatos vacíos
     pub fn empty() -> Self {
         Self {
+            schema_version: Self::current_version(),
             correlation_id: None,
             actor: None,
             trace_context: None,
@@ -2223,6 +2255,7 @@ mod tests {
                 DomainEvent::WorkerReady {
                     worker_id: WorkerId::new(),
                     provider_id: ProviderId::new(),
+                    job_id: None,
                     ready_at: Utc::now(),
                     correlation_id: None,
                     actor: None,
@@ -2303,6 +2336,7 @@ mod tests {
         let event = DomainEvent::WorkerReady {
             worker_id: worker_id.clone(),
             provider_id: provider_id.clone(),
+            job_id: None,
             ready_at: Utc::now(),
             correlation_id: Some("ready-123".to_string()),
             actor: Some("worker-lifecycle".to_string()),

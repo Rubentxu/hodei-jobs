@@ -76,6 +76,15 @@ pub struct DefaultWorkerProvisioningService {
     config: ProvisioningConfig,
 }
 
+impl std::fmt::Debug for DefaultWorkerProvisioningService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultWorkerProvisioningService")
+            .field("config", &self.config)
+            .field("providers_count", &self.providers.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl DefaultWorkerProvisioningService {
     pub fn new(
         registry: Arc<dyn WorkerRegistry>,

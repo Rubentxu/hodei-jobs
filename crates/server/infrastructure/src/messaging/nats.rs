@@ -796,6 +796,7 @@ mod tests {
         let event = DomainEvent::WorkerReady {
             worker_id: hodei_server_domain::shared_kernel::WorkerId::new(),
             provider_id: hodei_server_domain::shared_kernel::ProviderId::new(),
+            job_id: None,
             ready_at: Utc::now(),
             correlation_id: None,
             actor: None,

@@ -2,14 +2,428 @@
 //
 // Commands used by the ProvisioningSaga for worker lifecycle management.
 // These commands encapsulate the intent to provision or destroy workers.
+// EPIC-70: Added ValidateProviderCommand and PublishProvisionedCommand
+// for proper pipeline pattern (Event → Step → Command → Handler → Event)
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::{WorkerProvisioning, WorkerProvisioningResult, WorkerRegistry, WorkerSpec};
+use crate::workers::events::WorkerProvisioned;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
+
+/// Result of provider capacity validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCapacity {
+    /// Whether the provider has capacity
+    pub has_capacity: bool,
+    /// Current active workers
+    pub active_workers: u32,
+    /// Maximum workers allowed
+    pub max_workers: u32,
+    /// Available slots
+    pub available_slots: u32,
+    /// Provider status message
+    pub status_message: String,
+}
+
+impl ProviderCapacity {
+    /// Creates a successful capacity result.
+    #[inline]
+    pub fn available(active_workers: u32, max_workers: u32) -> Self {
+        Self {
+            has_capacity: true,
+            active_workers,
+            max_workers,
+            available_slots: max_workers.saturating_sub(active_workers),
+            status_message: "Provider has available capacity".to_string(),
+        }
+    }
+
+    /// Creates an unavailable capacity result.
+    #[inline]
+    pub fn unavailable(active_workers: u32, max_workers: u32) -> Self {
+        Self {
+            has_capacity: false,
+            active_workers,
+            max_workers,
+            available_slots: 0,
+            status_message: format!(
+                "Provider at capacity: {}/{} workers active",
+                active_workers, max_workers
+            ),
+        }
+    }
+}
+
+/// Command to validate provider capacity before worker creation.
+///
+/// This command encapsulates the intent to check if a provider has
+/// capacity to accept new workers. It follows the pipeline pattern:
+/// Event → Step → Command → Handler → Event
+///
+/// EPIC-70: Addresses SRP violation in ValidateProviderCapacityStep
+/// by extracting business logic into a dedicated command handler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateProviderCommand {
+    /// The provider ID to validate
+    pub provider_id: ProviderId,
+    /// Job requirements for capacity check
+    pub job_requirements: Option<JobRequirements>,
+    /// The saga that initiated this command
+    pub saga_id: String,
+    /// Optional correlation ID for tracing
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// Optional metadata for tracing
+    #[serde(default)]
+    pub metadata: CommandMetadataDefault,
+}
+
+/// Job requirements for capacity validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobRequirements {
+    /// Required CPU cores
+    pub cpu_cores: Option<u32>,
+    /// Required memory in MB
+    pub memory_mb: Option<u64>,
+    /// Required GPU
+    pub gpu_required: bool,
+}
+
+impl ValidateProviderCommand {
+    /// Creates a new ValidateProviderCommand.
+    #[inline]
+    pub fn new(provider_id: ProviderId, saga_id: String) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            provider_id,
+            job_requirements: None,
+            saga_id,
+            correlation_id: None,
+            metadata,
+        }
+    }
+
+    /// Creates a command with job requirements.
+    #[inline]
+    pub fn with_requirements(
+        provider_id: ProviderId,
+        job_requirements: JobRequirements,
+        saga_id: String,
+    ) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            provider_id,
+            job_requirements: Some(job_requirements),
+            saga_id,
+            correlation_id: None,
+            metadata,
+        }
+    }
+
+    /// Creates a command with correlation ID.
+    #[inline]
+    pub fn with_correlation(
+        provider_id: ProviderId,
+        saga_id: String,
+        correlation_id: String,
+    ) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            provider_id,
+            job_requirements: None,
+            saga_id,
+            correlation_id: Some(correlation_id),
+            metadata,
+        }
+    }
+}
+
+impl Command for ValidateProviderCommand {
+    type Output = ProviderCapacity;
+
+    #[inline]
+    fn idempotency_key(&self) -> Cow<'_, str> {
+        Cow::Owned(format!(
+            "{}-validate-provider-{}",
+            self.saga_id, self.provider_id
+        ))
+    }
+}
+
+/// Error types for ValidateProviderHandler.
+#[derive(Debug, thiserror::Error)]
+pub enum ValidateProviderError {
+    #[error("Provider {provider_id} not found")]
+    ProviderNotFound { provider_id: ProviderId },
+
+    #[error("Provider {provider_id} is not available: {status}")]
+    ProviderNotAvailable { provider_id: ProviderId, status: String },
+
+    #[error("Provider {provider_id} capacity exceeded: {active}/{max}")]
+    CapacityExceeded {
+        provider_id: ProviderId,
+        active: u32,
+        max: u32,
+    },
+}
+
+/// Handler for ValidateProviderCommand.
+///
+/// This handler validates that a provider has capacity to accept
+/// new workers. It performs the actual capacity check business logic,
+/// following the Single Responsibility Principle.
+#[derive(Debug)]
+pub struct ValidateProviderHandler<R>
+where
+    R: ProviderRegistry + Debug,
+{
+    registry: std::sync::Arc<R>,
+}
+
+impl<R> ValidateProviderHandler<R>
+where
+    R: ProviderRegistry + Debug,
+{
+    /// Creates a new handler with the given provider registry.
+    #[inline]
+    pub fn new(registry: std::sync::Arc<R>) -> Self {
+        Self { registry }
+    }
+}
+
+/// Provider registry trait for capacity checking.
+#[async_trait::async_trait]
+pub trait ProviderRegistry: Debug + Send + Sync {
+    /// Get provider configuration by ID
+    async fn get_provider_config(
+        &self,
+        provider_id: &ProviderId,
+    ) -> crate::shared_kernel::Result<Option<ProviderConfig>>;
+
+    /// Check if provider is healthy and available
+    async fn is_provider_available(
+        &self,
+        provider_id: &ProviderId,
+    ) -> crate::shared_kernel::Result<bool>;
+}
+
+/// Provider configuration (simplified for capacity checking)
+#[derive(Debug, Clone)]
+pub struct ProviderConfig {
+    pub id: ProviderId,
+    pub active_workers: u32,
+    pub max_workers: u32,
+    pub is_enabled: bool,
+}
+
+#[async_trait]
+impl<R> CommandHandler<ValidateProviderCommand> for ValidateProviderHandler<R>
+where
+    R: ProviderRegistry + Debug + Send + Sync + 'static,
+{
+    type Error = ValidateProviderError;
+
+    async fn handle(
+        &self,
+        command: ValidateProviderCommand,
+    ) -> Result<ProviderCapacity, Self::Error> {
+        // Check if provider exists
+        let config = self
+            .registry
+            .get_provider_config(&command.provider_id)
+            .await
+            .map_err(|_| ValidateProviderError::ProviderNotFound {
+                provider_id: command.provider_id.clone(),
+            })?
+            .ok_or_else(|| ValidateProviderError::ProviderNotFound {
+                provider_id: command.provider_id.clone(),
+            })?;
+
+        // Check if provider is available
+        if !config.is_enabled {
+            return Err(ValidateProviderError::ProviderNotAvailable {
+                provider_id: command.provider_id.clone(),
+                status: "Provider is disabled".to_string(),
+            });
+        }
+
+        let is_available = self
+            .registry
+            .is_provider_available(&command.provider_id)
+            .await
+            .map_err(|_| ValidateProviderError::ProviderNotAvailable {
+                provider_id: command.provider_id.clone(),
+                status: "Health check failed".to_string(),
+            })?;
+
+        if !is_available {
+            return Err(ValidateProviderError::ProviderNotAvailable {
+                provider_id: command.provider_id.clone(),
+                status: "Provider health check failed".to_string(),
+            });
+        }
+
+        // Check capacity
+        if config.active_workers >= config.max_workers {
+            return Err(ValidateProviderError::CapacityExceeded {
+                provider_id: command.provider_id.clone(),
+                active: config.active_workers,
+                max: config.max_workers,
+            });
+        }
+
+        Ok(ProviderCapacity::available(
+            config.active_workers,
+            config.max_workers,
+        ))
+    }
+}
+
+/// Command to publish worker provisioned event.
+///
+/// This command encapsulates the intent to announce that a worker
+/// has been successfully provisioned. It follows the pipeline pattern:
+/// Event → Step → Command → Handler → Event
+///
+/// EPIC-70: Addresses SRP violation in PublishProvisionedEventStep
+/// by extracting event publishing into a dedicated command handler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishProvisionedCommand {
+    /// The worker ID that was provisioned
+    pub worker_id: WorkerId,
+    /// The provider ID where worker was provisioned
+    pub provider_id: ProviderId,
+    /// Summary of the worker spec
+    pub spec_summary: String,
+    /// The saga that initiated this command
+    pub saga_id: String,
+    /// Optional correlation ID for tracing
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// Optional actor
+    #[serde(default)]
+    pub actor: Option<String>,
+    /// Optional metadata for tracing
+    #[serde(default)]
+    pub metadata: CommandMetadataDefault,
+}
+
+impl PublishProvisionedCommand {
+    /// Creates a new PublishProvisionedCommand.
+    #[inline]
+    pub fn new(
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        spec_summary: String,
+        saga_id: String,
+    ) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            worker_id,
+            provider_id,
+            spec_summary,
+            saga_id,
+            correlation_id: None,
+            actor: None,
+            metadata,
+        }
+    }
+
+    /// Creates a command with correlation and actor.
+    #[inline]
+    pub fn with_context(
+        worker_id: WorkerId,
+        provider_id: ProviderId,
+        spec_summary: String,
+        saga_id: String,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+    ) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            worker_id,
+            provider_id,
+            spec_summary,
+            saga_id,
+            correlation_id,
+            actor,
+            metadata,
+        }
+    }
+}
+
+impl Command for PublishProvisionedCommand {
+    type Output = ();
+
+    #[inline]
+    fn idempotency_key(&self) -> Cow<'_, str> {
+        Cow::Owned(format!(
+            "{}-publish-provisioned-{}",
+            self.saga_id, self.worker_id
+        ))
+    }
+}
+
+/// Error types for PublishProvisionedHandler.
+#[derive(Debug, thiserror::Error)]
+pub enum PublishProvisionedError {
+    #[error("Failed to publish WorkerProvisioned event: {source}")]
+    PublishFailed {
+        source: crate::event_bus::EventBusError,
+    },
+}
+
+/// Handler for PublishProvisionedCommand.
+///
+/// This handler publishes the WorkerProvisioned event to the event bus.
+/// It encapsulates the single responsibility of event publishing,
+/// keeping saga steps focused on orchestration.
+#[derive(Debug)]
+pub struct PublishProvisionedHandler<E>
+where
+    E: crate::event_bus::EventBus + Debug,
+{
+    event_bus: std::sync::Arc<E>,
+}
+
+impl<E> PublishProvisionedHandler<E>
+where
+    E: crate::event_bus::EventBus + Debug,
+{
+    /// Creates a new handler with the given event bus.
+    #[inline]
+    pub fn new(event_bus: std::sync::Arc<E>) -> Self {
+        Self { event_bus }
+    }
+}
+
+#[async_trait::async_trait]
+impl<E> CommandHandler<PublishProvisionedCommand> for PublishProvisionedHandler<E>
+where
+    E: crate::event_bus::EventBus + Debug + Send + Sync + 'static,
+{
+    type Error = PublishProvisionedError;
+
+    async fn handle(&self, command: PublishProvisionedCommand) -> Result<(), Self::Error> {
+        let event = WorkerProvisioned {
+            worker_id: command.worker_id.clone(),
+            provider_id: command.provider_id.clone(),
+            spec_summary: command.spec_summary.clone(),
+            occurred_at: chrono::Utc::now(),
+            correlation_id: command.correlation_id.clone(),
+            actor: command.actor.clone(),
+        };
+
+        self.event_bus
+            .publish(&event.into())
+            .await
+            .map_err(|e| PublishProvisionedError::PublishFailed { source: e })
+    }
+}
 
 /// Command to provision a new worker.
 ///
@@ -101,7 +515,7 @@ pub struct CreateWorkerHandler<P>
 where
     P: WorkerProvisioning + Debug,
 {
-    provisioning: P,
+    provisioning: std::sync::Arc<P>,
 }
 
 impl<P> CreateWorkerHandler<P>
@@ -110,7 +524,7 @@ where
 {
     /// Creates a new handler with the given provisioning service.
     #[inline]
-    pub fn new(provisioning: P) -> Self {
+    pub fn new(provisioning: std::sync::Arc<P>) -> Self {
         Self { provisioning }
     }
 }
@@ -225,7 +639,7 @@ pub struct DestroyWorkerHandler<P>
 where
     P: WorkerProvisioning + Debug,
 {
-    provisioning: P,
+    provisioning: std::sync::Arc<P>,
 }
 
 impl<P> DestroyWorkerHandler<P>
@@ -234,7 +648,7 @@ where
 {
     /// Creates a new handler with the given provisioning service.
     #[inline]
-    pub fn new(provisioning: P) -> Self {
+    pub fn new(provisioning: std::sync::Arc<P>) -> Self {
         Self { provisioning }
     }
 }

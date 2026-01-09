@@ -57,6 +57,9 @@ use hodei_server_domain::providers::ProviderConfigRepository;
 use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
 use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
+use hodei_server_domain::saga::commands::{
+    CreateWorkerCommand, CreateWorkerHandler, DestroyWorkerCommand, DestroyWorkerHandler,
+};
 
 use hodei_server_infrastructure::messaging::OutboxEventBus;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::{
@@ -329,28 +332,319 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Create repositories and run migrations
+    // ==========================================================================
+    // Database Migrations
+    // ==========================================================================
+    // Run SQL migrations from the migrations/ directory to set up the database schema.
+    // These migrations create all required tables for jobs, workers, events, sagas, etc.
+
+    info!("Running database migrations...");
+
+    // Helper function to split SQL content into individual statements
+    // Handles CREATE TABLE (...) blocks correctly by parsing parentheses depth
+    // Also handles PostgreSQL dollar-quoted strings ($$)
+    fn split_sql_statements(sql: &str) -> Vec<String> {
+        let mut statements = Vec::new();
+        let mut current = String::new();
+        let mut depth: i32 = 0;
+        let mut in_single_line_comment = false;
+        let mut in_multi_line_comment = false;
+        let mut in_dollar_quote = false;
+
+        let chars: Vec<char> = sql.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            let ch = chars[i];
+
+            // Handle single-line comments (only when not in dollar quote)
+            if !in_dollar_quote {
+                if ch == '\n' {
+                    in_single_line_comment = false;
+                    current.push(ch);
+                    i += 1;
+                    continue;
+                }
+                if in_single_line_comment {
+                    i += 1;
+                    continue;
+                }
+                if ch == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
+                    in_single_line_comment = true;
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // Handle multi-line comments (only when not in dollar quote)
+            if !in_dollar_quote {
+                if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                    in_multi_line_comment = true;
+                    i += 2;
+                    continue;
+                }
+                if in_multi_line_comment {
+                    if ch == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                        in_multi_line_comment = false;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
+
+            // Handle dollar-quoted strings ($$ or $tag$)
+            // This takes priority over everything else
+            if ch == '$' && !in_single_line_comment && !in_multi_line_comment {
+                // Look ahead to see if this is a dollar quote
+                let mut j = i + 1;
+                let mut tag = String::new();
+
+                // Collect the tag (characters between $ and $)
+                while j < chars.len() && chars[j] != '$' {
+                    tag.push(chars[j]);
+                    j += 1;
+                }
+
+                // Check if we found the closing $
+                if j < chars.len() && chars[j] == '$' {
+                    if in_dollar_quote {
+                        // We might be closing a dollar quote
+                        // Check if the tag matches (or both are empty/$$)
+                        let closing_tag = format!("${}$", tag);
+                        if current.ends_with(&closing_tag) || (tag.is_empty() && current.ends_with("$$")) {
+                            // Found the closing delimiter
+                            in_dollar_quote = false;
+                            // Add the closing $ to current
+                            current.push(ch);
+                            i += 1;
+                            // Add the tag if present
+                            for _ in 0..tag.len() {
+                                current.push(chars[i]);
+                                i += 1;
+                            }
+                            // Add the closing $
+                            current.push(chars[i]);
+                            i += 1;
+                            continue;
+                        }
+                    } else {
+                        // Starting a new dollar quote
+                        in_dollar_quote = true;
+                        // Add the opening $ to current
+                        current.push(ch);
+                        i += 1;
+                        // Add the tag if present
+                        for _ in 0..tag.len() {
+                            current.push(chars[i]);
+                            i += 1;
+                        }
+                        // Add the closing $
+                        current.push(chars[i]);
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+
+            // Track parentheses depth (only when not in dollar quote)
+            if !in_dollar_quote {
+                if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth = depth.saturating_sub(1);
+                }
+            }
+
+            // Split on semicolon only when not in parentheses or dollar quote
+            if ch == ';' && depth == 0 && !in_dollar_quote && !in_single_line_comment && !in_multi_line_comment {
+                current.push(ch);
+                let statement = current.trim().to_string();
+                if !statement.is_empty() && !statement.starts_with("--") {
+                    statements.push(statement);
+                }
+                current = String::new();
+                i += 1;
+            } else {
+                current.push(ch);
+                i += 1;
+            }
+        }
+
+        // Add the last statement if it exists
+        let statement = current.trim().to_string();
+        if !statement.is_empty() && !statement.starts_with("--") {
+            statements.push(statement);
+        }
+
+        statements
+    }
+
+    // Simple migration runner that executes SQL files in order
+    async fn run_sql_migrations(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+        use std::path::Path;
+
+        let infra_migrations_dir = Path::new("crates/server/infrastructure/migrations");
+
+        let mut all_migration_files: Vec<std::path::PathBuf> = Vec::new();
+
+        // NOTE: We only run infrastructure migrations, not root migrations
+        // The root migrations/ directory contains specialized/newer migrations
+        // that should be integrated into the infrastructure migration system
+
+        // Read infrastructure migrations directory (look for .sql files and up.sql files)
+        if infra_migrations_dir.exists() {
+            let infra_files: Vec<_> = std::fs::read_dir(infra_migrations_dir)
+                .map_err(|e| format!("Failed to read infrastructure migrations dir: {}", e))?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    let path = entry.path();
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                    // Exclude known duplicate/obsolete migration files
+                    // - 20241223_add_outbox_events.sql is superseded by 20241223150400_outbox_pattern/up.sql
+                    // - 20251228120000_add_outbox_dlq is superseded by 20251228120000_outbox_dlq/up.sql
+                    // - 20251223_add_reconciliation_indexes.sql creates indexes on tables that may not exist yet
+                    // - 20260106_add_outbox_notify_trigger.sql is a utility script, not a migration
+                    if file_name == "20241223_add_outbox_events.sql" ||
+                       file_name.contains("add_outbox_dlq") ||
+                       file_name == "20251223_add_reconciliation_indexes.sql" ||
+                       file_name == "20260106_add_outbox_notify_trigger.sql" {
+                        return false;
+                    }
+
+                    // Skip standalone .sql files that are not timestamped (they're utility files)
+                    // Only include timestamped migration files like 20241223_add_outbox_events.sql
+                    if path.extension().map(|ext| ext == "sql").unwrap_or(false) {
+                        // Check if it starts with a timestamp (YYYYMMDD format)
+                        if file_name.len() >= 8 && file_name[..8].chars().all(|c| c.is_ascii_digit()) {
+                            return true;
+                        }
+                        return false; // Skip non-timestamped SQL files
+                    }
+
+                    // Include up.sql files from timestamped subdirectories
+                    if path.is_dir() {
+                        let up_sql = path.join("up.sql");
+                        if up_sql.exists() {
+                            // Check if directory name starts with a timestamp
+                            if file_name.len() >= 8 && file_name[..8].chars().all(|c| c.is_ascii_digit()) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    false
+                })
+                .map(|entry| {
+                    let path = entry.path();
+                    // If it's a directory, return the up.sql path
+                    if path.is_dir() {
+                        path.join("up.sql")
+                    } else {
+                        path
+                    }
+                })
+                .collect();
+            all_migration_files.extend(infra_files);
+        }
+
+        // Sort all migration files by full path to ensure proper timestamp ordering
+        // This ensures that migrations in subdirectories like 20241221000000_init_schema/up.sql
+        // are ordered before standalone files like 20251223_add_reconciliation_indexes.sql
+        all_migration_files.sort();
+
+        info!("Found {} migration file(s)", all_migration_files.len());
+
+        for path in all_migration_files {
+            let file_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            info!("Applying migration: {}", file_name);
+
+            let sql_content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read migration file {}: {}", file_name, e))?;
+
+            // Split SQL content into individual statements
+            // SQLx prepared statements can only execute one command at a time
+            // We need to handle CREATE TABLE (...) statements correctly
+            let statements = split_sql_statements(&sql_content);
+
+            // Execute each statement separately
+            for (idx, statement) in statements.iter().enumerate() {
+                // Check if this statement contains multiple commands (like DO blocks)
+                // If it contains DO $$ or starts with DO, we need to execute it differently
+                let contains_multiple_commands = statement.contains("DO $$") ||
+                    (statement.trim().starts_with("DO") && statement.contains("$$"));
+
+                if contains_multiple_commands {
+                    // For DO blocks, use sqlx::raw_sql which can handle complex SQL
+                    sqlx::raw_sql(statement.as_str())
+                        .execute(pool)
+                        .await
+                        .map_err(|e| {
+                            format!(
+                                "Failed to execute DO block statement {}/{} in migration {}: {}\nStatement: {}",
+                                idx + 1,
+                                statements.len(),
+                                file_name,
+                                e,
+                                statement.chars().take(100).collect::<String>()
+                            )
+                        })?;
+                } else {
+                    // Use regular prepared statement for simple commands
+                    sqlx::query(statement.as_str())
+                        .execute(pool)
+                        .await
+                        .map_err(|e| {
+                            format!(
+                                "Failed to execute statement {}/{} in migration {}: {}\nStatement: {}",
+                                idx + 1,
+                                statements.len(),
+                                file_name,
+                                e,
+                                statement.chars().take(100).collect::<String>()
+                            )
+                        })?;
+                }
+            }
+
+            info!("✓ Migration {} applied successfully ({} statements)", file_name, statements.len());
+        }
+
+        Ok(())
+    }
+
+    if let Err(e) = run_sql_migrations(&pool).await {
+        error!("Failed to run migrations: {}", e);
+        return Err(e);
+    }
+
+    info!("✓ Database migrations completed");
+
+    // ==========================================================================
+    // Repository Initialization
+    // ==========================================================================
+
     let job_repository_impl = PostgresJobRepository::new(pool.clone());
-    job_repository_impl.run_migrations().await?;
     let job_repository = Arc::new(job_repository_impl);
 
     let job_queue_impl = PostgresJobQueue::new(pool.clone());
-    job_queue_impl.run_migrations().await?;
     let job_queue = Arc::new(job_queue_impl);
 
     let worker_registry_impl = PostgresWorkerRegistry::new(pool.clone());
-    worker_registry_impl.run_migrations().await?;
     let worker_registry = Arc::new(worker_registry_impl);
 
     let token_store_impl = PostgresWorkerBootstrapTokenStore::new(pool.clone());
-    token_store_impl.run_migrations().await?;
     let token_store = Arc::new(token_store_impl);
 
     let provider_config_repo_impl = PostgresProviderConfigRepository::new(pool.clone());
-    provider_config_repo_impl.run_migrations().await?;
     let provider_config_repo = Arc::new(provider_config_repo_impl);
 
-    info!("Database migrations completed");
+    info!("Repository initialization completed");
 
     // ==========================================================================
     // Event Bus Configuration - NATS JetStream Only
@@ -960,7 +1254,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ Saga orchestrator initialized with PostgreSQL repository");
 
     // GAP-60-01: Create CommandBus for saga command dispatch
-    let command_bus: DynCommandBus = Arc::new(InMemoryErasedCommandBus::new());
+    // Keep concrete type to register handlers, then convert to DynCommandBus
+    let command_bus_impl = InMemoryErasedCommandBus::new();
+
+    // Register command handlers for worker provisioning (GAP-60-01 FIX)
+    if let Some(ref provisioning_svc) = provisioning_service {
+        // Clone Arc for each handler (handlers need owned value)
+        let provisioning_for_create = provisioning_svc.clone();
+        let provisioning_for_destroy = provisioning_svc.clone();
+
+        // Register CreateWorkerHandler with Arc<DefaultWorkerProvisioningService>
+        let create_worker_handler = CreateWorkerHandler::new(provisioning_for_create);
+        command_bus_impl
+            .register::<CreateWorkerCommand, _>(create_worker_handler)
+            .await;
+
+        // Register DestroyWorkerHandler with Arc<DefaultWorkerProvisioningService>
+        let destroy_worker_handler = DestroyWorkerHandler::new(provisioning_for_destroy);
+        command_bus_impl
+            .register::<DestroyWorkerCommand, _>(destroy_worker_handler)
+            .await;
+
+        info!("  ✓ Command handlers registered (CreateWorker, DestroyWorker)");
+    }
+
+    let command_bus: DynCommandBus = Arc::new(command_bus_impl);
 
     // Create Provisioning Saga Coordinator (always enabled)
     let config =

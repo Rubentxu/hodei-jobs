@@ -114,6 +114,7 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: None,
             log_ingestor: None,
             supervisor_handle: None,
+            job_dispatcher: None,
         }
     }
 
@@ -150,6 +151,43 @@ impl WorkerAgentServiceImpl {
             heartbeat_processor: Some(Arc::new(heartbeat_processor)),
             log_ingestor: Some(Arc::new(log_ingestor)),
             supervisor_handle: Some(supervisor_handle),
+            job_dispatcher: None,
+        }
+    }
+
+    /// GAP-XXX: Create service with JobDispatcher for job dispatch on worker registration
+    pub fn with_job_dispatcher(
+        worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
+        job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
+        token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
+        log_service: Arc<LogStreamService>,
+        event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus>,
+        job_dispatcher: Arc<hodei_server_application::jobs::dispatcher::JobDispatcher>,
+    ) -> Self {
+        // GAP-GO-01: Create HeartbeatProcessor
+        let heartbeat_processor = HeartbeatProcessor::new(
+            Some(worker_registry.clone()),
+            Some(event_bus.clone()),
+            None,
+        );
+
+        // GAP-GO-01: Create LogIngestor
+        let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
+
+        Self {
+            workers: Arc::new(DashMap::new()),
+            otp_tokens: Arc::new(DashMap::new()),
+            worker_channels: Arc::new(DashMap::new()),
+            worker_registry: Some(worker_registry),
+            job_repository: Some(job_repository),
+            token_store: Some(token_store),
+            log_service: Some(log_service),
+            event_bus: Some(event_bus),
+            outbox_repository: None,
+            heartbeat_processor: Some(Arc::new(heartbeat_processor)),
+            log_ingestor: Some(Arc::new(log_ingestor)),
+            supervisor_handle: None,
+            job_dispatcher: Some(job_dispatcher),
         }
     }
 
@@ -585,13 +623,14 @@ impl WorkerAgentServiceImpl {
         }
 
         // 2. Emit WorkerRegistered and WorkerReady events (triggers JobDispatcher)
-        self.emit_worker_events(&worker_id).await?;
+        self.emit_worker_events(&worker_id, job_id_from_request).await?;
 
         Ok(())
     }
 
     /// Helper to emit WorkerRegistered and WorkerReady events
-    async fn emit_worker_events(&self, worker_id: &WorkerId) -> Result<(), Status> {
+    /// Also dispatches job if job_id is provided (OTP-based provisioning)
+    async fn emit_worker_events(&self, worker_id: &WorkerId, job_id: Option<JobId>) -> Result<(), Status> {
         if let Some(event_bus) = &self.event_bus {
             let now = Utc::now();
 
@@ -608,10 +647,12 @@ impl WorkerAgentServiceImpl {
                 warn!("Failed to publish WorkerRegistered: {}", e);
             }
 
-            // WorkerReady event - CRUCIAL: This triggers JobDispatcher to assign job
+            // WorkerReady event - Includes job_id for OTP-based provisioning
+            // This triggers job dispatch when job_id is present
             let event_ready = DomainEvent::WorkerReady {
                 worker_id: worker_id.clone(),
                 provider_id: ProviderId::new(),
+                job_id: job_id.clone(),
                 ready_at: now,
                 correlation_id: None,
                 actor: Some("worker-jit-registration".to_string()),
@@ -621,8 +662,8 @@ impl WorkerAgentServiceImpl {
                 warn!("Failed to publish WorkerReady: {}", e);
             } else {
                 info!(
-                    "🚀 Emitted WorkerReady for {}. JobDispatcher should pick this up.",
-                    worker_id
+                    "🚀 Emitted WorkerReady for {} (job_id: {:?}). JobDispatcher will pick this up.",
+                    worker_id, job_id
                 );
             }
         }

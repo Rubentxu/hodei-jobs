@@ -876,6 +876,70 @@ impl JobDispatcher {
         }
     }
 
+    /// Dispatch a specific job to a ready worker (for OTP-based provisioning)
+    ///
+    /// Called when a worker registers with a job_id from the OTP token.
+    /// This ensures the job associated with the provisioning token is dispatched
+    /// to this specific worker.
+    pub async fn dispatch_specific_job_to_worker(
+        &self,
+        job_id: &hodei_server_domain::shared_kernel::JobId,
+        worker_id: &WorkerId,
+    ) {
+        info!(
+            "👷 JobDispatcher: Dispatching specific job {} to worker {}",
+            job_id, worker_id
+        );
+
+        // Fetch the specific job
+        let job = match self.job_repository.find_by_id(job_id).await {
+            Ok(Some(job)) => {
+                debug!("JobDispatcher: Found job {}", job_id);
+                job
+            }
+            Ok(None) => {
+                warn!("⚠️ JobDispatcher: Job {} not found", job_id);
+                return;
+            }
+            Err(e) => {
+                error!(
+                    "❌ JobDispatcher: Failed to fetch job {}: {}",
+                    job_id, e
+                );
+                return;
+            }
+        };
+
+        // Verify job is pending
+        if *job.state() != JobState::Pending {
+            info!(
+                "ℹ️ JobDispatcher: Job {} is not pending (state: {:?}), skipping",
+                job_id,
+                job.state()
+            );
+            return;
+        }
+
+        // Dispatch the job
+        let mut job = self
+            .job_repository
+            .find_by_id(job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if let Err(e) = self.dispatch_job_to_worker(&mut job, worker_id).await {
+            error!(
+                "❌ JobDispatcher: Failed to dispatch job {}: {}",
+                job_id, e
+            );
+        } else {
+            info!(
+                "✅ JobDispatcher: Job {} dispatched to worker {}",
+                job_id, worker_id
+            );
+        }
+    }
+
     /// Find a pending job that matches worker capabilities
     /// Priority: 1) Worker has associated job_id → fetch that specific job
     ///           2) Worker has no job_id → REJECT (no FIFO fallback for legacy mode)

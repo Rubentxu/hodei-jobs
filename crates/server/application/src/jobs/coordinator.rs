@@ -205,9 +205,15 @@ impl JobCoordinator {
                     event_result = worker_ready_stream.next() => {
                         match event_result {
                             Some(Ok(event)) => {
-                                if let DomainEvent::WorkerReady { worker_id, .. } = event {
-                                    info!("👷 JobCoordinator: Received WorkerReady event for worker {}", worker_id);
-                                    dispatcher.dispatch_pending_job_to_worker(&worker_id).await;
+                                if let DomainEvent::WorkerReady { worker_id, job_id, .. } = event {
+                                    info!("👷 JobCoordinator: Received WorkerReady event for worker {} (job_id: {:?})", worker_id, job_id);
+                                    if let Some(ref jid) = job_id {
+                                        // OTP-based: dispatch specific job
+                                        dispatcher.dispatch_specific_job_to_worker(jid, &worker_id).await;
+                                    } else {
+                                        // Generic: find job for worker
+                                        dispatcher.dispatch_pending_job_to_worker(&worker_id).await;
+                                    }
                                 }
                             }
                             Some(Err(e)) => {

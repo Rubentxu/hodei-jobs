@@ -122,6 +122,8 @@ pub struct WorkerHeartbeat {
 pub struct WorkerReady {
     pub worker_id: WorkerId,
     pub provider_id: crate::shared_kernel::ProviderId,
+    /// Job ID to dispatch to this worker (None for general availability)
+    pub job_id: Option<JobId>,
     pub ready_at: DateTime<Utc>,
     pub correlation_id: Option<String>,
     pub actor: Option<String>,

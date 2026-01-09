@@ -35,7 +35,7 @@ tonic = { workspace = true }
 tonic-reflection = { workspace = true }
 tonic-web = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
-sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid", "migrate"] }
 
 # NATS Event Bus
 async-nats = "0.35"

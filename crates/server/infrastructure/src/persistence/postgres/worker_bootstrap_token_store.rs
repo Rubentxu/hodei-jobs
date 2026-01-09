@@ -97,6 +97,25 @@ impl WorkerBootstrapTokenStore for PostgresWorkerBootstrapTokenStore {
         );
 
         if rows_affected == 0 {
+            // Check for idempotency: if token was already consumed by the same worker, allow it
+            let existing = sqlx::query!(
+                "SELECT worker_id, consumed_at FROM worker_bootstrap_tokens WHERE token = $1",
+                token_uuid
+            )
+            .fetch_one(&self.pool)
+            .await
+            .ok();
+
+            if let Some(existing) = existing {
+                if existing.consumed_at.is_some() && existing.worker_id == worker_uuid {
+                    info!(
+                        "✅ PostgresWorkerBootstrapTokenStore::consume: Token {} already consumed by same worker {} (idempotent success)",
+                        token_uuid_log, worker_uuid
+                    );
+                    return Ok(());
+                }
+            }
+
             info!(
                 "❌ PostgresWorkerBootstrapTokenStore::consume: Token {} NOT consumed (not found, expired, or already consumed)",
                 token_uuid_log

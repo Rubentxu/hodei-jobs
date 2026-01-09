@@ -276,9 +276,16 @@ impl DockerProvider {
             memory: Some(memory_limit),
             cpu_period: Some(cpu_period),
             cpu_quota: Some(cpu_quota),
-            network_mode: self.config.network.clone(),
+            // Use host network by default to avoid Ubuntu 24.04 Docker bridge issues
+            // Can be overridden via DockerConfig.network
+            network_mode: self.config.network.clone().or(Some("host".to_string())),
             auto_remove: Some(false),
-            extra_hosts: Some(vec!["host.docker.internal:host-gateway".to_string()]),
+            // Only add extra_hosts if not using host network
+            extra_hosts: if self.config.network.as_deref() == Some("host") {
+                None
+            } else {
+                Some(vec!["host.docker.internal:host-gateway".to_string()])
+            },
             ..Default::default()
         };
 

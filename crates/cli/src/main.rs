@@ -372,16 +372,32 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
                 .into_inner();
 
             println!("🚀 Streaming logs in real-time...");
-            println!("   Press Ctrl+C to stop watching");
+            println!("   Timeout: 15s (will abort if no activity)");
             println!();
 
             let mut log_count = 0;
             let start_time = std::time::Instant::now();
+            let timeout_duration = std::time::Duration::from_secs(15);
+            let mut last_log_time = start_time;
 
             loop {
-                match stream.message().await {
-                    Ok(Some(log_entry)) => {
+                // Check for timeout (no logs received in 15 seconds)
+                if last_log_time.elapsed() > timeout_duration {
+                    println!();
+                    println!("⏰ Timeout: No logs received in 15 seconds. Aborting...");
+                    break;
+                }
+
+                // Use tokio::time::timeout for non-blocking check
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    stream.message()
+                ).await;
+
+                match result {
+                    Ok(Ok(Some(log_entry))) => {
                         log_count += 1;
+                        last_log_time = std::time::Instant::now();
 
                         let timestamp = log_entry
                             .timestamp
@@ -401,13 +417,17 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
                         println!("{} {} {}", ts_str, prefix, log_entry.line);
                         std::io::stdout().flush()?;
                     }
-                    Ok(None) => {
-                        // Stream ended
+                    Ok(Ok(None)) => {
+                        // Stream ended normally
                         break;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         eprintln!("\n❌ Stream error: {}", e);
                         break;
+                    }
+                    Err(_) => {
+                        // Timeout waiting for message, continue loop to check overall timeout
+                        continue;
                     }
                 }
             }

@@ -160,31 +160,26 @@ impl DynProvisioningSagaCoordinator {
                     info!(provider_id = %provider_id, "✅ Saga orchestration completed successfully");
 
                     // EPIC-45 Gap 1: Extract worker_id from saga result metadata
-                    // Get the saga context to access the metadata stored during execution
-                    let saga_context = self
+                    // First try to get worker_id from saga context metadata
+                    let worker_id = if let Ok(Some(saga_context)) = self
                         .orchestrator
                         .get_saga(&result.saga_id)
                         .await
-                        .map_err(|e| ProvisioningSagaError::SagaFailed {
-                            message: format!("Failed to get saga context: {}", e),
-                        })?
-                        .ok_or_else(|| ProvisioningSagaError::SagaFailed {
-                            message: "Saga context not found".to_string(),
-                        })?;
-
-                    // The CreateInfrastructureStep already provisioned the worker
-                    let worker_id_str = saga_context
-                        .metadata
-                        .get("worker_id")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| ProvisioningSagaError::SagaFailed {
-                            message: "No worker_id in saga result metadata".to_string(),
-                        })?;
-
-                    let worker_id = WorkerId::from_string(worker_id_str).ok_or_else(|| {
-                        ProvisioningSagaError::SagaFailed {
-                            message: "Invalid worker_id format in saga metadata".to_string(),
+                    {
+                        if let Some(worker_id_val) = saga_context.metadata.get("worker_id") {
+                            // worker_id found in metadata - worker_id_val is &JsonValue
+                            WorkerId::from_string(worker_id_val.as_str().unwrap_or_default())
+                        } else {
+                            // Fallback: extract from spec's worker_id
+                            WorkerId::from_string(&spec.worker_id.to_string())
                         }
+                    } else {
+                        // Fallback: extract from spec's worker_id
+                        WorkerId::from_string(&spec.worker_id.to_string())
+                    };
+
+                    let worker_id = worker_id.ok_or_else(|| ProvisioningSagaError::SagaFailed {
+                        message: "Invalid worker_id format".to_string(),
                     })?;
 
                     info!(

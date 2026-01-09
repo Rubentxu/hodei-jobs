@@ -68,7 +68,7 @@ pub use orchestrator::{InMemorySagaOrchestrator, OrchestratorError, SagaOrchestr
 
 // Re-exports from provisioning module
 pub use provisioning::{
-    CreateInfrastructureStep, ProvisioningSaga, PublishProvisionedEventStep, RegisterWorkerStep,
+    CreateInfrastructureStep, ProvisioningSaga, PublishProvisionedEventStep,
     ValidateProviderCapacityStep,
 };
 
