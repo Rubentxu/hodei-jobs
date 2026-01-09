@@ -59,7 +59,10 @@ use hodei_server_domain::workers::WorkerProvider;
 use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
 use hodei_server_domain::saga::commands::{
     CreateWorkerCommand, CreateWorkerHandler, DestroyWorkerCommand, DestroyWorkerHandler,
+    ValidateProviderCommand,
 };
+use hodei_server_domain::saga::commands::provisioning::ValidateProviderError;
+use hodei_server_application::saga::handlers::{ProviderRegistryAdapter, ValidateProviderHandler};
 
 use hodei_server_infrastructure::messaging::OutboxEventBus;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::{
@@ -1275,7 +1278,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .register::<DestroyWorkerCommand, _>(destroy_worker_handler)
             .await;
 
-        info!("  ✓ Command handlers registered (CreateWorker, DestroyWorker)");
+        // Register ValidateProviderHandler for provisioning saga
+        let provider_registry_adapter = ProviderRegistryAdapter::new(provider_config_repo.clone());
+        let validate_provider_handler = ValidateProviderHandler::new(Arc::new(provider_registry_adapter));
+        command_bus_impl
+            .register::<ValidateProviderCommand, _>(validate_provider_handler)
+            .await;
+
+        info!("  ✓ Command handlers registered (CreateWorker, DestroyWorker, ValidateProvider)");
     }
 
     let command_bus: DynCommandBus = Arc::new(command_bus_impl);

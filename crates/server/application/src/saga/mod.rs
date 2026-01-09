@@ -19,6 +19,7 @@
 pub mod dispatcher_saga;
 pub mod provisioning_saga;
 pub mod recovery_saga;
+pub mod handlers;
 
 pub use dispatcher_saga::{
     DynExecutionSagaDispatcher, DynExecutionSagaDispatcherBuilder,

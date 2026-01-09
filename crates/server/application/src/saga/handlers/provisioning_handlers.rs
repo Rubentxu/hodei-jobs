@@ -15,7 +15,7 @@ use hodei_server_domain::saga::commands::provisioning::{
 };
 use hodei_server_domain::shared_kernel::{ProviderId, Result};
 use hodei_server_domain::workers::events::WorkerProvisioned;
-use hodei_server_domain::EventBus;
+use hodei_server_domain::event_bus::EventBus;
 
 /// ProviderRegistry trait for capacity checking.
 /// This trait is defined in domain for reuse across implementations.
@@ -70,7 +70,7 @@ where
 {
     type Error = ValidateProviderError;
 
-    async fn handle(&self, command: ValidateProviderCommand) -> Result<ProviderCapacity, Self::Error> {
+    async fn handle(&self, command: ValidateProviderCommand) -> std::result::Result<ProviderCapacity, Self::Error> {
         debug!(
             provider_id = %command.provider_id,
             saga_id = %command.saga_id,
@@ -78,22 +78,19 @@ where
         );
 
         // Validate provider exists and get configuration
-        let config = self
+        let config_opt = self
             .registry
             .get_provider_config(&command.provider_id)
             .await
-            .map_err(|e| {
-                error!(error = %e, provider_id = %command.provider_id, "Failed to get provider config");
-                ValidateProviderError::ProviderNotFound {
-                    provider_id: command.provider_id.clone(),
-                }
-            })?
-            .ok_or_else(|| {
-                error!(provider_id = %command.provider_id, "Provider not found");
-                ValidateProviderError::ProviderNotFound {
-                    provider_id: command.provider_id.clone(),
-                }
-            })?;
+            .ok()  // Convert DomainError to None
+            .flatten();  // Flatten Option<Option<T>> to Option<T>
+
+        let config = config_opt.ok_or_else(|| {
+            error!(provider_id = %command.provider_id, "Provider not found");
+            ValidateProviderError::ProviderNotFound {
+                provider_id: command.provider_id.clone(),
+            }
+        })?;
 
         // Check if provider is enabled
         if !config.is_enabled {
@@ -105,17 +102,19 @@ where
         }
 
         // Check provider health/availability
-        let is_available = self
+        let is_available_opt = self
             .registry
             .is_provider_available(&command.provider_id)
             .await
-            .map_err(|e| {
-                error!(error = %e, "Health check failed");
-                ValidateProviderError::ProviderNotAvailable {
-                    provider_id: command.provider_id.clone(),
-                    status: "Health check failed".to_string(),
-                }
-            })?;
+            .ok();  // Convert DomainError to None
+
+        let is_available = is_available_opt.ok_or_else(|| {
+            error!(provider_id = %command.provider_id, "Health check failed");
+            ValidateProviderError::ProviderNotAvailable {
+                provider_id: command.provider_id.clone(),
+                status: "Health check failed".to_string(),
+            }
+        })?;
 
         if !is_available {
             error!(provider_id = %command.provider_id, "Provider health check failed");
@@ -194,7 +193,7 @@ where
 {
     type Error = PublishProvisionedError;
 
-    async fn handle(&self, command: PublishProvisionedCommand) -> Result<(), Self::Error> {
+    async fn handle(&self, command: PublishProvisionedCommand) -> std::result::Result<(), Self::Error> {
         info!(
             worker_id = %command.worker_id,
             provider_id = %command.provider_id,
@@ -238,7 +237,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::Arc;
-    use hodei_server_domain::shared_kernel::ProviderId;
+    use hodei_server_domain::shared_kernel::{ProviderId, Result};
 
     // Test implementations of ProviderRegistry
     #[derive(Debug)]

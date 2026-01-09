@@ -15,7 +15,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 
 /// PostgreSQL Provider Config Repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PostgresProviderConfigRepository {
     pool: PgPool,
 }

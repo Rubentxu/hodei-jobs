@@ -13,10 +13,11 @@ use hodei_server_domain::command::{Command, CommandHandler};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::execution::{
     AssignWorkerCommand, AssignWorkerError, CompleteJobCommand, CompleteJobError,
-    ExecuteJobCommand, ExecuteJobError, JobAssignmentResult, JobCompletionResult,
+    ExecuteJobCommand, ExecuteJobError, JobCompletionResult,
     JobExecutionResult, JobValidationResult, ValidateJobCommand, ValidateJobError,
+    WorkerAssignmentResult,
 };
-use hodei_server_domain::shared_kernel::{JobId, JobState, Result, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use hodei_server_domain::workers::{WorkerFilter, WorkerRegistry};
 
 // =============================================================================
@@ -65,22 +66,19 @@ where
         );
 
         // Find the job in repository
-        let job = self
+        let job_opt = self
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .map_err(|e| {
-                error!(error = %e, "Failed to find job");
-                ValidateJobError::JobNotFound {
-                    job_id: command.job_id.clone(),
-                }
-            })?
-            .ok_or_else(|| {
-                error!(job_id = %command.job_id, "Job not found in repository");
-                ValidateJobError::JobNotFound {
-                    job_id: command.job_id.clone(),
-                }
-            })?;
+            .ok()  // Convert DomainError to None
+            .flatten();  // Flatten Option<Option<T>> to Option<T>
+
+        let job = job_opt.ok_or_else(|| {
+            error!(job_id = %command.job_id, "Job not found in repository");
+            ValidateJobError::JobNotFound {
+                job_id: command.job_id.clone(),
+            }
+        })?;
 
         // Check if job is cancelled
         if *job.state() == JobState::Cancelled {
@@ -153,7 +151,7 @@ where
 {
     type Error = AssignWorkerError;
 
-    async fn handle(&self, command: AssignWorkerCommand) -> Result<JobAssignmentResult, Self::Error> {
+    async fn handle(&self, command: AssignWorkerCommand) -> Result<WorkerAssignmentResult, Self::Error> {
         debug!(
             job_id = %command.job_id,
             saga_id = %command.saga_id,
@@ -179,27 +177,23 @@ where
 
         if available_workers.is_empty() {
             warn!(job_id = %command.job_id, "No available workers found");
-            return Ok(JobAssignmentResult::failure("No available workers"));
+            return Ok(WorkerAssignmentResult::failure("No available workers"));
         }
 
         // Assign first available worker
         let worker = &available_workers[0];
 
         // Get job for update
-        let mut job = self
+        let job_opt = self
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .map_err(|e| {
-                error!(error = %e, "Failed to find job");
-                AssignWorkerError::AssignmentFailed {
-                    job_id: command.job_id.clone(),
-                    source: e,
-                }
-            })?
-            .ok_or_else(|| AssignWorkerError::NoAvailableWorkers {
-                job_id: command.job_id.clone(),
-            })?;
+            .ok()  // Convert DomainError to None
+            .flatten();  // Flatten Option<Option<T>> to Option<T>
+
+        let mut job = job_opt.ok_or_else(|| AssignWorkerError::NoAvailableWorkers {
+            job_id: command.job_id.clone(),
+        })?;
 
         // Mark job as assigned
         job.set_state(JobState::Assigned).map_err(|e| {
@@ -238,7 +232,7 @@ where
             "Worker assigned successfully"
         );
 
-        Ok(JobAssignmentResult::success(worker.id().clone(), worker.state().clone()))
+        Ok(WorkerAssignmentResult::success(worker.id().clone(), worker.state().clone()))
     }
 }
 
@@ -289,28 +283,28 @@ where
         );
 
         // Verify job exists
-        let _job = self
+        let job_opt = self
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .map_err(|_| ExecuteJobError::JobNotFound {
-                job_id: command.job_id.clone(),
-            })?
-            .ok_or_else(|| ExecuteJobError::JobNotFound {
-                job_id: command.job_id.clone(),
-            })?;
+            .ok()  // Convert DomainError to None
+            .flatten();  // Flatten Option<Option<T>> to Option<T>
+
+        let _job = job_opt.ok_or_else(|| ExecuteJobError::JobNotFound {
+            job_id: command.job_id.clone(),
+        })?;
 
         // Verify worker exists
-        let _worker = self
+        let worker_opt = self
             .worker_registry
             .find_by_id(&command.worker_id)
             .await
-            .map_err(|_| ExecuteJobError::WorkerNotFound {
-                worker_id: command.worker_id.clone(),
-            })?
-            .ok_or_else(|| ExecuteJobError::WorkerNotFound {
-                worker_id: command.worker_id.clone(),
-            })?;
+            .ok()  // Convert DomainError to None
+            .flatten();  // Flatten Option<Option<T>> to Option<T>
+
+        let _worker = worker_opt.ok_or_else(|| ExecuteJobError::WorkerNotFound {
+            worker_id: command.worker_id.clone(),
+        })?;
 
         // Mark job as running
         self.job_repository
@@ -370,7 +364,7 @@ where
 {
     type Error = CompleteJobError;
 
-    async fn handle(&self, command: CompleteJobCommand) -> Result<JobCompletionResult, Self::Error> {
+    async fn handle(&self, command: CompleteJobCommand) -> std::result::Result<JobCompletionResult, Self::Error> {
         debug!(
             job_id = %command.job_id,
             final_state = ?command.final_state,
@@ -378,16 +372,16 @@ where
         );
 
         // Get current job state
-        let job = self
+        let job_opt = self
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .map_err(|_| CompleteJobError::JobNotFound {
-                job_id: command.job_id.clone(),
-            })?
-            .ok_or_else(|| CompleteJobError::JobNotFound {
-                job_id: command.job_id.clone(),
-            })?;
+            .ok()  // Convert DomainError to None
+            .flatten();  // Flatten Option<Option<T>> to Option<T>
+
+        let job = job_opt.ok_or_else(|| CompleteJobError::JobNotFound {
+            job_id: command.job_id.clone(),
+        })?;
 
         // Validate state transition
         if !job.state().can_transition_to(&command.final_state) {
