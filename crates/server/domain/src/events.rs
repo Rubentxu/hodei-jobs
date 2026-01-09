@@ -2584,3 +2584,317 @@ mod tests {
         }
     }
 }
+
+// EPIC-65: Módulo de validación de conversión de eventos modulares
+// Tests validan que el Bridge Pattern funciona correctamente
+#[cfg(test)]
+mod epic65_validation_tests {
+    use crate::jobs::events::{
+        JobAccepted, JobAssigned, JobCancelled, JobCreated, JobDispatchAcknowledged,
+        JobQueued, JobRetried, JobStatusChanged, RunJobReceived,
+    };
+    use crate::shared_kernel::{JobId, JobState, ProviderId, WorkerId};
+    use crate::workers::events::{
+        WorkerDisconnected, WorkerHeartbeat, WorkerProvisioned,
+        WorkerReadyForJob, WorkerRecoveryFailed, WorkerReconnected,
+        WorkerRegistered, WorkerTerminated,
+    };
+    use crate::workers::TerminationReason;
+    use chrono::Utc;
+
+    #[test]
+    fn test_job_created_conversion() {
+        // GIVEN: Un evento modular JobCreated
+        let job_id = JobId::new();
+        let spec = crate::jobs::JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
+        let modular_event = JobCreated {
+            job_id: job_id.clone(),
+            spec,
+            occurred_at: Utc::now(),
+            correlation_id: Some("test-correlation".to_string()),
+            actor: Some("test-user".to_string()),
+        };
+
+        // WHEN: Convertimos a DomainEvent usando .into()
+        let domain_event = super::DomainEvent::from(modular_event);
+
+        // THEN: La conversión preserva todos los campos
+        match domain_event {
+            super::DomainEvent::JobCreated { job_id: id, actor, .. } => {
+                assert_eq!(id, job_id);
+                assert_eq!(actor, Some("test-user".to_string()));
+            }
+            _ => panic!("Expected JobCreated variant"),
+        }
+    }
+
+    #[test]
+    fn test_job_status_changed_conversion() {
+        // GIVEN: Un evento modular JobStatusChanged
+        let job_id = JobId::new();
+        let modular_event = JobStatusChanged {
+            job_id: job_id.clone(),
+            old_state: JobState::Pending,
+            new_state: JobState::Assigned,
+            occurred_at: Utc::now(),
+            correlation_id: Some("test-correlation".to_string()),
+            actor: Some("system".to_string()),
+        };
+
+        // WHEN: Convertimos a DomainEvent
+        let domain_event = super::DomainEvent::from(modular_event);
+
+        // THEN: La conversión preserva el estado
+        match domain_event {
+            super::DomainEvent::JobStatusChanged {
+                job_id,
+                old_state,
+                new_state,
+                ..
+            } => {
+                assert_eq!(job_id, job_id);
+                assert_eq!(old_state, JobState::Pending);
+                assert_eq!(new_state, JobState::Assigned);
+            }
+            _ => panic!("Expected JobStatusChanged variant"),
+        }
+    }
+
+    #[test]
+    fn test_job_cancelled_conversion() {
+        // GIVEN: Un evento modular JobCancelled
+        let job_id = JobId::new();
+        let modular_event = JobCancelled {
+            job_id: job_id.clone(),
+            reason: Some("User requested cancellation".to_string()),
+            occurred_at: Utc::now(),
+            correlation_id: Some("test-correlation".to_string()),
+            actor: Some("admin".to_string()),
+        };
+
+        // WHEN: Convertimos a DomainEvent
+        let domain_event = super::DomainEvent::from(modular_event);
+
+        // THEN: La conversión preserva la razón
+        match domain_event {
+            super::DomainEvent::JobCancelled { job_id, reason, .. } => {
+                assert_eq!(job_id, job_id);
+                assert_eq!(reason, Some("User requested cancellation".to_string()));
+            }
+            _ => panic!("Expected JobCancelled variant"),
+        }
+    }
+
+    #[test]
+    fn test_worker_registered_conversion() {
+        // GIVEN: Un evento modular WorkerRegistered
+        let worker_id = WorkerId::new();
+        let provider_id = ProviderId::new();
+        let modular_event = WorkerRegistered {
+            worker_id: worker_id.clone(),
+            provider_id: provider_id.clone(),
+            occurred_at: Utc::now(),
+            correlation_id: Some("test-correlation".to_string()),
+            actor: Some("worker-agent".to_string()),
+        };
+
+        // WHEN: Convertimos a DomainEvent
+        let domain_event = super::DomainEvent::from(modular_event);
+
+        // THEN: La conversión preserva IDs
+        match domain_event {
+            super::DomainEvent::WorkerRegistered {
+                worker_id,
+                provider_id,
+                ..
+            } => {
+                assert_eq!(worker_id, worker_id);
+                assert_eq!(provider_id, provider_id);
+            }
+            _ => panic!("Expected WorkerRegistered variant"),
+        }
+    }
+
+    #[test]
+    fn test_all_job_events_convertible() {
+        // Valida que todos los eventos de jobs tengan conversión implementada
+        let job_id = JobId::new();
+        let now = Utc::now();
+        let correlation_id = Some("test-correlation".to_string());
+        let actor = Some("test".to_string());
+        let spec = crate::jobs::JobSpec::new(vec!["test".to_string()]);
+
+        // JobCreated
+        let _ = super::DomainEvent::from(JobCreated {
+            job_id: job_id.clone(),
+            spec: spec.clone(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobStatusChanged
+        let _ = super::DomainEvent::from(JobStatusChanged {
+            job_id: job_id.clone(),
+            old_state: JobState::Pending,
+            new_state: JobState::Assigned,
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobCancelled
+        let _ = super::DomainEvent::from(JobCancelled {
+            job_id: job_id.clone(),
+            reason: Some("test".to_string()),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobRetried
+        let _ = super::DomainEvent::from(JobRetried {
+            job_id: job_id.clone(),
+            attempt: 1,
+            max_attempts: 3,
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobAssigned
+        let _ = super::DomainEvent::from(JobAssigned {
+            job_id: job_id.clone(),
+            worker_id: WorkerId::new(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobAccepted
+        let _ = super::DomainEvent::from(JobAccepted {
+            job_id: job_id.clone(),
+            worker_id: WorkerId::new(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobDispatchAcknowledged
+        let _ = super::DomainEvent::from(JobDispatchAcknowledged {
+            job_id: job_id.clone(),
+            worker_id: WorkerId::new(),
+            acknowledged_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // RunJobReceived
+        let _ = super::DomainEvent::from(RunJobReceived {
+            job_id: job_id.clone(),
+            worker_id: WorkerId::new(),
+            received_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // JobQueued
+        let _ = super::DomainEvent::from(JobQueued {
+            job_id: job_id.clone(),
+            preferred_provider: None,
+            job_requirements: spec,
+            queued_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+    }
+
+    #[test]
+    fn test_all_worker_events_convertible() {
+        // Valida que todos los eventos de workers tengan conversión implementada
+        let worker_id = WorkerId::new();
+        let provider_id = ProviderId::new();
+        let now = Utc::now();
+        let correlation_id = Some("test-correlation".to_string());
+        let actor = Some("test".to_string());
+
+        // WorkerRegistered
+        let _ = super::DomainEvent::from(WorkerRegistered {
+            worker_id: worker_id.clone(),
+            provider_id: provider_id.clone(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerTerminated
+        let _ = super::DomainEvent::from(WorkerTerminated {
+            worker_id: worker_id.clone(),
+            provider_id: provider_id.clone(),
+            reason: TerminationReason::JobCompleted,
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerDisconnected
+        let _ = super::DomainEvent::from(WorkerDisconnected {
+            worker_id: worker_id.clone(),
+            last_heartbeat: Some(now),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerProvisioned
+        let _ = super::DomainEvent::from(WorkerProvisioned {
+            worker_id: worker_id.clone(),
+            provider_id: provider_id.clone(),
+            spec_summary: "test-spec".to_string(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerReconnected
+        let _ = super::DomainEvent::from(WorkerReconnected {
+            worker_id: worker_id.clone(),
+            session_id: "session-123".to_string(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerRecoveryFailed
+        let _ = super::DomainEvent::from(WorkerRecoveryFailed {
+            worker_id: worker_id.clone(),
+            invalid_session_id: "invalid-session".to_string(),
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerReadyForJob
+        let _ = super::DomainEvent::from(WorkerReadyForJob {
+            worker_id: worker_id.clone(),
+            provider_id: provider_id.clone(),
+            capabilities: vec![],
+            tags: std::collections::HashMap::new(),
+            ready_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+
+        // WorkerHeartbeat
+        let _ = super::DomainEvent::from(WorkerHeartbeat {
+            worker_id: worker_id.clone(),
+            state: crate::shared_kernel::WorkerState::Ready,
+            load_average: None,
+            memory_usage_mb: None,
+            current_job_id: None,
+            occurred_at: now,
+            correlation_id: correlation_id.clone(),
+            actor: actor.clone(),
+        });
+    }
+}

@@ -2923,6 +2923,537 @@ helm uninstall hodei-jobs
 
 ---
 
+## Detailed Use Cases with Examples
+
+### Use Case 1: Submit and Execute a Simple Job
+
+**Scenario**: Submit a shell command job and monitor its execution
+
+```bash
+# 1. Submit job via gRPC
+grpcurl -plaintext -d '{
+  "job_definition": {
+    "job_id": {"value": "my-job-001"},
+    "name": "Hello World",
+    "command": {
+      "shell": {
+        "cmd": "echo",
+        "args": ["Hello from Hodei!"]
+      }
+    },
+    "resources": {
+      "cpu_cores": 1.0,
+      "memory_mb": 512,
+      "storage_mb": 1024
+    },
+    "preferences": {
+      "allow_retry": true,
+      "priority": 0
+    }
+  },
+  "queued_by": "dev-team"
+}' localhost:50051 hodei.JobExecutionService/QueueJob
+
+# Response
+{
+  "job_id": {"value": "550e8400-e29b-41d4-a716-446655440000"},
+  "status": 2,  // Queued
+  "created_at": "2026-01-09T10:00:00Z"
+}
+
+# 2. Monitor job status
+grpcurl -plaintext -d '{
+  "job_id": {"value": "550e8400-e29b-41d4-a716-446655440000"}
+}' localhost:50051 hodei.JobExecutionService/GetJobStatus
+
+# 3. Stream logs
+grpcurl -plaintext -d '{
+  "job_id": {"value": "550e8400-e29b-41d4-a716-446655440000"}
+}' localhost:50051 hodei.LogStreamService/SubscribeLogs
+```
+
+**Internal Flow**:
+
+```rust
+// 1. Client sends QueueJobRequest
+let request = QueueJobRequest { job_definition, queued_by };
+
+// 2. gRPC server calls use case
+let job = create_job_use_case.execute(request).await?;
+
+// 3. Domain creates Job aggregate
+let job = Job::new(job_spec, JobPreferences::default())?;
+
+// 4. Persist to database
+job_repository.save(&job).await?;
+job_queue.enqueue(job.clone()).await?;
+
+// 5. Publish domain event
+event_bus.publish(JobCreatedEvent {
+    job_id: job.id.clone(),
+    spec: job.spec.clone(),
+    queued_by: queued_by.clone(),
+}).await?;
+
+// 6. Event handler triggers provisioning
+provisioning_handler.handle(JobCreatedEvent).await?;
+
+// 7. Worker is provisioned and executes job
+// 8. JobCompletionEvent published
+// 9. Job status updated to Succeeded
+```
+
+### Use Case 2: Execute Job with Secrets
+
+**Scenario**: Execute a job that requires secrets (API keys, tokens)
+
+```bash
+# 1. Create secret (via REST API or gRPC)
+grpcurl -plaintext -d '{
+  "secret": {
+    "name": "api-key-prod",
+    "value": {"secret_string": "sk-prod-1234567890"},
+    "secret_type": "STRING"
+  },
+  "created_by": "dev-team"
+}' localhost:50051 hodei.CredentialService.CreateSecret
+
+# 2. Submit job with secret reference
+grpcurl -plaintext -d '{
+  "job_definition": {
+    "name": "API Job",
+    "command": {
+      "shell": {
+        "cmd": "python",
+        "args": ["-c", "import json; import sys; data = json.load(sys.stdin); print(f\"API Key: {data['api-key-prod']}\")"]
+      }
+    },
+    "secrets": ["api-key-prod"]
+  },
+  "queued_by": "dev-team"
+}' localhost:50051 hodei.JobExecutionService/QueueJob
+```
+
+**Secret Injection Flow**:
+
+```rust
+// Worker side - JobExecutor
+impl JobExecutor {
+    async fn execute_with_secrets(&self, job: RunJobCommand) -> Result<JobResult> {
+        // 1. Fetch secrets (if any)
+        let secrets = if let Some(secret_names) = &job.secrets {
+            self.fetch_secrets(secret_names).await?
+        } else {
+            HashMap::new()
+        };
+
+        // 2. Create temporary script
+        let script_path = self.create_temp_script(&job.command_type).await?;
+
+        // 3. Inject secrets via stdin
+        let mut child = Command::new(&job.interpreter)
+            .arg(&script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // Write secrets to stdin and close immediately
+        if !secrets.is_empty() {
+            let json = serde_json::to_string(&secrets)?;
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(json.as_bytes()).await?;
+            stdin.shutdown().await?;
+        }
+
+        // 4. Stream logs (secrets are automatically redacted)
+        self.stream_logs(&mut child, &job.job_id).await?;
+
+        // 5. Wait for completion
+        let status = child.wait().await?;
+
+        Ok(JobResult {
+            success: status.success(),
+            exit_code: status.code().unwrap_or(-1),
+            error_message: None,
+        })
+    }
+}
+```
+
+### Use Case 3: Scheduled Job (Cron-like)
+
+**Scenario**: Schedule a job to run every hour
+
+```bash
+# 1. Create scheduled job
+grpcurl -plaintext -d '{
+  "scheduled_job": {
+    "name": "Hourly Backup",
+    "cron_expression": "0 * * * *",
+    "job_definition": {
+      "name": "Backup",
+      "command": {
+        "shell": {
+          "cmd": "backup-script.sh",
+          "args": []
+        }
+      }
+    },
+    "enabled": true
+  },
+  "created_by": "ops-team"
+}' localhost:50051 hodei.SchedulerService.CreateScheduledJob
+
+# 2. List scheduled jobs
+grpcurl -plaintext -d '{}' localhost:50051 hodei.SchedulerService.ListScheduledJobs
+```
+
+### Use Case 4: Worker Auto-scaling
+
+**Scenario**: Automatically scale workers based on queue length
+
+```bash
+# Configure auto-scaling
+grpcurl -plaintext -d '{
+  "config": {
+    "min_workers": 2,
+    "max_workers": 10,
+    "scale_up_threshold": 5,
+    "scale_down_threshold": 2,
+    "scale_up_cooldown": 300,
+    "scale_down_cooldown": 600
+  }
+}' localhost:50051 hodei.ProviderManagementService.ConfigureAutoScaling
+```
+
+---
+
+## Design Patterns Implementation
+
+### 1. Repository Pattern
+
+**Purpose**: Abstract data access logic
+
+```rust
+// Domain trait
+#[async_trait]
+pub trait JobRepository: Send + Sync {
+    async fn save(&self, job: &Job) -> Result<()>;
+    async fn find_by_id(&self, id: &JobId) -> Result<Option<Job>>;
+    async fn find_by_state(&self, state: &JobState) -> Result<Vec<Job>>;
+}
+
+// Infrastructure implementation
+pub struct PostgresJobRepository {
+    pool: PgPool,
+}
+
+#[async_trait]
+impl JobRepository for PostgresJobRepository {
+    async fn save(&self, job: &Job) -> Result<()> {
+        sqlx::query!(
+            "INSERT INTO jobs (id, spec, state, ...) VALUES ($1, $2, $3, ...)",
+            job.id.as_uuid(),
+            serde_json::to_value(&job.spec)?,
+            job.state as i32,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+```
+
+### 2. Strategy Pattern
+
+**Purpose**: Encapsulate scheduling algorithms
+
+```rust
+pub trait SchedulingStrategy: Send + Sync {
+    fn score(&self, job: &Job, worker: &Worker, provider: &ProviderConfig) -> f64;
+}
+
+pub struct LeastLoadedStrategy;
+
+impl SchedulingStrategy for LeastLoadedStrategy {
+    fn score(&self, job: &Job, worker: &Worker, provider: &ProviderConfig) -> f64 {
+        let cpu_score = 1.0 - (worker.resources.cpu_usage_percent / 100.0);
+        let memory_score = 1.0 - (worker.resources.memory_usage_percent / 100.0);
+        (cpu_score + memory_score) / 2.0
+    }
+}
+```
+
+### 3. Observer Pattern (Domain Events)
+
+**Purpose**: React to domain changes
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobCompletedEvent {
+    pub job_id: JobId,
+    pub result: JobExecutionResult,
+    pub completed_at: DateTime<Utc>,
+}
+
+pub struct JobCompletionNotificationHandler {
+    notification_service: Arc<NotificationService>,
+}
+
+#[async_trait]
+impl EventHandler<JobCompletedEvent> for JobCompletionNotificationHandler {
+    async fn handle(&self, event: &JobCompletedEvent) -> Result<()> {
+        let job = self.job_repo.find_by_id(&event.job_id).await?;
+        if job.spec.preferences.notify_on_completion {
+            self.notification_service.send(&job.queued_by, &format!("Job {} completed", job.name)).await?;
+        }
+        Ok(())
+    }
+}
+```
+
+### 4. Saga Pattern
+
+**Purpose**: Coordinate distributed transactions
+
+```rust
+pub struct ProvisioningSaga {
+    steps: Vec<Box<dyn SagaStep>>,
+    current_step: usize,
+    compensation_data: HashMap<String, serde_json::Value>,
+}
+
+impl ProvisioningSaga {
+    pub async fn execute(&mut self) -> Result<()> {
+        for step in &self.steps {
+            if let Err(e) = step.execute(self.get_input(step)?).await {
+                self.compensate(self.current_step).await?;
+                return Err(e);
+            }
+            self.current_step += 1;
+        }
+        Ok(())
+    }
+
+    async fn compensate(&mut self, from_step: usize) -> Result<()> {
+        for step in (0..from_step).rev() {
+            let input = self.get_compensating_input(step)?;
+            self.steps[step].compensate(input).await?;
+        }
+        Ok(())
+    }
+}
+```
+
+---
+
+## Monitoring & Observability
+
+### Metrics Collection
+
+```rust
+use prometheus::{Counter, Histogram, Gauge};
+
+pub struct Metrics {
+    jobs_submitted: Counter,
+    jobs_completed: Counter,
+    jobs_failed: Counter,
+    job_duration: Histogram,
+    workers_active: Gauge,
+}
+
+impl Metrics {
+    pub fn record_job_completed(&self, duration: Duration) {
+        self.jobs_completed.inc();
+        self.job_duration.observe(duration.as_secs_f64());
+    }
+
+    pub fn update_workers_active(&self, count: usize) {
+        self.workers_active.set(count as f64);
+    }
+}
+```
+
+### Distributed Tracing
+
+```rust
+use opentelemetry::trace::{Tracer, TraceError};
+use tracing_opentelemetry::OpenTelemetryLayer;
+
+fn init_tracing() -> Result<TraceError> {
+    let tracer = opentelemetry_jaeger::new_pipeline()
+        .with_service_name("hodei-server")
+        .install_simple()?;
+
+    let telemetry = OpenTelemetryLayer::new(tracer);
+    tracing_subscriber::registry().with(telemetry).try_init()
+}
+```
+
+---
+
+## Troubleshooting Guide
+
+### Common Issues
+
+#### 1. Worker Not Registering
+
+**Diagnosis**:
+```bash
+grep "GenerateOTP" /var/log/hodei-server.log
+grep "Register" /var/log/hodei-worker.log
+docker exec <worker_container> cat /var/run/hodei/otp.txt
+```
+
+**Solutions**:
+- Increase OTP token TTL: `HODEI_OTP_TTL_SECS=600`
+- Verify network connectivity
+- Check mTLS certificate validity
+
+#### 2. Jobs Stuck in "Queued" State
+
+**Diagnosis**:
+```bash
+grpcurl -plaintext -d '{}' localhost:50051 hodei.SchedulerService.GetQueueStatus
+grpcurl -plaintext -d '{}' localhost:50051 hodei.SchedulerService.GetAvailableWorkers
+```
+
+**Solutions**:
+- Verify auto-scaling is enabled
+- Check provider health
+- Ensure worker images are available
+
+#### 3. High Memory Usage in Worker
+
+**Diagnosis**:
+```bash
+grpcurl -plaintext -d '{}' localhost:50051 hodei.MetricsService.GetWorkerMetrics
+docker stats
+```
+
+**Solutions**:
+- Reduce job batch size
+- Implement log truncation
+- Add memory limits to container
+
+---
+
+## Best Practices
+
+### 1. Job Design
+
+**DO**:
+- Keep jobs stateless and idempotent
+- Use appropriate resource limits
+- Implement graceful shutdown
+- Set reasonable timeouts
+
+**DON'T**:
+- Store state in job environment
+- Assume external dependencies are available
+- Ignore error conditions
+- Create infinite loops
+
+### 2. Error Handling
+
+**DO**:
+- Use Result types explicitly
+- Provide context with errors
+- Log errors with appropriate level
+- Implement retry logic for transient errors
+
+**DON'T**:
+- Use unwrap() in production code
+- Ignore errors
+- Panic on recoverable errors
+- Log passwords or secrets
+
+### 3. Performance Optimization
+
+**DO**:
+- Use async/await for I/O operations
+- Batch database operations
+- Use connection pooling
+- Implement caching where appropriate
+
+**DON'T**:
+- Block async runtime
+- N+1 query patterns
+- Allocate unnecessarily
+- Disable optimizations prematurely
+
+---
+
+## Extension Guide
+
+### Adding a New Worker Provider
+
+**Step 1**: Implement WorkerProvider trait
+**Step 2**: Add configuration variant
+**Step 3**: Register provider in factory
+**Step 4**: Add comprehensive tests
+
+### Adding a New Domain Event
+
+**Step 1**: Define event struct
+**Step 2**: Implement DomainEvent trait
+**Step 3**: Publish from use cases
+**Step 4**: Create event handlers
+**Step 5**: Register handlers in event bus
+
+---
+
+## Migration Guide
+
+### Migrating from v7.x to v8.0
+
+**Breaking Changes**:
+
+1. Log batching enabled by default
+2. mTLS required for worker communication
+3. Zero-copy I/O enabled
+
+**Migration Steps**:
+
+1. Backup database
+2. Run migrations
+3. Generate certificates
+4. Update configuration
+5. Rebuild workers
+6. Verify deployment
+
+---
+
+## Glossary
+
+### Domain Terms
+
+| Term | Definition |
+|------|------------|
+| **Aggregate** | Cluster of domain objects treated as single unit |
+| **Bounded Context** | Specific part of domain logic acting independently |
+| **Domain Event** | Something important in domain to other parts of system |
+| **Value Object** | Immutable object defined by its attributes |
+| **Repository** | Collection-like interface for accessing domain objects |
+| **Saga** | Sequence of local transactions for distributed operations |
+| **CQRS** | Command Query Responsibility Segregation pattern |
+| **Outbox Pattern** | Pattern to guarantee event publishing in transactions |
+
+### Technical Terms
+
+| Term | Definition |
+|------|------------|
+| **mTLS** | Mutual TLS authentication |
+| **OTP** | One-Time Password |
+| **gRPC** | Remote Procedure Call framework |
+| **Zero-Copy I/O** | I/O without data copying |
+| **Backpressure** | Mechanism to handle flow control |
+| **DDD** | Domain-Driven Design |
+| **SOLID** | Five design principles |
+
+---
+
 ## Conclusion
 
 This architecture document provides a comprehensive overview of the Hodei Job Platform's design, covering:
