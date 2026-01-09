@@ -1,0 +1,355 @@
+//! Provisioning Saga Command Handlers
+//!
+//! Handlers for provisioning-related commands: ValidateProviderCommand and PublishProvisionedCommand.
+//! These handlers implement the business logic for worker provisioning operations.
+
+use async_trait::async_trait;
+use std::fmt::Debug;
+use std::sync::Arc;
+use tracing::{debug, error, info};
+
+use hodei_server_domain::command::{Command, CommandHandler};
+use hodei_server_domain::saga::commands::provisioning::{
+    PublishProvisionedCommand, PublishProvisionedError, ProviderCapacity, ProviderConfig,
+    ValidateProviderCommand, ValidateProviderError,
+};
+use hodei_server_domain::shared_kernel::{ProviderId, Result};
+use hodei_server_domain::workers::events::WorkerProvisioned;
+use hodei_server_domain::EventBus;
+
+/// ProviderRegistry trait for capacity checking.
+/// This trait is defined in domain for reuse across implementations.
+#[async_trait::async_trait]
+pub trait ProviderRegistry: Debug + Send + Sync {
+    /// Get provider configuration by ID
+    async fn get_provider_config(
+        &self,
+        provider_id: &ProviderId,
+    ) -> Result<Option<ProviderConfig>>;
+
+    /// Check if provider is healthy and available
+    async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool>;
+}
+
+// =============================================================================
+// ValidateProviderHandler
+// =============================================================================
+
+/// Handler for ValidateProviderCommand.
+///
+/// This handler validates that a provider has capacity to accept
+/// new workers. It performs the actual capacity check business logic,
+/// following the Single Responsibility Principle.
+///
+/// # Architecture
+/// - Domain layer: Defines `ValidateProviderCommand` and `ValidateProviderError`
+/// - Application layer: Provides this handler implementation
+#[derive(Debug)]
+pub struct ValidateProviderHandler<R>
+where
+    R: ProviderRegistry + Debug,
+{
+    registry: Arc<R>,
+}
+
+impl<R> ValidateProviderHandler<R>
+where
+    R: ProviderRegistry + Debug,
+{
+    /// Creates a new handler with the given provider registry.
+    #[inline]
+    pub fn new(registry: Arc<R>) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait]
+impl<R> CommandHandler<ValidateProviderCommand> for ValidateProviderHandler<R>
+where
+    R: ProviderRegistry + Debug + Send + Sync + 'static,
+{
+    type Error = ValidateProviderError;
+
+    async fn handle(&self, command: ValidateProviderCommand) -> Result<ProviderCapacity, Self::Error> {
+        debug!(
+            provider_id = %command.provider_id,
+            saga_id = %command.saga_id,
+            "Validating provider capacity"
+        );
+
+        // Validate provider exists and get configuration
+        let config = self
+            .registry
+            .get_provider_config(&command.provider_id)
+            .await
+            .map_err(|e| {
+                error!(error = %e, provider_id = %command.provider_id, "Failed to get provider config");
+                ValidateProviderError::ProviderNotFound {
+                    provider_id: command.provider_id.clone(),
+                }
+            })?
+            .ok_or_else(|| {
+                error!(provider_id = %command.provider_id, "Provider not found");
+                ValidateProviderError::ProviderNotFound {
+                    provider_id: command.provider_id.clone(),
+                }
+            })?;
+
+        // Check if provider is enabled
+        if !config.is_enabled {
+            error!(provider_id = %command.provider_id, "Provider is disabled");
+            return Err(ValidateProviderError::ProviderNotAvailable {
+                provider_id: command.provider_id.clone(),
+                status: "Provider is disabled".to_string(),
+            });
+        }
+
+        // Check provider health/availability
+        let is_available = self
+            .registry
+            .is_provider_available(&command.provider_id)
+            .await
+            .map_err(|e| {
+                error!(error = %e, "Health check failed");
+                ValidateProviderError::ProviderNotAvailable {
+                    provider_id: command.provider_id.clone(),
+                    status: "Health check failed".to_string(),
+                }
+            })?;
+
+        if !is_available {
+            error!(provider_id = %command.provider_id, "Provider health check failed");
+            return Err(ValidateProviderError::ProviderNotAvailable {
+                provider_id: command.provider_id.clone(),
+                status: "Provider health check failed".to_string(),
+            });
+        }
+
+        // Check capacity against limits
+        if config.active_workers >= config.max_workers {
+            error!(
+                provider_id = %command.provider_id,
+                active = config.active_workers,
+                max = config.max_workers,
+                "Provider at capacity"
+            );
+            return Err(ValidateProviderError::CapacityExceeded {
+                provider_id: command.provider_id.clone(),
+                active: config.active_workers,
+                max: config.max_workers,
+            });
+        }
+
+        // Provider has capacity
+        let capacity = ProviderCapacity::available(config.active_workers, config.max_workers);
+
+        info!(
+            provider_id = %command.provider_id,
+            active_workers = config.active_workers,
+            max_workers = config.max_workers,
+            available_slots = capacity.available_slots,
+            "Provider capacity validated successfully"
+        );
+
+        Ok(capacity)
+    }
+}
+
+// =============================================================================
+// PublishProvisionedHandler
+// =============================================================================
+
+/// Handler for PublishProvisionedCommand.
+///
+/// This handler publishes the WorkerProvisioned event to the event bus.
+/// It encapsulates the single responsibility of event publishing,
+/// keeping saga steps focused on orchestration.
+///
+/// # Architecture
+/// - Domain layer: Defines `PublishProvisionedCommand` and `PublishProvisionedError`
+/// - Application layer: Provides this handler implementation
+#[derive(Debug)]
+pub struct PublishProvisionedHandler<E>
+where
+    E: EventBus + Debug,
+{
+    event_bus: Arc<E>,
+}
+
+impl<E> PublishProvisionedHandler<E>
+where
+    E: EventBus + Debug,
+{
+    /// Creates a new handler with the given event bus.
+    #[inline]
+    pub fn new(event_bus: Arc<E>) -> Self {
+        Self { event_bus }
+    }
+}
+
+#[async_trait::async_trait]
+impl<E> CommandHandler<PublishProvisionedCommand> for PublishProvisionedHandler<E>
+where
+    E: EventBus + Debug + Send + Sync + 'static,
+{
+    type Error = PublishProvisionedError;
+
+    async fn handle(&self, command: PublishProvisionedCommand) -> Result<(), Self::Error> {
+        info!(
+            worker_id = %command.worker_id,
+            provider_id = %command.provider_id,
+            saga_id = %command.saga_id,
+            "Publishing WorkerProvisioned event"
+        );
+
+        let event = WorkerProvisioned {
+            worker_id: command.worker_id.clone(),
+            provider_id: command.provider_id.clone(),
+            spec_summary: command.spec_summary.clone(),
+            occurred_at: chrono::Utc::now(),
+            correlation_id: command.correlation_id.clone(),
+            actor: command.actor.clone(),
+        };
+
+        self.event_bus
+            .publish(&event.into())
+            .await
+            .map_err(|e| {
+                error!(
+                    error = %e,
+                    worker_id = %command.worker_id,
+                    "Failed to publish WorkerProvisioned event"
+                );
+                PublishProvisionedError::PublishFailed { source: e }
+            })?;
+
+        info!(
+            worker_id = %command.worker_id,
+            provider_id = %command.provider_id,
+            "WorkerProvisioned event published successfully"
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use hodei_server_domain::shared_kernel::ProviderId;
+
+    // Test implementations of ProviderRegistry
+    #[derive(Debug)]
+    struct MockProviderRegistry {
+        config: Option<ProviderConfig>,
+        available: bool,
+    }
+
+    #[async_trait]
+    impl ProviderRegistry for MockProviderRegistry {
+        async fn get_provider_config(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<Option<ProviderConfig>> {
+            Ok(self.config.clone())
+        }
+
+        async fn is_provider_available(&self, _provider_id: &ProviderId) -> Result<bool> {
+            Ok(self.available)
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_provider_handler_success() {
+        let config = ProviderConfig {
+            id: ProviderId::new(),
+            active_workers: 5,
+            max_workers: 10,
+            is_enabled: true,
+        };
+        let registry = Arc::new(MockProviderRegistry {
+            config: Some(config),
+            available: true,
+        });
+
+        let handler = ValidateProviderHandler::new(registry);
+        let command = ValidateProviderCommand::new(
+            ProviderId::new(),
+            "test-saga".to_string(),
+        );
+
+        let result = handler.handle(command).await;
+        assert!(result.is_ok());
+        let capacity = result.unwrap();
+        assert!(capacity.has_capacity);
+        assert_eq!(capacity.available_slots, 5);
+    }
+
+    #[tokio::test]
+    async fn validate_provider_handler_not_found() {
+        let registry: Arc<dyn ProviderRegistry> = Arc::new(MockProviderRegistry {
+            config: None,
+            available: true,
+        });
+
+        let handler = ValidateProviderHandler::new(registry);
+        let command = ValidateProviderCommand::new(
+            ProviderId::new(),
+            "test-saga".to_string(),
+        );
+
+        let result = handler.handle(command).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ValidateProviderError::ProviderNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn validate_provider_handler_at_capacity() {
+        let config = ProviderConfig {
+            id: ProviderId::new(),
+            active_workers: 10,
+            max_workers: 10,
+            is_enabled: true,
+        };
+        let registry = Arc::new(MockProviderRegistry {
+            config: Some(config),
+            available: true,
+        });
+
+        let handler = ValidateProviderHandler::new(registry);
+        let command = ValidateProviderCommand::new(
+            ProviderId::new(),
+            "test-saga".to_string(),
+        );
+
+        let result = handler.handle(command).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ValidateProviderError::CapacityExceeded { .. }));
+    }
+
+    #[tokio::test]
+    async fn validate_provider_handler_disabled() {
+        let config = ProviderConfig {
+            id: ProviderId::new(),
+            active_workers: 5,
+            max_workers: 10,
+            is_enabled: false,
+        };
+        let registry = Arc::new(MockProviderRegistry {
+            config: Some(config),
+            available: true,
+        });
+
+        let handler = ValidateProviderHandler::new(registry);
+        let command = ValidateProviderCommand::new(
+            ProviderId::new(),
+            "test-saga".to_string(),
+        );
+
+        let result = handler.handle(command).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ValidateProviderError::ProviderNotAvailable { .. }));
+    }
+}

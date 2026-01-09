@@ -2,12 +2,13 @@
 //
 // Commands used by the ProvisioningSaga for worker lifecycle management.
 // These commands encapsulate the intent to provision or destroy workers.
+//
+// NOTE: Handler implementations are in the application layer
+// (application/src/saga/handlers/provisioning_handlers.rs).
 
-use crate::command::{Command, CommandHandler, CommandMetadataDefault};
+use crate::command::{Command, CommandMetadataDefault};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 use crate::workers::{WorkerProvisioning, WorkerProvisioningResult, WorkerRegistry, WorkerSpec};
-use crate::workers::events::WorkerProvisioned;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
@@ -166,31 +167,8 @@ pub enum ValidateProviderError {
     },
 }
 
-/// Handler for ValidateProviderCommand.
-///
-/// This handler validates that a provider has capacity to accept
-/// new workers. It performs the actual capacity check business logic,
-/// following the Single Responsibility Principle.
-#[derive(Debug)]
-pub struct ValidateProviderHandler<R>
-where
-    R: ProviderRegistry + Debug,
-{
-    registry: std::sync::Arc<R>,
-}
-
-impl<R> ValidateProviderHandler<R>
-where
-    R: ProviderRegistry + Debug,
-{
-    /// Creates a new handler with the given provider registry.
-    #[inline]
-    pub fn new(registry: std::sync::Arc<R>) -> Self {
-        Self { registry }
-    }
-}
-
-/// Provider registry trait for capacity checking.
+/// ProviderRegistry trait for capacity checking.
+/// This trait is re-exported for use by handlers in the application layer.
 #[async_trait::async_trait]
 pub trait ProviderRegistry: Debug + Send + Sync {
     /// Get provider configuration by ID
@@ -213,69 +191,6 @@ pub struct ProviderConfig {
     pub active_workers: u32,
     pub max_workers: u32,
     pub is_enabled: bool,
-}
-
-#[async_trait]
-impl<R> CommandHandler<ValidateProviderCommand> for ValidateProviderHandler<R>
-where
-    R: ProviderRegistry + Debug + Send + Sync + 'static,
-{
-    type Error = ValidateProviderError;
-
-    async fn handle(
-        &self,
-        command: ValidateProviderCommand,
-    ) -> Result<ProviderCapacity, Self::Error> {
-        // Check if provider exists
-        let config = self
-            .registry
-            .get_provider_config(&command.provider_id)
-            .await
-            .map_err(|_| ValidateProviderError::ProviderNotFound {
-                provider_id: command.provider_id.clone(),
-            })?
-            .ok_or_else(|| ValidateProviderError::ProviderNotFound {
-                provider_id: command.provider_id.clone(),
-            })?;
-
-        // Check if provider is available
-        if !config.is_enabled {
-            return Err(ValidateProviderError::ProviderNotAvailable {
-                provider_id: command.provider_id.clone(),
-                status: "Provider is disabled".to_string(),
-            });
-        }
-
-        let is_available = self
-            .registry
-            .is_provider_available(&command.provider_id)
-            .await
-            .map_err(|_| ValidateProviderError::ProviderNotAvailable {
-                provider_id: command.provider_id.clone(),
-                status: "Health check failed".to_string(),
-            })?;
-
-        if !is_available {
-            return Err(ValidateProviderError::ProviderNotAvailable {
-                provider_id: command.provider_id.clone(),
-                status: "Provider health check failed".to_string(),
-            });
-        }
-
-        // Check capacity
-        if config.active_workers >= config.max_workers {
-            return Err(ValidateProviderError::CapacityExceeded {
-                provider_id: command.provider_id.clone(),
-                active: config.active_workers,
-                max: config.max_workers,
-            });
-        }
-
-        Ok(ProviderCapacity::available(
-            config.active_workers,
-            config.max_workers,
-        ))
-    }
 }
 
 /// Command to publish worker provisioned event.
@@ -369,54 +284,6 @@ pub enum PublishProvisionedError {
     },
 }
 
-/// Handler for PublishProvisionedCommand.
-///
-/// This handler publishes the WorkerProvisioned event to the event bus.
-/// It encapsulates the single responsibility of event publishing,
-/// keeping saga steps focused on orchestration.
-#[derive(Debug)]
-pub struct PublishProvisionedHandler<E>
-where
-    E: crate::event_bus::EventBus + Debug,
-{
-    event_bus: std::sync::Arc<E>,
-}
-
-impl<E> PublishProvisionedHandler<E>
-where
-    E: crate::event_bus::EventBus + Debug,
-{
-    /// Creates a new handler with the given event bus.
-    #[inline]
-    pub fn new(event_bus: std::sync::Arc<E>) -> Self {
-        Self { event_bus }
-    }
-}
-
-#[async_trait::async_trait]
-impl<E> CommandHandler<PublishProvisionedCommand> for PublishProvisionedHandler<E>
-where
-    E: crate::event_bus::EventBus + Debug + Send + Sync + 'static,
-{
-    type Error = PublishProvisionedError;
-
-    async fn handle(&self, command: PublishProvisionedCommand) -> Result<(), Self::Error> {
-        let event = WorkerProvisioned {
-            worker_id: command.worker_id.clone(),
-            provider_id: command.provider_id.clone(),
-            spec_summary: command.spec_summary.clone(),
-            occurred_at: chrono::Utc::now(),
-            correlation_id: command.correlation_id.clone(),
-            actor: command.actor.clone(),
-        };
-
-        self.event_bus
-            .publish(&event.into())
-            .await
-            .map_err(|e| PublishProvisionedError::PublishFailed { source: e })
-    }
-}
-
 /// Command to provision a new worker.
 ///
 /// This command encapsulates the intent to create infrastructure
@@ -499,9 +366,7 @@ pub enum CreateWorkerError {
 }
 
 /// Handler for CreateWorkerCommand.
-///
-/// This handler uses the domain's WorkerProvisioning trait to
-/// provision actual infrastructure.
+/// Uses the domain's WorkerProvisioning trait to provision infrastructure.
 #[derive(Debug)]
 pub struct CreateWorkerHandler<P>
 where
@@ -521,8 +386,8 @@ where
     }
 }
 
-#[async_trait]
-impl<P> CommandHandler<CreateWorkerCommand> for CreateWorkerHandler<P>
+#[async_trait::async_trait]
+impl<P> crate::command::CommandHandler<CreateWorkerCommand> for CreateWorkerHandler<P>
 where
     P: WorkerProvisioning + Debug + Send + Sync + 'static,
 {
@@ -645,8 +510,8 @@ where
     }
 }
 
-#[async_trait]
-impl<P> CommandHandler<DestroyWorkerCommand> for DestroyWorkerHandler<P>
+#[async_trait::async_trait]
+impl<P> crate::command::CommandHandler<DestroyWorkerCommand> for DestroyWorkerHandler<P>
 where
     P: WorkerProvisioning + Debug + Send + Sync + 'static,
 {
@@ -753,8 +618,8 @@ where
     }
 }
 
-#[async_trait]
-impl<R> CommandHandler<UnregisterWorkerCommand> for UnregisterWorkerHandler<R>
+#[async_trait::async_trait]
+impl<R> crate::command::CommandHandler<UnregisterWorkerCommand> for UnregisterWorkerHandler<R>
 where
     R: WorkerRegistry + Debug + Send + Sync + 'static,
 {
@@ -774,6 +639,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::CommandHandler;
     use crate::shared_kernel::{ProviderId, Result};
     use crate::workers::WorkerSpec;
     use async_trait::async_trait;
