@@ -1,6 +1,7 @@
 //! Complete Job Use Case
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::jobs::events::JobStatusChanged;
 use hodei_server_domain::outbox::OutboxEventInsert;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobResult, WorkerId};
 use serde::{Deserialize, Serialize};
@@ -89,7 +90,8 @@ impl CompleteJobUseCase {
 
         self.job_repo.save_job(&job).await?;
 
-        let event = DomainEvent::JobStatusChanged {
+        // EPIC-65 Phase 3: Using modular event type
+        let status_changed_event = JobStatusChanged {
             job_id: job.id.clone(),
             old_state: hodei_server_domain::shared_kernel::JobState::Running,
             new_state: hodei_server_domain::shared_kernel::JobState::Succeeded,
@@ -98,7 +100,7 @@ impl CompleteJobUseCase {
             actor: None,
         };
 
-        self.event_port.publish_event(&event).await?;
+        self.event_port.publish_event(&status_changed_event.into()).await?;
 
         Ok(JobCompletionResult {
             job_id: command.job_id,

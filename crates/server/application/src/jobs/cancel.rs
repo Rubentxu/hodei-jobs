@@ -4,6 +4,7 @@
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
+use hodei_server_domain::jobs::events::{JobCancelled, JobStatusChanged};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::request_context::RequestContext;
 use hodei_server_domain::shared_kernel::{DomainError, JobId};
@@ -65,7 +66,8 @@ impl CancelJobUseCase {
         };
 
         // Publicar evento JobStatusChanged (Cancelled)
-        let event = DomainEvent::JobStatusChanged {
+        // EPIC-65 Phase 3: Using modular event type
+        let status_changed_event = JobStatusChanged {
             job_id: job.id.clone(),
             old_state,
             new_state: hodei_server_domain::shared_kernel::JobState::Cancelled,
@@ -74,7 +76,7 @@ impl CancelJobUseCase {
             actor: metadata.actor.clone(),
         };
 
-        if let Err(e) = self.event_bus.publish(&event).await {
+        if let Err(e) = self.event_bus.publish(&status_changed_event.into()).await {
             tracing::error!(
                 "Failed to publish JobStatusChanged (Cancelled) event: {}",
                 e
@@ -83,7 +85,8 @@ impl CancelJobUseCase {
 
         // Publicar evento explícito JobCancelled
         // Refactoring: Reuse EventMetadata from JobStatusChanged event
-        let cancelled_event = DomainEvent::JobCancelled {
+        // EPIC-65 Phase 3: Using modular event type
+        let cancelled_event = JobCancelled {
             job_id: job.id.clone(),
             reason: Some("User requested cancellation".to_string()),
             occurred_at: Utc::now(),
@@ -91,7 +94,7 @@ impl CancelJobUseCase {
             actor: metadata.actor.clone(),
         };
 
-        if let Err(e) = self.event_bus.publish(&cancelled_event).await {
+        if let Err(e) = self.event_bus.publish(&cancelled_event.into()).await {
             tracing::error!("Failed to publish JobCancelled event: {}", e);
         }
 

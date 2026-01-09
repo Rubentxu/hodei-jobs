@@ -18,6 +18,7 @@ use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
 use hodei_server_domain::shared_kernel::{WorkerId, WorkerState};
+use hodei_server_domain::workers::events::WorkerStatusChanged;
 use hodei_server_domain::workers::WorkerRegistry;
 use hodei_server_domain::workers::health::{WorkerHealthService, WorkerHealthStatus};
 use std::sync::Arc;
@@ -205,7 +206,8 @@ async fn monitor_workers(
         let metadata = EventMetadata::for_system_event(None, "system:worker_monitor");
 
         // Publicamos un evento informativo de desconexión detected
-        let event = DomainEvent::WorkerStatusChanged {
+        // EPIC-65 Phase 3: Using modular event type
+        let status_changed_event = WorkerStatusChanged {
             worker_id: worker_id.clone(),
             old_status: current_state,
             // NO cambiamos a Terminated - eso lo hace WorkerLifecycleManager
@@ -216,7 +218,7 @@ async fn monitor_workers(
             actor: metadata.actor,
         };
 
-        if let Err(e) = event_bus.publish(&event).await {
+        if let Err(e) = event_bus.publish(&status_changed_event.into()).await {
             error!(
                 "WorkerMonitor: Failed to publish disconnection alert: {}",
                 e

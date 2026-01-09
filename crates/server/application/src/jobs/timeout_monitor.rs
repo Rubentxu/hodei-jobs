@@ -8,6 +8,7 @@
 use crate::jobs::repository_ext::JobRepositoryExt;
 use chrono::{DateTime, Duration, Utc};
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
+use hodei_server_domain::jobs::events::JobStatusChanged;
 use hodei_server_domain::jobs::Job;
 use hodei_server_domain::shared_kernel::{JobId, JobState};
 use hodei_server_domain::{DomainError, EventPublisher, JobRepository, Result};
@@ -272,7 +273,8 @@ where
         self.repository.save(&job_mut).await?;
 
         // Publish domain event
-        let event = DomainEvent::JobStatusChanged {
+        // EPIC-65 Phase 3: Using modular event type
+        let status_changed_event = JobStatusChanged {
             job_id,
             old_state,
             new_state,
@@ -284,7 +286,7 @@ where
         let metadata = EventMetadata::for_system_event(None, "timeout-monitor");
 
         self.event_publisher
-            .publish_enriched(event, metadata)
+            .publish_enriched(status_changed_event.into(), metadata)
             .await
             .map_err(|e| DomainError::InfrastructureError {
                 message: format!("Failed to publish timeout event: {}", e),
