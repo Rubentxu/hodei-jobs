@@ -8,6 +8,7 @@ pub mod commands;
 pub mod garbage_collector;
 pub mod lifecycle;
 pub mod lifecycle_facade;
+pub mod orphan_detector;
 pub mod provisioning;
 pub mod provisioning_failure_handler;
 pub mod provisioning_impl;

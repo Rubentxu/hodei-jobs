@@ -384,7 +384,7 @@ mod tests {
         let logs = vec![
             create_test_log("JobCreated", Some("corr-1"), Some("user1")),
             create_test_log("JobCompleted", Some("corr-1"), Some("user1")),
-            create_test_log("WorkerRegistered", Some("corr-2"), Some("user2")),
+            create_test_log("WorkerReady", Some("corr-2"), Some("user2")),
         ];
         let repo = Arc::new(MockAuditRepository::with_logs(logs));
         let service = AuditServiceImpl::new(repo);
@@ -410,7 +410,7 @@ mod tests {
         let logs = vec![
             create_test_log("JobCreated", Some("corr-1"), Some("user1")),
             create_test_log("JobCompleted", Some("corr-1"), Some("user1")),
-            create_test_log("WorkerRegistered", Some("corr-2"), Some("user2")),
+            create_test_log("WorkerReady", Some("corr-2"), Some("user2")),
         ];
         let repo = Arc::new(MockAuditRepository::with_logs(logs));
         let service = AuditServiceImpl::new(repo);
@@ -435,7 +435,7 @@ mod tests {
             create_test_log("JobCreated", None, None),
             create_test_log("JobCreated", None, None),
             create_test_log("JobCompleted", None, None),
-            create_test_log("WorkerRegistered", None, None),
+            create_test_log("WorkerReady", None, None),
         ];
         let repo = Arc::new(MockAuditRepository::with_logs(logs));
         let service = AuditServiceImpl::new(repo);

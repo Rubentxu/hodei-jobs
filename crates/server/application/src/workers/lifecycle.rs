@@ -623,6 +623,8 @@ impl WorkerLifecycleManager {
         }
     }
 
+
+
     /// Provision a new worker using the specified provider
     /// Uses saga pattern with automatic compensation - saga coordinator is REQUIRED
     /// The job_id is REQUIRED - each worker is dedicated to a specific job

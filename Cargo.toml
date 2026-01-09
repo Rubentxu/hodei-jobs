@@ -12,6 +12,7 @@ members = [
     "crates/worker/infrastructure",
     "crates/worker/bin",
     "crates/cli",
+    "crates/server/shared",
     "proto",
 ]
 

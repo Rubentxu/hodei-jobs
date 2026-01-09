@@ -12,6 +12,7 @@ pub mod execution_saga_consumer;
 pub mod event_archiver;
 pub mod hybrid;
 pub mod nats;
+pub mod nats_manager;
 pub mod nats_outbox_relay;
 pub mod orphan_worker_detector_consumer;
 pub mod outbox_adapter;

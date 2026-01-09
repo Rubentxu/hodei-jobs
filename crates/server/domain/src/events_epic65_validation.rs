@@ -107,35 +107,7 @@ mod epic65_validation_tests {
         }
     }
 
-    #[test]
-    fn test_worker_registered_conversion() {
-        // GIVEN: Un evento modular WorkerRegistered
-        let worker_id = crate::workers::WorkerId::new();
-        let provider_id = crate::shared_kernel::ProviderId::new();
-        let modular_event = WorkerRegistered {
-            worker_id: worker_id.clone(),
-            provider_id: provider_id.clone(),
-            occurred_at: Utc::now(),
-            correlation_id: Some(Uuid::new_v4().to_string()),
-            actor: Some("worker-agent".to_string()),
-        };
 
-        // WHEN: Convertimos a DomainEvent
-        let domain_event: DomainEvent = modular_event.into();
-
-        // THEN: La conversión preserva IDs
-        match domain_event {
-            DomainEvent::WorkerRegistered {
-                worker_id,
-                provider_id,
-                ..
-            } => {
-                assert_eq!(worker_id, worker_id);
-                assert_eq!(provider_id, provider_id);
-            }
-            _ => panic!("Expected WorkerRegistered variant"),
-        }
-    }
 
     #[test]
     fn test_worker_status_changed_conversion() {

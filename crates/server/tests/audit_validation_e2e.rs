@@ -109,7 +109,7 @@ async fn test_audit_helper_wait_for_log() {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let log = hodei_jobs_domain::audit::AuditLog::new(
-            "WorkerRegistered".to_string(),
+            "WorkerReady".to_string(),
             serde_json::json!({"worker_id": "test-worker"}),
             Some(corr_clone),
             Some("test-actor".to_string()),
@@ -119,12 +119,12 @@ async fn test_audit_helper_wait_for_log() {
 
     // Wait for the log with timeout
     let result = audit_helper
-        .wait_for_audit_log(&correlation_id, "WorkerRegistered", Duration::from_secs(5))
+        .wait_for_audit_log(&correlation_id, "WorkerReady", Duration::from_secs(5))
         .await;
 
-    assert!(result.is_ok(), "Expected to find WorkerRegistered log");
+    assert!(result.is_ok(), "Expected to find WorkerReady log");
     let log = result.unwrap();
-    assert_eq!(log.event_type, "WorkerRegistered");
+    assert_eq!(log.event_type, "WorkerReady");
 }
 
 /// Test that demonstrates assert_no_events
@@ -187,7 +187,7 @@ async fn test_audit_helper_find_by_event_type() {
 
     for i in 0..3 {
         let log = hodei_jobs_domain::audit::AuditLog::new(
-            "WorkerRegistered".to_string(),
+            "WorkerReady".to_string(),
             serde_json::json!({"worker_id": format!("worker-{}", i)}),
             Some(format!("worker-corr-{}", i)),
             Some("test-actor".to_string()),
@@ -202,12 +202,12 @@ async fn test_audit_helper_find_by_event_type() {
         .unwrap();
     assert_eq!(job_logs.len(), 5, "Expected 5 JobCreated events");
 
-    // Find WorkerRegistered events
+    // Find WorkerReady events
     let worker_logs = audit_helper
-        .find_by_event_type("WorkerRegistered", 10)
+        .find_by_event_type("WorkerReady", 10)
         .await
         .unwrap();
-    assert_eq!(worker_logs.len(), 3, "Expected 3 WorkerRegistered events");
+    assert_eq!(worker_logs.len(), 3, "Expected 3 WorkerReady events");
 
     // Find non-existent event type
     let empty_logs = audit_helper
