@@ -1,31 +1,16 @@
 //! Jobs page - List and manage job executions
 
 use crate::components::StatusBadge;
+use crate::server_functions::{JobSummaryStatus, RecentJob, get_fallback_recent_jobs};
 use leptos::prelude::*;
-
-/// Recent job for display
-#[derive(Clone, Debug)]
-pub struct RecentJob {
-    pub id: String,
-    pub name: String,
-    pub status: JobSummaryStatus,
-    pub duration: String,
-    pub started: String,
-}
-
-#[derive(Clone, Debug)]
-pub enum JobSummaryStatus {
-    Running,
-    Success,
-    Failed,
-    Pending,
-}
 
 /// Jobs page component
 #[component]
 pub fn Jobs() -> impl IntoView {
-    let jobs = generate_sample_jobs();
-    let total_jobs = jobs.len();
+    // State for jobs
+    let jobs = RwSignal::new(get_fallback_recent_jobs());
+    let search_term = RwSignal::new(String::new());
+    let total_count = RwSignal::new(3i32);
 
     view! {
         <div class="page">
@@ -33,7 +18,7 @@ pub fn Jobs() -> impl IntoView {
                 <div>
                     <h1 class="page-title">"Jobs"</h1>
                     <p class="page-subtitle">
-                        {format!("{} total jobs", total_jobs)}
+                        {format!("{} total jobs", total_count.get())}
                     </p>
                 </div>
                 <div class="quick-actions">
@@ -53,7 +38,14 @@ pub fn Jobs() -> impl IntoView {
                         <div class="card-body">
                             <div class="form-group">
                                 <label class="form-label">"Search"</label>
-                                <input type="text" class="form-input" placeholder="Search..." />
+                                <input
+                                    type="text"
+                                    class="form-input"
+                                    placeholder="Search jobs..."
+                                    on:input=move |e| {
+                                        search_term.set(event_target_value(&e));
+                                    }
+                                />
                             </div>
                             <div class="form-group">
                                 <label class="form-label">"Status"</label>
@@ -80,9 +72,20 @@ pub fn Jobs() -> impl IntoView {
                                 </tr>
                             </thead>
                             <tbody>
-                                {jobs
-                                    .into_iter()
-                                    .map(|job| {
+                                {move || {
+                                    let term = search_term.get().to_lowercase();
+                                    let all_jobs = jobs.get();
+                                    let filtered: Vec<RecentJob> = if term.is_empty() {
+                                        all_jobs
+                                    } else {
+                                        all_jobs
+                                            .into_iter()
+                                            .filter(|j| {
+                                                j.name.to_lowercase().contains(&term) || j.id.to_lowercase().contains(&term)
+                                            })
+                                            .collect()
+                                    };
+                                    filtered.into_iter().map(|job| {
                                         let status = match job.status {
                                             JobSummaryStatus::Running => crate::components::JobStatusBadge::Running,
                                             JobSummaryStatus::Success => crate::components::JobStatusBadge::Success,
@@ -109,8 +112,8 @@ pub fn Jobs() -> impl IntoView {
                                                 <td>{job.started}</td>
                                             </tr>
                                         }
-                                    })
-                                    .collect::<Vec<_>>()}
+                                    }).collect::<Vec<_>>()
+                                }}
                             </tbody>
                         </table>
                     </div>
@@ -118,30 +121,4 @@ pub fn Jobs() -> impl IntoView {
             </div>
         </div>
     }
-}
-
-fn generate_sample_jobs() -> Vec<RecentJob> {
-    vec![
-        RecentJob {
-            id: "job-1247".to_string(),
-            name: "data-processing-pipeline".to_string(),
-            status: JobSummaryStatus::Success,
-            duration: "2m 34s".to_string(),
-            started: "2024-01-11 10:30".to_string(),
-        },
-        RecentJob {
-            id: "job-1246".to_string(),
-            name: "ml-model-training-v2".to_string(),
-            status: JobSummaryStatus::Running,
-            duration: "14m 22s".to_string(),
-            started: "2024-01-11 10:23".to_string(),
-        },
-        RecentJob {
-            id: "job-1245".to_string(),
-            name: "image-processing-batch".to_string(),
-            status: JobSummaryStatus::Success,
-            duration: "45s".to_string(),
-            started: "2024-01-11 09:45".to_string(),
-        },
-    ]
 }

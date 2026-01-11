@@ -2,31 +2,15 @@
 
 use crate::components::provider_forms::{ProviderFormState, ProviderType};
 use crate::components::provider_wizard::{ProviderWizard, WizardState};
+use crate::server_functions::{
+    ProviderDisplayStatus, ProviderInfo, ProviderType as ServerProviderType, get_fallback_providers,
+};
 use leptos::prelude::*;
-
-/// Provider configuration
-#[derive(Clone, Debug)]
-pub struct ProviderConfig {
-    pub id: String,
-    pub name: String,
-    pub provider_type: ProviderType,
-    pub status: ProviderStatus,
-    pub description: String,
-    pub cluster_info: Option<String>,
-}
-
-/// Provider connection status
-#[derive(Clone, Debug, PartialEq)]
-pub enum ProviderStatus {
-    Connected,
-    Disconnected,
-    Error,
-}
 
 /// Providers page component
 #[component]
 pub fn Providers() -> impl IntoView {
-    let providers = generate_sample_providers();
+    let providers = RwSignal::new(get_fallback_providers());
     let wizard_state = RwSignal::new(WizardState::default());
 
     let open_wizard = move |ptype: Option<ProviderType>| {
@@ -39,7 +23,6 @@ pub fn Providers() -> impl IntoView {
     };
 
     let on_submit = Callback::new(move |data: ProviderFormState| {
-        // In a real app, this would make an API call
         leptos::logging::log!("Submitted provider data: {:?}", data);
     });
 
@@ -60,66 +43,64 @@ pub fn Providers() -> impl IntoView {
 
             // Provider Cards Grid
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
-                {providers
-                    .into_iter()
-                    .map(|provider| {
-                        let icon = match provider.provider_type {
-                            ProviderType::Kubernetes => "container",
-                            ProviderType::Docker => "docker",
-                            ProviderType::Firecracker => "security",
-                        };
-                        let color = match provider.provider_type {
-                            ProviderType::Kubernetes => "var(--color-info)",
-                            ProviderType::Docker => "var(--color-primary)",
-                            ProviderType::Firecracker => "var(--color-warning)",
-                        };
-                        let status_badge = match provider.status {
-                            ProviderStatus::Connected => ("Connected".to_string(), "badge-success".to_string()),
-                            ProviderStatus::Disconnected => ("Disconnected".to_string(), "badge-danger".to_string()),
-                            ProviderStatus::Error => ("Error".to_string(), "badge-warning".to_string()),
-                        };
+                {move || providers.get().into_iter().map(|provider| {
+                    let icon = match provider.provider_type {
+                        ServerProviderType::Kubernetes => "container",
+                        ServerProviderType::Docker => "docker",
+                        ServerProviderType::Firecracker => "security",
+                    };
+                    let color = match provider.provider_type {
+                        ServerProviderType::Kubernetes => "var(--color-info)",
+                        ServerProviderType::Docker => "var(--color-primary)",
+                        ServerProviderType::Firecracker => "var(--color-warning)",
+                    };
+                    let status_badge = match provider.status {
+                        ProviderDisplayStatus::Connected => ("Connected".to_string(), "badge-success".to_string()),
+                        ProviderDisplayStatus::Disconnected => ("Disconnected".to_string(), "badge-danger".to_string()),
+                        ProviderDisplayStatus::Error => ("Error".to_string(), "badge-warning".to_string()),
+                    };
+                    let provider_type_label = match provider.provider_type {
+                        ServerProviderType::Kubernetes => "Kubernetes Cluster",
+                        ServerProviderType::Docker => "Docker Daemon",
+                        ServerProviderType::Firecracker => "Firecracker MicroVMs",
+                    };
 
-                        view! {
-                            <div class="card card-hover">
-                                <div class="card-body">
-                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
-                                        <div style="display: flex; align-items: center; gap: 1rem;">
-                                            <div style=format!("width: 48px; height: 48px; border-radius: 12px; background: {}; display: flex; align-items: center; justify-content: center;", color)>
-                                                <span class="material-symbols-outlined" style="font-size: 1.5rem; color: white;">{icon}</span>
-                                            </div>
-                                            <div>
-                                                <h3 style="font-size: 1.125rem; font-weight: 600; margin: 0;">{provider.name}</h3>
-                                                <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0.25rem 0 0;">
-                                                    {match provider.provider_type {
-                                                        ProviderType::Kubernetes => "Kubernetes Cluster",
-                                                        ProviderType::Docker => "Docker Daemon",
-                                                        ProviderType::Firecracker => "Firecracker MicroVMs",
-                                                    }}
-                                                </p>
-                                            </div>
+                    view! {
+                        <div class="card card-hover">
+                            <div class="card-body">
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
+                                    <div style="display: flex; align-items: center; gap: 1rem;">
+                                        <div style=format!("width: 48px; height: 48px; border-radius: 12px; background: {}; display: flex; align-items: center; justify-content: center;", color)>
+                                            <span class="material-symbols-outlined" style="font-size: 1.5rem; color: white;">{icon}</span>
                                         </div>
-                                        <span class={status_badge.1}>{status_badge.0}</span>
+                                        <div>
+                                            <h3 style="font-size: 1.125rem; font-weight: 600; margin: 0;">{provider.name}</h3>
+                                            <p style="font-size: 0.875rem; color: var(--text-secondary); margin: 0.25rem 0 0;">
+                                                {provider_type_label}
+                                            </p>
+                                        </div>
                                     </div>
+                                    <span class={status_badge.1}>{status_badge.0}</span>
+                                </div>
 
-                                    <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">
-                                        {provider.description}
-                                    </p>
+                                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                                    {provider.description}
+                                </p>
 
-                                    <div style="display: flex; gap: 0.5rem;">
-                                        <button class="btn btn-primary btn-sm">
-                                            <span class="material-symbols-outlined" style="font-size: 1rem;">"settings"</span>
-                                            "Configure"
-                                        </button>
-                                        <button class="btn btn-secondary btn-sm">
-                                            <span class="material-symbols-outlined" style="font-size: 1rem;">"health_and_safety"</span>
-                                            "Test"
-                                        </button>
-                                    </div>
+                                <div style="display: flex; gap: 0.5rem;">
+                                    <button class="btn btn-primary btn-sm">
+                                        <span class="material-symbols-outlined" style="font-size: 1rem;">"settings"</span>
+                                        "Configure"
+                                    </button>
+                                    <button class="btn btn-secondary btn-sm">
+                                        <span class="material-symbols-outlined" style="font-size: 1rem;">"health_and_safety"</span>
+                                        "Test"
+                                    </button>
                                 </div>
                             </div>
-                        }
-                    })
-                    .collect::<Vec<_>>()}
+                        </div>
+                    }
+                }).collect::<Vec<_>>()}
             </div>
 
             // Add Provider Section
@@ -172,34 +153,4 @@ pub fn Providers() -> impl IntoView {
             <ProviderWizard state=wizard_state on_submit=on_submit />
         </div>
     }
-}
-
-/// Generate sample providers
-fn generate_sample_providers() -> Vec<ProviderConfig> {
-    vec![
-        ProviderConfig {
-            id: "provider-k8s-001".to_string(),
-            name: "Production Kubernetes".to_string(),
-            provider_type: ProviderType::Kubernetes,
-            status: ProviderStatus::Connected,
-            description: "Main production cluster in us-east-1 region".to_string(),
-            cluster_info: Some("production-cluster.elb.us-east-1.amazonaws.com".to_string()),
-        },
-        ProviderConfig {
-            id: "provider-docker-001".to_string(),
-            name: "Local Docker".to_string(),
-            provider_type: ProviderType::Docker,
-            status: ProviderStatus::Connected,
-            description: "Development Docker daemon".to_string(),
-            cluster_info: Some("unix:///var/run/docker.sock".to_string()),
-        },
-        ProviderConfig {
-            id: "provider-fc-001".to_string(),
-            name: "Firecracker Pool".to_string(),
-            provider_type: ProviderType::Firecracker,
-            status: ProviderStatus::Disconnected,
-            description: "High-performance microVM pool".to_string(),
-            cluster_info: None,
-        },
-    ]
 }

@@ -2,47 +2,16 @@
 //!
 //! Visualizes the current state of the job scheduler, queue status, and allows configuration.
 
+use crate::server_functions::{
+    Priority, QueueItemInfo, QueueStatus, QueueStatusInfo, get_fallback_queue_items,
+    get_fallback_queue_status,
+};
 use leptos::prelude::*;
-
-#[derive(Clone, Debug, PartialEq)]
-struct QueueItem {
-    id: String,
-    name: String,
-    priority: String,
-    submitted_by: String,
-    status: String,
-    wait_time: String,
-}
 
 #[component]
 pub fn Scheduler() -> impl IntoView {
-    // Sample data
-    let queue_items = vec![
-        QueueItem {
-            id: "job-123".to_string(),
-            name: "Data Pipeline A".to_string(),
-            priority: "High".to_string(),
-            submitted_by: "alice".to_string(),
-            status: "Queued".to_string(),
-            wait_time: "00:02:15".to_string(),
-        },
-        QueueItem {
-            id: "job-124".to_string(),
-            name: "Report Gen".to_string(),
-            priority: "Medium".to_string(),
-            submitted_by: "bob".to_string(),
-            status: "Scheduling".to_string(),
-            wait_time: "00:00:45".to_string(),
-        },
-        QueueItem {
-            id: "job-125".to_string(),
-            name: "Batch Process".to_string(),
-            priority: "Low".to_string(),
-            submitted_by: "system".to_string(),
-            status: "Pending".to_string(),
-            wait_time: "00:00:10".to_string(),
-        },
-    ];
+    let queue_status = RwSignal::new(QueueStatusInfo::default());
+    let queue_items = RwSignal::new(get_fallback_queue_items());
 
     view! {
         <div class="page">
@@ -52,7 +21,7 @@ pub fn Scheduler() -> impl IntoView {
                     <p class="page-subtitle">"Manage job scheduling, queue prioritization, and resource allocation"</p>
                 </div>
                 <div class="last-updated">
-                    "Last updated: Just now"
+                    "Updated just now"
                 </div>
             </div>
 
@@ -67,7 +36,7 @@ pub fn Scheduler() -> impl IntoView {
                             </div>
                             <div class="kpi-data">
                                 <span class="kpi-label">"Total Queued"</span>
-                                <span class="kpi-value">"42"</span>
+                                <span class="kpi-value">{queue_status.get().total_queued.to_string()}</span>
                                 <span class="kpi-trend positive">"+12% vs last hour"</span>
                             </div>
                         </div>
@@ -77,9 +46,9 @@ pub fn Scheduler() -> impl IntoView {
                             </div>
                             <div class="kpi-data">
                                 <span class="kpi-label">"Active Scheduling"</span>
-                                <span class="kpi-value">"8"</span>
+                                <span class="kpi-value">{queue_status.get().active_scheduling.to_string()}</span>
                                 <div class="progress-bar-mini">
-                                    <div class="progress-fill" style="width: 75%"></div>
+                                    <div class="progress-fill" style=format!("width: {}%", (queue_status.get().active_scheduling as f64 / 10.0 * 100.0).min(100.0))></div>
                                 </div>
                             </div>
                         </div>
@@ -89,7 +58,7 @@ pub fn Scheduler() -> impl IntoView {
                             </div>
                             <div class="kpi-data">
                                 <span class="kpi-label">"Avg. Wait Time"</span>
-                                <span class="kpi-value">"14s"</span>
+                                <span class="kpi-value">{format!("{:.1}s", queue_status.get().avg_wait_time_seconds)}</span>
                                 <span class="kpi-badge success">"SLA OK"</span>
                             </div>
                         </div>
@@ -122,24 +91,30 @@ pub fn Scheduler() -> impl IntoView {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {queue_items.into_iter().map(|item| {
-                                        let priority_val = item.priority.clone();
+                                    {move || queue_items.get().into_iter().map(|item| {
                                         let priority_match = item.priority.clone();
-                                        let priority_icon = match priority_match.as_str() {
-                                            "High" => "priority_high",
-                                            "Low" => "arrow_downward",
-                                            _ => "remove",
+                                        let priority_icon = match priority_match {
+                                            Priority::High => "priority_high",
+                                            Priority::Low => "arrow_downward",
+                                            Priority::Medium => "remove",
                                         };
-                                        let is_high = priority_match == "High";
-                                        let is_low = priority_match == "Low";
+                                        let is_high = matches!(priority_match, Priority::High);
+                                        let is_low = matches!(priority_match, Priority::Low);
                                         let submitted_by = item.submitted_by.clone();
                                         let submitted_by_text = item.submitted_by.clone();
+
+                                        let status_text = match item.status {
+                                            QueueStatus::Queued => "Queued",
+                                            QueueStatus::Scheduling => "Scheduling",
+                                            QueueStatus::Pending => "Pending",
+                                            QueueStatus::Running => "Running",
+                                        };
 
                                         view! {
                                             <tr>
                                                 <td>
-                                                    <div class="priority-cell" title=priority_val>
-                                                        <span class="material-symbols-outlined" class:text-danger=is_high class:text-warning={!is_high && !is_low} class:text-sub=is_low>
+                                                    <div class="priority-cell" title=format!("{:?}", priority_match)>
+                                                        <span class="material-symbols-outlined" class:text-danger=is_high class:text-warning={!is_high && !matches!(priority_match, Priority::Low)} class:text-sub=is_low>
                                                             {priority_icon}
                                                         </span>
                                                     </div>
@@ -157,7 +132,7 @@ pub fn Scheduler() -> impl IntoView {
                                                     </div>
                                                 </td>
                                                 <td>
-                                                    <span class="badge badge-outline">{item.status}</span>
+                                                    <span class="badge badge-outline">{status_text}</span>
                                                 </td>
                                                 <td class="font-mono">{item.wait_time}</td>
                                                 <td>
@@ -223,10 +198,10 @@ pub fn Scheduler() -> impl IntoView {
                                 </div>
                             </div>
                             <div class="health-item">
-                                <span class="material-symbols-outlined text-warning">"warning"</span>
+                                <span class="material-symbols-outlined text-success">"check_circle"</span>
                                 <div class="health-info">
                                     <span class="health-label">"Worker Availability"</span>
-                                    <span class="health-value">"92% online"</span>
+                                    <span class="health-value">{format!("{:.0}% online", queue_status.get().workers_online_percent)}</span>
                                 </div>
                             </div>
                         </div>
