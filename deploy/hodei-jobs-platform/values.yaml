@@ -1,0 +1,798 @@
+# =============================================================================
+# Hodei Jobs Platform - Production Configuration
+# =============================================================================
+# All values are production-ready with proper defaults.
+# Secrets should NOT be set here - use external-secrets or GitOps.
+
+# =============================================================================
+# Global Settings
+# =============================================================================
+global:
+  # Cluster domain for DNS resolution
+  clusterDomain: "cluster.local"
+  # Image pull secrets for private registries
+  imagePullSecrets: []
+  # Storage class for persistent volumes
+  storageClass: ""
+  # Pod distribution
+  topologySpreadConstraints: []
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+replicaCount: 3
+
+image:
+  repository: ghcr.io/rubentxu/hodei-jobs-platform
+  pullPolicy: IfNotPresent
+  tag: "v0.27.0"
+
+# Image pull secrets (use external-secrets for production)
+imagePullSecrets: []
+
+# Name overrides
+nameOverride: ""
+fullnameOverride: ""
+
+# =============================================================================
+# Security Configuration
+# =============================================================================
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod Security Standards (PSS)
+podSecurityStandard:
+  # enforce: Most restrictive, audit: Log violations, warn: Show warnings
+  enforce: "Restricted"
+  audit: "Restricted"
+  warn: "Restricted"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 2000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  privileged: false
+  runAsUser: 1000
+  runAsGroup: 1000
+
+# =============================================================================
+# gRPC Service Configuration
+# =============================================================================
+service:
+  type: ClusterIP
+  port: 8080
+  grpcPort: 9090
+  annotations: {}
+
+# =============================================================================
+# Ingress Configuration
+# =============================================================================
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: hodei.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hodei-tls
+      hosts:
+        - hodei.example.com
+
+# =============================================================================
+# Resources & Scaling
+# =============================================================================
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # Behavior for gradual scaling
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
+# High Availability
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+  # maxUnavailable: 1  # Alternative: use maxUnavailable instead
+
+# =============================================================================
+# Health Checks & Probes
+# =============================================================================
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+
+startupProbe:
+  httpGet:
+    path: /health/startup
+    port: http
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+  successThreshold: 1
+
+# =============================================================================
+# Topology & Scheduling
+# =============================================================================
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pod anti-affinity for HA
+podAntiAffinity:
+  enabled: true
+  topologyKey: "kubernetes.io/hostname"
+  type: preferredDuringSchedulingIgnoredDuringExecution
+  weight: 100
+
+# Topology spread constraints
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: hodei-jobs-platform
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: hodei-jobs-platform
+
+# =============================================================================
+# Monitoring & Observability
+# =============================================================================
+# Prometheus ServiceMonitor
+serviceMonitor:
+  enabled: true
+  labels:
+    prometheus.io/scrape: "true"
+    hodei.io/monitor: "true"
+  annotations: {}
+  path: /metrics
+  port: http
+  interval: 30s
+  scrapeTimeout: 10s
+
+# Prometheus Rule for alerts
+prometheusRules:
+  enabled: true
+  rules:
+    - alert: HodeiJobPlatformDown
+      expr: up{job="hodei-jobs-platform"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Hodei Jobs Platform is down"
+    - alert: HodeiJobQueueBacklog
+      expr: hodei_jobs_queue_depth > 1000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Job queue backlog is growing"
+
+# Logging configuration
+logging:
+  level: INFO
+  format: json
+  output: stdout
+  # Optional: External log aggregation
+  external:
+    enabled: false
+    type: "loki"  # loki, elasticsearch, cloudwatch
+    endpoint: ""
+    username: ""
+    password: ""
+    batchSize: 1000
+    batchTimeout: 5s
+
+# Distributed tracing
+tracing:
+  enabled: true
+  exporter: "otlp"  # otlp, jaeger, zipkin
+  endpoint: ""
+  sampleRate: 1.0
+  propagation: "w3c"
+
+# =============================================================================
+# NATS JetStream Configuration
+# =============================================================================
+nats:
+  enabled: true
+  # Number of NATS replicas
+  replicaCount: 3
+  # JetStream settings
+  jetstream:
+    enabled: true
+    maxMemoryStore: 1Gi
+    maxFileStore: 10Gi
+  # NATS resources
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  # Auth (use external-secrets for production)
+  auth:
+    enabled: true
+    # Basic auth credentials - override with external-secrets
+    basic:
+      enabled: false
+      user: ""
+      password: ""
+    # Token auth - override with external-secrets
+    token:
+      enabled: false
+      system: ""
+      operator: ""
+      resolver: ""
+  # TLS for NATS
+  tls:
+    enabled: false
+    secretName: ""
+  # Pod disruption budget for NATS
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+# =============================================================================
+# PostgreSQL Configuration
+# =============================================================================
+postgresql:
+  enabled: true
+  # Use external PostgreSQL for production
+  useInternal: true
+  # Connection string (use external-secrets for production)
+  connectionString: ""
+  # Internal PostgreSQL settings (if enabled)
+  auth:
+    postgresPassword: ""  # Set via external-secrets
+    database: "hodei_jobs"
+    existingSecret: "hodei-postgresql"
+    secretKeys:
+      adminPasswordKey: "postgres-password"
+      userPasswordKey: "password"
+      databaseKey: "database"
+  # HA for PostgreSQL
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+  # Read replicas for read scaling
+  readReplicas:
+    replicaCount: 0
+    persistence:
+      enabled: true
+      size: 20Gi
+  # Pod disruption budget
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+# =============================================================================
+# External Secrets Configuration (GitOps)
+# =============================================================================
+externalSecrets:
+  enabled: true
+  # Secret Store provider
+  secretStore:
+    # Use ClusterSecretStore for cluster-wide access
+    create: true
+    name: "hodei-secret-store"
+    provider: "aws"  # aws, gcp, azure, vault
+    # AWS Secrets Manager
+    aws:
+      region: "us-east-1"
+      roleArn: ""
+    # GCP Secret Manager
+    gcp:
+      project: ""
+    # Azure Key Vault
+    azure:
+      tenantId: ""
+      clientId: ""
+      vaultName: ""
+    # HashiCorp Vault
+    vault:
+      server: "https://vault.example.com"
+      path: "secret/data/hodei"
+      role: "hodei-jobs"
+      auth: "kubernetes"
+  # Secrets to sync
+  secrets:
+    # Database credentials
+    - name: postgresql
+      secretPath: "postgresql"
+      data:
+        - key: "POSTGRES_PASSWORD"
+          property: "postgres-password"
+        - key: "DATABASE_URL"
+          property: "connection-string"
+    # NATS credentials
+    - name: nats
+      secretPath: "nats"
+      data:
+        - key: "NATS_USER"
+          property: "user"
+        - key: "NATS_PASSWORD"
+          property: "password"
+    # gRPC TLS
+    - name: grpc-tls
+      secretPath: "grpc-tls"
+      data:
+        - key: "TLS_CERT"
+          property: "tls.crt"
+        - key: "TLS_KEY"
+          property: "tls.key"
+        - key: "CA_CERT"
+          property: "ca.crt"
+    # Worker credentials
+    - name: worker-credentials
+      secretPath: "worker"
+      data:
+        - key: "WORKER_API_KEY"
+          property: "api-key"
+        - key: "WORKER_TOKEN"
+          property: "token"
+
+# =============================================================================
+# Kubernetes Provider Configuration
+# =============================================================================
+kubernetesProvider:
+  enabled: true
+  # Worker namespace for ephemeral workers
+  namespace: "hodei-jobs-workers"
+  # Kubeconfig (use external-secrets for production)
+  kubeconfigPath: ""
+  context: ""
+  # Service account for workers
+  serviceAccount: "hodei-jobs-worker"
+  # Image pull secrets for workers
+  imagePullSecrets: []
+  # Resource defaults for workers
+  defaultCpuRequest: "100m"
+  defaultMemoryRequest: "128Mi"
+  defaultCpuLimit: "1000m"
+  defaultMemoryLimit: "512Mi"
+  # Security context for workers
+  podSecurityStandard: "Restricted"
+  # Scaling configuration
+  enableHPA: true
+  enableDynamicNamespaces: true
+  namespacePrefix: "hodei-tenant"
+  # Maximum concurrent workers
+  maxConcurrentWorkers: 100
+  # Worker lifecycle
+  workerLifecycle:
+    idleTimeout: "5m"
+    maxLifetime: "1h"
+    gracefulTermination: "30s"
+
+# =============================================================================
+# Docker Provider Configuration
+# =============================================================================
+dockerProvider:
+  enabled: false
+  host: "unix:///var/run/docker.sock"
+  network: "hodei-workers"
+  # TLS for Docker daemon
+  tls:
+    enabled: false
+    caCert: ""
+    clientCert: ""
+    clientKey: ""
+
+# =============================================================================
+# Job Execution Configuration
+# =============================================================================
+jobExecution:
+  # Maximum concurrent jobs per worker
+  maxConcurrentJobs: 10
+  # Job timeout
+  defaultTimeout: "1h"
+  # Maximum retry attempts
+  maxRetries: 3
+  # Retry backoff
+  retryBackoff:
+    initial: "1s"
+    max: "5m"
+    multiplier: 2.0
+  # Cleanup configuration
+  cleanup:
+    enabled: true
+    afterCompletion: "5m"
+    failedJobsRetention: "24h"
+    succeededJobsRetention: "7d"
+
+# =============================================================================
+# Backup Configuration
+# =============================================================================
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: "720h"  # 30 days
+  # Backup targets
+  targets:
+    postgresql:
+      enabled: true
+      type: "pg_dumpall"
+    nats:
+      enabled: true
+      type: "jetstream"
+  # Storage backend
+  storage:
+    type: "s3"  # s3, gcs, azure, filesystem
+    bucket: "hodei-backups"
+    region: "us-east-1"
+    endpoint: ""
+    # Use external-secrets for credentials
+    secretName: "backup-credentials"
+    keyId: ""
+    secretKey: ""
+    encryptionKey: ""
+  # Retention policy
+  retention:
+    daily: 7
+    weekly: 4
+    monthly: 12
+
+# =============================================================================
+# Network Policies
+# =============================================================================
+networkPolicy:
+  enabled: true
+  # Ingress rules
+  ingress:
+    enabled: true
+    ports:
+      - port: 8080
+        protocol: TCP
+      - port: 9090
+        protocol: TCP
+    # Allow from ingress controller
+    fromNamespace: "ingress-nginx"
+  # Egress rules
+  egress:
+    enabled: true
+    rules:
+      # DNS
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                name: kube-system
+        ports:
+          - port: 53
+            protocol: UDP
+          - port: 53
+            protocol: TCP
+      # HTTPS/HTTP
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+        ports:
+          - port: 443
+            protocol: TCP
+          - port: 80
+            protocol: TCP
+      # PostgreSQL
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: postgresql
+        ports:
+          - port: 5432
+            protocol: TCP
+      # NATS
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: nats
+        ports:
+          - port: 4222
+            protocol: TCP
+          - port: 6222
+            protocol: TCP
+
+# =============================================================================
+# Init Containers & Lifecycle Hooks
+# =============================================================================
+initContainers:
+  enabled: true
+  # Database migration
+  migrate:
+    enabled: true
+    image: ""
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    # Wait for dependencies
+  waitFor:
+    dependencies:
+      enabled: true
+      timeout: 120s
+
+# =============================================================================
+# Sidecars & Additional Containers
+# =============================================================================
+sidecars:
+  # OTel collector for tracing
+  otelCollector:
+    enabled: false
+    image: "otel/opentelemetry-collector-contrib:latest"
+    config: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+      exporters:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+      service:
+        pipelines:
+          traces:
+            receivers: [otlp]
+            exporters: [otlp]
+  # Proxy sidecar
+  proxy:
+    enabled: false
+    image: "envoyproxy/envoy:v1.28-latest"
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+# =============================================================================
+# Volume Claims & Storage
+# =============================================================================
+volumes:
+  # Temporary storage
+  tmp:
+    enabled: true
+    sizeLimit: "1Gi"
+  # Cache volume
+  cache:
+    enabled: true
+    sizeLimit: "1Gi"
+  # Work volume for job execution
+  work:
+    enabled: false
+    storageClass: ""
+    size: "10Gi"
+  # Custom volumes
+  extra: []
+
+# =============================================================================
+# Pod Annotations & Labels
+# =============================================================================
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+
+# =============================================================================
+# Rollout Strategy (使用 Argo Rollouts 时)
+# =============================================================================
+strategy:
+  type: "RollingUpdate"
+  rollingUpdate:
+    maxSurge: "25%"
+    maxUnavailable: 0
+
+# =============================================================================
+# Emergency Settings
+# =============================================================================
+# Disable all safety features for debugging
+debug:
+  enabled: false
+  # Force single replica (disable PDB)
+  forceSingleReplica: false
+  # Disable all probes
+  disableProbes: false
+
+# =============================================================================
+# Operator Configuration (Kubernetes Controller with Web Dashboard)
+# =============================================================================
+operator:
+  enabled: true
+  replicaCount: 1
+
+  # Operator settings
+  watchNamespace: ""  # Empty = all namespaces
+  watchAllNamespaces: false
+  logLevel: "info"
+
+  # Hodei Server connection
+  hodeiServer:
+    address: "http://hodei-jobs-platform:50051"
+
+  # Resources
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Probes
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Web Dashboard Configuration (Leptos WASM UI)
+# =============================================================================
+web:
+  enabled: true
+  port: 8080
+
+  # Run as sidecar in operator pod
+  sidecar: true
+
+  # Web image
+  image:
+    repository: ghcr.io/rubentxu/hodei-jobs/operator-web
+    tag: "v0.38.5"
+    pullPolicy: IfNotPresent
+
+  # Resources for web container
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+
+  # Probes
+  livenessProbe:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # Init container to copy assets
+  initContainer:
+    enabled: true
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
+      requests:
+        cpu: 5m
+        memory: 8Mi
+
+  # Ingress for web dashboard
+  ingress:
+    enabled: true
+    className: ""
+    annotations: {}
+    hosts:
+      - host: hodei.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
