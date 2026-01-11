@@ -7,10 +7,33 @@ use leptos::prelude::*;
 /// Jobs page component
 #[component]
 pub fn Jobs() -> impl IntoView {
-    // State for jobs
     let jobs = RwSignal::new(get_fallback_recent_jobs());
     let search_term = RwSignal::new(String::new());
-    let total_count = RwSignal::new(3i32);
+    let status_filter = RwSignal::new(String::from("all"));
+    let selected_count = RwSignal::new(0i32);
+
+    let filtered_jobs = Signal::derive(move || {
+        let search = search_term.get().to_lowercase();
+        let status = status_filter.get();
+        jobs.get()
+            .into_iter()
+            .filter(|j| {
+                let search_match = search.is_empty()
+                    || j.name.to_lowercase().contains(&search)
+                    || j.id.to_lowercase().contains(&search);
+                let status_match = status == "all"
+                    || match j.status {
+                        JobSummaryStatus::Running => status == "running",
+                        JobSummaryStatus::Success => status == "success",
+                        JobSummaryStatus::Failed => status == "failed",
+                        JobSummaryStatus::Pending => status == "pending",
+                    };
+                search_match && status_match
+            })
+            .collect::<Vec<RecentJob>>()
+    });
+
+    let has_selection = move || selected_count.get() > 0;
 
     view! {
         <div class="page">
@@ -18,7 +41,7 @@ pub fn Jobs() -> impl IntoView {
                 <div>
                     <h1 class="page-title">"Jobs"</h1>
                     <p class="page-subtitle">
-                        {format!("{} total jobs", total_count.get())}
+                        {move || format!("{} total jobs", jobs.get().len())}
                     </p>
                 </div>
                 <div class="quick-actions">
@@ -26,6 +49,24 @@ pub fn Jobs() -> impl IntoView {
                         <span class="material-symbols-outlined">"add"</span>
                         "New Job"
                     </button>
+                </div>
+            </div>
+
+            <div class="bulk-actions-bar" style={move || if has_selection() { "display: flex;" } else { "display: none;" }}>
+                <div class="bulk-actions-content">
+                    <span class="bulk-actions-count">
+                        {move || format!("{} selected", selected_count.get())}
+                    </span>
+                    <div class="bulk-actions-buttons">
+                        <button class="btn btn-sm btn-warning">
+                            <span class="material-symbols-outlined">"cancel"</span>
+                            "Cancel"
+                        </button>
+                        <button class="btn btn-sm btn-danger">
+                            <span class="material-symbols-outlined">"delete"</span>
+                            "Delete"
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -49,11 +90,17 @@ pub fn Jobs() -> impl IntoView {
                             </div>
                             <div class="form-group">
                                 <label class="form-label">"Status"</label>
-                                <select class="form-select">
+                                <select
+                                    class="form-select"
+                                    on:change=move |e| {
+                                        status_filter.set(event_target_value(&e));
+                                    }
+                                >
                                     <option value="all">"All"</option>
                                     <option value="running">"Running"</option>
                                     <option value="success">"Success"</option>
                                     <option value="failed">"Failed"</option>
+                                    <option value="pending">"Pending"</option>
                                 </select>
                             </div>
                         </div>
@@ -65,6 +112,9 @@ pub fn Jobs() -> impl IntoView {
                         <table class="data-table">
                             <thead>
                                 <tr>
+                                    <th style="width: 40px;">
+                                        <input type="checkbox" class="form-checkbox" />
+                                    </th>
                                     <th>"Status"</th>
                                     <th>"Job Name"</th>
                                     <th>"Duration"</th>
@@ -73,19 +123,8 @@ pub fn Jobs() -> impl IntoView {
                             </thead>
                             <tbody>
                                 {move || {
-                                    let term = search_term.get().to_lowercase();
-                                    let all_jobs = jobs.get();
-                                    let filtered: Vec<RecentJob> = if term.is_empty() {
-                                        all_jobs
-                                    } else {
-                                        all_jobs
-                                            .into_iter()
-                                            .filter(|j| {
-                                                j.name.to_lowercase().contains(&term) || j.id.to_lowercase().contains(&term)
-                                            })
-                                            .collect()
-                                    };
-                                    filtered.into_iter().map(|job| {
+                                    let list = filtered_jobs.get();
+                                    list.into_iter().map(|job| {
                                         let status = match job.status {
                                             JobSummaryStatus::Running => crate::components::JobStatusBadge::Running,
                                             JobSummaryStatus::Success => crate::components::JobStatusBadge::Success,
@@ -93,8 +132,12 @@ pub fn Jobs() -> impl IntoView {
                                             JobSummaryStatus::Pending => crate::components::JobStatusBadge::Pending,
                                         };
                                         let animate = matches!(job.status, JobSummaryStatus::Running);
+
                                         view! {
                                             <tr class="clickable">
+                                                <td>
+                                                    <input type="checkbox" class="form-checkbox" />
+                                                </td>
                                                 <td>
                                                     <StatusBadge
                                                         status=status

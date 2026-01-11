@@ -14,6 +14,7 @@ pub mod components;
 pub mod grpc;
 pub mod pages;
 pub mod server_functions;
+pub mod state;
 pub mod types;
 
 /// Application state for managing connection status and theme
@@ -65,7 +66,9 @@ pub fn App() -> impl IntoView {
     leptos_meta::provide_meta_context();
     view! {
         <AppStateProvider>
-            <pages::AppRouter />
+            <state::StateProvider>
+                <pages::AppRouter />
+            </state::StateProvider>
         </AppStateProvider>
     }
 }
