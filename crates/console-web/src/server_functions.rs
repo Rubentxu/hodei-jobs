@@ -120,6 +120,51 @@ pub struct QueueStatusInfo {
     pub workers_online_percent: f64,
 }
 
+/// Provider health status for Worker Health Panel
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProviderHealth {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub provider_type: ProviderType,
+    pub status: ProviderDisplayStatus,
+    pub latency_ms: u32,
+    pub worker_count: u32,
+    pub last_heartbeat: String,
+}
+
+/// Get fallback provider health data
+pub fn get_fallback_provider_health() -> Vec<ProviderHealth> {
+    vec![
+        ProviderHealth {
+            provider_id: "provider-k8s-001".to_string(),
+            provider_name: "Production Kubernetes".to_string(),
+            provider_type: ProviderType::Kubernetes,
+            status: ProviderDisplayStatus::Connected,
+            latency_ms: 45,
+            worker_count: 2,
+            last_heartbeat: "2024-01-11 10:35".to_string(),
+        },
+        ProviderHealth {
+            provider_id: "provider-docker-001".to_string(),
+            provider_name: "Local Docker".to_string(),
+            provider_type: ProviderType::Docker,
+            status: ProviderDisplayStatus::Connected,
+            latency_ms: 12,
+            worker_count: 1,
+            last_heartbeat: "2024-01-11 10:35".to_string(),
+        },
+        ProviderHealth {
+            provider_id: "provider-fc-001".to_string(),
+            provider_name: "Firecracker Pool".to_string(),
+            provider_type: ProviderType::Firecracker,
+            status: ProviderDisplayStatus::Disconnected,
+            latency_ms: 0,
+            worker_count: 0,
+            last_heartbeat: "2024-01-11 09:15".to_string(),
+        },
+    ]
+}
+
 /// Default dashboard stats (fallback when gRPC unavailable)
 impl Default for DashboardStats {
     fn default() -> Self {

@@ -137,10 +137,18 @@ web/*.local
 # web/bun.lock - DO NOT IGNORE (needed for reproducible builds)
 
 # -----------------------------------------------------------------------------
-# Documentation - Track analysis reports but ignore generated docs
+# Documentation - Track root files, ignore subdirectories
 # -----------------------------------------------------------------------------
-# docs/**
-# !docs/assets/
+# Ignore all subdirectories in docs/
+docs/*/
+# But track documentation files at root level
+!docs/*.md
+!docs/*.mdx
+!docs/*.txt
+!docs/LICENSE
+!docs/README*
+# Also track assets
+!docs/assets/
 
 
 # -----------------------------------------------------------------------------
