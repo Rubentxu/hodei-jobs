@@ -177,6 +177,32 @@ pub enum JobStatus {
     Failed,
     #[serde(rename = "cancelled")]
     Cancelled,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+/// Worker state (matches proto definition)
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkerState {
+    Unknown = 0,
+    Registered = 1,
+    Idle = 2,
+    Running = 3,
+    Terminated = 4,
+}
+
+impl WorkerState {
+    /// Convert from i32 (proto value)
+    pub fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(WorkerState::Unknown),
+            1 => Some(WorkerState::Registered),
+            2 => Some(WorkerState::Idle),
+            3 => Some(WorkerState::Running),
+            4 => Some(WorkerState::Terminated),
+            _ => None,
+        }
+    }
 }
 
 /// Job information

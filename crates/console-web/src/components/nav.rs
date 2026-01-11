@@ -2,20 +2,29 @@
 
 use leptos::prelude::*;
 
+/// Main navigation bar component
 #[component]
 pub fn NavBar() -> impl IntoView {
     view! {
         <nav class="navbar">
-            <div class="nav-brand">
-                <a href="/">"Hodei Console"</a>
+            <div class="navbar-brand">
+                <a href="/" class="navbar-logo">
+                    <span class="logo-icon material-symbols-outlined">"bolt"</span>
+                    <span>"Hodei Console"</span>
+                </a>
             </div>
-            <ul class="nav-links">
-                <li><a href="/">"Dashboard"</a></li>
-                <li><a href="/jobs">"Jobs"</a></li>
-                <li><a href="/pools">"Worker Pools"</a></li>
-                <li><a href="/providers">"Providers"</a></li>
-                <li><a href="/settings">"Settings"</a></li>
-            </ul>
+            <div class="header-actions">
+                <div class="header-search">
+                    <span class="material-symbols-outlined header-search-icon">"search"</span>
+                    <input type="text" placeholder="Search jobs, workers..." />
+                </div>
+                <button class="nav-btn" aria-label="Notifications">
+                    <span class="material-symbols-outlined">"notifications"</span>
+                </button>
+                <button class="nav-btn" aria-label="User profile">
+                    <span class="material-symbols-outlined">"account_circle"</span>
+                </button>
+            </div>
         </nav>
     }
 }
