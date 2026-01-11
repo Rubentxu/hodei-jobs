@@ -1027,6 +1027,61 @@ impl WorkerProviderIdentity for KubernetesProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+
+    fn transform_server_address(&self, server_address: &str) -> String {
+        use tracing::info;
+
+        // Kubernetes pods cannot use host.docker.internal
+        // Transform localhost/127.0.0.1 to use host.minikube.internal for Minikube
+        // or the actual host IP for production clusters
+
+        info!("K8s provider: Transforming server_address: {}", server_address);
+
+        if server_address.contains("localhost") || server_address.contains("127.0.0.1") {
+            // For Minikube/local development
+            if std::env::var("MINIKUBE_ACTIVE_DOCKERD").is_ok() {
+                let transformed = server_address
+                    .replace("localhost", "host.minikube.internal")
+                    .replace("127.0.0.1", "host.minikube.internal");
+                info!("K8s provider: Detected Minikube, transformed to: {}", transformed);
+                transformed
+            } else {
+                // For production: Try to get host IP from environment
+                // Fallback to using the service name if configured
+                let result = std::env::var("HODEI_SERVER_HOST_IP")
+                    .unwrap_or_else(|_| {
+                        // Last resort: use the original address and let it fail with proper error
+                        warn!(
+                            "Kubernetes provider: server_address contains localhost but HODEI_SERVER_HOST_IP not set. \
+                             Workers may fail to connect. Set HODEI_SERVER_HOST_IP to the host machine IP."
+                        );
+                        server_address.to_string()
+                    });
+                info!("K8s provider: Production mode, transformed to: {}", result);
+                result
+            }
+        } else if server_address.contains("host.docker.internal") {
+            // Transform Docker-specific address to Kubernetes-compatible one
+            let transformed = if std::env::var("MINIKUBE_ACTIVE_DOCKERD").is_ok() {
+                server_address.replace("host.docker.internal", "host.minikube.internal")
+            } else {
+                std::env::var("HODEI_SERVER_HOST_IP")
+                    .unwrap_or_else(|_| {
+                        warn!(
+                            "Kubernetes provider: server_address contains host.docker.internal but HODEI_SERVER_HOST_IP not set. \
+                             Workers may fail to connect. Set HODEI_SERVER_HOST_IP to the host machine IP."
+                        );
+                        server_address.to_string()
+                    })
+            };
+            info!("K8s provider: Transformed host.docker.internal to: {}", transformed);
+            transformed
+        } else {
+            // Use the address as-is (might be a service name, external IP, etc.)
+            info!("K8s provider: Using address as-is: {}", server_address);
+            server_address.to_string()
+        }
+    }
 }
 
 #[async_trait]

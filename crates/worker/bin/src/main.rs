@@ -5,7 +5,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use hodei_jobs::{
     JobResultMessage, RegisterWorkerRequest, ResourceCapacity, SelfTerminateMessage, ServerMessage,
-    WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage, WorkerStatus,
+    WorkerHeartbeat, WorkerId, WorkerInfo, WorkerMessage, WorkerStatus, WorkerStatusNotification,
     server_message::Payload as ServerPayload,
     worker_agent_service_client::WorkerAgentServiceClient,
     worker_message::Payload as WorkerPayload,
@@ -265,6 +265,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut server_stream = response.into_inner();
                 info!("✓ Bidirectional stream established");
                 backoff = Duration::from_secs(1); // Reset backoff on success
+
+                // Send WorkerStatusNotification to signal that worker is ready to receive jobs
+                info!("📡 Sending AVAILABLE status to server...");
+                let status_msg = WorkerMessage {
+                    payload: Some(WorkerPayload::Status(WorkerStatusNotification {
+                        status: WorkerStatus::Available as i32,
+                        reason: "Worker stream established and ready for jobs".to_string(),
+                    }))
+                };
+                if let Err(e) = tx.send(status_msg).await {
+                    error!("Failed to send AVAILABLE status: {}", e);
+                    break;
+                } else {
+                    info!("✅ Worker marked as AVAILABLE");
+                }
 
                 // CRITICAL: Deliver any pending job results from previous connection
                 {

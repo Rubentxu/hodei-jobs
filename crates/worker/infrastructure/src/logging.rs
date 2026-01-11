@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{warn, info, debug, error};
 
 /// FileLogger for local job log persistence
 #[derive(Clone)]
@@ -78,10 +78,21 @@ impl LogBatcher {
     /// Push a log entry to the batcher
     /// Flushes when buffer is full or interval elapsed
     pub async fn push(&mut self, entry: LogEntry) {
+        debug!(
+            job_id = %entry.job_id,
+            buffer_size = self.buffer.len(),
+            capacity = self.capacity,
+            "LogBatcher: Pushing log entry"
+        );
+
         self.buffer.push(entry);
 
         // Flush when buffer reaches capacity
         if self.buffer.len() >= self.capacity {
+            info!(
+                buffer_size = self.buffer.len(),
+                "LogBatcher: Buffer full, triggering flush"
+            );
             self.flush().await;
         }
     }
@@ -90,14 +101,23 @@ impl LogBatcher {
     /// Returns true if flush succeeded, false if failed
     pub async fn flush(&mut self) -> bool {
         if self.buffer.is_empty() {
+            debug!("LogBatcher: Buffer empty, skipping flush");
             return true;
         }
 
         // Take the buffer contents
         let batch = std::mem::take(&mut self.buffer);
+        let entry_count = batch.len();
 
         // Create LogBatch message
         let job_id = batch[0].job_id.clone();
+
+        info!(
+            job_id = %job_id,
+            entry_count = entry_count,
+            "LogBatcher: Flushing batch to server"
+        );
+
         let msg = WorkerMessage {
             payload: Some(WorkerPayload::LogBatch(hodei_jobs::LogBatch {
                 job_id: job_id.clone(),
@@ -106,26 +126,38 @@ impl LogBatcher {
         };
 
         // Send (blocking with timeout to avoid hanging)
+        debug!(
+            job_id = %job_id,
+            "LogBatcher: Attempting to send batch via channel"
+        );
+
         match tokio::time::timeout(Duration::from_secs(5), self.tx.send(msg)).await {
             Ok(result) => match result {
                 Ok(_) => {
+                    info!(
+                        job_id = %job_id,
+                        entry_count = entry_count,
+                        "✅ LogBatcher: Batch sent successfully"
+                    );
                     self.last_flush = Instant::now();
                     true
                 }
                 Err(e) => {
-                    warn!(
+                    error!(
                         error = %e,
                         job_id = %job_id,
-                        "Failed to send log batch to server"
+                        entry_count = entry_count,
+                        "❌ LogBatcher: Failed to send log batch - channel error"
                     );
                     false
                 }
             },
             Err(_) => {
-                warn!(
+                error!(
                     job_id = %job_id,
                     timeout_sec = 5,
-                    "Log batch send timed out"
+                    entry_count = entry_count,
+                    "❌ LogBatcher: Send timed out after 5 seconds"
                 );
                 false
             }

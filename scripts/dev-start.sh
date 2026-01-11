@@ -56,7 +56,13 @@ else
     echo "✅ Port 50051 is free"
 fi
 
-# Get container IPs for proper networking
+# Get container network mode
+get_network_mode() {
+    local container_name=$1
+    docker inspect "$container_name" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null
+}
+
+# Get container IPs for proper networking (only for bridge mode)
 get_container_ip() {
     local container_name=$1
     docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name" 2>/dev/null
@@ -70,21 +76,46 @@ NATS_CONTAINER="hodei-jobs-nats"
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "$POSTGRES_CONTAINER"; then
     echo "🔗 Detected Docker containers, configuring container networking..."
 
-    POSTGRES_IP=$(get_container_ip "$POSTGRES_CONTAINER")
-    NATS_IP=$(get_container_ip "$NATS_CONTAINER")
+    POSTGRES_NETWORK=$(get_network_mode "$POSTGRES_CONTAINER")
+    NATS_NETWORK=$(get_network_mode "$NATS_CONTAINER")
 
-    if [ -n "$POSTGRES_IP" ]; then
-        echo "   PostgreSQL container IP: $POSTGRES_IP"
-        export DATABASE_URL="postgres://postgres:postgres@${POSTGRES_IP}:5432/hodei_jobs"
+    echo "   PostgreSQL network mode: $POSTGRES_NETWORK"
+    echo "   NATS network mode: $NATS_NETWORK"
+
+    # If containers use host network mode, use localhost
+    if [ "$POSTGRES_NETWORK" = "host" ]; then
+        echo "   PostgreSQL using host network, connecting to localhost"
+        export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
+    else
+        # For bridge mode, use container IP
+        POSTGRES_IP=$(get_container_ip "$POSTGRES_CONTAINER")
+        if [ -n "$POSTGRES_IP" ] && [ "$POSTGRES_IP" != "invalid IP" ]; then
+            echo "   PostgreSQL container IP: $POSTGRES_IP"
+            export DATABASE_URL="postgres://postgres:postgres@${POSTGRES_IP}:5432/hodei_jobs"
+        else
+            echo "   Failed to get PostgreSQL IP, falling back to localhost"
+            export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
+        fi
     fi
 
-    if [ -n "$NATS_IP" ]; then
-        echo "   NATS container IP: $NATS_IP"
-        export HODEI_NATS_URLS="nats://${NATS_IP}:4222"
+    if [ "$NATS_NETWORK" = "host" ]; then
+        echo "   NATS using host network, connecting to localhost"
+        export HODEI_NATS_URLS="nats://localhost:4222"
+    else
+        # For bridge mode, use container IP
+        NATS_IP=$(get_container_ip "$NATS_CONTAINER")
+        if [ -n "$NATS_IP" ] && [ "$NATS_IP" != "invalid IP" ]; then
+            echo "   NATS container IP: $NATS_IP"
+            export HODEI_NATS_URLS="nats://${NATS_IP}:4222"
+        else
+            echo "   Failed to get NATS IP, falling back to localhost"
+            export HODEI_NATS_URLS="nats://localhost:4222"
+        fi
     fi
 else
     echo "⚠️  Docker containers not detected, using localhost"
     export DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost:5432/hodei_jobs}"
+    export HODEI_NATS_URLS="${HODEI_NATS_URLS:-nats://localhost:4222}"
 fi
 
 # Compile server

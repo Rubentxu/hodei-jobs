@@ -18,6 +18,8 @@ export DATABASE_URL := "postgres://postgres:postgres@localhost:5432/hodei_jobs"
 # HODEI_SERVER_ADDRESS: Set by providers in worker environment variables
 export HODEI_SERVER_HOST := "0.0.0.0"
 export HODEI_SERVER_ADDRESS := "host.docker.internal"
+# MINIKUBE_ACTIVE_DOCKERD: Enables Kubernetes provider to detect Minikube and transform server address
+export MINIKUBE_ACTIVE_DOCKERD := "minikube"
 
 # Default target
 _default:

@@ -1,0 +1,37 @@
+# Ejemplo de WorkerPool CRD para Hodei Operator
+# Aplicar con: kubectl apply -f examples/crds/worker-pool-example.yaml
+apiVersion: hodei.io/v1alpha1
+kind: WorkerPool
+metadata:
+  name: example-worker-pool
+  namespace: hodei-system
+spec:
+  # Proveedor (docker, kubernetes, firecracker)
+  provider: kubernetes
+  # Número mínimo de réplicas
+  min_replicas: 1
+  # Número máximo de réplicas
+  max_replicas: 5
+  # Imagen de los workers
+  image: "ghcr.io/rubentxu/hodei-worker:latest"
+  # Recursos de Kubernetes
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  # Configuración específica del proveedor
+  config:
+    # Para proveedor kubernetes
+    kubernetes:
+      namespace: hodei-workers
+      service_account: hodei-worker
+      tolerations:
+        - key: "worker"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+      node_selector:
+        worker-type: compute

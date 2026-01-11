@@ -13,6 +13,8 @@ members = [
     "crates/worker/bin",
     "crates/cli",
     "crates/server/shared",
+    "crates/operator",
+    "crates/console-web",
     "proto",
 ]
 
@@ -133,6 +135,14 @@ tonic-prost-build = "0.14"
 
 # Scheduling
 cron = "0.12"
+
+# Leptos web framework
+leptos = "0.8.15"
+leptos_router = "0.8.11"
+leptos_meta = "0.8.3"
+
+# HTTP framework
+axum = "0.7"
 
 # Dev dependencies
 [workspace.dependencies.tokio-test]

@@ -1,0 +1,598 @@
+version: v2
+
+name: hodei-jobs
+
+config:
+  # Profiles de activación
+  activation:
+    - command: dev
+      profile: development
+    - command: production
+      profile: production
+    - command: operator
+      profile: operator-dev
+    - command: worker
+      profile: worker-dev
+
+profiles:
+  # Perfil de desarrollo (reemplaza `just dev-server`)
+  - name: development
+    patches:
+      - op: replace
+        path: dev.hotReload
+        value: true
+      - op: replace
+        path: dev.sync[0].uploadExcludeDirs
+        value:
+          - .git
+          - target
+          - Cargo.lock
+          - logs
+          - .claude
+          - '**/*.log'
+          - '*.tmp'
+          - '**/Cargo.lock'
+          - '**/target'
+      - op: replace
+        path: dev.ports[0].localPort
+        value: 50051
+      - op: replace
+        path: dev.env
+        value:
+          - name: RUST_LOG
+            value: info,hodei_server=debug
+          - name: HODEI_DEV_MODE
+            value: "1"
+          - name: DATABASE_URL
+            value: postgres://postgres:postgres@postgres:5432/hodei_jobs
+          - name: HODEI_NATS_URLS
+            value: nats://nats:4222
+          - name: HODEI_SERVER_GRPC_PORT
+            value: "50051"
+          - name: RUST_BACKTRACE
+            value: "1"
+      - op: add
+        path: dev.terminal
+        value:
+          command: cargo run -p hodei-server-bin
+          workDir: /app
+
+  # Perfil de desarrollo del operador
+  - name: operator-dev
+    patches:
+      - op: replace
+        path: dev.workDir
+        value: /app
+      - op: replace
+        path: dev.command
+        value: ["/bin/bash"]
+      - op: replace
+        path: dev.env
+        value:
+          - name: RUST_LOG
+            value: debug,hodei_operator=info,kube=info
+          - name: HODEI_SERVER_ADDR
+            value: "http://host.docker.internal:50051"
+          - name: HODEI_OPERATOR_NAMESPACE
+            value: hodei-system
+      - op: replace
+        path: dev.ports
+        value:
+          - port: 8080
+            localPort: 8080
+            name: Metrics
+          - port: 50051
+            localPort: 50051
+            name: gRPC Server
+      - op: add
+        path: dev.terminal
+        value:
+          command: cargo run -p hodei-operator-bin
+          workDir: /app
+
+  # Perfil de desarrollo del worker
+  - name: worker-dev
+    patches:
+      - op: replace
+        path: dev.workDir
+        value: /app
+      - op: replace
+        path: dev.env
+        value:
+          - name: RUST_LOG
+            value: debug,hodei_worker=info
+          - name: HODEI_WORKER_DEV_MODE
+            value: "1"
+          - name: HODEI_SERVER_ADDR
+            value: "http://host.docker.internal:50051"
+      - op: replace
+        path: dev.ports
+        value: []
+      - op: add
+        path: dev.terminal
+        value:
+          command: cargo run -p hodei-worker-bin
+          workDir: /app
+
+  # Perfil de desarrollo del web dashboard
+  - name: web-dev
+    patches:
+      - op: replace
+        path: dev.workDir
+        value: /app
+      - op: replace
+        path: dev.command
+        value: ["/bin/bash"]
+      - op: replace
+        path: dev.env
+        value:
+          - name: RUST_LOG
+            value: debug,hodei_operator_web=info
+          - name: HODEI_OPERATOR_ADDR
+            value: "http://localhost:50051"
+          - name: HODEI_DEV_MODE
+            value: "1"
+      - op: replace
+        path: dev.ports
+        value:
+          - port: 8080
+            localPort: 8080
+            name: Web Dashboard
+          - port: 50051
+            localPort: 50051
+            name: gRPC Server
+      - op: add
+        path: dev.terminal
+        value:
+          command: |
+            echo "Starting Hodei Web Dashboard Development..."
+            echo "Building WASM bundle..."
+            cd /app/crates/operator-web
+            wasm-pack build --target web --out-dir dist
+            echo "Starting local server..."
+            # Start simple HTTP server for testing
+            cd /app/crates/operator-web/assets
+            python3 -m http.server 8080 &
+            echo "Web dashboard available at http://localhost:8080"
+            fg
+          workDir: /app
+
+  # Perfil de producción
+  - name: production
+    patches:
+      - op: remove
+        path: dev
+      - op: replace
+        path: images.server.image
+        value: ghcr.io/rubentxu/hodei-jobs/server:${VERSION:-latest}
+
+# Configuración de desarrollo
+dev:
+  hotReload: true
+  workDir: /app
+
+  # Sincronización de archivos
+  sync:
+    - localPath: .
+      remotePath: /app
+      file: false
+      excludePaths:
+        - .git
+        - target
+        - Cargo.lock
+        - logs
+        - .claude
+        - '**/*.log'
+        - '*.tmp'
+        - '*.db'
+        - '.env'
+        - '**/target'
+        - '**/Cargo.lock'
+        - '*.bak'
+        - '*.swp'
+      bandwidthLimits:
+        upload: 10240    # 10 MB/s
+        download: 10240  # 10 MB/s
+
+  # Puerto forwarding
+  ports:
+    - port: 50051
+      localPort: 50051
+      name: gRPC Server
+      bindAddress: "127.0.0.1"
+    - port: 9090
+      localPort: 9090
+      name: Metrics
+      bindAddress: "127.0.0.1"
+
+  # Variables de entorno
+  env:
+    - name: RUST_LOG
+      value: info,hodei_server=debug
+    - name: HODEI_DEV_MODE
+      value: "1"
+    - name: DATABASE_URL
+      value: postgres://postgres:postgres@postgres:5432/hodei_jobs
+    - name: HODEI_NATS_URLS
+      value: nats://nats:4222
+    - name: HODEI_SERVER_GRPC_PORT
+      value: "50051"
+    - name: RUST_BACKTRACE
+      value: "1"
+    - name: CARGO_INCREMENTAL
+      value: "1"
+    - name: RUSTFLAGS
+      value: "-C target-cpu=native"
+
+  # Terminal interactivo
+  terminal:
+    command: cargo run -p hodei-server-bin
+    workDir: /app
+
+  # Auto-reload
+  autoReload:
+    paths:
+      - ./crates/**/src/**/*.rs
+      - ./proto/**/*.proto
+      - ./Cargo.toml
+      - ./crates/*/Cargo.toml
+    images:
+      - server
+      - operator
+      - worker
+
+  # Reverse ports (para acceder a servicios locales desde el container)
+  reversePorts:
+    - port: 5432  # PostgreSQL local
+      name: Postgres Local
+    - port: 4222  # NATS local
+      name: NATS Local
+    - port: 4317  # OTLP Collector
+      name: OTLP Collector
+
+# Imágenes
+images:
+  server:
+    image: ghcr.io/rubentxu/hodei-jobs/server:${VERSION:-latest}
+    dockerfile: Dockerfile
+    context: .
+    injectRestartHelper: true
+
+  operator:
+    image: ghcr.io/rubentxu/hodei-jobs/operator:${VERSION:-latest}
+    dockerfile: crates/operator/Dockerfile
+    context: .
+    injectRestartHelper: true
+
+  worker:
+    image: ghcr.io/rubentxu/hodei-jobs/worker:${VERSION:-latest}
+    dockerfile: Dockerfile.worker
+    context: .
+
+  # Web Dashboard image
+  operator-web:
+    image: ghcr.io/rubentxu/hodei-jobs/operator-web:${VERSION:-latest}
+    dockerfile: crates/operator-web/Dockerfile.prod
+    context: .
+
+# Deployments
+deployments:
+  # Hodei Server con Helm
+  - name: hodei-server
+    helm:
+      chart:
+        name: ./helm/hodei-jobs-platform
+      values:
+        global:
+          imagePullPolicy: IfNotPresent
+        server:
+          replicas: 1
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          env:
+            - name: HODEI_DEV_MODE
+              value: "1"
+
+  # Hodei Platform (Server + Operator + Web Dashboard)
+  - name: hodei-platform
+    helm:
+      chart:
+        name: ./helm/hodei-jobs-platform
+      values:
+        image:
+          repository: ghcr.io/rubentxu/hodei-jobs
+          tag: ${VERSION:-latest}
+        server:
+          enabled: true
+          replicaCount: 1
+        operator:
+          enabled: true
+          replicaCount: 1
+          hodeiServer:
+            address: "http://hodei-jobs-platform:50051"
+        web:
+          enabled: true
+          sidecar: true
+
+# Comandos personalizados
+commands:
+  # Desarrollo rápido del server
+  - name: start
+    command: dev
+    description: Start development environment (hot-reload enabled)
+    aliases: [run, up, server]
+
+  # Desarrollo del operator
+  - name: operator
+    command: dev --profile operator-dev
+    description: Start operator development with hot-reload
+    aliases: [op, oper]
+
+  # Desarrollo del worker
+  - name: worker
+    command: dev --profile worker-dev
+    description: Start worker development with hot-reload
+    aliases: [wk]
+
+  # Desarrollo del web dashboard
+  - name: web
+    command: dev --profile web-dev
+    description: Start web dashboard development with WASM hot-reload
+    aliases: [ui, dashboard]
+
+  # Debug sin hot-reload
+  - name: debug
+    command: dev --no-hot-reload
+    description: Start development without hot-reload for debugging
+
+  # Solo sync (build local)
+  - name: sync
+    command: dev --skip-build
+    description: Sync files without rebuilding image
+
+  # Build release
+  - name: build
+    command: build
+    description: Build release binary and images
+    flags:
+      - name: platform
+        shorthand: p
+        description: Build for specific platform (linux/amd64, linux/arm64)
+
+  # Build solo operator
+  - name: build-operator
+    command: "build --image operator"
+    description: Build only the operator image
+
+  # Build solo server
+  - name: build-server
+    command: "build --image server"
+    description: Build only the server image
+
+  # Build solo worker
+  - name: build-worker
+    command: "build --image worker"
+    description: Build only the worker image
+
+  # Build web dashboard (WASM)
+  - name: build-web
+    command: "build --image operator-web"
+    description: Build web dashboard image (WASM + Caddy)
+    flags:
+      - name: wasm-pack
+        description: "Build WASM bundle with wasm-pack"
+
+  # Build all images
+  - name: build-all
+    command: "build"
+    description: Build all images (server, operator, worker, web)
+
+  # Deploy all to cluster (Server + Operator + Web Dashboard)
+  - name: deploy
+    command: deploy
+    description: Deploy complete platform (server + operator + web)
+    flags:
+      - name: namespace
+        shorthand: n
+        description: Target namespace
+
+  # Deploy plataforma completa
+  - name: deploy-platform
+    command: deploy --deployment hodei-platform
+    description: Deploy complete platform
+    flags:
+      - name: upgrade
+        shorthand: u
+        description: Force upgrade (--upgrade)
+
+  # Deploy servidor
+  - name: deploy-server
+    command: deploy --deployment hodei-server
+    description: Deploy only the server
+    flags:
+      - name: upgrade
+        shorthand: u
+        description: Force upgrade (--upgrade)
+
+  # Ver estado
+  - name: status
+    command: status
+    description: Show deployment status
+    flags:
+      - name: all
+        description: Show all resources
+
+  # Ver logs del server
+  - name: logs-server
+    command: "logs --deployment hodei-server"
+    description: Show logs from server
+    flags:
+      - name: follow
+        shorthand: f
+        description: Follow logs
+      - name: tail
+        shorthand: t
+        description: Number of lines to show
+
+  # Ver logs del operator
+  - name: logs-operator
+    command: "logs --deployment hodei-operator"
+    description: Show logs from operator
+    flags:
+      - name: follow
+        shorthand: f
+        description: Follow logs
+      - name: tail
+        shorthand: t
+        description: Number of lines to show
+
+  # Ver todos los logs
+  - name: logs
+    command: logs
+    description: Show logs from all deployments
+    flags:
+      - name: follow
+        shorthand: f
+        description: Follow logs
+      - name: tail
+        shorthand: t
+        description: Number of lines to show
+      - name: all-namespaces
+        description: Include all namespaces
+
+  # Limpiar
+  - name: clean
+    command: purge
+    description: Remove all deployed resources
+    flags:
+      - name: force
+        description: Skip confirmation
+
+  # Abrir terminal
+  - name: shell
+    command: terminal
+    description: Open shell in the server container
+    aliases: [sh, exec]
+    flags:
+      - name: deployment
+        shorthand: d
+        description: Deployment to connect to
+
+  # Puerto forwarding manual
+  - name: port-forward
+    command: "create-port-forward"
+    description: Create port-forward to a specific service
+    flags:
+      - name: deployment
+        shorthand: d
+        description: Deployment name
+      - name: port
+        shorthand: p
+        description: Port to forward
+      - name: local
+        description: Local port (optional)
+
+  # Puerto forwarding al server
+  - name: port-forward-server
+    command: "create-port-forward --deployment hodei-server --port 50051"
+    description: Create port-forward to gRPC server
+
+  # Puerto forwarding al operator
+  - name: port-forward-operator
+    command: "create-port-forward --deployment hodei-operator --port 8080"
+    description: Create port-forward to operator metrics
+
+  # Renderizar YAML sin deploy
+  - name: render
+    command: "render"
+    description: Render templates without applying
+    flags:
+      - name: deployment
+        shorthand: d
+        description: Specific deployment to render
+
+  # Ver recursos del sistema Hodei
+  - name: resources
+    command: "ui"
+    description: Open DevSpace UI for resource management
+
+  # Profile management
+  - name: profiles
+    command: "list-profiles"
+    description: List available profiles
+
+  # Dependency management
+  - name: deps-up
+    command: "update-dependencies"
+    description: Update chart dependencies
+
+  # Init desarrollo
+  - name: init
+    command: |
+      echo "Inicializando desarrollo Hodei..."
+      echo "1. Verificando cluster..."
+      kubectl cluster-info
+      echo ""
+      echo "2. Verificando servicios..."
+      kubectl get pods -n hodei-system
+      echo ""
+      echo "3. Instalando CRDs..."
+      helm upgrade --install hodei-operator ./helm/operator --set crds.create=true
+      echo ""
+      echo "Entorno listo para desarrollo!"
+    description: Initialize development environment
+    container: false
+
+# Hooks
+hooks:
+  # Antes de iniciar desarrollo, verificar cluster
+  - name: check-cluster
+    if: "${DEVSPACE_CMD_ARGUMENTS[0] == 'dev'}"
+    before:
+      - command: |
+          kubectl cluster-info > /dev/null 2>&1 || \
+          (echo "Error: No hay cluster Kubernetes configurado" && exit 1)
+        container: false
+        log: "Verificando cluster Kubernetes..."
+
+  # Antes de iniciar desarrollo del operator
+  - name: check-operator-prereqs
+    if: "${DEVSPACE_CMD_ARGUMENTS[0] == 'operator'}"
+    before:
+      - command: |
+          kubectl get ns hodei-system > /dev/null 2>&1 || \
+          (echo "Creando namespace hodei-system..." && kubectl create ns hodei-system)
+        container: false
+        log: "Verificando prerrequisitos del operator..."
+
+  # Después de sync, reiniciar server
+  - name: restart-on-change
+    after:
+      - command: ["pkill", "-f", "hodei-server"] || true
+        container: true
+        log: "Restarting server..."
+        wait: 1
+
+  # Después de deploy, esperar a que esté listo
+  - name: wait-for-deployments
+    if: "${DEVSPACE_CMD_ARGUMENTS[0] == 'deploy'}"
+    after:
+      - command: |
+          kubectl rollout status deployment/hodei-server -n hodei-system --timeout=120s
+          kubectl rollout status deployment/hodei-operator -n hodei-system --timeout=120s
+        container: false
+        log: "Esperando a que los deployments estén listos..."
+
+# Vars (variables)
+vars:
+  - name: VERSION
+    value: ${VERSION:-latest}
+  - name: NAMESPACE
+    value: hodei-system
+  - name: REGISTRY
+    value: ghcr.io/rubentxu/hodei-jobs

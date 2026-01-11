@@ -10,14 +10,24 @@ use hodei_server_domain::command::{
     MarkJobFailedError, MarkJobFailedHandler, ResumeFromManualInterventionCommand,
     ResumeFromManualInterventionError, ResumeFromManualInterventionHandler,
 };
+use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::saga::commands::provisioning::{
+    PublishProvisionedCommand, ValidateProviderCommand,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use crate::saga::handlers::provisioning_handlers::{
+    PublishProvisionedHandler, ProviderRegistry, ValidateProviderHandler,
+};
 
 /// Bootstrap configuration for command handlers
 #[derive(Debug, Clone, Default)]
 pub struct CommandBusBootstrapConfig {
     /// Enable all default command handlers
     pub enable_default_handlers: bool,
+    /// Enable saga command handlers (ValidateProvider, PublishProvisioned)
+    pub enable_saga_handlers: bool,
     /// Custom handler configurations
     pub custom_handlers: Vec<Box<dyn HandlerRegistration>>,
 }
@@ -36,16 +46,20 @@ pub trait HandlerRegistration: Send + Sync {
 /// # Arguments
 /// * `command_bus` - The command bus to register handlers with
 /// * `config` - Bootstrap configuration for customizing handler registration
+/// * `provider_registry` - Provider registry for ValidateProviderHandler
+/// * `event_bus` - Event bus for PublishProvisionedHandler
 ///
 /// # Example
 ///
 /// ```ignore
 /// let command_bus = Arc::new(Mutex::new(InMemoryCommandBus::new()));
-/// register_all_command_handlers(&command_bus, CommandBusBootstrapConfig::default()).await;
+/// register_all_command_handlers(&command_bus, CommandBusBootstrapConfig::default(), provider_registry, event_bus).await;
 /// ```
 pub async fn register_all_command_handlers<B: CommandBus + Send + Sync>(
     command_bus: &mut Arc<Mutex<B>>,
     config: CommandBusBootstrapConfig,
+    provider_registry: Option<Arc<dyn ProviderRegistry>>,
+    event_bus: Option<Arc<dyn EventBus>>,
 ) {
     tracing::info!("Registering command handlers...");
 
@@ -66,6 +80,41 @@ pub async fn register_all_command_handlers<B: CommandBus + Send + Sync>(
         .await;
 
         tracing::info!("Default command handlers registered");
+    }
+
+    // Register saga command handlers if enabled
+    if config.enable_saga_handlers {
+        tracing::info!("Registering saga command handlers...");
+
+        // ValidateProviderHandler
+        if let Some(registry) = provider_registry {
+            let handler = ValidateProviderHandler::new(registry);
+            command_bus
+                .lock()
+                .await
+                .register::<ValidateProviderCommand, ValidateProviderHandler<dyn ProviderRegistry>>(
+                    handler,
+                );
+            tracing::info!("ValidateProviderHandler registered");
+        } else {
+            tracing::warn!("ProviderRegistry not available - ValidateProviderHandler not registered");
+        }
+
+        // PublishProvisionedHandler
+        if let Some(bus) = event_bus {
+            let handler = PublishProvisionedHandler::new(bus);
+            command_bus
+                .lock()
+                .await
+                .register::<PublishProvisionedCommand, PublishProvisionedHandler<dyn EventBus>>(
+                    handler,
+                );
+            tracing::info!("PublishProvisionedHandler registered");
+        } else {
+            tracing::warn!("EventBus not available - PublishProvisionedHandler not registered");
+        }
+
+        tracing::info!("Saga command handlers registration complete");
     }
 
     // Register custom handlers
@@ -97,6 +146,8 @@ where
 pub struct CommandBusBuilder {
     config: CommandBusBootstrapConfig,
     handlers: Vec<Box<dyn HandlerRegistration>>,
+    provider_registry: Option<Arc<dyn ProviderRegistry>>,
+    event_bus: Option<Arc<dyn EventBus>>,
 }
 
 impl CommandBusBuilder {
@@ -105,12 +156,26 @@ impl CommandBusBuilder {
         Self {
             config: CommandBusBootstrapConfig::default(),
             handlers: Vec::new(),
+            provider_registry: None,
+            event_bus: None,
         }
     }
 
     /// Enable default handlers
     pub fn with_default_handlers(mut self) -> Self {
         self.config.enable_default_handlers = true;
+        self
+    }
+
+    /// Enable saga command handlers (requires provider_registry and event_bus)
+    pub fn with_saga_handlers(
+        mut self,
+        provider_registry: Arc<dyn ProviderRegistry>,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Self {
+        self.config.enable_saga_handlers = true;
+        self.provider_registry = Some(provider_registry);
+        self.event_bus = Some(event_bus);
         self
     }
 
@@ -129,7 +194,13 @@ impl CommandBusBuilder {
 
         // Register handlers
         let mut bus_clone = bus.clone();
-        register_all_command_handlers(&mut bus_clone, self.config.clone()).await;
+        register_all_command_handlers(
+            &mut bus_clone,
+            self.config.clone(),
+            self.provider_registry.clone(),
+            self.event_bus.clone(),
+        )
+        .await;
 
         // Register custom handlers
         for handler in &self.handlers {

@@ -360,6 +360,19 @@ impl WorkerProviderIdentity for DockerProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+
+    fn transform_server_address(&self, server_address: &str) -> String {
+        // Docker containers can use host.docker.internal to reach the host
+        // If the address contains localhost or 127.0.0.1, transform it
+        if server_address.contains("localhost") || server_address.contains("127.0.0.1") {
+            server_address
+                .replace("localhost", "host.docker.internal")
+                .replace("127.0.0.1", "host.docker.internal")
+        } else {
+            // Use the address as-is (might be an explicit IP or hostname)
+            server_address.to_string()
+        }
+    }
 }
 
 #[async_trait]
@@ -451,30 +464,94 @@ impl WorkerLifecycle for DockerProvider {
         handle: &WorkerHandle,
     ) -> std::result::Result<(), ProviderError> {
         let container_id = &handle.provider_resource_id;
-        info!("Destroying worker: {}", handle.worker_id);
+        let worker_id = &handle.worker_id;
 
+        info!(
+            "🗑️ Destroying worker: {} (container_id: {}, provider_type: {:?})",
+            worker_id, container_id, handle.provider_type
+        );
+
+        // DEBUG: Verify container exists before attempting to destroy
+        match self.client.inspect_container(container_id, None::<InspectContainerOptions>).await {
+            Ok(info) => {
+                debug!(
+                    "✅ Container exists: name={:?}, state={:?}, id={}",
+                    info.name, info.state, container_id
+                );
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                if err_msg.contains("No such container") || err_msg.contains("404") {
+                    info!(
+                        "ℹ️ Container {} already removed (worker: {}), treating as success",
+                        container_id, worker_id
+                    );
+                    self.active_workers.write().await.remove(container_id);
+                    return Ok(());
+                } else {
+                    warn!("⚠️ Failed to inspect container: {}", e);
+                }
+            }
+        }
+
+        // Step 1: Stop container gracefully
         let stop_options = StopContainerOptionsBuilder::default().t(10).build();
-        if let Err(e) = self
+        match self
             .client
             .stop_container(container_id, Some(stop_options))
             .await
         {
-            warn!("Failed to stop container gracefully: {}", e);
+            Ok(_) => {
+                debug!("✅ Container {} stopped successfully", container_id);
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                if !err_msg.contains("No such container") && !err_msg.contains("404") {
+                    warn!("⚠️ Failed to stop container gracefully: {}", e);
+                } else {
+                    debug!("ℹ️ Container {} already stopped", container_id);
+                }
+            }
         }
 
+        // Step 2: Remove container forcefully
         let remove_options = RemoveContainerOptionsBuilder::default()
             .force(true)
             .v(true)
             .build();
 
-        self.client
+        match self
+            .client
             .remove_container(container_id, Some(remove_options))
             .await
-            .map_err(|e| ProviderError::Internal(format!("Failed to remove container: {}", e)))?;
+        {
+            Ok(_) => {
+                info!("✅ Container {} removed successfully", container_id);
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                if !err_msg.contains("No such container") && !err_msg.contains("404") {
+                    error!(
+                        "❌ Failed to remove container {}: {}",
+                        container_id, e
+                    );
+                    return Err(ProviderError::Internal(format!(
+                        "Failed to remove container: {}",
+                        e
+                    )));
+                } else {
+                    debug!("ℹ️ Container {} already removed", container_id);
+                }
+            }
+        }
 
+        // Step 3: Clean up internal state
         self.active_workers.write().await.remove(container_id);
 
-        info!("Worker {} destroyed successfully", handle.worker_id);
+        info!(
+            "✅ Worker {} destroyed successfully (container: {})",
+            worker_id, container_id
+        );
         Ok(())
     }
 }

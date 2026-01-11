@@ -1,37 +1,43 @@
 apiVersion: v2
 name: hodei-jobs-platform
-description: A Helm chart for deploying Hodei Job Platform on Kubernetes
+description: Hodei Jobs Platform - Complete HPC-ready distributed job execution with operator and web UI
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.38.5
+appVersion: 0.38.5
 
 keywords:
   - jobs
   - kubernetes
   - batch-processing
   - distributed-computing
+  - hpc
+  - operator
 
-home: https://github.com/rubentxu/hodei-job-platform
+home: https://hodei.io
 sources:
-  - https://github.com/rubentxu/hodei-job-platform
+  - https://github.com/rubentxu/hodei-jobs
 
 maintainers:
   - name: Hodei Team
     email: team@hodei.io
 
 dependencies:
+  # PostgreSQL - Job metadata storage
   - name: postgresql
     version: "12.x.x"
     repository: "https://charts.bitnami.com/bitnami"
     condition: postgresql.enabled
+  # NATS JetStream - Event bus for jobs
   - name: nats
     version: "1.x.x"
     repository: "https://nats-io.github.io/k8s/helm"
     condition: nats.enabled
+  # Prometheus - Metrics
   - name: prometheus
     version: "25.x.x"
     repository: "https://prometheus-community.github.io/helm-charts"
     condition: prometheus.enabled
+  # External Secrets - GitOps secret management
   - name: external-secrets
     version: "0.9.x"
     repository: "https://charts.external-secrets.io"

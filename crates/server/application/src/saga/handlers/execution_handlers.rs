@@ -19,6 +19,7 @@ use hodei_server_domain::saga::commands::execution::{
 };
 use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use hodei_server_domain::workers::{WorkerFilter, WorkerRegistry};
+use crate::workers::WorkerCommandSender;
 
 // =============================================================================
 // ValidateJobHandler
@@ -242,36 +243,66 @@ where
 
 /// Handler for ExecuteJobCommand.
 ///
-/// This handler marks the job as running and initiates execution.
-#[derive(Debug)]
-pub struct ExecuteJobHandler<J, W>
+/// This handler dispatches the job to the worker via gRPC and marks it as running.
+/// Results come via JobStatusChanged events when the worker sends JobResultMessage.
+///
+/// Architecture:
+/// - ExecuteJobHandler: Dispatch job (send RunJobCommand)
+/// - WorkerStream: Receives JobResultMessage from worker
+/// - on_job_result: Updates job state and publishes JobStatusChanged event
+/// - Event-driven flow continues independently
+pub struct ExecuteJobHandler<J, W, S>
 where
     J: JobRepository + Debug,
     W: WorkerRegistry + Debug,
+    S: WorkerCommandSender,
 {
     job_repository: Arc<J>,
     worker_registry: Arc<W>,
+    command_sender: Arc<S>,
 }
 
-impl<J, W> ExecuteJobHandler<J, W>
+impl<J, W, S> std::fmt::Debug for ExecuteJobHandler<J, W, S>
 where
     J: JobRepository + Debug,
     W: WorkerRegistry + Debug,
+    S: WorkerCommandSender,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecuteJobHandler")
+            .field("job_repository", &"Arc<JobRepository>")
+            .field("worker_registry", &"Arc<WorkerRegistry>")
+            .field("command_sender", &"Arc<WorkerCommandSender>")
+            .finish()
+    }
+}
+
+impl<J, W, S> ExecuteJobHandler<J, W, S>
+where
+    J: JobRepository + Debug,
+    W: WorkerRegistry + Debug,
+    S: WorkerCommandSender,
 {
     #[inline]
-    pub fn new(job_repository: Arc<J>, worker_registry: Arc<W>) -> Self {
+    pub fn new(
+        job_repository: Arc<J>,
+        worker_registry: Arc<W>,
+        command_sender: Arc<S>,
+    ) -> Self {
         Self {
             job_repository,
             worker_registry,
+            command_sender,
         }
     }
 }
 
 #[async_trait]
-impl<J, W> CommandHandler<ExecuteJobCommand> for ExecuteJobHandler<J, W>
+impl<J, W, S> CommandHandler<ExecuteJobCommand> for ExecuteJobHandler<J, W, S>
 where
     J: JobRepository + Debug + Send + Sync + 'static,
     W: WorkerRegistry + Debug + Send + Sync + 'static,
+    S: WorkerCommandSender + Send + Sync + 'static,
 {
     type Error = ExecuteJobError;
 
@@ -282,31 +313,29 @@ where
             "Executing job"
         );
 
-        // Verify job exists
-        let job_opt = self
+        // 1. Verify job exists and get full job data
+        let job = self
             .job_repository
             .find_by_id(&command.job_id)
             .await
             .ok()  // Convert DomainError to None
-            .flatten();  // Flatten Option<Option<T>> to Option<T>
+            .flatten()  // Flatten Option<Option<T>> to Option<T>
+            .ok_or_else(|| ExecuteJobError::JobNotFound {
+                job_id: command.job_id.clone(),
+            })?;
 
-        let _job = job_opt.ok_or_else(|| ExecuteJobError::JobNotFound {
-            job_id: command.job_id.clone(),
-        })?;
-
-        // Verify worker exists
-        let worker_opt = self
+        // 2. Verify worker exists
+        let _worker = self
             .worker_registry
             .find_by_id(&command.worker_id)
             .await
             .ok()  // Convert DomainError to None
-            .flatten();  // Flatten Option<Option<T>> to Option<T>
+            .flatten()  // Flatten Option<Option<T>> to Option<T>
+            .ok_or_else(|| ExecuteJobError::WorkerNotFound {
+                worker_id: command.worker_id.clone(),
+            })?;
 
-        let _worker = worker_opt.ok_or_else(|| ExecuteJobError::WorkerNotFound {
-            worker_id: command.worker_id.clone(),
-        })?;
-
-        // Mark job as running
+        // 3. Update job state to Running
         self.job_repository
             .update_state(&command.job_id, JobState::Running)
             .await
@@ -315,12 +344,31 @@ where
                 source: e,
             })?;
 
+        // 4. Send RunJobCommand to worker via gRPC
         info!(
             job_id = %command.job_id,
             worker_id = %command.worker_id,
-            "Job execution initiated"
+            "📤 Dispatching job to worker"
         );
 
+        self.command_sender
+            .send_run_job(&command.worker_id, &job)
+            .await
+            .map_err(|e| {
+                error!(error = %e, "Failed to send RunJobCommand to worker");
+                ExecuteJobError::ExecutionFailed {
+                    job_id: command.job_id.clone(),
+                    source: e,
+                }
+            })?;
+
+        info!(
+            job_id = %command.job_id,
+            worker_id = %command.worker_id,
+            "✅ Job dispatched. Result will come via JobStatusChanged event."
+        );
+
+        // Job is dispatched - result comes via events from on_job_result
         Ok(JobExecutionResult::initiated(JobState::Running))
     }
 }

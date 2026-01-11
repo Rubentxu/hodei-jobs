@@ -1159,6 +1159,25 @@ impl WorkerProviderIdentity for FirecrackerProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
         &self.capabilities
     }
+
+    fn transform_server_address(&self, server_address: &str) -> String {
+        // Firecracker VMs use TAP network interface
+        // Transform localhost/127.0.0.1 to use the host IP on the TAP network
+        if server_address.contains("localhost") || server_address.contains("127.0.0.1") {
+            // Use the TAP bridge IP (typically 172.16.0.1 for Firecracker default setup)
+            // This can be overridden via HODEI_FIRECRACKER_HOST_IP environment variable
+            std::env::var("HODEI_FIRECRACKER_HOST_IP")
+                .unwrap_or_else(|_| {
+                    // Default TAP bridge IP for Firecracker
+                    server_address
+                        .replace("localhost", "172.16.0.1")
+                        .replace("127.0.0.1", "172.16.0.1")
+                })
+        } else {
+            // Use the address as-is
+            server_address.to_string()
+        }
+    }
 }
 
 #[async_trait]

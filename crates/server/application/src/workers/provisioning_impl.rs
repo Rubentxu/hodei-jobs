@@ -148,14 +148,21 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
 
         // Generate OTP token BEFORE creating the container
         // This way the token can be passed to the worker via environment variables
+        // Note: provider_resource_id will be updated after worker creation
         let worker_id = spec.worker_id.clone();
         let otp_token = self
             .token_store
-            .issue(&worker_id, self.config.otp_ttl)
+            .issue(&worker_id, self.config.otp_ttl, None)
             .await?;
 
-        // Create a mutable copy of the spec with OTP token and job_id in environment
+        // Transform server_address based on provider type
+        // This allows each provider to customize how workers connect to the server
+        // (e.g., Docker uses host.docker.internal, K8s uses cluster-internal service)
+        let transformed_address = provider.transform_server_address(&spec.server_address);
+
+        // Create a mutable copy of the spec with transformed server_address, OTP token and job_id
         let mut spec_with_env = spec.clone();
+        spec_with_env.server_address = transformed_address;
         spec_with_env
             .environment
             .insert("HODEI_OTP_TOKEN".to_string(), otp_token.to_string());
@@ -163,7 +170,10 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
             .environment
             .insert("HODEI_JOB_ID".to_string(), job_id.to_string());
 
-        info!("Generated OTP for worker {}, creating container", worker_id);
+        info!(
+            "Generated OTP for worker {}, creating container with server_address: {}",
+            worker_id, spec_with_env.server_address
+        );
 
         // Create worker via provider (now with OTP token in environment)
         let handle = provider.create_worker(&spec_with_env).await.map_err(|e| {
@@ -171,6 +181,20 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
                 message: e.to_string(),
             }
         })?;
+
+        // CRITICAL: Update OTP token with provider_resource_id after worker creation
+        // This enables correct JIT registration for all provider types (Docker, Kubernetes, Firecracker)
+        // by storing the actual resource ID (container ID, pod name, VM ID) in the token
+        let provider_resource_id = handle.provider_resource_id.clone();
+        info!(
+            "Updating OTP token {} with provider_resource_id: {} for worker {}",
+            otp_token, provider_resource_id, worker_id
+        );
+
+        // Re-issue token with provider_resource_id (this updates the existing token)
+        self.token_store
+            .issue(&worker_id, self.config.otp_ttl, Some(provider_resource_id))
+            .await?;
 
         // DO NOT register in registry here - worker will self-register via gRPC with OTP
         // When the worker starts, it will:

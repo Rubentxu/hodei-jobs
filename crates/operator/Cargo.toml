@@ -1,0 +1,61 @@
+[package]
+name = "hodei-operator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kubernetes Operator for Hodei Jobs Platform - gRPC Client"
+
+[[bin]]
+name = "hodei-operator"
+path = "bin/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+leptos = ["dep:leptos", "dep:leptos_router"]
+dashboard = ["dep:axum", "dep:tower", "dep:tower-http"]
+
+[dependencies]
+# Workspace dependencies
+tokio.workspace = true
+kube = { workspace = true, features = ["runtime", "derive"] }
+k8s-openapi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+clap = { workspace = true }
+
+# Internal proto crate
+hodei-jobs = { workspace = true }
+
+# Operator-specific
+schemars = { version = "1.1.0", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+hostname = "0.4"
+
+# Web Dashboard
+axum = { version = "0.7", features = ["json"], optional = true }
+tower = { version = "0.4", features = ["util", "make"], optional = true }
+tower-http = { version = "0.5", features = ["fs"], optional = true }
+mime = "0.3"
+
+# Leptos (optional, requires --features leptos)
+leptos = { version = "0.6", optional = true }
+leptos_router = { version = "0.6", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+assert_matches.workspace = true
+
+[build-dependencies]

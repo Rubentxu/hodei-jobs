@@ -14,10 +14,13 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::interval;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId, WorkerState};
-use hodei_server_domain::workers::{WorkerHandle, WorkerSpec};
+use hodei_server_domain::workers::{WorkerHandle, WorkerRegistry, WorkerSpec};
+use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::event_bus::EventBus;
+use chrono::Utc;
 
 /// Errors from WorkerSupervisor operations
 #[derive(Debug, Error)]
@@ -80,6 +83,7 @@ pub struct WorkerActorState {
     pub session_id: String,
     pub registered_at: chrono::DateTime<chrono::Utc>,
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+    pub current_job_id: Option<hodei_server_domain::shared_kernel::JobId>,
 }
 
 impl WorkerActorState {
@@ -99,6 +103,7 @@ impl WorkerActorState {
             session_id,
             registered_at: chrono::Utc::now(),
             last_heartbeat: None,
+            current_job_id: None,
         }
     }
 }
@@ -263,6 +268,10 @@ pub struct WorkerSupervisor {
     metrics: Arc<WorkerSupervisorMetrics>,
     /// Configuration (EPIC-42)
     config: WorkerSupervisorConfig,
+    /// Worker registry for database persistence
+    worker_registry: Option<Arc<dyn WorkerRegistry>>,
+    /// Event bus for publishing domain events
+    event_bus: Option<Arc<dyn EventBus>>,
 }
 
 impl WorkerSupervisor {
@@ -278,6 +287,8 @@ impl WorkerSupervisor {
             shutdown,
             metrics,
             config: WorkerSupervisorConfig::default(),
+            worker_registry: None,
+            event_bus: None,
         }
     }
 
@@ -294,7 +305,21 @@ impl WorkerSupervisor {
             shutdown,
             metrics,
             config,
+            worker_registry: None,
+            event_bus: None,
         }
+    }
+
+    /// Set worker registry for database persistence
+    pub fn with_worker_registry(mut self, registry: Arc<dyn WorkerRegistry>) -> Self {
+        self.worker_registry = Some(registry);
+        self
+    }
+
+    /// Set event bus for publishing domain events
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
     }
 
     /// Run the actor loop with active heartbeat timeout tracking (EPIC-42)
@@ -580,7 +605,82 @@ impl WorkerSupervisor {
     async fn handle_heartbeat(&mut self, worker_id: &WorkerId) -> SupervisorResult<()> {
         if let Some(state) = self.state.registry.get_mut(worker_id) {
             state.last_heartbeat = Some(chrono::Utc::now());
+
+            // Check if transitioning from Creating to Ready
+            let state_changed = state.status == WorkerState::Creating;
+            let provider_id = state.provider_id.clone();
             state.status = WorkerState::Ready;
+
+            // Persist state change to database and emit event if transitioning to Ready
+            if state_changed {
+                if let Some(ref registry) = self.worker_registry {
+                    // First, query the worker from DB to get the current_job_id
+                    let job_id = match registry.get(worker_id).await {
+                        Ok(Some(worker)) => worker.current_job_id().cloned(),
+                        Ok(None) => {
+                            warn!(
+                                worker_id = %worker_id,
+                                "Worker not found in registry when querying job_id"
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            warn!(
+                                worker_id = %worker_id,
+                                error = %e,
+                                "Failed to query worker for job_id"
+                            );
+                            None
+                        }
+                    };
+
+                    // Update in-memory state with job_id
+                    if let Some(state) = self.state.registry.get_mut(worker_id) {
+                        state.current_job_id = job_id.clone();
+                    }
+
+                    if let Err(e) = registry.update_state(worker_id, WorkerState::Ready).await {
+                        error!(
+                            worker_id = %worker_id,
+                            error = %e,
+                            "Failed to persist worker state transition to Ready in database"
+                        );
+                        // Continue execution - in-memory state is updated
+                    } else {
+                        debug!(
+                            worker_id = %worker_id,
+                            "Worker state persisted to database: Creating -> Ready"
+                        );
+
+                        // Emit WorkerReady event with job_id for OTP-based provisioning
+                        if let Some(ref event_bus) = self.event_bus {
+                            let event = DomainEvent::WorkerReady {
+                                worker_id: worker_id.clone(),
+                                provider_id: provider_id.clone(),
+                                job_id: job_id.clone(),
+                                ready_at: Utc::now(),
+                                correlation_id: job_id.as_ref().map(|id| id.to_string()),
+                                actor: Some("worker-supervisor-actor".to_string()),
+                            };
+
+                            if let Err(e) = event_bus.publish(&event).await {
+                                error!(
+                                    worker_id = %worker_id,
+                                    error = %e,
+                                    "Failed to publish WorkerReady event"
+                                );
+                            } else {
+                                info!(
+                                    worker_id = %worker_id,
+                                    job_id = ?job_id,
+                                    "✅ Published WorkerReady event (triggers JobDispatcher)"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             return Ok(());
         }
 
@@ -1007,6 +1107,8 @@ impl Default for WorkerSupervisorConfig {
 pub struct WorkerSupervisorBuilder {
     config: WorkerSupervisorConfig,
     shutdown: Option<watch::Sender<()>>,
+    worker_registry: Option<Arc<dyn WorkerRegistry>>,
+    event_bus: Option<Arc<dyn EventBus>>,
 }
 
 impl WorkerSupervisorBuilder {
@@ -1015,6 +1117,8 @@ impl WorkerSupervisorBuilder {
         Self {
             config: WorkerSupervisorConfig::default(),
             shutdown: None,
+            worker_registry: None,
+            event_bus: None,
         }
     }
 
@@ -1030,13 +1134,35 @@ impl WorkerSupervisorBuilder {
         self
     }
 
+    /// Set worker registry for database persistence
+    pub fn with_worker_registry(mut self, registry: Arc<dyn WorkerRegistry>) -> Self {
+        self.worker_registry = Some(registry);
+        self
+    }
+
+    /// Set event bus for publishing domain events
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
     /// Build the supervisor and handle
     pub fn build(self) -> (WorkerSupervisorHandle, WorkerSupervisor, watch::Sender<()>) {
         let (tx, rx) = mpsc::channel(self.config.inbox_capacity);
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let metrics = Arc::new(WorkerSupervisorMetrics::default());
 
-        let supervisor = WorkerSupervisor::new(rx, shutdown_rx, metrics.clone());
+        let mut supervisor = WorkerSupervisor::new(rx, shutdown_rx, metrics.clone());
+
+        // Set worker registry if provided
+        if let Some(registry) = self.worker_registry {
+            supervisor = supervisor.with_worker_registry(registry);
+        }
+
+        // Set event bus if provided
+        if let Some(event_bus) = self.event_bus {
+            supervisor = supervisor.with_event_bus(event_bus);
+        }
 
         let handle = WorkerSupervisorHandle::new(tx);
 

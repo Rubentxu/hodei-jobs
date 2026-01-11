@@ -586,8 +586,8 @@ impl OutboxRelay {
                 "Failed to publish event to event bus"
             );
 
-            // Mark as failed in the outbox
-            self.mark_event_failed(event.id, &e.to_string()).await?;
+            // Mark as failed/retry in the outbox
+            self.mark_event_failed(event.id, &e.to_string(), event.retry_count).await?;
 
             // Record retry statistics
             self.metrics().record_retry(event.retry_count);
@@ -1992,13 +1992,31 @@ impl OutboxRelay {
     }
 
     /// Mark an event as failed in the outbox
+    /// Mark an event as failed in the outbox
     async fn mark_event_failed(
         &self,
         event_id: Uuid,
         error: &str,
+        current_retry_count: i32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let repo = PostgresOutboxRepository::new(self.pool.clone());
-        repo.mark_failed(&event_id, error).await?;
+
+        if current_retry_count + 1 >= self.config.max_retries {
+            warn!(
+                event_id = %event_id,
+                max_retries = self.config.max_retries,
+                "Event exceeded max retries, marking as FAILED"
+            );
+            repo.mark_failed(&event_id, error).await?;
+        } else {
+            debug!(
+                event_id = %event_id,
+                attempt = current_retry_count + 1,
+                max = self.config.max_retries,
+                "Event failed, increasing retry count (will retry)"
+            );
+            repo.record_failure_retry(&event_id, error).await?;
+        }
         Ok(())
     }
 }

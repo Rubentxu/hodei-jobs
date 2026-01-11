@@ -9,6 +9,10 @@
 
 Esta documentación contiene análisis profundo del sistema Hodei Job Platform y épicas de refactoring.
 
+### 📐 Arquitectura del Sistema
+
+**[📘 SYSTEM_ARCHITECTURE.md (V2)](SYSTEM_ARCHITECTURE.md)** - Documentación completa de arquitectura y sagas (2026).
+
 ### 📊 Análisis Arquitectural
 
 #### [Análisis 1: Cadena de Mando - Superposición de Responsabilidades](analysis/001_cadena_mando_superposicion_responsabilidades.md)

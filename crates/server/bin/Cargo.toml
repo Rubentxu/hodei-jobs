@@ -13,12 +13,14 @@ hodei-server-infrastructure = { path = "../infrastructure" }
 hodei-server-interface = { path = "../interface" }
 hodei-shared = { path = "../../shared" }
 hodei-jobs = { workspace = true }
+hodei-console-web = { path = "../../console-web", optional = true }
 
 # Async & Runtime
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 # Config & CLI
 config = { workspace = true }
@@ -30,15 +32,20 @@ anyhow = { workspace = true }
 # UUIDs
 uuid = { workspace = true }
 
-# HTTP/gRPC
+# HTTP/gRPC + REST API
 tonic = { workspace = true }
 tonic-reflection = { workspace = true }
 tonic-web = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
+axum = { version = "0.7", features = ["json"] }
+tower = { workspace = true }
+hyper = { workspace = true }
+http = { workspace = true }
+
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid", "migrate"] }
 
 # NATS Event Bus
 async-nats = "0.35"
 
 # Concurrency
-dashmap = "6.1"
+dashmap = { workspace = true }

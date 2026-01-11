@@ -271,6 +271,23 @@ impl OutboxRepository for PostgresOutboxRepository {
         Ok(())
     }
 
+    async fn record_failure_retry(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            r#"
+            UPDATE outbox_events
+            SET retry_count = COALESCE(retry_count, 0) + 1,
+                last_error = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(error)
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     async fn exists_by_idempotency_key(&self, idempotency_key: &str) -> Result<bool, OutboxError> {
         let result: Option<OutboxEventRow> = sqlx::query_as::<_, OutboxEventRow>(
             r#"

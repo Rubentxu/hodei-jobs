@@ -15,8 +15,8 @@ pub mod timeout;
 
 pub use cancellation::{
     NotifyWorkerCommand, NotifyWorkerError, NotifyWorkerResult,
-    ReleaseWorkerCommand, ReleaseWorkerError, ReleaseWorkerResult,
-    UpdateJobStateCommand, UpdateJobStateError, UpdateJobStateResult,
+    ReleaseWorkerCommand, ReleaseWorkerError, ReleaseWorkerHandler, ReleaseWorkerResult,
+    UpdateJobStateCommand, UpdateJobStateError, UpdateJobStateHandler, UpdateJobStateResult,
 };
 pub use execution::{
     AssignWorkerCommand, AssignWorkerError, CompleteJobCommand,

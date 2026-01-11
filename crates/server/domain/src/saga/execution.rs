@@ -12,6 +12,7 @@ use crate::command::dispatch_erased;
 use crate::saga::commands::execution::{
     AssignWorkerCommand, CompleteJobCommand, ExecuteJobCommand, ValidateJobCommand,
 };
+use crate::saga::commands::{ReleaseWorkerCommand, UpdateJobStateCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
 use std::time::Duration;
@@ -382,7 +383,7 @@ impl SagaStep for AssignWorkerStep {
             }
         };
 
-        // GAP-52-01: Get CommandBus from context
+        // Get CommandBus from context
         let command_bus = {
             let services = context.services().ok_or_else(|| SagaError::CompensationFailed {
                 step: self.name().to_string(),
@@ -403,15 +404,26 @@ impl SagaStep for AssignWorkerStep {
 
         info!(
             worker_id = %worker_id_str,
-            "🔄 Compensating: releasing worker via CommandBus"
+            "🔄 Compensating: releasing worker via ReleaseWorkerCommand"
         );
 
-        // Release worker by dispatching UnregisterWorkerCommand (simplified compensation)
-        // For full compensation, we'd dispatch a ReleaseWorkerCommand
-        // This is a simplified version - the worker state will be updated by the command handler
+        // Dispatch ReleaseWorkerCommand to release worker back to READY state
+        let release_command = ReleaseWorkerCommand::with_job(
+            worker_id.clone(),
+            self.job_id.clone(),
+            context.saga_id.to_string(),
+        );
+
+        dispatch_erased(&command_bus, release_command)
+            .await
+            .map_err(|e| SagaError::CompensationFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to release worker {}: {}", worker_id_str, e),
+            })?;
+
         info!(
             worker_id = %worker_id_str,
-            "✅ Worker release compensation complete"
+            "✅ Worker release compensation complete - worker returned to READY state"
         );
 
         Ok(())
@@ -550,7 +562,7 @@ impl SagaStep for ExecuteJobStep {
     /// EPIC-50 GAP-52-01: Compensate job execution via CommandBus
     #[instrument(skip(context), fields(step = "ExecuteJob"))]
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
-        // GAP-52-01: Get CommandBus from context
+        // Get CommandBus from context
         let command_bus = {
             let services = context.services().ok_or_else(|| SagaError::CompensationFailed {
                 step: self.name().to_string(),
@@ -563,11 +575,33 @@ impl SagaStep for ExecuteJobStep {
             })?.clone()
         };
 
-        info!(job_id = %self.job_id, "🔄 Compensating: reverting job state via CommandBus");
+        info!(job_id = %self.job_id, "🔄 Compensating: reverting job state to PENDING via UpdateJobStateCommand");
 
-        // For compensation, we use CompleteJobCommand with PENDING state
-        // This is a simplified approach - the command handler would need to support this
-        info!(job_id = %self.job_id, "✅ Job execution compensation complete");
+        // Get original state from context, default to PENDING if not available
+        let original_state = context.get_metadata::<JobState>("execution_original_state")
+            .and_then(|r| r.ok())
+            .unwrap_or(JobState::Pending);
+
+        // Dispatch UpdateJobStateCommand to revert job state
+        let update_command = UpdateJobStateCommand::with_original_state(
+            self.job_id.clone(),
+            original_state.clone(),
+            JobState::Running, // The state we're reverting from
+            context.saga_id.to_string(),
+        );
+
+        dispatch_erased(&command_bus, update_command)
+            .await
+            .map_err(|e| SagaError::CompensationFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to revert job {} state to {:?}: {}", self.job_id, original_state, e),
+            })?;
+
+        info!(
+            job_id = %self.job_id,
+            reverted_to = ?original_state,
+            "✅ Job execution compensation complete - job state reverted"
+        );
 
         Ok(())
     }

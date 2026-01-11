@@ -4,18 +4,53 @@
 //! These handlers implement the business logic for worker provisioning operations.
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use std::fmt::Debug;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use hodei_server_domain::command::{Command, CommandHandler};
+use hodei_server_domain::event_bus::{EventBus, EventBusError};
+use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::saga::commands::provisioning::{
     PublishProvisionedCommand, PublishProvisionedError, ProviderCapacity, ProviderConfig,
     ValidateProviderCommand, ValidateProviderError,
 };
 use hodei_server_domain::shared_kernel::{ProviderId, Result};
 use hodei_server_domain::workers::events::WorkerProvisioned;
-use hodei_server_domain::event_bus::EventBus;
+
+/// Wrapper around Arc<dyn EventBus> that implements EventBus trait.
+/// This allows passing trait objects to generic handlers.
+#[derive(Clone)]
+pub struct ArcEventBusWrapper {
+    inner: Arc<dyn EventBus>,
+}
+
+impl std::fmt::Debug for ArcEventBusWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArcEventBusWrapper").finish()
+    }
+}
+
+impl ArcEventBusWrapper {
+    pub fn new(inner: Arc<dyn EventBus>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl EventBus for ArcEventBusWrapper {
+    async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+        self.inner.publish(event).await
+    }
+
+    async fn subscribe(
+        &self,
+        topic: &str,
+    ) -> std::result::Result<BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>, EventBusError> {
+        self.inner.subscribe(topic).await
+    }
+}
 
 /// ProviderRegistry trait for capacity checking.
 /// This trait is defined in domain for reuse across implementations.
@@ -170,14 +205,14 @@ where
 #[derive(Debug)]
 pub struct PublishProvisionedHandler<E>
 where
-    E: EventBus + Debug,
+    E: EventBus + Send + Sync,
 {
     event_bus: Arc<E>,
 }
 
 impl<E> PublishProvisionedHandler<E>
 where
-    E: EventBus + Debug,
+    E: EventBus + Send + Sync,
 {
     /// Creates a new handler with the given event bus.
     #[inline]

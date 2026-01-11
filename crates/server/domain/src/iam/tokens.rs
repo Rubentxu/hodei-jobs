@@ -40,9 +40,26 @@ impl FromStr for OtpToken {
 
 #[async_trait]
 pub trait WorkerBootstrapTokenStore: Send + Sync {
-    async fn issue(&self, worker_id: &WorkerId, ttl: Duration) -> Result<OtpToken>;
+    /// Issue a new OTP token for a worker
+    ///
+    /// # Arguments
+    /// * `worker_id` - The ID of the worker
+    /// * `ttl` - Time-to-live for the token
+    /// * `provider_resource_id` - Optional provider-specific resource ID (container ID, pod name, VM ID)
+    ///   This is stored to enable correct JIT registration without hardcoding provider-specific logic
+    async fn issue(
+        &self,
+        worker_id: &WorkerId,
+        ttl: Duration,
+        provider_resource_id: Option<String>,
+    ) -> Result<OtpToken>;
 
-    async fn consume(&self, token: &OtpToken, worker_id: &WorkerId) -> Result<()>;
+    /// Consume an OTP token and return the provider_resource_id if available
+    async fn consume(
+        &self,
+        token: &OtpToken,
+        worker_id: &WorkerId,
+    ) -> Result<Option<String>>;
 
     async fn cleanup_expired(&self) -> Result<u64>;
 }

@@ -72,6 +72,18 @@ pub trait OutboxRepository {
     /// * `Result<(), OutboxError>` - Success or error
     async fn mark_failed(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError>;
 
+    /// Record a failure for retry
+    ///
+    /// Increments the retry count and stores the error message, but keeps the status as PENDING.
+    ///
+    /// # Arguments
+    /// * `event_id` - ID of the event
+    /// * `error` - Error message
+    ///
+    /// # Returns
+    /// * `Result<(), OutboxError>` - Success or error
+    async fn record_failure_retry(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError>;
+
     /// Check if an idempotency key already exists
     ///
     /// Used to ensure idempotency when inserting events.
@@ -314,6 +326,16 @@ mod tests {
             let mut vec = self.events.lock().unwrap();
             if let Some(event) = vec.iter_mut().find(|e| &e.id == event_id) {
                 event.status = crate::outbox::OutboxStatus::Failed;
+                event.retry_count += 1;
+                event.last_error = Some(error.to_string());
+            }
+            Ok(())
+        }
+
+        async fn record_failure_retry(&self, event_id: &Uuid, error: &str) -> Result<(), OutboxError> {
+            let mut vec = self.events.lock().unwrap();
+            if let Some(event) = vec.iter_mut().find(|e| &e.id == event_id) {
+                // Keep status as PENDING (or whatever it was)
                 event.retry_count += 1;
                 event.last_error = Some(error.to_string());
             }

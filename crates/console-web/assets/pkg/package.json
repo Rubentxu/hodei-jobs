@@ -1,0 +1,19 @@
+{
+  "name": "hodei-console-web",
+  "type": "module",
+  "collaborators": [
+    "Hodei Team"
+  ],
+  "description": "Hodei Jobs Administration Console - Leptos WASM",
+  "version": "0.1.0",
+  "files": [
+    "hodei_console_web_bg.wasm",
+    "hodei_console_web.js",
+    "hodei_console_web.d.ts"
+  ],
+  "main": "hodei_console_web.js",
+  "types": "hodei_console_web.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

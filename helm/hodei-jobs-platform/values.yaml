@@ -679,3 +679,120 @@ debug:
   forceSingleReplica: false
   # Disable all probes
   disableProbes: false
+
+# =============================================================================
+# Operator Configuration (Kubernetes Controller with Web Dashboard)
+# =============================================================================
+operator:
+  enabled: true
+  replicaCount: 1
+
+  # Operator settings
+  watchNamespace: ""  # Empty = all namespaces
+  watchAllNamespaces: false
+  logLevel: "info"
+
+  # Hodei Server connection
+  hodeiServer:
+    address: "http://hodei-jobs-platform:50051"
+
+  # Resources
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Probes
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Web Dashboard Configuration (Leptos WASM UI)
+# =============================================================================
+web:
+  enabled: true
+  port: 8080
+
+  # Run as sidecar in operator pod
+  sidecar: true
+
+  # Web image
+  image:
+    repository: ghcr.io/rubentxu/hodei-jobs/operator-web
+    tag: "v0.38.5"
+    pullPolicy: IfNotPresent
+
+  # Resources for web container
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+
+  # Probes
+  livenessProbe:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # Init container to copy assets
+  initContainer:
+    enabled: true
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
+      requests:
+        cpu: 5m
+        memory: 8Mi
+
+  # Ingress for web dashboard
+  ingress:
+    enabled: true
+    className: ""
+    annotations: {}
+    hosts:
+      - host: hodei.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []

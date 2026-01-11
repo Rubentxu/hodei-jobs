@@ -310,6 +310,28 @@ pub trait WorkerProviderIdentity: Send + Sync {
 
     /// Capacidades que pueden ofrecer los workers
     fn capabilities(&self) -> &ProviderCapabilities;
+
+    /// Transform server address for workers to connect based on provider type.
+    /// This allows each provider to customize how workers should connect to the server.
+    ///
+    /// # Default Behavior
+    /// Returns the address unchanged. Override this method if your provider needs
+    /// provider-specific address transformation.
+    ///
+    /// # Examples
+    /// - Docker: May use "host.docker.internal" or bridge network IP
+    /// - Kubernetes: May use cluster-internal service name
+    /// - Firecracker: May use host IP or TAP interface IP
+    ///
+    /// # Arguments
+    /// * `server_address` - The configured server address (e.g., from HODEI_SERVER_ADDRESS)
+    ///
+    /// # Returns
+    /// The transformed address that workers should use to connect
+    fn transform_server_address(&self, server_address: &str) -> String {
+        // Default: use address as-is
+        server_address.to_string()
+    }
 }
 
 /// Trait helper para acceder a las capacidades

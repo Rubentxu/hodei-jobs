@@ -389,21 +389,31 @@ pub enum UpdateJobStateError {
 }
 
 /// Handler for UpdateJobStateCommand.
-#[derive(Debug)]
 pub struct UpdateJobStateHandler<J>
 where
-    J: JobRepository + Debug,
+    J: JobRepository,
 {
-    job_repository: J,
+    job_repository: Arc<J>,
+}
+
+impl<J> std::fmt::Debug for UpdateJobStateHandler<J>
+where
+    J: JobRepository,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateJobStateHandler")
+            .field("job_repository", &"Arc<JobRepository>")
+            .finish()
+    }
 }
 
 impl<J> UpdateJobStateHandler<J>
 where
-    J: JobRepository + Debug,
+    J: JobRepository,
 {
     /// Creates a new handler with the given job repository.
     #[inline]
-    pub fn new(job_repository: J) -> Self {
+    pub fn new(job_repository: Arc<J>) -> Self {
         Self { job_repository }
     }
 }
@@ -411,7 +421,7 @@ where
 #[async_trait]
 impl<J> CommandHandler<UpdateJobStateCommand> for UpdateJobStateHandler<J>
 where
-    J: JobRepository + Debug + Send + Sync + 'static,
+    J: JobRepository + Send + Sync + 'static,
 {
     type Error = UpdateJobStateError;
 
@@ -555,21 +565,31 @@ pub enum ReleaseWorkerError {
 }
 
 /// Handler for ReleaseWorkerCommand.
-#[derive(Debug)]
 pub struct ReleaseWorkerHandler<W>
 where
-    W: WorkerRegistry + Debug,
+    W: WorkerRegistry,
 {
-    worker_registry: W,
+    worker_registry: Arc<W>,
+}
+
+impl<W> std::fmt::Debug for ReleaseWorkerHandler<W>
+where
+    W: WorkerRegistry,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseWorkerHandler")
+            .field("worker_registry", &"Arc<WorkerRegistry>")
+            .finish()
+    }
 }
 
 impl<W> ReleaseWorkerHandler<W>
 where
-    W: WorkerRegistry + Debug,
+    W: WorkerRegistry,
 {
     /// Creates a new handler with the given worker registry.
     #[inline]
-    pub fn new(worker_registry: W) -> Self {
+    pub fn new(worker_registry: Arc<W>) -> Self {
         Self { worker_registry }
     }
 }
@@ -577,7 +597,7 @@ where
 #[async_trait]
 impl<W> CommandHandler<ReleaseWorkerCommand> for ReleaseWorkerHandler<W>
 where
-    W: WorkerRegistry + Debug + Send + Sync + 'static,
+    W: WorkerRegistry + Send + Sync + 'static,
 {
     type Error = ReleaseWorkerError;
 
@@ -600,7 +620,16 @@ where
                 worker_id: worker_id.clone(),
             })?;
 
-        // Release worker to ready state
+        // First, release worker from job (clears current_job_id and sets to TERMINATED)
+        self.worker_registry
+            .release_from_job(&worker_id)
+            .await
+            .map_err(|e| ReleaseWorkerError::ReleaseFailed {
+                worker_id: worker_id.clone(),
+                source: e,
+            })?;
+
+        // Then update to READY state (for compensation, worker should be available again)
         self.worker_registry
             .update_state(&worker_id, WorkerState::Ready)
             .await
@@ -609,7 +638,11 @@ where
                 source: e,
             })?;
 
-        debug!(worker_id = %worker_id, "Worker released to Ready state");
+        debug!(
+            worker_id = %worker_id,
+            job_id = ?command.job_id,
+            "Worker released from job and returned to Ready state for compensation"
+        );
 
         Ok(ReleaseWorkerResult::success())
     }

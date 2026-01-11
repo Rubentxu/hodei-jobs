@@ -17,7 +17,7 @@ echo ""
 
 echo "1️⃣  ESTADO DEL JOB:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT
     'ID: ' || id || ' | Estado: ' || state || ' | Intentos: ' || attempts || ' | Creado: ' || created_at as info,
     CASE
@@ -35,7 +35,7 @@ WHERE id = '$JOB_ID';
 echo ""
 echo "2️⃣  EN COLA:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT
     CASE
         WHEN jq.job_id IS NOT NULL THEN '✅ SÍ - Está en job_queue (enqueued: ' || jq.enqueued_at || ')'
@@ -50,7 +50,7 @@ WHERE j.id = '$JOB_ID';
 echo ""
 echo "3️⃣  WORKERS DISPONIBLES:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT
     COUNT(*) as workers_ready,
     CASE
@@ -65,7 +65,7 @@ WHERE state = 'READY' AND last_heartbeat > now() - interval '30 seconds';
 echo ""
 echo "4️⃣  ESPECIFICACIÓN DEL JOB:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT jsonb_pretty(spec) as job_spec
 FROM jobs
 WHERE id = '$JOB_ID';
@@ -74,7 +74,7 @@ WHERE id = '$JOB_ID';
 echo ""
 echo "5️⃣  WORKERS RECIENTES (últimos 2 min):"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT
     id,
     state,
@@ -95,7 +95,7 @@ LIMIT 5;
 echo ""
 echo "6️⃣  PROVEEDORES CONFIGURADOS:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT
     name,
     provider_type,
@@ -110,7 +110,7 @@ FROM provider_configs;
 echo ""
 echo "7️⃣  TOKENS BOOTSTRAP DISPONIBLES:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-docker exec hodei-jobs-postgres psql -U postgres -c "
+docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -c "
 SELECT
     COUNT(*) as total_tokens,
     COUNT(CASE WHEN consumed_at IS NULL AND expires_at > now() THEN 1 END) as tokens_disponibles,
@@ -124,9 +124,9 @@ echo "8️⃣  RESUMEN DEL DIAGNÓSTICO:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Obtener estado actual del job
-JOB_STATE=$(docker exec hodei-jobs-postgres psql -U postgres -t -c "SELECT state FROM jobs WHERE id = '$JOB_ID';" 2>/dev/null | xargs)
-IN_QUEUE=$(docker exec hodei-jobs-postgres psql -U postgres -t -c "SELECT COUNT(*) FROM job_queue WHERE job_id = '$JOB_ID';" 2>/dev/null | xargs)
-WORKERS_READY=$(docker exec hodei-jobs-postgres psql -U postgres -t -c "SELECT COUNT(*) FROM workers WHERE state = 'READY' AND last_heartbeat > now() - interval '30 seconds';" 2>/dev/null | xargs)
+JOB_STATE=$(docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -t -c "SELECT state FROM jobs WHERE id = '$JOB_ID';" 2>/dev/null | xargs)
+IN_QUEUE=$(docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -t -c "SELECT COUNT(*) FROM job_queue WHERE job_id = '$JOB_ID';" 2>/dev/null | xargs)
+WORKERS_READY=$(docker exec hodei-jobs-postgres psql -U postgres -d hodei_jobs -t -c "SELECT COUNT(*) FROM workers WHERE state = 'READY' AND last_heartbeat > now() - interval '30 seconds';" 2>/dev/null | xargs)
 
 echo "   Estado actual: $JOB_STATE"
 echo "   En cola: $IN_QUEUE"

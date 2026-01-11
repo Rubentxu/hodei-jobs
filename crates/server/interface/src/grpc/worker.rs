@@ -406,15 +406,13 @@ impl WorkerAgentServiceImpl {
     /// 2. If Actor returns WorkerNotFound, performs JIT registration to heal state
     /// 3. Emits WorkerReady event to trigger job dispatch
     ///
-    /// Events emitted:
-    /// - WorkerReady: Worker is available for job assignment (triggers dispatch)
     async fn on_worker_ready(
         &self,
-        worker_id_str: &str,
+        worker_id: &WorkerId,
         worker_info: &WorkerInfo,
         job_id_from_token: Option<JobId>,
+        provider_resource_id: Option<String>,
     ) -> Result<(), Status> {
-        let worker_id = Self::parse_worker_uuid(worker_id_str)?;
 
         // 1. Attempt route through Actor (EPIC-42)
         if let Some(ref supervisor) = self.supervisor_handle {
@@ -532,8 +530,24 @@ impl WorkerAgentServiceImpl {
                             }
                         };
 
-                        // B. Build WorkerHandle from worker info
-                        let resource_id = worker_info.name.clone();
+                        // B. Build WorkerHandle - use provider_resource_id from OTP token
+                        // ABSTRACT SOLUTION: Works for Docker (container ID), Kubernetes (pod name), Firecracker (VM ID)
+                        // The provider_resource_id was stored in the OTP token when the worker was provisioned
+                        let resource_id = provider_resource_id.ok_or_else(|| {
+                            error!(
+                                "❌ JIT Registration failed: provider_resource_id not available for worker {}",
+                                worker_id
+                            );
+                            Status::internal(
+                                "Provider resource ID not available - cannot complete JIT registration"
+                            )
+                        })?;
+
+                        info!(
+                            "🔍 JIT Registration: Using provider_resource_id from OTP token for worker {} (resource_id: {})",
+                            worker_id, resource_id
+                        );
+
                         let handle = WorkerHandle::new(
                             worker_id.clone(),
                             resource_id.clone(),
@@ -1053,7 +1067,7 @@ impl WorkerAgentServiceImpl {
 
         if let Some(store) = self.token_store() {
             let token = store
-                .issue(&worker_id, std::time::Duration::from_secs(300))
+                .issue(&worker_id, std::time::Duration::from_secs(300), None)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
             return Ok(token.to_string());
@@ -1075,12 +1089,12 @@ impl WorkerAgentServiceImpl {
     ///
     /// En modo desarrollo (HODEI_DEV_MODE=1), acepta tokens con prefijo "dev-"
     /// Validate OTP token (PRD v6.0)
-    /// Returns worker_id
+    /// Returns (worker_id, provider_resource_id)
     async fn validate_otp(
         &self,
         token: &str,
         worker_id_from_request: &str,
-    ) -> Result<String, Status> {
+    ) -> Result<(String, Option<String>), Status> {
         let _worker_id = Self::parse_worker_uuid(worker_id_from_request)?;
 
         // Modo desarrollo: solo en debug builds (nunca en release)
@@ -1092,7 +1106,7 @@ impl WorkerAgentServiceImpl {
                 "Development mode: accepting token for worker {}",
                 worker_id_from_request
             );
-            return Ok(worker_id_from_request.to_string());
+            return Ok((worker_id_from_request.to_string(), None));
         }
 
         if let Some(store) = self.token_store() {
@@ -1102,11 +1116,11 @@ impl WorkerAgentServiceImpl {
                     Status::unauthenticated(e.to_string())
                 },
             )?;
-            store
+            let provider_resource_id = store
                 .consume(&token, &worker_id)
                 .await
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
-            return Ok(worker_id_from_request.to_string());
+            return Ok((worker_id_from_request.to_string(), provider_resource_id));
         }
 
         // EPIC-42: DashMap entry API para modificación atómica
@@ -1128,7 +1142,7 @@ impl WorkerAgentServiceImpl {
         }
 
         otp.used = true;
-        Ok(otp.worker_id.clone())
+        Ok((otp.worker_id.clone(), None))
     }
 
     /// Genera un session ID para reconexiones
@@ -1137,19 +1151,48 @@ impl WorkerAgentServiceImpl {
     }
 
     /// Envía un mensaje a un worker específico
+    /// Implements retry logic to handle race condition between worker registration and stream setup
     pub async fn send_to_worker(
         &self,
         worker_id: &str,
         message: ServerMessage,
     ) -> Result<(), Status> {
-        let sender = self.worker_channels
-            .get(worker_id)
-            .ok_or_else(|| Status::not_found(format!("Worker {} not connected", worker_id)))?;
+        use tokio::time::{sleep, Duration};
 
-        sender
-            .send(Ok(message))
-            .await
-            .map_err(|e| Status::internal(format!("Failed to send message to worker: {}", e)))
+        let max_attempts = 10;
+        let mut delay = Duration::from_millis(50);
+
+        for attempt in 1..=max_attempts {
+            if let Some(sender) = self.worker_channels.get(worker_id) {
+                info!(
+                    "📤 Sending message to worker {} (attempt {}/{})",
+                    worker_id, attempt, max_attempts
+                );
+
+                return sender
+                    .send(Ok(message))
+                    .await
+                    .map_err(|e| Status::internal(format!("Failed to send message to worker: {}", e)));
+            }
+
+            if attempt < max_attempts {
+                info!(
+                    "⏳ Worker {} channel not ready yet, retrying in {:?} (attempt {}/{})",
+                    worker_id, delay, attempt, max_attempts
+                );
+                sleep(delay).await;
+                delay = std::cmp::min(delay * 2, Duration::from_millis(1000)); // Max 1s backoff
+            }
+        }
+
+        error!(
+            "❌ Worker {} not connected after {} attempts over {:?}",
+            worker_id, max_attempts, Duration::from_millis(50) * (2_u32.pow(max_attempts) - 1)
+        );
+        Err(Status::not_found(format!(
+            "Worker {} not connected after {} retry attempts",
+            worker_id, max_attempts
+        )))
     }
 }
 
@@ -1259,11 +1302,11 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 "🔐 WorkerAgentService::register: Validating OTP token for worker {}...",
                 worker_id
             );
-            let validated_worker_id = self.validate_otp(&req.auth_token, &worker_id).await?;
+            let (validated_worker_id, provider_resource_id_from_token) = self.validate_otp(&req.auth_token, &worker_id).await?;
 
             info!(
-                "✅ WorkerAgentService::register: OTP validation SUCCESSFUL for worker {}",
-                validated_worker_id
+                "✅ WorkerAgentService::register: OTP validation SUCCESSFUL for worker {} (resource_id: {:?})",
+                validated_worker_id, provider_resource_id_from_token
             );
 
             // Extract job_id from request (passed by worker via env var)
@@ -1286,9 +1329,14 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 validated_worker_id, job_id_from_request
             );
 
-            // Pass worker_info and job_id for JIT registration if needed
-            self.on_worker_ready(&validated_worker_id, &worker_info, job_id_from_request.clone())
-                .await?;
+            // Pass worker_info, job_id, and provider_resource_id (from OTP token) for JIT registration
+            self.on_worker_ready(
+                &Self::parse_worker_uuid(&validated_worker_id)?,
+                &worker_info,
+                job_id_from_request.clone(),
+                provider_resource_id_from_token,
+            )
+            .await?;
         } else {
             info!(
                 "✅ WorkerAgentService::register: Skipping OTP validation for worker {} (valid session)",
@@ -1351,41 +1399,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                     }
                 }
 
-                // Always publish Registered for new sessions (consistent with current design)
-                // Or should we only publish Registered for clean starts?
-                // The requirements imply we want to track "Recovery Failed" distinct from "Registered".
-                // Let's keep publishing Registered so systems relying on it to know a worker is UP still work.
-
-                // Get provider_id from registry to ensure correct provider_id in event
-                let provider_id = if let Some(registry) = self.worker_registry() {
-                    if let Ok(Some(worker)) = registry
-                        .get(&WorkerId(
-                            uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
-                        ))
-                        .await
-                    {
-                        Some(worker.handle().provider_id.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                let event = DomainEvent::WorkerReady {
-                    worker_id: hodei_server_domain::shared_kernel::WorkerId(
-                        uuid::Uuid::parse_str(&worker_id).unwrap_or_default(),
-                    ),
-                    provider_id: provider_id
-                        .unwrap_or_else(|| hodei_server_domain::shared_kernel::ProviderId::new()),
-                    job_id: None, // WorkerReady without specific job
-                    ready_at: Utc::now(),
-                    correlation_id: ctx.correlation_id_owned(),
-                    actor: ctx.actor_owned(),
-                };
-                if let Err(e) = event_bus.publish(&event).await {
-                    warn!("Failed to publish WorkerReady event: {}", e);
-                }
+                // NOTE: WorkerReady event is emitted by on_worker_ready() with the correct job_id
+                // from the OTP token. Don't emit it here to avoid overwriting with job_id: None
             }
         }
 
@@ -1622,6 +1637,9 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         "Worker status: {:?}, reason: {}",
                                         status.status, status.reason
                                     );
+
+                                    // Worker status change logged - worker_channels already updated
+                                    // Jobs will be dispatched via retry logic in send_to_worker
                                 }
                                 WorkerPayload::Ack(ack) => {
                                     info!(

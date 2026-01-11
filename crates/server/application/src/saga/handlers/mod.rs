@@ -7,7 +7,7 @@
 pub mod provisioning_handlers;
 pub mod execution_handlers;
 
-pub use provisioning_handlers::{ValidateProviderHandler};
+pub use provisioning_handlers::{ArcEventBusWrapper, ValidateProviderHandler, PublishProvisionedHandler};
 pub use execution_handlers::*;
 
 use async_trait::async_trait;
