@@ -3,7 +3,7 @@
 use crate::components::provider_forms::{ProviderFormState, ProviderType};
 use crate::components::provider_wizard::{ProviderWizard, WizardState};
 use crate::server_functions::{
-    ProviderDisplayStatus, ProviderInfo, ProviderType as ServerProviderType, get_fallback_providers,
+    ProviderDisplayStatus, ProviderType as ServerProviderType, get_fallback_providers,
 };
 use leptos::prelude::*;
 

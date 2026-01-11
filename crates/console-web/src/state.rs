@@ -4,9 +4,7 @@
 //! - Selection support
 //! - Sorting state
 
-use crate::server_functions::{
-    JobSummaryStatus, ProviderInfo, QueueItemInfo, RecentJob, WorkerInfo,
-};
+use crate::server_functions::{ProviderInfo, QueueItemInfo, RecentJob, WorkerInfo};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

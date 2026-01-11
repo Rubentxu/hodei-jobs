@@ -2,8 +2,8 @@
 
 use crate::components::{IconVariant, StatsCard, StatusBadge};
 use crate::server_functions::{
-    DashboardStats, JobSummaryStatus, ProviderHealth, ProviderType, RecentJob,
-    get_fallback_dashboard_stats, get_fallback_provider_health, get_fallback_recent_jobs,
+    DashboardStats, JobSummaryStatus, ProviderHealth, ProviderType, get_fallback_provider_health,
+    get_fallback_recent_jobs,
 };
 use leptos::prelude::*;
 

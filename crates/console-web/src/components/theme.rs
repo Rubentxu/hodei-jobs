@@ -84,6 +84,7 @@ fn system_prefers_dark() -> bool {
 }
 
 /// Global theme state key
+#[allow(dead_code)]
 const THEME_CONTEXT_KEY: &str = "hodei-theme-context";
 
 /// Get or create theme signal
@@ -177,6 +178,7 @@ impl ThemeContext {
 
 /// Persist theme to localStorage
 #[cfg(feature = "client")]
+#[allow(dead_code)]
 fn persist_theme(theme: Theme) {
     use wasm_bindgen::prelude::*;
     use web_sys::window;
@@ -190,10 +192,12 @@ fn persist_theme(theme: Theme) {
 }
 
 #[cfg(not(feature = "client"))]
+#[allow(dead_code)]
 fn persist_theme(_: Theme) {}
 
 /// Load saved theme from localStorage
 #[cfg(feature = "client")]
+#[allow(dead_code)]
 fn load_saved_theme() -> Option<Theme> {
     use wasm_bindgen::prelude::*;
     use web_sys::window;
@@ -205,12 +209,14 @@ fn load_saved_theme() -> Option<Theme> {
 }
 
 #[cfg(not(feature = "client"))]
+#[allow(dead_code)]
 fn load_saved_theme() -> Option<Theme> {
     None
 }
 
 /// Apply theme by toggling CSS class on document
 #[cfg(feature = "client")]
+#[allow(dead_code)]
 fn apply_theme(theme: Theme) {
     use wasm_bindgen::prelude::*;
     use web_sys::window;
@@ -227,6 +233,8 @@ fn apply_theme(theme: Theme) {
 }
 
 #[cfg(not(feature = "client"))]
+#[allow(dead_code)]
+#[allow(clippy::cmp_min_max_by)]
 fn apply_theme(_: Theme) {}
 
 /// Hook to use theme context in components

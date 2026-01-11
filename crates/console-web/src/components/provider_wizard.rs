@@ -2,11 +2,7 @@
 //!
 //! Provides wizard dialogs for adding Kubernetes, Docker, and Firecracker providers.
 
-use crate::components::provider_forms::{
-    DockerProviderConfig, FirecrackerProviderConfig, KubernetesProviderConfig, ProviderFormState,
-    ProviderType, ProviderValidationError,
-};
-use crate::types::ProviderConfig;
+use crate::components::provider_forms::{ProviderFormState, ProviderType};
 use leptos::prelude::*;
 
 /// Wizard state

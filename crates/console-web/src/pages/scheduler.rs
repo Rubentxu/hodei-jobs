@@ -2,10 +2,7 @@
 //!
 //! Visualizes the current state of the job scheduler, queue status, and allows configuration.
 
-use crate::server_functions::{
-    Priority, QueueItemInfo, QueueStatus, QueueStatusInfo, get_fallback_queue_items,
-    get_fallback_queue_status,
-};
+use crate::server_functions::{Priority, QueueStatus, QueueStatusInfo, get_fallback_queue_items};
 use leptos::prelude::*;
 
 #[component]

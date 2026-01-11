@@ -42,7 +42,10 @@ pub use events::{
     TraceContext,
 };
 
-// Public events module that provides both the legacy DomainEvent and new modular events
+// Re-export event mapping for realtime projections
+// Note: ClientEvent and ClientEventPayload are now defined in hodei_shared::realtime
+
+// Public events module that provides both legacy DomainEvent and new modular events
 pub mod events_public {
     //! Domain Events Module
     //!
@@ -75,6 +78,12 @@ pub use domain_events::*;
 pub use logging::*;
 pub use request_context::*;
 pub use shared_kernel::*;
+
+// Re-export realtime types from hodei_shared (shared WebSocket protocol)
+pub use hodei_shared::realtime::ClientEvent;
+pub use hodei_shared::realtime::ClientEventPayload;
+pub use hodei_shared::realtime::ServerMessage;
+pub use hodei_shared::realtime::ClientCommand;
 
 // Re-exports de bounded contexts
 pub use audit::*;

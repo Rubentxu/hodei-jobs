@@ -52,7 +52,7 @@ pub struct WorkerInfo {
     pub provider_type: ProviderType,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum WorkerDisplayStatus {
     Online,
     Busy,
@@ -60,7 +60,7 @@ pub enum WorkerDisplayStatus {
     Error,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ProviderType {
     Kubernetes,
     Docker,

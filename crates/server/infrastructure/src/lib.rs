@@ -10,6 +10,9 @@ pub mod reconciliation;
 // Por dominio (implementaciones de providers)
 pub mod providers;
 
+// Realtime WebSocket infrastructure
+pub mod realtime;
+
 // Security
 pub mod credentials;
 

@@ -99,7 +99,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
 }
 
 /// Render the Leptos app to HTML
-async fn render_handler(state: Arc<ServerState>) -> impl IntoResponse {
+async fn render_handler(_state: Arc<ServerState>) -> impl IntoResponse {
     // For SSR, we render the Leptos app
     // In a full implementation, this would use leptos::server::render_to_string
     // with the app component and provide context
