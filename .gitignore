@@ -160,9 +160,10 @@ AGENTS.md
 CLAUDE.md
 .claude/
 .github
--e 
+-e
 # -----------------------------------------------------------------------------
 # Shared Tests
 # -----------------------------------------------------------------------------
 crates/shared/tests/
 context/
+docs/frontend/stitch_dashboard_overview/
