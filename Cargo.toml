@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.38.5"
+version = "0.39.0"
 edition = "2024"
 license = "MIT"
 authors = ["Hodei Team Platform"]
@@ -140,6 +140,7 @@ cron = "0.12"
 leptos = "0.8.15"
 leptos_router = "0.8.11"
 leptos_meta = "0.8.3"
+leptos_axum_html = "0.3"
 
 # HTTP framework
 axum = "0.7"
