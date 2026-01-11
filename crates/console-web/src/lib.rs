@@ -13,6 +13,7 @@ pub mod server;
 pub mod components;
 pub mod grpc;
 pub mod pages;
+pub mod server_functions;
 pub mod types;
 
 /// Application state for managing connection status and theme
