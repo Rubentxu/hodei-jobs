@@ -75,6 +75,9 @@ cron = "0.12"
 # Monitoring
 prometheus = { workspace = true }
 
+# Concurrency
+dashmap = { workspace = true }
+
 # Observability (OpenTelemetry)
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
