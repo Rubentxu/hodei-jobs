@@ -7,7 +7,9 @@
 
 use async_trait::async_trait;
 use futures::Stream;
-use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, ResourceRequirements as K8sResourceRequirements};
+use k8s_openapi::api::core::v1::{
+    Container, EnvVar, Pod, ResourceRequirements as K8sResourceRequirements,
+};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::{
     Client, Config,
@@ -1035,7 +1037,10 @@ impl WorkerProviderIdentity for KubernetesProvider {
         // Transform localhost/127.0.0.1 to use host.minikube.internal for Minikube
         // or the actual host IP for production clusters
 
-        info!("K8s provider: Transforming server_address: {}", server_address);
+        info!(
+            "K8s provider: Transforming server_address: {}",
+            server_address
+        );
 
         if server_address.contains("localhost") || server_address.contains("127.0.0.1") {
             // For Minikube/local development
@@ -1043,7 +1048,10 @@ impl WorkerProviderIdentity for KubernetesProvider {
                 let transformed = server_address
                     .replace("localhost", "host.minikube.internal")
                     .replace("127.0.0.1", "host.minikube.internal");
-                info!("K8s provider: Detected Minikube, transformed to: {}", transformed);
+                info!(
+                    "K8s provider: Detected Minikube, transformed to: {}",
+                    transformed
+                );
                 transformed
             } else {
                 // For production: Try to get host IP from environment
@@ -1074,7 +1082,10 @@ impl WorkerProviderIdentity for KubernetesProvider {
                         server_address.to_string()
                     })
             };
-            info!("K8s provider: Transformed host.docker.internal to: {}", transformed);
+            info!(
+                "K8s provider: Transformed host.docker.internal to: {}",
+                transformed
+            );
             transformed
         } else {
             // Use the address as-is (might be a service name, external IP, etc.)
@@ -1441,6 +1452,16 @@ fn parse_k8s_log_line(line: &str) -> (chrono::DateTime<chrono::Utc>, String) {
 
 #[cfg(test)]
 mod tests {
+    // Force initialization of rustls crypto provider at module load time
+    use ctor::ctor;
+    use rustls::crypto::CryptoProvider;
+    use rustls::crypto::aws_lc_rs;
+
+    #[ctor]
+    fn init_rustls() {
+        let _ = CryptoProvider::install_default(aws_lc_rs::default_provider());
+    }
+
     use super::*;
     use crate::providers::pod_spec_factory::PodSpecFactory;
     use hodei_server_domain::workers::KubernetesContainer;

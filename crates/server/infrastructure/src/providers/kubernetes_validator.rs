@@ -475,6 +475,13 @@ impl Default for KubernetesConnectionValidator {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::init_rustls;
+
+    #[ctor::ctor]
+    fn init() {
+        init_rustls();
+    }
+
     use super::*;
     use hodei_server_domain::providers::{ProviderConfig, ProviderTypeConfig};
     use hodei_server_domain::workers::ProviderType;

@@ -4,19 +4,20 @@
 //! Following Hexagonal Architecture, handlers are in the application layer
 //! while commands and interfaces remain in the domain layer.
 
-pub mod provisioning_handlers;
 pub mod execution_handlers;
+pub mod provisioning_handlers;
 
-pub use provisioning_handlers::{ArcEventBusWrapper, ValidateProviderHandler, PublishProvisionedHandler};
 pub use execution_handlers::*;
+pub use provisioning_handlers::{PublishProvisionedHandler, ValidateProviderHandler};
 
 use async_trait::async_trait;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::saga::handlers::provisioning_handlers::ProviderRegistry;
 use hodei_server_domain::providers::config::ProviderConfigRepository;
-use hodei_server_domain::saga::commands::provisioning::ProviderConfig as SagaProviderConfig;
+use hodei_server_domain::saga::commands::provisioning::{
+    ProviderConfig as SagaProviderConfig, ProviderRegistry,
+};
 use hodei_server_domain::shared_kernel::{ProviderId, ProviderStatus, Result};
 
 /// Adapter that implements ProviderRegistry using ProviderConfigRepository
@@ -42,7 +43,10 @@ impl<R> ProviderRegistry for ProviderRegistryAdapter<R>
 where
     R: ProviderConfigRepository + Debug + Send + Sync + 'static,
 {
-    async fn get_provider_config(&self, provider_id: &ProviderId) -> Result<Option<SagaProviderConfig>> {
+    async fn get_provider_config(
+        &self,
+        provider_id: &ProviderId,
+    ) -> Result<Option<SagaProviderConfig>> {
         let config = self.repo.find_by_id(provider_id).await?;
         Ok(config.map(|c| SagaProviderConfig {
             id: c.id,

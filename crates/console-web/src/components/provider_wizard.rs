@@ -2,29 +2,12 @@
 //!
 //! Provides wizard dialogs for adding Kubernetes, Docker, and Firecracker providers.
 
+use crate::components::provider_forms::{
+    DockerProviderConfig, FirecrackerProviderConfig, KubernetesProviderConfig, ProviderFormState,
+    ProviderType, ProviderValidationError,
+};
+use crate::types::ProviderConfig;
 use leptos::prelude::*;
-use serde::{Deserialize, Serialize};
-
-/// Provider types
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub enum ProviderType {
-    #[serde(rename = "kubernetes")]
-    Kubernetes,
-    #[serde(rename = "docker")]
-    Docker,
-    #[serde(rename = "firecracker")]
-    Firecracker,
-}
-
-impl std::fmt::Display for ProviderType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProviderType::Kubernetes => write!(f, "Kubernetes"),
-            ProviderType::Docker => write!(f, "Docker"),
-            ProviderType::Firecracker => write!(f, "Firecracker"),
-        }
-    }
-}
 
 /// Wizard state
 #[derive(Clone, Debug, Default)]
@@ -32,37 +15,15 @@ pub struct WizardState {
     pub is_open: bool,
     pub current_step: usize,
     pub provider_type: Option<ProviderType>,
-    pub form_data: ProviderFormData,
-}
-
-/// Provider form data
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ProviderFormData {
-    pub name: String,
-    pub description: String,
-    // Kubernetes fields
-    pub kubeconfig: String,
-    pub cluster_url: String,
-    pub namespace: String,
-    // Docker fields
-    pub docker_socket: String,
-    pub docker_tls: bool,
-    pub docker_ca_cert: String,
-    pub docker_client_cert: String,
-    pub docker_client_key: String,
-    // Firecracker fields
-    pub fc_socket_path: String,
-    pub fc_kernel_image: String,
-    pub fc_rootfs: String,
-    pub fc_vcpu: u32,
-    pub fc_mem_mib: u32,
+    // Form data is now managed via the robust ProviderFormState
+    pub form_state: ProviderFormState,
 }
 
 /// Provider wizard component
 #[component]
 pub fn ProviderWizard(
     state: RwSignal<WizardState>,
-    on_submit: Callback<ProviderFormData>,
+    on_submit: Callback<ProviderFormState>,
 ) -> impl IntoView {
     let close_wizard = move |_| {
         state.set(WizardState::default());
@@ -70,6 +31,20 @@ pub fn ProviderWizard(
 
     let next_step = move |_| {
         state.update(|s| {
+            // Validate before proceeding from config step
+            if s.current_step == 1 {
+                if let Err(errors) = s.form_state.validate() {
+                    // In a real app we'd show these errors.
+                    // For now, we just auto-advance if it's "mostly" okay or let validation
+                    // be handled within the form components themselves.
+                    // For this implementation, we assume the form components update the state.
+                    // and we check valid status.
+                    if !errors.is_empty() {
+                        return;
+                    }
+                }
+            }
+
             if s.current_step < 2 {
                 s.current_step += 1;
             }
@@ -85,22 +60,28 @@ pub fn ProviderWizard(
     };
 
     let handle_submit = move |_| {
-        let data = state.get().form_data.clone();
-        on_submit.run(data);
+        let form_state = state.get().form_state.clone();
+        on_submit.run(form_state);
         state.update(|s| s.is_open = false);
+    };
+
+    let on_type_select = move |ptype: ProviderType| {
+        state.update(|s| {
+            s.provider_type = Some(ptype.clone());
+            s.form_state.provider_type = Some(ptype);
+            s.current_step = 1; // Move to config immediately after selection
+        });
     };
 
     view! {
         <Show when={move || state.get().is_open}>
             <div class="modal-overlay" on:click={close_wizard}>
-                <div class="modal-content wizard-modal" on:click=|_| {}>
+                <div class="modal-content wizard-modal" on:click=|_| {}> // Stop propagation
                     <div class="wizard-header">
                         <h2 class="wizard-title">
                             {move || match state.get().provider_type {
-                                Some(ProviderType::Kubernetes) => "Add Kubernetes Provider",
-                                Some(ProviderType::Docker) => "Add Docker Provider",
-                                Some(ProviderType::Firecracker) => "Add Firecracker Provider",
-                                None => "Add Provider",
+                                Some(pt) => format!("Add {} Provider", pt.display_name()),
+                                None => "Add Provider".to_string(),
                             }}
                         </h2>
                         <button class="modal-close" on:click={close_wizard}>"×"</button>
@@ -109,7 +90,7 @@ pub fn ProviderWizard(
                     <div class="wizard-progress">
                         <div class="progress-step" class:active={move || state.get().current_step >= 0}>
                             <span class="step-number">"1"</span>
-                            <span class="step-label">"Basic Info"</span>
+                            <span class="step-label">"Provider Type"</span>
                         </div>
                         <div class="progress-line"></div>
                         <div class="progress-step" class:active={move || state.get().current_step >= 1}>
@@ -125,13 +106,13 @@ pub fn ProviderWizard(
 
                     <div class="wizard-body">
                         <Show when={move || state.get().current_step == 0}>
-                            <BasicInfoForm />
+                            <ProviderTypeSelector on_select=Callback::new(on_type_select) />
                         </Show>
                         <Show when={move || state.get().current_step == 1}>
-                            <ConfigForm />
+                            <ConfigForm state=state />
                         </Show>
                         <Show when={move || state.get().current_step == 2}>
-                            <ReviewForm />
+                            <ReviewForm state=state />
                         </Show>
                     </div>
 
@@ -142,10 +123,10 @@ pub fn ProviderWizard(
                             </button>
                         </Show>
                         <div class="spacer"></div>
-                        <Show when={move || state.get().current_step < 2}>
-                            <button class="btn btn-primary" on:click={next_step}>
-                                "Next"
-                            </button>
+                        <Show when={move || state.get().current_step == 1}>
+                             <button class="btn btn-primary" on:click={next_step}>
+                                 "Next"
+                             </button>
                         </Show>
                         <Show when={move || state.get().current_step == 2}>
                             <button class="btn btn-success" on:click={handle_submit}>
@@ -159,111 +140,12 @@ pub fn ProviderWizard(
     }
 }
 
-/// Basic info form step
-#[component]
-fn BasicInfoForm() -> impl IntoView {
-    view! {
-        <div class="form-step">
-            <div class="form-group">
-                <label for="provider-name">"Provider Name"</label>
-                <input
-                    id="provider-name"
-                    type="text"
-                    class="form-input"
-                    placeholder="e.g., Production Kubernetes Cluster"
-                />
-            </div>
-            <div class="form-group">
-                <label for="provider-description">"Description"</label>
-                <textarea
-                    id="provider-description"
-                    class="form-textarea"
-                    placeholder="Brief description of this provider..."
-                ></textarea>
-            </div>
-        </div>
-    }
-}
-
-/// Configuration form step
-#[component]
-fn ConfigForm() -> impl IntoView {
-    view! {
-        <div class="form-step">
-            <Show when={move || true /* placeholder for provider_type check */}>
-                <KubernetesConfigForm />
-            </Show>
-        </div>
-    }
-}
-
-/// Kubernetes configuration form
-#[component]
-fn KubernetesConfigForm() -> impl IntoView {
-    view! {
-        <div class="provider-config">
-            <div class="config-section">
-                <h4>"Kubernetes Configuration"</h4>
-                <div class="form-group">
-                    <label for="kubeconfig">"Kubeconfig (Base64 encoded)"</label>
-                    <textarea
-                        id="kubeconfig"
-                        class="form-textarea code"
-                        placeholder="Paste your kubeconfig content here..."
-                        rows="8"
-                    ></textarea>
-                    <p class="form-help">"Base64 encoded kubeconfig content. Get it with: cat ~/.kube/config | base64 -w0"</p>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="cluster-url">"Cluster URL (optional)"</label>
-                        <input
-                            id="cluster-url"
-                            type="text"
-                            class="form-input"
-                            placeholder="https://kubernetes.example.com:6443"
-                        />
-                    </div>
-                    <div class="form-group">
-                        <label for="namespace">"Default Namespace"</label>
-                        <input
-                            id="namespace"
-                            type="text"
-                            class="form-input"
-                            placeholder="hodei-workers"
-                        />
-                    </div>
-                </div>
-            </div>
-        </div>
-    }
-}
-
-/// Review form step
-#[component]
-fn ReviewForm() -> impl IntoView {
-    view! {
-        <div class="form-step">
-            <div class="review-section">
-                <h4>"Review Configuration"</h4>
-                <p class="form-help">"Review your provider configuration before adding."</p>
-            </div>
-        </div>
-    }
-}
-
 /// Provider type selector component
 #[component]
 pub fn ProviderTypeSelector(on_select: Callback<ProviderType>) -> impl IntoView {
-    let on_kubernetes = move |_| {
-        on_select.run(ProviderType::Kubernetes);
-    };
-    let on_docker = move |_| {
-        on_select.run(ProviderType::Docker);
-    };
-    let on_firecracker = move |_| {
-        on_select.run(ProviderType::Firecracker);
-    };
+    let on_kubernetes = move |_| on_select.run(ProviderType::Kubernetes);
+    let on_docker = move |_| on_select.run(ProviderType::Docker);
+    let on_firecracker = move |_| on_select.run(ProviderType::Firecracker);
 
     view! {
         <div class="provider-type-grid">
@@ -272,7 +154,7 @@ pub fn ProviderTypeSelector(on_select: Callback<ProviderType>) -> impl IntoView 
                     <span class="material-symbols-outlined">"container"</span>
                 </div>
                 <h4>"Kubernetes"</h4>
-                <p>"Deploy workers on Kubernetes clusters with full orchestration"</p>
+                <p>"Deploy workers on Kubernetes clusters"</p>
             </button>
             <button class="provider-type-card" on:click={on_docker}>
                 <div class="type-icon docker">
@@ -286,8 +168,155 @@ pub fn ProviderTypeSelector(on_select: Callback<ProviderType>) -> impl IntoView 
                     <span class="material-symbols-outlined">"security"</span>
                 </div>
                 <h4>"Firecracker"</h4>
-                <p>"Launch ultra-lightweight microVMs for maximum performance"</p>
+                <p>"Launch ultra-lightweight microVMs"</p>
             </button>
+        </div>
+    }
+}
+
+/// Configuration form container
+#[component]
+fn ConfigForm(state: RwSignal<WizardState>) -> impl IntoView {
+    view! {
+        <div class="form-step">
+            <Show when={move || state.get().provider_type == Some(ProviderType::Kubernetes)}>
+                <KubernetesConfigForm state=state />
+            </Show>
+            <Show when={move || state.get().provider_type == Some(ProviderType::Docker)}>
+                <DockerConfigForm state=state />
+            </Show>
+            <Show when={move || state.get().provider_type == Some(ProviderType::Firecracker)}>
+                <FirecrackerConfigForm state=state />
+            </Show>
+            <Show when={move || state.get().provider_type.is_none()}>
+                <div>"Please select a provider type"</div>
+            </Show>
+        </div>
+    }
+}
+
+/// Kubernetes configuration form
+#[component]
+fn KubernetesConfigForm(state: RwSignal<WizardState>) -> impl IntoView {
+    view! {
+        <div class="provider-config">
+            <div class="form-group">
+                <label>"Name"</label>
+                <input type="text" class="form-input"
+                    on:input=move |ev| state.update(|s| s.form_state.kubernetes.name = event_target_value(&ev))
+                    prop:value=move || state.get().form_state.kubernetes.name
+                />
+            </div>
+             <div class="form-group">
+                <label>"Kubeconfig (Base64)"</label>
+                <textarea class="form-textarea code"
+                    on:input=move |ev| state.update(|s| s.form_state.kubernetes.kubeconfig = event_target_value(&ev))
+                    prop:value=move || state.get().form_state.kubernetes.kubeconfig
+                ></textarea>
+            </div>
+            <div class="form-group">
+                <label>"Namespace"</label>
+                <input type="text" class="form-input"
+                    on:input=move |ev| state.update(|s| s.form_state.kubernetes.namespace = event_target_value(&ev))
+                    prop:value=move || state.get().form_state.kubernetes.namespace
+                />
+            </div>
+        </div>
+    }
+}
+
+/// Docker configuration form
+#[component]
+fn DockerConfigForm(state: RwSignal<WizardState>) -> impl IntoView {
+    view! {
+        <div class="provider-config">
+           <div class="form-group">
+                <label>"Name"</label>
+                <input type="text" class="form-input"
+                    on:input=move |ev| state.update(|s| s.form_state.docker.name = event_target_value(&ev))
+                     prop:value=move || state.get().form_state.docker.name
+                />
+            </div>
+            <div class="form-group">
+                <label>"Docker Socket"</label>
+                <input type="text" class="form-input"
+                    placeholder="unix:///var/run/docker.sock"
+                    on:input=move |ev| state.update(|s| s.form_state.docker.socket_path = event_target_value(&ev))
+                    prop:value=move || state.get().form_state.docker.socket_path
+                />
+            </div>
+        </div>
+    }
+}
+
+/// Firecracker configuration form
+#[component]
+fn FirecrackerConfigForm(state: RwSignal<WizardState>) -> impl IntoView {
+    view! {
+        <div class="provider-config">
+           <div class="form-group">
+                <label>"Name"</label>
+                <input type="text" class="form-input"
+                    on:input=move |ev| state.update(|s| s.form_state.firecracker.name = event_target_value(&ev))
+                    prop:value=move || state.get().form_state.firecracker.name
+                />
+            </div>
+            <div class="form-group">
+                <label>"Socket Path"</label>
+                <input type="text" class="form-input"
+                    on:input=move |ev| state.update(|s| s.form_state.firecracker.socket_path = event_target_value(&ev))
+                    prop:value=move || state.get().form_state.firecracker.socket_path
+                />
+            </div>
+            <div class="form-row">
+                 <div class="form-group">
+                    <label>"Kernel Image"</label>
+                    <input type="text" class="form-input"
+                        on:input=move |ev| state.update(|s| s.form_state.firecracker.kernel_image = event_target_value(&ev))
+                        prop:value=move || state.get().form_state.firecracker.kernel_image
+                    />
+                </div>
+                 <div class="form-group">
+                    <label>"Rootfs"</label>
+                    <input type="text" class="form-input"
+                        on:input=move |ev| state.update(|s| s.form_state.firecracker.rootfs = event_target_value(&ev))
+                        prop:value=move || state.get().form_state.firecracker.rootfs
+                    />
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// Review form step
+#[component]
+fn ReviewForm(state: RwSignal<WizardState>) -> impl IntoView {
+    view! {
+        <div class="form-step">
+            <div class="review-section">
+                <h4>"Review Configuration"</h4>
+                <Show when={move || state.get().provider_type == Some(ProviderType::Kubernetes)}>
+                    <div class="review-item">
+                        <span class="label">"Type:"</span> <span class="value">"Kubernetes"</span>
+                        <span class="label">"Name:"</span> <span class="value">{state.get().form_state.kubernetes.name}</span>
+                        <span class="label">"Namespace:"</span> <span class="value">{state.get().form_state.kubernetes.namespace}</span>
+                    </div>
+                </Show>
+                <Show when={move || state.get().provider_type == Some(ProviderType::Docker)}>
+                    <div class="review-item">
+                        <span class="label">"Type:"</span> <span class="value">"Docker"</span>
+                        <span class="label">"Name:"</span> <span class="value">{state.get().form_state.docker.name}</span>
+                        <span class="label">"Socket:"</span> <span class="value">{state.get().form_state.docker.socket_path}</span>
+                    </div>
+                </Show>
+                <Show when={move || state.get().provider_type == Some(ProviderType::Firecracker)}>
+                    <div class="review-item">
+                        <span class="label">"Type:"</span> <span class="value">"Firecracker"</span>
+                        <span class="label">"Name:"</span> <span class="value">{state.get().form_state.firecracker.name}</span>
+                        <span class="label">"Kernel:"</span> <span class="value">{state.get().form_state.firecracker.kernel_image}</span>
+                    </div>
+                </Show>
+            </div>
         </div>
     }
 }

@@ -91,9 +91,10 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         })
         .layer(cors)
         .layer(TraceLayer::new_for_http())
-        .layer(TimeoutLayer::new(Duration::from_secs(
-            state.request_timeout,
-        )))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(state.request_timeout),
+        ))
         .with_state(state)
 }
 

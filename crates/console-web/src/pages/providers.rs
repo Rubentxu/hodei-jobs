@@ -1,5 +1,7 @@
 //! Providers page - Configure and manage worker providers
 
+use crate::components::provider_forms::{ProviderFormState, ProviderType};
+use crate::components::provider_wizard::{ProviderWizard, WizardState};
 use leptos::prelude::*;
 
 /// Provider configuration
@@ -11,14 +13,6 @@ pub struct ProviderConfig {
     pub status: ProviderStatus,
     pub description: String,
     pub cluster_info: Option<String>,
-}
-
-/// Provider types
-#[derive(Clone, Debug, PartialEq)]
-pub enum ProviderType {
-    Kubernetes,
-    Docker,
-    Firecracker,
 }
 
 /// Provider connection status
@@ -33,6 +27,21 @@ pub enum ProviderStatus {
 #[component]
 pub fn Providers() -> impl IntoView {
     let providers = generate_sample_providers();
+    let wizard_state = RwSignal::new(WizardState::default());
+
+    let open_wizard = move |ptype: Option<ProviderType>| {
+        wizard_state.update(|s| {
+            s.is_open = true;
+            s.provider_type = ptype.clone();
+            s.form_state.provider_type = ptype;
+            s.current_step = if s.provider_type.is_some() { 1 } else { 0 };
+        });
+    };
+
+    let on_submit = Callback::new(move |data: ProviderFormState| {
+        // In a real app, this would make an API call
+        leptos::logging::log!("Submitted provider data: {:?}", data);
+    });
 
     view! {
         <div class="page">
@@ -42,7 +51,7 @@ pub fn Providers() -> impl IntoView {
                     <p class="page-subtitle">"Configure worker infrastructure providers"</p>
                 </div>
                 <div class="quick-actions">
-                    <button class="btn btn-primary">
+                    <button class="btn btn-primary" on:click=move |_| open_wizard(None)>
                         <span class="material-symbols-outlined">"add"</span>
                         "Add Provider"
                     </button>
@@ -120,7 +129,7 @@ pub fn Providers() -> impl IntoView {
                 </div>
                 <div class="card-body">
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">
-                        <div class="card" style="text-align: center; cursor: pointer;">
+                        <div class="card" style="text-align: center; cursor: pointer;" on:click=move |_| open_wizard(Some(ProviderType::Kubernetes))>
                             <div class="card-body" style="padding: 2rem;">
                                 <div style="width: 64px; height: 64px; border-radius: 16px; background: var(--color-info); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem;">
                                     <span class="material-symbols-outlined" style="font-size: 2rem; color: white;">"container"</span>
@@ -132,7 +141,7 @@ pub fn Providers() -> impl IntoView {
                                 <button class="btn btn-secondary btn-sm">"Add"</button>
                             </div>
                         </div>
-                        <div class="card" style="text-align: center; cursor: pointer;">
+                        <div class="card" style="text-align: center; cursor: pointer;" on:click=move |_| open_wizard(Some(ProviderType::Docker))>
                             <div class="card-body" style="padding: 2rem;">
                                 <div style="width: 64px; height: 64px; border-radius: 16px; background: var(--color-primary); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem;">
                                     <span class="material-symbols-outlined" style="font-size: 2rem; color: white;">"docker"</span>
@@ -144,7 +153,7 @@ pub fn Providers() -> impl IntoView {
                                 <button class="btn btn-secondary btn-sm">"Add"</button>
                             </div>
                         </div>
-                        <div class="card" style="text-align: center; cursor: pointer;">
+                        <div class="card" style="text-align: center; cursor: pointer;" on:click=move |_| open_wizard(Some(ProviderType::Firecracker))>
                             <div class="card-body" style="padding: 2rem;">
                                 <div style="width: 64px; height: 64px; border-radius: 16px; background: var(--color-warning); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem;">
                                     <span class="material-symbols-outlined" style="font-size: 2rem; color: white;">"security"</span>
@@ -159,6 +168,8 @@ pub fn Providers() -> impl IntoView {
                     </div>
                 </div>
             </div>
+
+            <ProviderWizard state=wizard_state on_submit=on_submit />
         </div>
     }
 }

@@ -9,17 +9,16 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+use crate::workers::WorkerCommandSender;
 use hodei_server_domain::command::{Command, CommandHandler};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::execution::{
     AssignWorkerCommand, AssignWorkerError, CompleteJobCommand, CompleteJobError,
-    ExecuteJobCommand, ExecuteJobError, JobCompletionResult,
-    JobExecutionResult, JobValidationResult, ValidateJobCommand, ValidateJobError,
-    WorkerAssignmentResult,
+    ExecuteJobCommand, ExecuteJobError, JobCompletionResult, JobExecutionResult,
+    JobValidationResult, ValidateJobCommand, ValidateJobError, WorkerAssignmentResult,
 };
 use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use hodei_server_domain::workers::{WorkerFilter, WorkerRegistry};
-use crate::workers::WorkerCommandSender;
 
 // =============================================================================
 // ValidateJobHandler
@@ -59,7 +58,10 @@ where
 {
     type Error = ValidateJobError;
 
-    async fn handle(&self, command: ValidateJobCommand) -> Result<JobValidationResult, Self::Error> {
+    async fn handle(
+        &self,
+        command: ValidateJobCommand,
+    ) -> Result<JobValidationResult, Self::Error> {
         debug!(
             job_id = %command.job_id,
             saga_id = %command.saga_id,
@@ -71,8 +73,8 @@ where
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .ok()  // Convert DomainError to None
-            .flatten();  // Flatten Option<Option<T>> to Option<T>
+            .ok() // Convert DomainError to None
+            .flatten(); // Flatten Option<Option<T>> to Option<T>
 
         let job = job_opt.ok_or_else(|| {
             error!(job_id = %command.job_id, "Job not found in repository");
@@ -152,7 +154,10 @@ where
 {
     type Error = AssignWorkerError;
 
-    async fn handle(&self, command: AssignWorkerCommand) -> Result<WorkerAssignmentResult, Self::Error> {
+    async fn handle(
+        &self,
+        command: AssignWorkerCommand,
+    ) -> Result<WorkerAssignmentResult, Self::Error> {
         debug!(
             job_id = %command.job_id,
             saga_id = %command.saga_id,
@@ -164,17 +169,13 @@ where
             .with_state(WorkerState::Ready)
             .accepting_jobs();
 
-        let available_workers = self
-            .worker_registry
-            .find(&filter)
-            .await
-            .map_err(|e| {
-                error!(error = %e, "Failed to find available workers");
-                AssignWorkerError::AssignmentFailed {
-                    job_id: command.job_id.clone(),
-                    source: e,
-                }
-            })?;
+        let available_workers = self.worker_registry.find(&filter).await.map_err(|e| {
+            error!(error = %e, "Failed to find available workers");
+            AssignWorkerError::AssignmentFailed {
+                job_id: command.job_id.clone(),
+                source: e,
+            }
+        })?;
 
         if available_workers.is_empty() {
             warn!(job_id = %command.job_id, "No available workers found");
@@ -189,8 +190,8 @@ where
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .ok()  // Convert DomainError to None
-            .flatten();  // Flatten Option<Option<T>> to Option<T>
+            .ok() // Convert DomainError to None
+            .flatten(); // Flatten Option<Option<T>> to Option<T>
 
         let mut job = job_opt.ok_or_else(|| AssignWorkerError::NoAvailableWorkers {
             job_id: command.job_id.clone(),
@@ -205,15 +206,13 @@ where
             }
         })?;
 
-        self.job_repository.update(&job)
-            .await
-            .map_err(|e| {
-                error!(error = %e, "Failed to update job");
-                AssignWorkerError::AssignmentFailed {
-                    job_id: command.job_id.clone(),
-                    source: e,
-                }
-            })?;
+        self.job_repository.update(&job).await.map_err(|e| {
+            error!(error = %e, "Failed to update job");
+            AssignWorkerError::AssignmentFailed {
+                job_id: command.job_id.clone(),
+                source: e,
+            }
+        })?;
 
         // Update worker state to Busy
         self.worker_registry
@@ -233,7 +232,10 @@ where
             "Worker assigned successfully"
         );
 
-        Ok(WorkerAssignmentResult::success(worker.id().clone(), worker.state().clone()))
+        Ok(WorkerAssignmentResult::success(
+            worker.id().clone(),
+            worker.state().clone(),
+        ))
     }
 }
 
@@ -284,11 +286,7 @@ where
     S: WorkerCommandSender,
 {
     #[inline]
-    pub fn new(
-        job_repository: Arc<J>,
-        worker_registry: Arc<W>,
-        command_sender: Arc<S>,
-    ) -> Self {
+    pub fn new(job_repository: Arc<J>, worker_registry: Arc<W>, command_sender: Arc<S>) -> Self {
         Self {
             job_repository,
             worker_registry,
@@ -318,8 +316,8 @@ where
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .ok()  // Convert DomainError to None
-            .flatten()  // Flatten Option<Option<T>> to Option<T>
+            .ok() // Convert DomainError to None
+            .flatten() // Flatten Option<Option<T>> to Option<T>
             .ok_or_else(|| ExecuteJobError::JobNotFound {
                 job_id: command.job_id.clone(),
             })?;
@@ -329,8 +327,8 @@ where
             .worker_registry
             .find_by_id(&command.worker_id)
             .await
-            .ok()  // Convert DomainError to None
-            .flatten()  // Flatten Option<Option<T>> to Option<T>
+            .ok() // Convert DomainError to None
+            .flatten() // Flatten Option<Option<T>> to Option<T>
             .ok_or_else(|| ExecuteJobError::WorkerNotFound {
                 worker_id: command.worker_id.clone(),
             })?;
@@ -412,7 +410,10 @@ where
 {
     type Error = CompleteJobError;
 
-    async fn handle(&self, command: CompleteJobCommand) -> std::result::Result<JobCompletionResult, Self::Error> {
+    async fn handle(
+        &self,
+        command: CompleteJobCommand,
+    ) -> std::result::Result<JobCompletionResult, Self::Error> {
         debug!(
             job_id = %command.job_id,
             final_state = ?command.final_state,
@@ -424,8 +425,8 @@ where
             .job_repository
             .find_by_id(&command.job_id)
             .await
-            .ok()  // Convert DomainError to None
-            .flatten();  // Flatten Option<Option<T>> to Option<T>
+            .ok() // Convert DomainError to None
+            .flatten(); // Flatten Option<Option<T>> to Option<T>
 
         let job = job_opt.ok_or_else(|| CompleteJobError::JobNotFound {
             job_id: command.job_id.clone(),
@@ -476,9 +477,10 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use hodei_server_domain::jobs::{Job, JobSpec};
-    use hodei_server_domain::shared_kernel::ProviderId;
-    use std::sync::Arc;
+    use hodei_server_domain::DomainError;
+    use hodei_server_domain::jobs::{Job, JobSpec, JobsFilter};
+    use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
+    use hodei_server_domain::workers::WorkerFilter;
 
     // Test implementations
     #[derive(Debug)]
@@ -486,13 +488,48 @@ mod tests {
 
     #[async_trait]
     impl JobRepository for MockJobRepository {
-        async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> {
-            Ok(Some(Job::new(JobId::new(), JobSpec::default())))
+        async fn save(&self, _job: &Job) -> Result<(), DomainError> {
+            Ok(())
         }
-        async fn update(&self, _job: &Job) -> Result<()> { Ok(()) }
-        async fn update_state(&self, _id: &JobId, _state: JobState) -> Result<()> { Ok(()) }
-        async fn find(&self, _filter: crate::jobs::JobFilter) -> Result<Vec<Job>> { Ok(vec![]) }
-        async fn delete(&self, _id: &JobId) -> Result<()> { Ok(()) }
+        async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>, DomainError> {
+            // Return a valid job for testing
+            let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
+            Ok(Some(Job::new(_id.clone(), spec)))
+        }
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_pending(&self) -> Result<Vec<Job>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_all(
+            &self,
+            _limit: usize,
+            _offset: usize,
+        ) -> Result<(Vec<Job>, usize), DomainError> {
+            Ok((vec![], 0))
+        }
+        async fn find_by_execution_id(
+            &self,
+            _execution_id: &str,
+        ) -> Result<Option<Job>, DomainError> {
+            Ok(None)
+        }
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64, DomainError> {
+            Ok(0)
+        }
+        async fn delete(&self, _id: &JobId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn update(&self, _job: &Job) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn update_state(&self, _id: &JobId, _state: JobState) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -500,10 +537,107 @@ mod tests {
 
     #[async_trait]
     impl WorkerRegistry for MockWorkerRegistry {
-        async fn find_by_id(&self, _id: &WorkerId) -> Result<Option<hodei_server_domain::workers::Worker>> { Ok(None) }
-        async fn find(&self, _filter: WorkerFilter) -> Result<Vec<hodei_server_domain::workers::Worker>> { Ok(vec![]) }
-        async fn update_state(&self, _id: &WorkerId, _state: WorkerState) -> Result<()> { Ok(()) }
-        async fn get_by_job_id(&self, _job_id: &JobId) -> Result<Option<hodei_server_domain::workers::Worker>> { Ok(None) }
+        async fn register(
+            &self,
+            _handle: hodei_server_domain::WorkerHandle,
+            _spec: hodei_server_domain::WorkerSpec,
+            _job_id: JobId,
+        ) -> Result<hodei_server_domain::Worker, DomainError> {
+            unimplemented!()
+        }
+        async fn save(&self, _worker: &hodei_server_domain::Worker) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn unregister(&self, _id: &WorkerId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn find_by_id(
+            &self,
+            _id: &WorkerId,
+        ) -> Result<Option<hodei_server_domain::Worker>, DomainError> {
+            Ok(None)
+        }
+        async fn get_by_job_id(
+            &self,
+            _job_id: &JobId,
+        ) -> Result<Option<hodei_server_domain::Worker>, DomainError> {
+            Ok(None)
+        }
+        async fn find(
+            &self,
+            _filter: &WorkerFilter,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_ready_worker(
+            &self,
+            _filter: Option<&hodei_server_domain::WorkerFilter>,
+        ) -> Result<Option<hodei_server_domain::Worker>, DomainError> {
+            Ok(None)
+        }
+        async fn find_available(&self) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_by_provider(
+            &self,
+            _provider_id: &hodei_server_domain::ProviderId,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn update_heartbeat(&self, _id: &WorkerId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn mark_busy(
+            &self,
+            _id: &WorkerId,
+            _job_id: Option<JobId>,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn release_from_job(&self, _id: &WorkerId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn update_state(
+            &self,
+            _id: &WorkerId,
+            _state: WorkerState,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn find_unhealthy(
+            &self,
+            _timeout: std::time::Duration,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_for_termination(
+            &self,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_idle_timed_out(
+            &self,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_lifetime_exceeded(
+            &self,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn find_ttl_after_completion_exceeded(
+            &self,
+        ) -> Result<Vec<hodei_server_domain::Worker>, DomainError> {
+            Ok(vec![])
+        }
+        async fn stats(
+            &self,
+        ) -> Result<hodei_server_domain::workers::WorkerRegistryStats, DomainError> {
+            Ok(hodei_server_domain::workers::WorkerRegistryStats::default())
+        }
+        async fn count(&self) -> Result<usize, DomainError> {
+            Ok(0)
+        }
     }
 
     #[tokio::test]
@@ -523,11 +657,46 @@ mod tests {
         struct NotFoundRepo;
         #[async_trait]
         impl JobRepository for NotFoundRepo {
-            async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> { Ok(None) }
-            async fn update(&self, _job: &Job) -> Result<()> { Ok(()) }
-            async fn update_state(&self, _id: &JobId, _state: JobState) -> Result<()> { Ok(()) }
-            async fn find(&self, _filter: crate::jobs::JobFilter) -> Result<Vec<Job>> { Ok(vec![]) }
-            async fn delete(&self, _id: &JobId) -> Result<()> { Ok(()) }
+            async fn save(&self, _job: &Job) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>, DomainError> {
+                Ok(None)
+            }
+            async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>, DomainError> {
+                Ok(vec![])
+            }
+            async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>, DomainError> {
+                Ok(vec![])
+            }
+            async fn find_pending(&self) -> Result<Vec<Job>, DomainError> {
+                Ok(vec![])
+            }
+            async fn find_all(
+                &self,
+                _limit: usize,
+                _offset: usize,
+            ) -> Result<(Vec<Job>, usize), DomainError> {
+                Ok((vec![], 0))
+            }
+            async fn find_by_execution_id(
+                &self,
+                _execution_id: &str,
+            ) -> Result<Option<Job>, DomainError> {
+                Ok(None)
+            }
+            async fn count_by_state(&self, _state: &JobState) -> Result<u64, DomainError> {
+                Ok(0)
+            }
+            async fn delete(&self, _id: &JobId) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn update(&self, _job: &Job) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn update_state(&self, _id: &JobId, _state: JobState) -> Result<(), DomainError> {
+                Ok(())
+            }
         }
 
         let repo = Arc::new(NotFoundRepo);
@@ -536,6 +705,9 @@ mod tests {
 
         let result = handler.handle(command).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ValidateJobError::JobNotFound { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ValidateJobError::JobNotFound { .. }
+        ));
     }
 }

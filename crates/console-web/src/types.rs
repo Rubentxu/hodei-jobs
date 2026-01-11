@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Marker trait for provider configurations
+pub trait ProviderConfig: Send + Sync {}
+
 /// Provider types supported by Hodei
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ProviderType {

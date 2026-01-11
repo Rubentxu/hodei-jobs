@@ -2,6 +2,13 @@
 #[cfg(test)]
 // use crate::test_infrastructure::{InMemoryJobQueue, InMemoryJobRepository};
 use crate::persistence::postgres::test_in_memory::{InMemoryJobQueue, InMemoryJobRepository};
+use crate::test_helpers::init_rustls;
+
+#[ctor::ctor]
+fn init_rustls_for_tests() {
+    init_rustls();
+}
+
 use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobSpec};
 use hodei_server_domain::shared_kernel::{JobId, JobState};
 

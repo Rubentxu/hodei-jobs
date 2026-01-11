@@ -292,6 +292,14 @@ mod tests {
         ) -> std::result::Result<(), OutboxError> {
             Ok(())
         }
+        async fn record_failure_retry(
+            &self,
+            _event_id: &Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
         async fn exists_by_idempotency_key(
             &self,
             _key: &str,

@@ -603,6 +603,14 @@ mod tests {
             Ok(())
         }
 
+        async fn record_failure_retry(
+            &self,
+            _event_id: &Uuid,
+            _error: &str,
+        ) -> Result<(), OutboxError> {
+            Ok(())
+        }
+
         async fn exists_by_idempotency_key(&self, _key: &str) -> Result<bool, OutboxError> {
             Ok(false)
         }

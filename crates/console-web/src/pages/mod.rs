@@ -12,12 +12,14 @@ use crate::components::Layout;
 mod dashboard;
 mod jobs;
 mod providers;
+mod scheduler;
 mod settings;
 mod workers;
 
 use dashboard::Dashboard;
 use jobs::Jobs;
 use providers::Providers;
+use scheduler::Scheduler;
 use settings::Settings;
 use workers::Workers;
 
@@ -32,7 +34,7 @@ pub fn AppRouter() -> impl IntoView {
                     <Route path=path!("/jobs") view=Jobs />
                     <Route path=path!("/jobs/:id") view=JobDetailPage />
                     <Route path=path!("/workers") view=Workers />
-                    <Route path=path!("/scheduler") view=SchedulerPage />
+                    <Route path=path!("/scheduler") view=Scheduler />
                     <Route path=path!("/providers") view=Providers />
                     <Route path=path!("/settings") view=Settings />
                 </Routes>
@@ -48,17 +50,6 @@ fn JobDetailPage() -> impl IntoView {
         <div class="page">
             <h1 class="page-title">"Job Details"</h1>
             <p class="page-subtitle">"Job details will be displayed here"</p>
-        </div>
-    }
-}
-
-/// Scheduler page placeholder
-#[component]
-fn SchedulerPage() -> impl IntoView {
-    view! {
-        <div class="page">
-            <h1 class="page-title">"Scheduler & Queue"</h1>
-            <p class="page-subtitle">"Job scheduling and queue management"</p>
         </div>
     }
 }

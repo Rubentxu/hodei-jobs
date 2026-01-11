@@ -17,6 +17,9 @@ pub mod credentials;
 pub mod provisioning;
 
 #[cfg(test)]
+pub mod test_helpers;
+
+#[cfg(test)]
 mod tests;
 
 // Re-exports - Only available with test-utils feature

@@ -12,7 +12,9 @@
 
 use crate::saga::provisioning_saga::{DynProvisioningSagaCoordinator, ProvisioningSagaError};
 use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaError};
-use crate::workers::garbage_collector::{CleanupResult, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector};
+use crate::workers::garbage_collector::{
+    CleanupResult, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector,
+};
 use crate::workers::reconciler::{ReconciliationResult, WorkerReconciler};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -623,8 +625,6 @@ impl WorkerLifecycleManager {
         }
     }
 
-
-
     /// Provision a new worker using the specified provider
     /// Uses saga pattern with automatic compensation - saga coordinator is REQUIRED
     /// The job_id is REQUIRED - each worker is dedicated to a specific job
@@ -868,7 +868,11 @@ impl WorkerLifecycleManager {
     /// Start monitoring events from all registered providers AND domain events
     /// This enables reactive worker cleanup based on domain events
     pub async fn start_event_monitoring(&self) {
-        let providers: Vec<_> = self.providers.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
+        let providers: Vec<_> = self
+            .providers
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
 
         for (id, provider) in providers {
             let provider = provider.clone();
@@ -1178,12 +1182,11 @@ impl WorkerLifecycleManager {
         // GAP-GO-02: Delegate to WorkerGarbageCollector if available
         if let Some(ref gc) = self.garbage_collector {
             info!("GAP-GO-02: Delegating orphan detection to WorkerGarbageCollector");
-            return gc
-                .detect_and_cleanup_orphans()
-                .await
-                .map_err(|e| DomainError::InfrastructureError {
+            return gc.detect_and_cleanup_orphans().await.map_err(|e| {
+                DomainError::InfrastructureError {
                     message: format!("Orphan detection failed: {}", e),
-                });
+                }
+            });
         }
 
         // Legacy implementation (fallback)
@@ -1410,13 +1413,13 @@ pub struct HealthCheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::command::InMemoryErasedCommandBus;
     use crate::WorkerProvisioningService;
     use crate::provisioning::ProvisioningResult;
     use crate::saga::provisioning_saga::ProvisioningSagaCoordinatorConfig;
     use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
     use futures::stream::BoxStream;
     use hodei_server_domain::command::DynCommandBus;
+    use hodei_server_domain::command::InMemoryErasedCommandBus;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::saga::{
         Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
@@ -1703,6 +1706,14 @@ mod tests {
         }
 
         async fn mark_failed(
+            &self,
+            _event_id: &uuid::Uuid,
+            _error: &str,
+        ) -> std::result::Result<(), OutboxError> {
+            Ok(())
+        }
+
+        async fn record_failure_retry(
             &self,
             _event_id: &uuid::Uuid,
             _error: &str,

@@ -84,3 +84,5 @@ tonic = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = "3.15"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+ctor = "0.2"

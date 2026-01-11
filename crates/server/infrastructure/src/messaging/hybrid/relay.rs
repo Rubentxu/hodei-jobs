@@ -8,8 +8,8 @@ use hodei_server_domain::outbox::{OutboxError, OutboxEventView, OutboxRepository
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
-use tokio::time::{interval, Duration};
+use tokio::sync::{Mutex, broadcast};
+use tokio::time::{Duration, interval};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the hybrid outbox relay.
@@ -100,7 +100,9 @@ impl<R: OutboxRepository> HybridOutboxRelay<R> {
         let (shutdown, rx) = broadcast::channel(1);
 
         // Try to create listener, store in struct
-        let listener = match crate::messaging::hybrid::PgNotifyListener::new(pool, &config.channel).await {
+        let listener = match crate::messaging::hybrid::PgNotifyListener::new(pool, &config.channel)
+            .await
+        {
             Ok(l) => Some(l),
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to create LISTEN/NOTIFY listener, polling-only mode");
@@ -127,7 +129,10 @@ impl<R: OutboxRepository> HybridOutboxRelay<R> {
         let mut shutdown_rx = self.shutdown.subscribe();
         let has_listener = self.listener.is_some();
 
-        info!(channel = self.config.channel, has_listener, "Starting hybrid outbox relay");
+        info!(
+            channel = self.config.channel,
+            has_listener, "Starting hybrid outbox relay"
+        );
 
         loop {
             tokio::select! {
@@ -159,7 +164,9 @@ impl<R: OutboxRepository> HybridOutboxRelay<R> {
     }
 
     /// Try to receive a notification from the listener.
-    async fn recv_notification(&mut self) -> Result<Option<sqlx::postgres::PgNotification>, sqlx::Error> {
+    async fn recv_notification(
+        &mut self,
+    ) -> Result<Option<sqlx::postgres::PgNotification>, sqlx::Error> {
         if let Some(ref mut listener) = self.listener {
             listener.recv().await.map(Some)
         } else {
@@ -232,7 +239,13 @@ impl<R: OutboxRepository> HybridOutboxRelay<R> {
 pub async fn create_hybrid_outbox_relay(
     pool: &PgPool,
     config: Option<HybridOutboxConfig>,
-) -> Result<(HybridOutboxRelay<PostgresOutboxRepository>, broadcast::Receiver<()>), sqlx::Error> {
+) -> Result<
+    (
+        HybridOutboxRelay<PostgresOutboxRepository>,
+        broadcast::Receiver<()>,
+    ),
+    sqlx::Error,
+> {
     let repository = Arc::new(PostgresOutboxRepository::new(pool.clone()));
     HybridOutboxRelay::new(pool, repository, config).await
 }
@@ -291,6 +304,14 @@ mod tests {
             Ok(())
         }
 
+        async fn record_failure_retry(
+            &self,
+            _event_id: &Uuid,
+            _error: &str,
+        ) -> Result<(), OutboxError> {
+            Ok(())
+        }
+
         async fn exists_by_idempotency_key(&self, _key: &str) -> Result<bool, OutboxError> {
             Ok(false)
         }
@@ -304,7 +325,10 @@ mod tests {
             let events = self.events.lock().await;
             let pending_count = events.iter().filter(|e| e.is_pending()).count();
             let published_count = events.iter().filter(|e| e.is_published()).count();
-            let failed_count = events.iter().filter(|e| matches!(e.status, OutboxStatus::Failed)).count();
+            let failed_count = events
+                .iter()
+                .filter(|e| matches!(e.status, OutboxStatus::Failed))
+                .count();
             Ok(hodei_server_domain::outbox::OutboxStats {
                 pending_count: pending_count as u64,
                 published_count: published_count as u64,
