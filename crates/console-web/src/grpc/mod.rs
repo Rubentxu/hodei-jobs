@@ -17,6 +17,7 @@ use hodei_jobs::{GetJobRequest, GetJobResponse, JobId, ListJobsRequest, ListJobs
 
 // Import service clients
 use hodei_jobs::job_execution_service_client::JobExecutionServiceClient;
+use hodei_jobs::providers::provider_management_service_client::ProviderManagementServiceClient;
 use hodei_jobs::scheduler_service_client::SchedulerServiceClient;
 
 /// Connection state
@@ -204,6 +205,14 @@ impl GrpcClient {
         Ok(SchedulerServiceClient::new(channel))
     }
 
+    /// Get provider management service client
+    pub async fn providers(
+        &self,
+    ) -> Result<ProviderManagementServiceClient<Channel>, GrpcClientError> {
+        let channel = self.get_channel().await?;
+        Ok(ProviderManagementServiceClient::new(channel))
+    }
+
     /// Disconnect from the server
     pub async fn disconnect(&self) {
         *self.channel.write().await = None;
@@ -326,5 +335,188 @@ impl SchedulerService {
             .map_err(GrpcClientError::Request)?;
 
         Ok(response.into_inner().status.unwrap_or_default())
+    }
+}
+
+/// Workers Service - High-level API for worker operations
+/// Uses existing SchedulerService.GetAvailableWorkers (already implemented)
+#[derive(Clone)]
+pub struct WorkersService {
+    client: GrpcClient,
+}
+
+impl WorkersService {
+    /// Create new WorkersService
+    pub fn new(client: GrpcClient) -> Self {
+        Self { client }
+    }
+
+    /// List all available workers
+    ///
+    /// Uses the existing GetAvailableWorkers from SchedulerService
+    ///
+    /// # Arguments
+    /// * `filter` - Optional worker filter criteria
+    ///
+    /// # Returns
+    /// List of available workers
+    pub async fn list_workers(
+        &self,
+        filter: Option<hodei_jobs::WorkerFilterCriteria>,
+    ) -> Result<hodei_jobs::GetAvailableWorkersResponse, GrpcClientError> {
+        let request = hodei_jobs::GetAvailableWorkersRequest {
+            filter,
+            scheduler_name: self.client.config.scheduler_name.clone(),
+        };
+
+        let mut svc = self.client.scheduler().await?;
+        let response = svc
+            .get_available_workers(request)
+            .await
+            .map_err(GrpcClientError::Request)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Get worker by ID from the list of available workers
+    ///
+    /// # Arguments
+    /// * `worker_id` - The ID of the worker
+    ///
+    /// # Returns
+    /// Worker information if found
+    pub async fn get_worker_info(
+        &self,
+        worker_id: &str,
+    ) -> Result<hodei_jobs::AvailableWorker, GrpcClientError> {
+        if worker_id.is_empty() {
+            return Err(GrpcClientError::ServiceUnavailable { service: "workers" });
+        }
+
+        // Get all workers and filter by ID
+        let response = self.list_workers(None).await?;
+
+        response
+            .workers
+            .into_iter()
+            .find(|w| {
+                w.worker_id
+                    .as_ref()
+                    .map(|id| id.value.as_str() == worker_id)
+                    .unwrap_or(false)
+            })
+            .ok_or(GrpcClientError::ServiceUnavailable { service: "workers" })
+    }
+}
+
+/// Metrics Service - High-level API for metrics operations
+#[derive(Clone)]
+pub struct MetricsService {
+    client: GrpcClient,
+}
+
+impl MetricsService {
+    /// Create new MetricsService
+    pub fn new(client: GrpcClient) -> Self {
+        Self { client }
+    }
+
+    /// Get overall system metrics via queue status
+    ///
+    /// # Returns
+    /// System-wide metrics via scheduler queue status
+    pub async fn get_system_metrics(
+        &self,
+    ) -> Result<hodei_jobs::GetQueueStatusResponse, GrpcClientError> {
+        let request = hodei_jobs::GetQueueStatusRequest {
+            scheduler_name: self.client.config.scheduler_name.clone(),
+        };
+
+        let mut svc = self.client.scheduler().await?;
+        let response = svc
+            .get_queue_status(request)
+            .await
+            .map_err(GrpcClientError::Request)?;
+
+        Ok(response.into_inner())
+    }
+}
+
+/// Providers Service - High-level API for provider operations
+///
+/// Uses existing ProviderManagementService from the server
+#[derive(Clone)]
+pub struct ProvidersService {
+    client: GrpcClient,
+}
+
+impl ProvidersService {
+    /// Create new ProvidersService
+    pub fn new(client: GrpcClient) -> Self {
+        Self { client }
+    }
+
+    /// List all providers
+    ///
+    /// # Returns
+    /// List of registered providers
+    pub async fn list_providers(
+        &self,
+    ) -> Result<hodei_jobs::providers::ListProvidersResponse, GrpcClientError> {
+        let request = hodei_jobs::providers::ListProvidersRequest {
+            provider_type: None,
+            status: None,
+            only_with_capacity: None,
+        };
+
+        let mut svc = self.client.providers().await?;
+        let response = svc
+            .list_providers(request)
+            .await
+            .map_err(GrpcClientError::Request)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Get provider by ID
+    ///
+    /// # Arguments
+    /// * `provider_id` - The ID of the provider
+    ///
+    /// # Returns
+    /// Provider details
+    pub async fn get_provider(
+        &self,
+        provider_id: &str,
+    ) -> Result<hodei_jobs::providers::GetProviderResponse, GrpcClientError> {
+        let request = hodei_jobs::providers::GetProviderRequest {
+            provider_id: provider_id.to_string(),
+        };
+
+        let mut svc = self.client.providers().await?;
+        let response = svc
+            .get_provider(request)
+            .await
+            .map_err(GrpcClientError::Request)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Get provider statistics
+    ///
+    /// # Returns
+    /// Global provider statistics
+    pub async fn get_provider_stats(
+        &self,
+    ) -> Result<hodei_jobs::providers::GetProviderStatsResponse, GrpcClientError> {
+        let request = hodei_jobs::providers::GetProviderStatsRequest {};
+
+        let mut svc = self.client.providers().await?;
+        let response = svc
+            .get_provider_stats(request)
+            .await
+            .map_err(GrpcClientError::Request)?;
+
+        Ok(response.into_inner())
     }
 }
