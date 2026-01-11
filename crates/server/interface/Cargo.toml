@@ -41,4 +41,13 @@ tokio-stream = { workspace = true, features = ["sync"] }
 prometheus = { workspace = true }
 dashmap = "6.1"
 
+# WebSocket
+tokio-tungstenite = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+hyper = { workspace = true }
+
+# JWT
+jsonwebtoken = { workspace = true }
+
 [dev-dependencies]

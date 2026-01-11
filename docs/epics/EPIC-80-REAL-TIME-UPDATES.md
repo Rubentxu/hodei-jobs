@@ -2,11 +2,11 @@
 
 | Estado | Prioridad | Estimación | Epic Padre |
 | :--- | :--- | :--- | :--- |
-| ✅ 80% Implementado | Alta | 3 Sprints | N/A |
+| ✅ 90% Implementado | Alta | 3 Sprints | N/A |
 
 ## 📊 Estado de Implementación Actual
 
-### ✅ Componentes Completados (80%)
+### ✅ Componentes Completados (90%)
 
 #### 1. **ClientEvent Projection Layer** - ✅ COMPLETADO
 - Ubicación: `crates/server/domain/src/events/mapping.rs`
@@ -51,24 +51,26 @@
 - Broadcast a ConnectionManager por topics
 - Tests: 4/4 ✅
 
-### ❌ Pendiente de Implementación (20%)
+#### 9. **WebSocket Handler con JWT** - ✅ IMPLEMENTADO
+- Ubicación: `crates/server/interface/src/websocket/`
+- `handler.rs`: Handler principal con Axum y tokio-tungstenite
+- `jwt.rs`: Validación JWT con jsonwebtoken v10
+- `mod.rs`: Exports públicos y documentación
+- Endpoint: `/api/v1/ws` con autenticación Bearer token
+- Tests unitarios: 8/8 ✅
 
-1. **WebSocket Handler** - ❌ PENDIENTE
-   - JWT autenticación en headers (NO query params)
-   - Integración con Axum router
-   - Endpoint `/api/v1/ws`
-   - Ubicación esperada: `crates/server/interface/src/websocket/`
+### ❌ Pendiente de Implementación (10%)
 
-2. **Frontend Integration** - ❌ PENDIENTE
+1. **Frontend Integration** - ❌ PENDIENTE
    - Cliente WebSocket en Leptos WASM
    - Reconexión automática con exponential backoff
    - Store de estado para eventos en tiempo real
 
-3. **Tests de Carga** - ❌ PENDIENTE
+2. **Tests de Carga** - ❌ PENDIENTE
    - Simulación de miles de conexiones concurrentes
    - Validación de throughput con batching
 
-4. **EventBus Integration** - ⚠️ PARCIAL
+3. **EventBus Integration** - ⚠️ PARCIAL
    - El trait EventSubscriber está definido
    - Falta integración con PostgresEventBus real
 

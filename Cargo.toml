@@ -99,6 +99,7 @@ leptos_axum_html = "0.3"
 
 # HTTP framework
 axum ="0.8.8"
+tokio-tungstenite = "0.28"
 
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-stream = "0.1"
@@ -135,7 +136,7 @@ clap_complete = "4.5.62"
 reqwest = { version = "0.13.1", features = ["json"] }
 rand = "0.9.2"
 bcrypt = "0.17.1"
-jsonwebtoken = "10.2.0"
+jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
 validator = { version = "0.20.0", features = ["derive"] }
 mockall = "0.14.0"
 bollard = "0.19.4"
