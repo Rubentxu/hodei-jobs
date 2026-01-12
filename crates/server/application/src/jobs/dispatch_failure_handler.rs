@@ -197,6 +197,7 @@ mod tests {
     use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
     use hodei_shared::states::{DispatchFailureReason, JobState};
     use uuid::Uuid;
+    use hodei_server_domain::JobCreated;
 
     // Mock job repository for testing
     struct MockJobRepository {
@@ -344,13 +345,13 @@ mod tests {
 
         // Create a different event type
         let job_id = JobId::new();
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id,
             spec: hodei_server_domain::jobs::JobSpec::new(vec!["echo".to_string()]),
             occurred_at: Utc::now(),
             correlation_id: None,
             actor: None,
-        };
+        });
 
         let result = handler.handle_event(event).await;
         assert!(result.is_ok());

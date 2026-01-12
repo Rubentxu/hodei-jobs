@@ -9,6 +9,7 @@ use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use hodei_server_domain::JobCreated;
 
 /// Mock EventBus para tests
 #[derive(Default)]
@@ -192,7 +193,7 @@ async fn test_create_job_saves_and_enqueues_atomically() {
     );
 
     match &events[0] {
-        DomainEvent::JobCreated { job_id, .. } => {
+        DomainEvent::JobCreated(JobCreated { job_id, .. }) => {
             println!("✓ JobCreated event published for job_id: {}", job_id.0);
         }
         _ => panic!("Expected JobCreated event"),
@@ -310,13 +311,7 @@ async fn test_create_job_publishes_correct_event_data() {
     assert!(events.len() >= 1, "Should publish at least one event");
 
     match &events[0] {
-        DomainEvent::JobCreated {
-            job_id,
-            spec,
-            correlation_id,
-            actor,
-            ..
-        } => {
+        DomainEvent::JobCreated(JobCreated { job_id, spec, correlation_id, actor, .. }) => {
             assert_eq!(
                 correlation_id.as_deref(),
                 Some("correlation-123"),

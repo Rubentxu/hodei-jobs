@@ -53,6 +53,7 @@ pub struct ExecuteNextJobResponse {
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
+use hodei_server_domain::JobCreated;
 
 /// DTO para Retry Job Response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,13 +219,13 @@ impl CreateJobUseCase {
         // Refactoring: Use EventMetadata to centralize audit info
         let metadata = EventMetadata::new(request.correlation_id.clone(), request.actor.clone());
 
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: job_id.clone(),
             spec: job_spec,
             occurred_at: Utc::now(),
             correlation_id: metadata.correlation_id.clone(),
             actor: metadata.actor.clone(),
-        };
+        });
 
         tracing::info!("🎯 About to publish JobCreated event for job: {}", job_id);
         if let Err(e) = self.event_bus.publish(&event).await {
@@ -579,13 +580,7 @@ mod tests {
 
         // El evento debe ser JobCreated
         match &events[0] {
-            DomainEvent::JobCreated {
-                job_id: _,
-                spec,
-                occurred_at: _,
-                correlation_id,
-                actor,
-            } => {
+            DomainEvent::JobCreated(JobCreated { job_id: _, spec, occurred_at: _, correlation_id, actor }) => {
                 // EPIC-21 Jenkins sh behavior: commands are wrapped as bash -c "command"
                 let cmd_vec = spec.command_vec();
                 assert_eq!(cmd_vec[0], "bash"); // Interpreter

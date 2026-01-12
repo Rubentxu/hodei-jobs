@@ -503,6 +503,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+    use crate::JobCreated;
 
     // Mock EventPublisher
     struct MockEventPublisher {
@@ -654,13 +655,13 @@ mod tests {
             TransactionalOutbox::new(outbox_repo.clone(), std::time::Duration::from_millis(100));
 
         let job_id = JobId::new();
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: job_id.clone(),
             spec: crate::jobs::JobSpec::new(vec!["echo".to_string(), "hello".to_string()]),
             occurred_at: chrono::Utc::now(),
             correlation_id: Some("test-corr".to_string()),
             actor: Some("test-actor".to_string()),
-        };
+        });
 
         outbox
             .publish_with_outbox(
@@ -688,13 +689,13 @@ mod tests {
             TransactionalOutbox::new(outbox_repo.clone(), std::time::Duration::from_millis(100));
 
         let job_id = JobId::new();
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: job_id.clone(),
             spec: crate::jobs::JobSpec::new(vec!["echo".to_string(), "hello".to_string()]),
             occurred_at: chrono::Utc::now(),
             correlation_id: Some("test-corr".to_string()),
             actor: Some("test-actor".to_string()),
-        };
+        });
 
         // Publish event through the outbox (this serializes it properly)
         outbox

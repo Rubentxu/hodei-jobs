@@ -41,6 +41,7 @@ mod tests {
     use hodei_server_domain::jobs::JobSpec;
     use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId};
     use std::sync::{Arc, Mutex};
+    use hodei_server_domain::JobCreated;
 
     struct MockAuditRepository {
         pub saved_logs: Arc<Mutex<Vec<AuditLog>>>,
@@ -214,13 +215,13 @@ mod tests {
         let job_id = JobId::new();
         let expected_correlation_id = job_id.0.to_string();
 
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id,
             spec: JobSpec::new(vec!["echo".to_string(), "hello".to_string()]),
             occurred_at: Utc::now(),
             correlation_id: Some(expected_correlation_id.clone()),
             actor: Some("test-actor".to_string()),
-        };
+        });
 
         service
             .log_event(&event)

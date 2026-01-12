@@ -210,6 +210,7 @@ impl EventHandler for MockEventHandler {
 
 #[cfg(test)]
 mod tests {
+    use hodei_server_domain::JobCreated;
     use super::*;
 
     #[tokio::test]
@@ -233,13 +234,13 @@ mod tests {
         let job_id = hodei_server_domain::shared_kernel::JobId::new();
         let spec = hodei_server_domain::jobs::JobSpec::new(vec!["echo".to_string()]);
         let result = handler
-            .handle(&DomainEvent::JobCreated {
+            .handle(&DomainEvent::JobCreated(JobCreated {
                 job_id,
                 spec,
                 occurred_at: chrono::Utc::now(),
                 correlation_id: None,
                 actor: None,
-            })
+            }))
             .await;
         assert!(result.is_ok());
         assert_eq!(handler.interested_in(), "*");

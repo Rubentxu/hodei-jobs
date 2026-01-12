@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use hodei_server_domain::JobCreated;
 
 /// Configuration for the Outbox Relay
 #[derive(Debug, Clone)]
@@ -641,7 +642,7 @@ impl OutboxRelay {
                     })?;
                 let job_id = hodei_server_domain::shared_kernel::JobId(job_id);
 
-                Ok(DomainEvent::JobCreated {
+                Ok(DomainEvent::JobCreated(JobCreated {
                     job_id,
                     spec: serde_json::from_value(payload["spec"].clone()).map_err(|_| {
                         DomainError::InfrastructureError {
@@ -657,7 +658,7 @@ impl OutboxRelay {
                         m.get("actor")
                             .and_then(|v| v.as_str().map(|s| s.to_string()))
                     }),
-                })
+                }))
             }
 
             // EPIC-29: JobQueued event triggers reactive job processing

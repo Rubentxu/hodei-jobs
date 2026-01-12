@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
-
+use hodei_server_domain::JobCreated;
 use hodei_shared::event_topics::ALL_EVENTS;
 
 /// NATS connection configuration.
@@ -321,7 +321,7 @@ impl NatsEventBus {
     /// `{prefix}.{entity}.{action}` (e.g., `hodei.jobs.created`)
     pub fn event_to_subject(event: &DomainEvent) -> String {
         let entity = match event {
-            DomainEvent::JobCreated { .. } => "jobs",
+            DomainEvent::JobCreated(JobCreated { .. }) => "jobs",
             DomainEvent::JobStatusChanged { .. } => "jobs",
             DomainEvent::JobCancelled { .. } => "jobs",
             DomainEvent::JobRetried { .. } => "jobs",
@@ -783,13 +783,13 @@ mod tests {
         let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
 
         // Test JobCreated
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: job_id.clone(),
             spec: spec.clone(),
             occurred_at: Utc::now(),
             correlation_id: None,
             actor: None,
-        };
+        });
         assert_eq!(NatsEventBus::event_to_subject(&event), job_topics::CREATED);
 
         // Test WorkerReady
@@ -834,13 +834,13 @@ mod tests {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
 
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: job_id.clone(),
             spec: spec.clone(),
             occurred_at: Utc::now(),
             correlation_id: Some("test-correlation".to_string()),
             actor: Some("test-actor".to_string()),
-        };
+        });
 
         let envelope = NatsMessageEnvelope::from_domain_event(&event);
         assert_eq!(envelope.event_type, "JobCreated");

@@ -387,6 +387,7 @@ impl DbAuditTestHelper {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use hodei_server_domain::JobCreated;
     use hodei_server_domain::jobs::JobSpec;
     use hodei_server_domain::shared_kernel::JobId;
 
@@ -394,13 +395,13 @@ mod tests {
         correlation_id: Option<String>,
         actor: Option<String>,
     ) -> DomainEvent {
-        DomainEvent::JobCreated {
+        DomainEvent::JobCreated(JobCreated {
             job_id: JobId::new(),
             spec: JobSpec::new(vec!["echo".to_string()]),
             occurred_at: Utc::now(),
             correlation_id,
             actor,
-        }
+        })
     }
 
     fn create_job_cancelled_event() -> DomainEvent {

@@ -21,6 +21,7 @@ use hodei_server_domain::jobs::JobSpec;
 use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
 use sqlx::postgres::PgPoolOptions;
+use hodei_server_domain::JobCreated;
 
 /// Default channel used by PostgresEventBus
 const HODEI_EVENTS_CHANNEL: &str = "hodei_events";
@@ -53,13 +54,13 @@ async fn event_bus_publish_and_subscribe() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let job_id = JobId::new();
-    let event = DomainEvent::JobCreated {
+    let event = DomainEvent::JobCreated(JobCreated {
         job_id: job_id.clone(),
         spec: JobSpec::new(vec!["echo".to_string(), "test".to_string()]),
         occurred_at: Utc::now(),
         correlation_id: None,
         actor: None,
-    };
+    });
     event_bus.publish(&event).await?;
 
     let received_event = match timeout(Duration::from_secs(5), subscriber.next()).await {
@@ -72,10 +73,7 @@ async fn event_bus_publish_and_subscribe() -> anyhow::Result<()> {
     assert_eq!(received_event.event_type(), "JobCreated");
 
     // Verify it's the same event we published
-    if let DomainEvent::JobCreated {
-        job_id: received_id,
-        ..
-    } = received_event
+    if let DomainEvent::JobCreated(JobCreated { job_id: received_id, .. }) = received_event
     {
         assert_eq!(received_id, job_id);
     } else {
@@ -102,13 +100,13 @@ async fn event_bus_latency_under_100ms() -> anyhow::Result<()> {
     // Measure latency for 5 events
     let mut latencies = Vec::new();
     for i in 0..5 {
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: JobId::new(),
             spec: JobSpec::new(vec!["echo".to_string(), format!("test_{}", i)]),
             occurred_at: Utc::now(),
             correlation_id: None,
             actor: None,
-        };
+        });
         let start = Instant::now();
 
         event_bus.publish(&event).await?;
@@ -165,13 +163,13 @@ async fn event_bus_concurrent_subscribers() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let job_id = JobId::new();
-    let event = DomainEvent::JobCreated {
+    let event = DomainEvent::JobCreated(JobCreated {
         job_id: job_id.clone(),
         spec: JobSpec::new(vec!["echo".to_string(), "test".to_string()]),
         occurred_at: Utc::now(),
         correlation_id: None,
         actor: None,
-    };
+    });
     event_bus.publish(&event).await?;
 
     // All subscribers should receive the same event
@@ -199,9 +197,9 @@ async fn event_bus_concurrent_subscribers() -> anyhow::Result<()> {
     // All should receive JobCreated
     match (&received1, &received2, &received3) {
         (
-            DomainEvent::JobCreated { job_id: id1, .. },
-            DomainEvent::JobCreated { job_id: id2, .. },
-            DomainEvent::JobCreated { job_id: id3, .. },
+            DomainEvent::JobCreated(JobCreated { job_id: id1, .. }),
+            DomainEvent::JobCreated(JobCreated { job_id: id2, .. }),
+            DomainEvent::JobCreated(JobCreated { job_id: id3, .. }),
         ) => {
             // All should have received the same job_id
             assert_eq!(*id1, job_id);
@@ -229,13 +227,13 @@ async fn event_bus_different_event_types() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let events = vec![
-        DomainEvent::JobCreated {
+        DomainEvent::JobCreated(JobCreated {
             job_id: JobId::new(),
             spec: JobSpec::new(vec!["echo".to_string(), "test".to_string()]),
             occurred_at: Utc::now(),
             correlation_id: None,
             actor: None,
-        },
+        }),
         DomainEvent::WorkerRegistered {
             worker_id: WorkerId::new(),
             provider_id: ProviderId::new(),

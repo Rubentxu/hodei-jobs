@@ -12,18 +12,21 @@ use hodei_shared::states::{
     SchedulingFailureReason,
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JobCreated {
+    pub job_id: JobId,
+    pub spec: JobSpec,
+    pub occurred_at: DateTime<Utc>,
+    pub correlation_id: Option<String>,
+    pub actor: Option<String>,
+}
+
 /// Representa un evento de dominio que ha ocurrido en el sistema.
 /// Los eventos son hechos inmutables.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DomainEvent {
     /// Se ha solicitado la creación de un nuevo job
-    JobCreated {
-        job_id: JobId,
-        spec: JobSpec,
-        occurred_at: DateTime<Utc>,
-        correlation_id: Option<String>,
-        actor: Option<String>,
-    },
+    JobCreated(JobCreated),
     /// El estado de un job ha cambiado
     JobStatusChanged {
         job_id: JobId,
@@ -943,13 +946,13 @@ impl JobCreatedBuilder {
     }
 
     pub fn build(self) -> DomainEvent {
-        DomainEvent::JobCreated {
+        DomainEvent::JobCreated(JobCreated {
             job_id: self.job_id,
             spec: self.spec,
             occurred_at: self.occurred_at,
             correlation_id: self.correlation_id,
             actor: self.actor,
-        }
+        })
     }
 }
 
@@ -1001,7 +1004,7 @@ impl DomainEvent {
     /// Obtiene el ID de correlación asociado al evento (si existe)
     pub fn correlation_id(&self) -> Option<String> {
         match self {
-            DomainEvent::JobCreated { correlation_id, .. }
+            DomainEvent::JobCreated(JobCreated { correlation_id, .. })
             | DomainEvent::JobStatusChanged { correlation_id, .. }
             | DomainEvent::WorkerRegistered { correlation_id, .. }
             | DomainEvent::WorkerStatusChanged { correlation_id, .. }
@@ -1058,7 +1061,7 @@ impl DomainEvent {
     /// Obtiene el actor que inició el evento (si existe)
     pub fn actor(&self) -> Option<String> {
         match self {
-            DomainEvent::JobCreated { actor, .. }
+            DomainEvent::JobCreated(JobCreated { actor, .. })
             | DomainEvent::JobStatusChanged { actor, .. }
             | DomainEvent::WorkerRegistered { actor, .. }
             | DomainEvent::WorkerStatusChanged { actor, .. }
@@ -1115,7 +1118,7 @@ impl DomainEvent {
     /// Obtiene la fecha en que ocurrió el evento
     pub fn occurred_at(&self) -> DateTime<Utc> {
         match self {
-            DomainEvent::JobCreated { occurred_at, .. }
+            DomainEvent::JobCreated(JobCreated { occurred_at, .. })
             | DomainEvent::JobStatusChanged { occurred_at, .. }
             | DomainEvent::WorkerRegistered { occurred_at, .. }
             | DomainEvent::WorkerStatusChanged { occurred_at, .. }
@@ -1178,7 +1181,7 @@ impl DomainEvent {
     /// Obtiene el tipo de evento como string
     pub fn event_type(&self) -> &'static str {
         match self {
-            DomainEvent::JobCreated { .. } => "JobCreated",
+            DomainEvent::JobCreated(JobCreated { .. }) => "JobCreated",
             DomainEvent::JobStatusChanged { .. } => "JobStatusChanged",
             DomainEvent::WorkerRegistered { .. } => "WorkerRegistered",
             DomainEvent::WorkerStatusChanged { .. } => "WorkerStatusChanged",
@@ -1240,7 +1243,7 @@ impl DomainEvent {
     /// Obtiene el ID del agregado principal asociado al evento
     pub fn aggregate_id(&self) -> String {
         match self {
-            DomainEvent::JobCreated { job_id, .. } => job_id.to_string(),
+            DomainEvent::JobCreated(JobCreated { job_id, .. }) => job_id.to_string(),
             DomainEvent::JobStatusChanged { job_id, .. } => job_id.to_string(),
             DomainEvent::JobCancelled { job_id, .. } => job_id.to_string(),
             DomainEvent::JobRetried { job_id, .. } => job_id.to_string(),
@@ -1323,13 +1326,13 @@ mod tests {
     fn test_event_serialization() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string(), "hello".to_string()]);
-        let event = DomainEvent::JobCreated {
+        let event = DomainEvent::JobCreated(JobCreated {
             job_id: job_id.clone(),
             spec: spec.clone(),
             occurred_at: Utc::now(),
             correlation_id: Some("test-correlation-id".to_string()),
             actor: Some("test-actor".to_string()),
-        };
+        });
 
         let serialized = serde_json::to_string(&event).expect("Failed to serialize");
         let deserialized: DomainEvent =
@@ -1431,13 +1434,13 @@ mod tests {
 
         let events = vec![
             (
-                DomainEvent::JobCreated {
+                DomainEvent::JobCreated(JobCreated {
                     job_id: job_id.clone(),
                     spec,
                     occurred_at: Utc::now(),
                     correlation_id: None,
                     actor: None,
-                },
+                }),
                 "JobCreated",
             ),
             (
@@ -1770,13 +1773,7 @@ mod tests {
             .build();
 
         match event {
-            DomainEvent::JobCreated {
-                job_id: actual_job_id,
-                spec: actual_spec,
-                occurred_at: _,
-                correlation_id,
-                actor,
-            } => {
+            DomainEvent::JobCreated(JobCreated { job_id: actual_job_id, spec: actual_spec, occurred_at: _, correlation_id, actor }) => {
                 assert_eq!(actual_job_id, job_id);
                 assert_eq!(actual_spec, spec);
                 assert_eq!(correlation_id, Some("workflow-456".to_string()));
@@ -1827,13 +1824,7 @@ mod tests {
         let event = JobCreatedBuilder::new(job_id.clone(), spec.clone()).build();
 
         match event {
-            DomainEvent::JobCreated {
-                job_id: actual_job_id,
-                spec: actual_spec,
-                occurred_at: _,
-                correlation_id,
-                actor,
-            } => {
+            DomainEvent::JobCreated(JobCreated { job_id: actual_job_id, spec: actual_spec, occurred_at: _, correlation_id, actor }) => {
                 assert_eq!(actual_job_id, job_id);
                 assert_eq!(actual_spec, spec);
                 assert_eq!(correlation_id, None);
@@ -1856,11 +1847,7 @@ mod tests {
             .build();
 
         match event {
-            DomainEvent::JobCreated {
-                correlation_id,
-                actor,
-                ..
-            } => {
+            DomainEvent::JobCreated(JobCreated { correlation_id, actor, .. }) => {
                 assert_eq!(correlation_id, Some("override".to_string()));
                 assert_eq!(actor, Some("test-user".to_string()));
             }
