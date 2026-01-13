@@ -1,0 +1,81 @@
+# Production profile for DevSpace
+# Usage: devspace use profile production
+
+patches:
+  - op: replace
+    path: config.activation
+    value:
+      - command: production
+        profile: production
+
+# Disable development features in production
+dev:
+  hotReload: false
+  sync: []
+  ports: []
+  env: []
+
+# Production deployments
+deployments:
+  - name: hodei-server
+    helm:
+      chart:
+        name: ./helm/hodei-jobs-platform
+      values:
+        global:
+          environment: production
+          imagePullPolicy: Always
+        server:
+          replicas: 3
+          strategy: RollingUpdate
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          hpa:
+            enabled: true
+            minReplicas: 3
+            maxReplicas: 10
+            targetCPUUtilizationPercentage: 70
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 50051
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+        postgresql:
+          enabled: true
+          replication:
+            enabled: true
+            synchronousReplicas: 1
+
+        nats:
+          enabled: true
+          replicaCount: 3
+          jetstream:
+            enabled: true
+            storage:
+              size: 10Gi
+
+        monitoring:
+          enabled: true
+          prometheus:
+            enabled: true
+          grafana:
+            enabled: true
+
+        security:
+          networkPolicy:
+            enabled: true
+          podSecurityPolicy:
+            enabled: true

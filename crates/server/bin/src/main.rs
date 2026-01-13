@@ -974,10 +974,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     register_provisioning_command_handlers(&command_bus_inner, command_bus_config).await;
 
+    // Register execution command handlers
+    use hodei_server_application::command::{ExecutionCommandBusConfig, register_execution_command_handlers};
+    let execution_command_bus_config = ExecutionCommandBusConfig::new(
+        job_repository.clone(),
+        worker_registry.clone(),
+    );
+    register_execution_command_handlers(&command_bus_inner, execution_command_bus_config).await;
+
     // Wrap in Arc<dyn ErasedCommandBus> for DynCommandBus
     let command_bus: DynCommandBus = Arc::new(command_bus_inner);
 
-    info!("  ✓ Command handlers registered for saga dispatch");
+    info!("  ✓ Command handlers registered for saga dispatch (provisioning + execution)");
 
     // Create Provisioning Saga Coordinator (always enabled)
     let config =
