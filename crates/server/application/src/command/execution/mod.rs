@@ -7,7 +7,8 @@
 use hodei_server_domain::command::InMemoryErasedCommandBus;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::execution::{
-    AssignWorkerCommand, AssignWorkerHandler, ValidateJobCommand, ValidateJobHandler,
+    AssignWorkerCommand, AssignWorkerHandler, CompleteJobCommand, CompleteJobHandler,
+    ExecuteJobCommand, ExecuteJobHandler, ValidateJobCommand, ValidateJobHandler,
 };
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
@@ -17,6 +18,8 @@ use std::sync::Arc;
 /// This function registers:
 /// - ValidateJobHandler: Handles ValidateJobCommand for job validation
 /// - AssignWorkerHandler: Handles AssignWorkerCommand for worker assignment
+/// - ExecuteJobHandler: Handles ExecuteJobCommand for job execution initiation
+/// - CompleteJobHandler: Handles CompleteJobCommand for job completion
 ///
 /// # Arguments
 /// * `command_bus` - The InMemoryErasedCommandBus to register handlers with
@@ -40,7 +43,8 @@ pub async fn register_execution_command_handlers(
     tracing::info!("  ✓ ValidateJobHandler registered");
 
     // Create handler for AssignWorkerCommand
-    let assign_worker_handler = AssignWorkerHandler::new(job_repository, worker_registry);
+    let assign_worker_handler =
+        AssignWorkerHandler::new(job_repository.clone(), worker_registry.clone());
 
     // Register AssignWorkerHandler
     command_bus
@@ -48,6 +52,27 @@ pub async fn register_execution_command_handlers(
         .await;
 
     tracing::info!("  ✓ AssignWorkerHandler registered");
+
+    // Create handler for ExecuteJobCommand
+    let execute_job_handler =
+        ExecuteJobHandler::new(job_repository.clone(), worker_registry.clone());
+
+    // Register ExecuteJobHandler
+    command_bus
+        .register::<ExecuteJobCommand, _>(execute_job_handler)
+        .await;
+
+    tracing::info!("  ✓ ExecuteJobHandler registered");
+
+    // Create handler for CompleteJobCommand
+    let complete_job_handler = CompleteJobHandler::new(job_repository, worker_registry);
+
+    // Register CompleteJobHandler
+    command_bus
+        .register::<CompleteJobCommand, _>(complete_job_handler)
+        .await;
+
+    tracing::info!("  ✓ CompleteJobHandler registered");
 
     tracing::info!("Execution command handlers registered successfully");
 }

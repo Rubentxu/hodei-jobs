@@ -141,7 +141,8 @@ impl DynExecutionSagaDispatcher {
             .set_metadata("worker_id", &worker_id.to_string())
             .ok();
 
-        let saga = ExecutionSaga::new(job_id.clone());
+        // Use with_worker to pass the pre-assigned worker_id to the saga
+        let saga = ExecutionSaga::with_worker(job_id.clone(), worker_id.clone());
 
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
