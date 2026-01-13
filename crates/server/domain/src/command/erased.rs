@@ -68,11 +68,14 @@ impl<C: Command, H: CommandHandler<C> + Send + Sync + 'static> AnyHandler for Ha
             })?;
 
         // Ejecutar handler (cualquier tipo de error se convierte a CommandError)
-        let result = self.handler.handle(command).await
-            .map_err(|e| CommandError::HandlerError {
-                command_type: std::any::type_name::<C>().to_string(),
-                error: format!("{:?}", e),
-            })?;
+        let result =
+            self.handler
+                .handle(command)
+                .await
+                .map_err(|e| CommandError::HandlerError {
+                    command_type: std::any::type_name::<C>().to_string(),
+                    error: format!("{:?}", e),
+                })?;
 
         Ok(Box::new(result) as Box<dyn Any + Send>)
     }
@@ -112,10 +115,15 @@ impl InMemoryErasedCommandBus {
         let mut dispatchers = self.dispatchers.lock().await;
         let type_id = TypeId::of::<C>();
 
-        dispatchers.dispatchers.insert(
-            type_id,
-            Arc::new(HandlerWrapper::<C, H>::new(handler))
+        tracing::debug!(
+            command_type = std::any::type_name::<C>(),
+            type_id = ?type_id,
+            "Registering command handler"
         );
+
+        dispatchers
+            .dispatchers
+            .insert(type_id, Arc::new(HandlerWrapper::<C, H>::new(handler)));
     }
 
     /// Despacha un comando con tipo concreto (versión ergonómica).
@@ -147,9 +155,35 @@ impl ErasedCommandBus for InMemoryErasedCommandBus {
         command_type_id: TypeId,
     ) -> Result<Box<dyn Any + Send>, CommandError> {
         let dispatchers = self.dispatchers.lock().await;
-        let handler = dispatchers.dispatchers.get(&command_type_id)
-            .ok_or_else(|| CommandError::HandlerNotFound {
-                command_type: format!("type_id={:?}", command_type_id),
+
+        // Debug: Log registered handlers count and the requested type_id
+        tracing::debug!(
+            registered_count = dispatchers.dispatchers.len(),
+            requested_type_id = ?command_type_id,
+            "Looking for command handler"
+        );
+
+        // Debug: Log all registered type_ids
+        for (registered_type_id, _) in &dispatchers.dispatchers {
+            tracing::debug!(
+                registered_type_id = ?registered_type_id,
+                is_match = (registered_type_id == &command_type_id),
+                "Registered handler"
+            );
+        }
+
+        let handler = dispatchers
+            .dispatchers
+            .get(&command_type_id)
+            .ok_or_else(|| {
+                tracing::error!(
+                    requested_type_id = ?command_type_id,
+                    registered_count = dispatchers.dispatchers.len(),
+                    "Handler not found for command type"
+                );
+                CommandError::HandlerNotFound {
+                    command_type: format!("type_id={:?}", command_type_id),
+                }
             })?;
 
         handler.handle_any(command).await
@@ -214,7 +248,9 @@ mod tests {
     struct OtherCommand;
     impl Command for OtherCommand {
         type Output = ();
-        fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("".to_string()) }
+        fn idempotency_key(&self) -> Cow<'_, str> {
+            Cow::Owned("".to_string())
+        }
     }
 
     // Test handler - must implement Debug, Clone
@@ -235,9 +271,11 @@ mod tests {
         let bus = InMemoryErasedCommandBus::new();
         bus.register::<TestCommand, TestHandler>(TestHandler).await;
 
-        let result = bus.dispatch(TestCommand {
-            value: "test".to_string(),
-        }).await;
+        let result = bus
+            .dispatch(TestCommand {
+                value: "test".to_string(),
+            })
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "handled: test");
@@ -259,9 +297,13 @@ mod tests {
         // Cast to DynCommandBus
         let dyn_bus: DynCommandBus = Arc::new(bus);
 
-        let result = dispatch_erased(&dyn_bus, TestCommand {
-            value: "test".to_string(),
-        }).await;
+        let result = dispatch_erased(
+            &dyn_bus,
+            TestCommand {
+                value: "test".to_string(),
+            },
+        )
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "handled: test");
@@ -285,18 +327,26 @@ mod tests {
     async fn test_type_erasure_safety_different_types() {
         // Command A with String output
         #[derive(Debug, Clone)]
-        struct CommandA { value: i32 }
+        struct CommandA {
+            value: i32,
+        }
         impl Command for CommandA {
             type Output = i32;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("a".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("a".to_string())
+            }
         }
 
         // Command B with String output
         #[derive(Debug, Clone)]
-        struct CommandB { value: String }
+        struct CommandB {
+            value: String,
+        }
         impl Command for CommandB {
             type Output = String;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("b".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("b".to_string())
+            }
         }
 
         // Handler for CommandA
@@ -333,7 +383,13 @@ mod tests {
         assert_eq!(result_a.unwrap(), 42); // 21 * 2
 
         // Dispatch CommandB
-        let result_b = dispatch_erased(&dyn_bus, CommandB { value: "hello".to_string() }).await;
+        let result_b = dispatch_erased(
+            &dyn_bus,
+            CommandB {
+                value: "hello".to_string(),
+            },
+        )
+        .await;
         assert!(result_b.is_ok());
         assert_eq!(result_b.unwrap(), "processed: hello");
     }
@@ -346,24 +402,37 @@ mod tests {
     async fn test_multiple_command_types_dispatch() {
         // Define multiple command types
         #[derive(Debug, Clone)]
-        struct CreateCommand { name: String }
+        struct CreateCommand {
+            name: String,
+        }
         impl Command for CreateCommand {
             type Output = uuid::Uuid;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned(self.name.clone()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned(self.name.clone())
+            }
         }
 
         #[derive(Debug, Clone)]
-        struct UpdateCommand { id: uuid::Uuid, data: String }
+        struct UpdateCommand {
+            id: uuid::Uuid,
+            data: String,
+        }
         impl Command for UpdateCommand {
             type Output = bool;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned(self.id.to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned(self.id.to_string())
+            }
         }
 
         #[derive(Debug, Clone)]
-        struct DeleteCommand { id: uuid::Uuid }
+        struct DeleteCommand {
+            id: uuid::Uuid,
+        }
         impl Command for DeleteCommand {
             type Output = bool;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned(self.id.to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned(self.id.to_string())
+            }
         }
 
         // Define handlers
@@ -399,19 +468,35 @@ mod tests {
 
         // Register all handlers
         let bus = InMemoryErasedCommandBus::new();
-        bus.register::<CreateCommand, CreateHandler>(CreateHandler).await;
-        bus.register::<UpdateCommand, UpdateHandler>(UpdateHandler).await;
-        bus.register::<DeleteCommand, DeleteHandler>(DeleteHandler).await;
+        bus.register::<CreateCommand, CreateHandler>(CreateHandler)
+            .await;
+        bus.register::<UpdateCommand, UpdateHandler>(UpdateHandler)
+            .await;
+        bus.register::<DeleteCommand, DeleteHandler>(DeleteHandler)
+            .await;
 
         let dyn_bus: DynCommandBus = Arc::new(bus);
 
         // Dispatch all commands
-        let create_result = dispatch_erased(&dyn_bus, CreateCommand { name: "test".to_string() }).await;
+        let create_result = dispatch_erased(
+            &dyn_bus,
+            CreateCommand {
+                name: "test".to_string(),
+            },
+        )
+        .await;
         assert!(create_result.is_ok());
         assert!(!create_result.unwrap().is_nil());
 
         let update_id = uuid::Uuid::new_v4();
-        let update_result = dispatch_erased(&dyn_bus, UpdateCommand { id: update_id, data: "updated".to_string() }).await;
+        let update_result = dispatch_erased(
+            &dyn_bus,
+            UpdateCommand {
+                id: update_id,
+                data: "updated".to_string(),
+            },
+        )
+        .await;
         assert!(update_result.is_ok());
         assert!(update_result.unwrap());
 
@@ -434,7 +519,9 @@ mod tests {
         struct IncrementCommand;
         impl Command for IncrementCommand {
             type Output = usize;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("increment".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("increment".to_string())
+            }
         }
 
         // Handler with atomic counter
@@ -456,7 +543,8 @@ mod tests {
 
         let counter = Arc::new(AtomicUsize::new(0));
         let bus = InMemoryErasedCommandBus::new();
-        bus.register::<IncrementCommand, _>(IncrementHandler::new(counter.clone())).await;
+        bus.register::<IncrementCommand, _>(IncrementHandler::new(counter.clone()))
+            .await;
 
         let dyn_bus: DynCommandBus = Arc::new(bus);
 
@@ -464,9 +552,7 @@ mod tests {
         let handles: Vec<_> = (0..5)
             .map(|_| {
                 let bus_clone = dyn_bus.clone();
-                tokio::spawn(async move {
-                    dispatch_erased(&bus_clone, IncrementCommand).await
-                })
+                tokio::spawn(async move { dispatch_erased(&bus_clone, IncrementCommand).await })
             })
             .collect();
 
@@ -497,14 +583,18 @@ mod tests {
         struct IntCommand;
         impl Command for IntCommand {
             type Output = i32;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("int".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("int".to_string())
+            }
         }
 
         #[derive(Debug, Clone)]
         struct StringCommand;
         impl Command for StringCommand {
             type Output = String;
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("string".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("string".to_string())
+            }
         }
 
         // Handler for IntCommand only
@@ -540,14 +630,18 @@ mod tests {
         struct ErrorTypeA;
         impl Command for ErrorTypeA {
             type Output = ();
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("a".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("a".to_string())
+            }
         }
 
         #[derive(Debug, Clone)]
         struct ErrorTypeB;
         impl Command for ErrorTypeB {
             type Output = ();
-            fn idempotency_key(&self) -> Cow<'_, str> { Cow::Owned("b".to_string()) }
+            fn idempotency_key(&self) -> Cow<'_, str> {
+                Cow::Owned("b".to_string())
+            }
         }
 
         // Handler with io::Error

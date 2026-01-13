@@ -9,7 +9,7 @@ use crate::workers::{WorkerProvisioning, WorkerProvisioningResult, WorkerRegistr
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Command to provision a new worker.
 ///
@@ -96,30 +96,20 @@ pub enum CreateWorkerError {
 ///
 /// This handler uses the domain's WorkerProvisioning trait to
 /// provision actual infrastructure.
-#[derive(Debug)]
-pub struct CreateWorkerHandler<P>
-where
-    P: WorkerProvisioning + Debug,
-{
-    provisioning: P,
+pub struct CreateWorkerHandler {
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
 }
 
-impl<P> CreateWorkerHandler<P>
-where
-    P: WorkerProvisioning + Debug,
-{
+impl CreateWorkerHandler {
     /// Creates a new handler with the given provisioning service.
     #[inline]
-    pub fn new(provisioning: P) -> Self {
+    pub fn new(provisioning: Arc<dyn WorkerProvisioning + Send + Sync>) -> Self {
         Self { provisioning }
     }
 }
 
 #[async_trait]
-impl<P> CommandHandler<CreateWorkerCommand> for CreateWorkerHandler<P>
-where
-    P: WorkerProvisioning + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<CreateWorkerCommand> for CreateWorkerHandler {
     type Error = CreateWorkerError;
 
     async fn handle(
@@ -220,30 +210,20 @@ pub enum DestroyWorkerError {
 }
 
 /// Handler for DestroyWorkerCommand.
-#[derive(Debug)]
-pub struct DestroyWorkerHandler<P>
-where
-    P: WorkerProvisioning + Debug,
-{
-    provisioning: P,
+pub struct DestroyWorkerHandler {
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
 }
 
-impl<P> DestroyWorkerHandler<P>
-where
-    P: WorkerProvisioning + Debug,
-{
+impl DestroyWorkerHandler {
     /// Creates a new handler with the given provisioning service.
     #[inline]
-    pub fn new(provisioning: P) -> Self {
+    pub fn new(provisioning: Arc<dyn WorkerProvisioning + Send + Sync>) -> Self {
         Self { provisioning }
     }
 }
 
 #[async_trait]
-impl<P> CommandHandler<DestroyWorkerCommand> for DestroyWorkerHandler<P>
-where
-    P: WorkerProvisioning + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<DestroyWorkerCommand> for DestroyWorkerHandler {
     type Error = DestroyWorkerError;
 
     async fn handle(&self, command: DestroyWorkerCommand) -> Result<(), Self::Error> {
@@ -290,11 +270,7 @@ impl UnregisterWorkerCommand {
 
     /// Creates a command with a reason.
     #[inline]
-    pub fn with_reason(
-        worker_id: WorkerId,
-        saga_id: String,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub fn with_reason(worker_id: WorkerId, saga_id: String, reason: impl Into<String>) -> Self {
         let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
         Self {
             worker_id,
@@ -328,30 +304,20 @@ pub enum UnregisterWorkerError {
 }
 
 /// Handler for UnregisterWorkerCommand.
-#[derive(Debug)]
-pub struct UnregisterWorkerHandler<R>
-where
-    R: WorkerRegistry + Debug,
-{
-    registry: R,
+pub struct UnregisterWorkerHandler {
+    registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
-impl<R> UnregisterWorkerHandler<R>
-where
-    R: WorkerRegistry + Debug,
-{
+impl UnregisterWorkerHandler {
     /// Creates a new handler with the given registry.
     #[inline]
-    pub fn new(registry: R) -> Self {
+    pub fn new(registry: Arc<dyn WorkerRegistry + Send + Sync>) -> Self {
         Self { registry }
     }
 }
 
 #[async_trait]
-impl<R> CommandHandler<UnregisterWorkerCommand> for UnregisterWorkerHandler<R>
-where
-    R: WorkerRegistry + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<UnregisterWorkerCommand> for UnregisterWorkerHandler {
     type Error = UnregisterWorkerError;
 
     async fn handle(&self, command: UnregisterWorkerCommand) -> Result<(), Self::Error> {
@@ -440,7 +406,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_worker_handler_provisions_worker() {
-        let provisioning = MockWorkerProvisioning;
+        let provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+            Arc::new(MockWorkerProvisioning);
         let handler = CreateWorkerHandler::new(provisioning);
         let cmd = CreateWorkerCommand::new(
             make_test_worker_spec(),
@@ -483,7 +450,8 @@ mod tests {
 
     #[tokio::test]
     async fn destroy_worker_handler_destroys_worker() {
-        let provisioning = MockWorkerProvisioning;
+        let provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+            Arc::new(MockWorkerProvisioning);
         let handler = DestroyWorkerHandler::new(provisioning);
         let cmd = DestroyWorkerCommand::new(
             WorkerId::new(),

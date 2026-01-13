@@ -5,12 +5,12 @@
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
 use crate::jobs::JobRepository;
-use crate::shared_kernel::{JobId, WorkerId, JobState, WorkerState};
+use crate::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use crate::workers::{WorkerFilter, WorkerRegistry};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Command to validate a job before execution.
 ///
@@ -96,30 +96,20 @@ pub enum ValidateJobError {
 }
 
 /// Handler for ValidateJobCommand.
-#[derive(Debug)]
-pub struct ValidateJobHandler<J>
-where
-    J: JobRepository + Debug,
-{
-    job_repository: J,
+pub struct ValidateJobHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
 }
 
-impl<J> ValidateJobHandler<J>
-where
-    J: JobRepository + Debug,
-{
+impl ValidateJobHandler {
     /// Creates a new handler with the given job repository.
     #[inline]
-    pub fn new(job_repository: J) -> Self {
+    pub fn new(job_repository: Arc<dyn JobRepository + Send + Sync>) -> Self {
         Self { job_repository }
     }
 }
 
 #[async_trait]
-impl<J> CommandHandler<ValidateJobCommand> for ValidateJobHandler<J>
-where
-    J: JobRepository + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<ValidateJobCommand> for ValidateJobHandler {
     type Error = ValidateJobError;
 
     async fn handle(
@@ -248,24 +238,18 @@ pub enum AssignWorkerError {
 }
 
 /// Handler for AssignWorkerCommand.
-#[derive(Debug)]
-pub struct AssignWorkerHandler<J, W>
-where
-    J: JobRepository + Debug,
-    W: WorkerRegistry + Debug,
-{
-    job_repository: J,
-    worker_registry: W,
+pub struct AssignWorkerHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
-impl<J, W> AssignWorkerHandler<J, W>
-where
-    J: JobRepository + Debug,
-    W: WorkerRegistry + Debug,
-{
+impl AssignWorkerHandler {
     /// Creates a new handler with the given repositories.
     #[inline]
-    pub fn new(job_repository: J, worker_registry: W) -> Self {
+    pub fn new(
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    ) -> Self {
         Self {
             job_repository,
             worker_registry,
@@ -274,11 +258,7 @@ where
 }
 
 #[async_trait]
-impl<J, W> CommandHandler<AssignWorkerCommand> for AssignWorkerHandler<J, W>
-where
-    J: JobRepository + Debug + Send + Sync + 'static,
-    W: WorkerRegistry + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<AssignWorkerCommand> for AssignWorkerHandler {
     type Error = AssignWorkerError;
 
     async fn handle(
@@ -289,15 +269,15 @@ where
         let job_id = command.job_id.clone();
 
         // Find an available worker using find with WorkerFilter
-        let filter = WorkerFilter::new().with_state(WorkerState::Ready).accepting_jobs();
-        let available_workers = self
-            .worker_registry
-            .find(&filter)
-            .await
-            .map_err(|e| AssignWorkerError::AssignmentFailed {
+        let filter = WorkerFilter::new()
+            .with_state(WorkerState::Ready)
+            .accepting_jobs();
+        let available_workers = self.worker_registry.find(&filter).await.map_err(|e| {
+            AssignWorkerError::AssignmentFailed {
                 job_id: job_id.clone(),
                 source: e,
-            })?;
+            }
+        })?;
 
         if available_workers.is_empty() {
             return Ok(WorkerAssignmentResult::failure("No available workers"));
@@ -321,17 +301,18 @@ where
             })?;
 
         // Mark job as assigned
-        job.set_state(JobState::Assigned).map_err(|e| AssignWorkerError::AssignmentFailed {
-            job_id: job_id.clone(),
-            source: e,
-        })?;
-
-        self.job_repository.update(&job)
-            .await
+        job.set_state(JobState::Assigned)
             .map_err(|e| AssignWorkerError::AssignmentFailed {
                 job_id: job_id.clone(),
                 source: e,
             })?;
+
+        self.job_repository.update(&job).await.map_err(|e| {
+            AssignWorkerError::AssignmentFailed {
+                job_id: job_id.clone(),
+                source: e,
+            }
+        })?;
 
         // Update worker state to Busy
         self.worker_registry
@@ -342,7 +323,10 @@ where
                 source: e,
             })?;
 
-        Ok(WorkerAssignmentResult::success(worker.id().clone(), worker.state().clone()))
+        Ok(WorkerAssignmentResult::success(
+            worker.id().clone(),
+            worker.state().clone(),
+        ))
     }
 }
 
@@ -435,24 +419,18 @@ pub enum ExecuteJobError {
 }
 
 /// Handler for ExecuteJobCommand.
-#[derive(Debug)]
-pub struct ExecuteJobHandler<J, W>
-where
-    J: JobRepository + Debug,
-    W: WorkerRegistry + Debug,
-{
-    job_repository: J,
-    worker_registry: W,
+pub struct ExecuteJobHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
-impl<J, W> ExecuteJobHandler<J, W>
-where
-    J: JobRepository + Debug,
-    W: WorkerRegistry + Debug,
-{
+impl ExecuteJobHandler {
     /// Creates a new handler with the given repositories.
     #[inline]
-    pub fn new(job_repository: J, worker_registry: W) -> Self {
+    pub fn new(
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    ) -> Self {
         Self {
             job_repository,
             worker_registry,
@@ -461,17 +439,10 @@ where
 }
 
 #[async_trait]
-impl<J, W> CommandHandler<ExecuteJobCommand> for ExecuteJobHandler<J, W>
-where
-    J: JobRepository + Debug + Send + Sync + 'static,
-    W: WorkerRegistry + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<ExecuteJobCommand> for ExecuteJobHandler {
     type Error = ExecuteJobError;
 
-    async fn handle(
-        &self,
-        command: ExecuteJobCommand,
-    ) -> Result<JobExecutionResult, Self::Error> {
+    async fn handle(&self, command: ExecuteJobCommand) -> Result<JobExecutionResult, Self::Error> {
         // Clone IDs since we need them in closures
         let job_id = command.job_id.clone();
         let worker_id = command.worker_id.clone();
@@ -582,10 +553,7 @@ impl Command for CompleteJobCommand {
 
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
-        Cow::Owned(format!(
-            "{}-complete-job-{}",
-            self.saga_id, self.job_id
-        ))
+        Cow::Owned(format!("{}-complete-job-{}", self.saga_id, self.job_id))
     }
 }
 
@@ -630,24 +598,18 @@ pub enum CompleteJobError {
 }
 
 /// Handler for CompleteJobCommand.
-#[derive(Debug)]
-pub struct CompleteJobHandler<J, W>
-where
-    J: JobRepository + Debug,
-    W: WorkerRegistry + Debug,
-{
-    job_repository: J,
-    worker_registry: W,
+pub struct CompleteJobHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
-impl<J, W> CompleteJobHandler<J, W>
-where
-    J: JobRepository + Debug,
-    W: WorkerRegistry + Debug,
-{
+impl CompleteJobHandler {
     /// Creates a new handler with the given repositories.
     #[inline]
-    pub fn new(job_repository: J, worker_registry: W) -> Self {
+    pub fn new(
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    ) -> Self {
         Self {
             job_repository,
             worker_registry,
@@ -656,11 +618,7 @@ where
 }
 
 #[async_trait]
-impl<J, W> CommandHandler<CompleteJobCommand> for CompleteJobHandler<J, W>
-where
-    J: JobRepository + Debug + Send + Sync + 'static,
-    W: WorkerRegistry + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<CompleteJobCommand> for CompleteJobHandler {
     type Error = CompleteJobError;
 
     async fn handle(
@@ -721,7 +679,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared_kernel::{JobId, ProviderId, WorkerId, JobState, WorkerState};
+    use crate::shared_kernel::{JobId, JobState, ProviderId, WorkerId, WorkerState};
 
     #[tokio::test]
     async fn validate_job_command_idempotency() {
@@ -806,7 +764,10 @@ mod tests {
         let result = WorkerAssignmentResult::failure("No workers available");
         assert!(!result.success);
         assert!(result.worker_id.is_none());
-        assert_eq!(result.failure_reason, Some("No workers available".to_string()));
+        assert_eq!(
+            result.failure_reason,
+            Some("No workers available".to_string())
+        );
     }
 
     #[tokio::test]

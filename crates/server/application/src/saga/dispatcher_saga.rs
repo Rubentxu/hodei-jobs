@@ -2,14 +2,14 @@
 //!
 //! Implements the ExecutionSaga coordination with JobDispatcher using saga pattern.
 
+use hodei_server_domain::command::DynCommandBus;
+use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{
     ExecutionSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaServices,
 };
 use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
-use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::command::DynCommandBus;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -544,7 +544,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 should_fail: false,
-                executed_sagas: Arc.new(Mutex::new(Vec::new())),
+                executed_sagas: Arc::new(Mutex::new(Vec::new())),
             }
         }
 

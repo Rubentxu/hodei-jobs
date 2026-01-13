@@ -89,7 +89,7 @@ pub trait Command: Debug + Clone + Send + Sync + 'static {
 
 /// Trait for command handlers.
 #[async_trait]
-pub trait CommandHandler<C: Command>: Debug + Send + Sync + 'static {
+pub trait CommandHandler<C: Command>: Send + Sync + 'static {
     /// Error type returned when command execution fails
     type Error: std::fmt::Debug + Send + Sync;
 
@@ -112,8 +112,8 @@ pub trait CommandBus: Debug + Send + Sync {
 
 // Re-export submodules
 pub mod bus;
-pub mod error;
 pub mod erased;
+pub mod error;
 pub mod handler;
 pub mod jobs;
 pub mod middleware;
@@ -122,14 +122,14 @@ pub mod registry;
 
 pub use bus::{CommandBusConfig, InMemoryCommandBus};
 pub use erased::{
-    DynCommandBus, ErasedCommandBus, ErasedCommandBusExt, InMemoryErasedCommandBus,
-    dispatch_erased,
+    DynCommandBus, ErasedCommandBus, ErasedCommandBusExt, InMemoryErasedCommandBus, dispatch_erased,
 };
 pub use error::{CommandError, CommandResult};
 pub use handler::HandlerBox;
 pub use jobs::{
-    MarkJobFailedCommand, MarkJobFailedError, MarkJobFailedHandler, ResumeFromManualInterventionCommand,
-    ResumeFromManualInterventionError, ResumeFromManualInterventionHandler,
+    MarkJobFailedCommand, MarkJobFailedError, MarkJobFailedHandler,
+    ResumeFromManualInterventionCommand, ResumeFromManualInterventionError,
+    ResumeFromManualInterventionHandler,
 };
 pub use middleware::{LoggingLayer, RetryLayer, TelemetryLayer};
 pub use outbox::{

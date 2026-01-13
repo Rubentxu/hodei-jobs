@@ -5,11 +5,12 @@
 //! with the CommandBus for saga-based job execution.
 
 use hodei_server_domain::command::InMemoryErasedCommandBus;
+use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::execution::{
-    AssignWorkerCommand, AssignWorkerHandler,
-    ValidateJobCommand, ValidateJobHandler,
+    AssignWorkerCommand, AssignWorkerHandler, ValidateJobCommand, ValidateJobHandler,
 };
-use hodei_server_infrastructure::persistence::postgres::{PostgresJobRepository, PostgresWorkerRegistry};
+use hodei_server_domain::workers::WorkerRegistry;
+use std::sync::Arc;
 
 /// Register all execution command handlers with the provided CommandBus.
 ///
@@ -19,12 +20,12 @@ use hodei_server_infrastructure::persistence::postgres::{PostgresJobRepository, 
 ///
 /// # Arguments
 /// * `command_bus` - The InMemoryErasedCommandBus to register handlers with
-/// * `job_repository` - Concrete PostgresJobRepository implementation
-/// * `worker_registry` - Concrete PostgresWorkerRegistry implementation
+/// * `job_repository` - Job repository trait object
+/// * `worker_registry` - Worker registry trait object
 pub async fn register_execution_command_handlers(
     command_bus: &InMemoryErasedCommandBus,
-    job_repository: PostgresJobRepository,
-    worker_registry: PostgresWorkerRegistry,
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 ) {
     tracing::info!("Registering execution command handlers...");
 
@@ -33,24 +34,17 @@ pub async fn register_execution_command_handlers(
 
     // Register ValidateJobHandler
     command_bus
-        .register::<ValidateJobCommand, ValidateJobHandler<PostgresJobRepository>>(
-            validate_job_handler,
-        )
+        .register::<ValidateJobCommand, _>(validate_job_handler)
         .await;
 
     tracing::info!("  ✓ ValidateJobHandler registered");
 
     // Create handler for AssignWorkerCommand
-    let assign_worker_handler = AssignWorkerHandler::new(
-        job_repository,
-        worker_registry,
-    );
+    let assign_worker_handler = AssignWorkerHandler::new(job_repository, worker_registry);
 
     // Register AssignWorkerHandler
     command_bus
-        .register::<AssignWorkerCommand, AssignWorkerHandler<PostgresJobRepository, PostgresWorkerRegistry>>(
-            assign_worker_handler,
-        )
+        .register::<AssignWorkerCommand, _>(assign_worker_handler)
         .await;
 
     tracing::info!("  ✓ AssignWorkerHandler registered");
