@@ -2,13 +2,11 @@
 //! EPIC-50: Command Bus Core Infrastructure - Historia de Usuario 56.2
 
 mod provisioning;
-mod execution;
 
 pub use provisioning::{
     ProvisioningCommandBusBuilder, ProvisioningCommandBusConfig,
     register_provisioning_command_handlers,
 };
-pub use execution::register_execution_command_handlers;
 
 use hodei_server_domain::command::{Command, CommandBus};
 use std::sync::Arc;
