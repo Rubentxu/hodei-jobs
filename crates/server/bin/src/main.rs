@@ -975,12 +975,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_provisioning_command_handlers(&command_bus_inner, command_bus_config).await;
 
     // Register execution command handlers
-    use hodei_server_application::command::{ExecutionCommandBusConfig, register_execution_command_handlers};
-    let execution_command_bus_config = ExecutionCommandBusConfig::new(
-        job_repository.clone(),
-        worker_registry.clone(),
-    );
-    register_execution_command_handlers(&command_bus_inner, execution_command_bus_config).await;
+    use hodei_server_application::command::register_execution_command_handlers;
+    use hodei_server_infrastructure::persistence::postgres::{PostgresJobRepository, PostgresWorkerRegistry};
+    
+    // Get concrete implementations for handler registration
+    let job_repo_concrete = job_repository.clone();
+    let worker_registry_concrete = worker_registry.clone();
+    
+    register_execution_command_handlers(
+        &command_bus_inner,
+        job_repo_concrete,
+        worker_registry_concrete,
+    ).await;
 
     // Wrap in Arc<dyn ErasedCommandBus> for DynCommandBus
     let command_bus: DynCommandBus = Arc::new(command_bus_inner);

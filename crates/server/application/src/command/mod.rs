@@ -8,10 +8,7 @@ pub use provisioning::{
     ProvisioningCommandBusBuilder, ProvisioningCommandBusConfig,
     register_provisioning_command_handlers,
 };
-pub use execution::{
-    ExecutionCommandBusConfig,
-    register_execution_command_handlers,
-};
+pub use execution::register_execution_command_handlers;
 
 use hodei_server_domain::command::{Command, CommandBus};
 use std::sync::Arc;
