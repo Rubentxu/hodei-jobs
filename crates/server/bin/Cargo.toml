@@ -22,10 +22,13 @@ serde = { workspace = true, features = ["derive"] }
 
 # Config & CLI
 config = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 
 # Error handling
 anyhow = { workspace = true }
+
+# Retry with exponential backoff
+backoff = { version = "0.4", features = ["tokio"] }
 
 # UUIDs
 uuid = { workspace = true }
@@ -42,3 +45,6 @@ async-nats = "0.35"
 
 # Concurrency
 dashmap = "6.1"
+
+# Cryptography for migration checksums
+sha2 = "0.10"
