@@ -1,0 +1,141 @@
+# =============================================================================
+# Hodei Jobs Platform - Development Configuration (minikube)
+# =============================================================================
+# This file is optimized for local development with minikube
+
+# =============================================================================
+# Global Settings
+# =============================================================================
+global:
+  security:
+    allowInsecureImages: true
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+replicaCount: 1
+
+image:
+  repository: hodei-jobs-platform
+  pullPolicy: Never
+  tag: "local"
+
+# Disable autoscaling for local development
+autoscaling:
+  enabled: false
+
+# Disable PDB for local development
+podDisruptionBudget:
+  enabled: false
+
+# =============================================================================
+# NATS Configuration (using simplified settings)
+# =============================================================================
+nats:
+  enabled: true
+  replicaCount: 1
+  image:
+    registry: docker.io
+    repository: library/nats
+    tag: 2.10-alpine
+  persistence:
+    enabled: true
+    storageClass: standard
+    size: 512Mi
+  jetstream:
+    enabled: true
+  auth:
+    enabled: false
+  tls:
+    enabled: false
+  pdb:
+    enabled: false
+
+# =============================================================================
+# PostgreSQL Configuration
+# =============================================================================
+postgresql:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: library/postgres
+    tag: 16-alpine
+  auth:
+    postgresPassword: "postgres"
+    database: "hodei_jobs"
+    username: "postgres"
+    password: "postgres"
+  primary:
+    persistence:
+      enabled: false
+  pdb:
+    enabled: false
+
+# =============================================================================
+# Disable External Secrets for local development
+# =============================================================================
+externalSecrets:
+  enabled: false
+
+# =============================================================================
+# Disable backup for local development
+# =============================================================================
+backup:
+  enabled: false
+
+# =============================================================================
+# Disable network policies for local development
+# =============================================================================
+networkPolicy:
+  enabled: false
+
+# Disable NATS network policy explicitly
+nats:
+  networkPolicy:
+    enabled: false
+
+# =============================================================================
+# Disable init containers that require external dependencies
+# Migrations are handled by Helm Hook Job, not init container
+initContainers:
+  enabled: true
+  migrate:
+    enabled: false  # migrations handled by Helm Hook
+  waitFor:
+    dependencies:
+      enabled: true  # Wait for dependencies
+
+# =============================================================================
+# Service Account Configuration
+# =============================================================================
+serviceAccount:
+  create: true
+  annotations: {}
+
+# =============================================================================
+# Kubernetes Provider Configuration
+# =============================================================================
+kubernetesProvider:
+  enabled: true
+  namespace: hodei-jobs-workers
+
+# =============================================================================
+# Docker Provider Configuration
+# =============================================================================
+dockerProvider:
+  enabled: false
+
+# =============================================================================
+# Disable operator and web for local development
+# =============================================================================
+operator:
+  enabled: false
+
+web:
+  enabled: false
+
+# =============================================================================
+# Disable ingress for local development
+# =============================================================================
+ingress:
+  enabled: false

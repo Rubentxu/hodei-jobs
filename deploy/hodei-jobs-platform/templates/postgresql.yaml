@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+type: Opaque
+data:
+  connection-string: {{ printf "postgres://%s:%s@%s-postgresql:%d/%s" (.Values.postgresql.auth.username | default "postgres") (.Values.postgresql.auth.password | default "postgres") (include "hodei-jobs-platform.fullname" .) 5432 (.Values.postgresql.auth.database | default "hodei_jobs") | b64enc | quote }}
+  postgres-password: {{ .Values.postgresql.auth.password | default "postgres" | b64enc | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+    app.kubernetes.io/name: postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "hodei-jobs-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "hodei-jobs-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql
+    spec:
+      containers:
+      - name: postgresql
+        image: {{ .Values.postgresql.image.registry | default "docker.io" }}/{{ .Values.postgresql.image.repository | default "library/postgres" }}:{{ .Values.postgresql.image.tag | default "16-alpine" }}
+        ports:
+        - containerPort: 5432
+          name: tcp-postgresql
+        env:
+        - name: POSTGRES_USER
+          value: {{ .Values.postgresql.auth.username | default "postgres" | quote }}
+        - name: POSTGRES_PASSWORD
+          value: {{ .Values.postgresql.auth.password | default "postgres" | quote }}
+        - name: POSTGRES_DB
+          value: {{ .Values.postgresql.auth.database | default "hodei_jobs" | quote }}
+        volumeMounts:
+        - name: postgresql-data
+          mountPath: /var/lib/postgresql/data
+        - name: postgresql-socket
+          mountPath: /var/run/postgresql
+        resources:
+          {{- toYaml .Values.postgresql.primary.resources | nindent 10 }}
+      volumes:
+      - name: postgresql-data
+        emptyDir: {}
+      - name: postgresql-socket
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+    name: tcp-postgresql
+  selector:
+    {{- include "hodei-jobs-platform.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql

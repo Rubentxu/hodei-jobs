@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-nats
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/name: nats
+spec:
+  replicas: {{ .Values.nats.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "hodei-jobs-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  template:
+    metadata:
+      labels:
+        {{- include "hodei-jobs-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nats
+    spec:
+      containers:
+      - name: nats
+        image: {{ .Values.nats.image.registry | default "docker.io" }}/{{ .Values.nats.image.repository | default "library/nats" }}:{{ .Values.nats.image.tag | default "2.10-alpine" }}
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 6222
+          name: cluster
+        - containerPort: 8222
+          name: http
+        command:
+        - nats-server
+        - --jetstream
+        - --http_port=8222
+        resources:
+          {{- toYaml .Values.nats.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-nats
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4222
+    targetPort: 4222
+    protocol: TCP
+    name: client
+  - port: 6222
+    targetPort: 6222
+    protocol: TCP
+    name: cluster
+  - port: 8222
+    targetPort: 8222
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "hodei-jobs-platform.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats

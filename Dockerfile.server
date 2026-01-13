@@ -1,0 +1,60 @@
+# Hodei Server Kubernetes Image
+# Optimized for Kubernetes deployments with health checks
+
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+FROM rust:latest AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY proto ./proto
+
+# Build release binary
+RUN cargo build --release -p hodei-server-bin
+
+# =============================================================================
+# Stage 2: Runtime (minimal dependencies)
+# =============================================================================
+FROM debian:stable-slim AS runtime
+
+# Install ONLY runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy server binary
+COPY --from=builder /app/target/release/hodei-server-bin /usr/local/bin/hodei-jobs-server
+
+# Create non-root user
+RUN useradd -r -u 1000 -g root -d /var/lib/hodei hodei \
+    && mkdir -p /var/lib/hodei \
+    && chown -R hodei:root /var/lib/hodei
+
+USER hodei
+
+# Environment variables
+ENV HODEI_SERVER_GRPC_PORT=50051
+ENV HODEI_SERVER_HTTP_PORT=8080
+ENV RUST_LOG=info
+
+# Expose ports
+EXPOSE 50051 8080
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Default command
+ENTRYPOINT ["/usr/local/bin/hodei-server"]
+CMD []

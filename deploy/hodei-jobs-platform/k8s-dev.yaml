@@ -1,0 +1,156 @@
+# =============================================================================
+# Hodei Jobs Platform - Kubernetes Development Deployment
+# =============================================================================
+# Deployment directo para desarrollo local
+# Usa servicios externos (postgres, nats en Docker)
+#
+# Usage: kubectl apply -f deploy/hodei-jobs-platform/k8s-dev.yaml
+# =============================================================================
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hodei-system
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/managed-by: kubectl
+
+---
+# Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hodei-server
+  namespace: hodei-system
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hodei-server
+  namespace: hodei-system
+  labels:
+    app: hodei-server
+    version: dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hodei-server
+  template:
+    metadata:
+      labels:
+        app: hodei-server
+        version: dev
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: hodei-server
+      containers:
+      - name: server
+        # Usar imagen compilada localmente o la última disponible
+        image: ghcr.io/rubentxu/hodei-jobs-platform:v0.27.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 50051
+          name: grpc
+        - containerPort: 9090
+          name: metrics
+        env:
+        # Server config
+        - name: HODEI_SERVER_GRPC_PORT
+          value: "50051"
+        - name: RUST_LOG
+          value: "debug,hodei_server=trace"
+        - name: HODEI_DEV_MODE
+          value: "1"
+
+        # External services (Docker)
+        - name: DATABASE_URL
+          value: "postgres://postgres:postgres@host.docker.internal:5432/hodei_jobs"
+        - name: HODEI_NATS_URLS
+          value: "nats://host.docker.internal:4222"
+
+        # Provider config para workers k8s
+        - name: HODEI_K8S_WORKER_IMAGE
+          value: "ghcr.io/rubentxu/hodei-jobs-platform:v0.27.0"
+        - name: HODEI_K8S_NAMESPACE
+          value: "hodei-jobs-workers"
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 30
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: hodei-server
+  namespace: hodei-system
+  labels:
+    app: hodei-server
+spec:
+  selector:
+    app: hodei-server
+  ports:
+  - port: 50051
+    targetPort: 50051
+    name: grpc
+  - port: 9090
+    targetPort: 9090
+    name: metrics
+  type: ClusterIP
+
+---
+# Role para crear workers en namespace hodei-jobs-workers
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hodei-server-worker-creator
+  namespace: hodei-jobs-workers
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hodei-server-worker-binding
+  namespace: hodei-jobs-workers
+subjects:
+- kind: ServiceAccount
+  name: hodei-server
+  namespace: hodei-system
+roleRef:
+  kind: Role
+  name: hodei-server-worker-creator
+  apiGroup: rbac.authorization.k8s.io
