@@ -8,6 +8,9 @@
 # Global Settings
 # =============================================================================
 global:
+  # Allow non-standard images (for local/minikube development)
+  security:
+    allowInsecureImages: true
   # Cluster domain for DNS resolution
   clusterDomain: "cluster.local"
   # Image pull secrets for private registries
@@ -20,12 +23,12 @@ global:
 # =============================================================================
 # Server Configuration
 # =============================================================================
-replicaCount: 3
+replicaCount: 1  # Reduced for local development
 
 image:
-  repository: ghcr.io/rubentxu/hodei-jobs-platform
-  pullPolicy: IfNotPresent
-  tag: "v0.27.0"
+  repository: hodei-jobs-platform
+  pullPolicy: Never  # Use local images only
+  tag: "local"
 
 # Image pull secrets (use external-secrets for production)
 imagePullSecrets: []
@@ -110,9 +113,7 @@ resources:
     memory: 512Mi
 
 autoscaling:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 10
+  enabled: false  # Disabled for local development (requires metrics-server)
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
   # Behavior for gradual scaling
@@ -205,9 +206,15 @@ topologySpreadConstraints:
 # =============================================================================
 # Monitoring & Observability
 # =============================================================================
+# Prometheus configuration
+prometheus:
+  enabled: false  # Disable for now, requires Prometheus Operator
+  prometheus:
+    enabled: false
+
 # Prometheus ServiceMonitor
 serviceMonitor:
-  enabled: true
+  enabled: false  # Disable for now, requires Prometheus Operator
   labels:
     prometheus.io/scrape: "true"
     hodei.io/monitor: "true"
@@ -265,12 +272,23 @@ tracing:
 nats:
   enabled: true
   # Number of NATS replicas
-  replicaCount: 3
+  replicaCount: 1  # Reduced for development
+  # Use local image for minikube
+  image:
+    registry: docker.io
+    repository: library/nats
+    tag: 2.10-alpine
+    digest: ""
+  # Persistence required for JetStream
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 1Gi
   # JetStream settings
   jetstream:
     enabled: true
-    maxMemoryStore: 1Gi
-    maxFileStore: 10Gi
+    maxMemoryStore: 512Mi
+    maxFileStore: 1Gi
   # NATS resources
   resources:
     limits:
@@ -307,25 +325,26 @@ nats:
 # =============================================================================
 postgresql:
   enabled: true
-  # Use external PostgreSQL for production
+  # Use internal PostgreSQL (our template, not Bitnami subchart)
   useInternal: true
+  # Use local image for minikube
+  image:
+    registry: docker.io
+    repository: library/postgres
+    tag: 16-alpine
   # Connection string (use external-secrets for production)
   connectionString: ""
-  # Internal PostgreSQL settings (if enabled)
+  # Internal PostgreSQL settings
   auth:
-    postgresPassword: ""  # Set via external-secrets
+    postgresPassword: "postgres"  # For local development only
     database: "hodei_jobs"
-    existingSecret: "hodei-postgresql"
-    secretKeys:
-      adminPasswordKey: "postgres-password"
-      userPasswordKey: "password"
-      databaseKey: "database"
-  # HA for PostgreSQL
+    existingSecret: ""  # Disabled for local development
+    username: "postgres"
+    password: "postgres"
+  # Resources
   primary:
     persistence:
-      enabled: true
-      size: 20Gi
-      storageClass: ""
+      enabled: false
     resources:
       limits:
         cpu: 1000m
@@ -333,26 +352,19 @@ postgresql:
       requests:
         cpu: 500m
         memory: 512Mi
-  # Read replicas for read scaling
-  readReplicas:
-    replicaCount: 0
-    persistence:
-      enabled: true
-      size: 20Gi
   # Pod disruption budget
   pdb:
-    enabled: true
-    minAvailable: 1
+    enabled: false  # Disabled for local development
 
 # =============================================================================
 # External Secrets Configuration (GitOps)
 # =============================================================================
 externalSecrets:
-  enabled: true
+  enabled: false  # Disabled for local development
   # Secret Store provider
   secretStore:
     # Use ClusterSecretStore for cluster-wide access
-    create: true
+    create: false  # Disabled for local development
     name: "hodei-secret-store"
     provider: "aws"  # aws, gcp, azure, vault
     # AWS Secrets Manager
