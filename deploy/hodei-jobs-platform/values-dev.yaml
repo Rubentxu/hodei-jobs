@@ -95,15 +95,15 @@ nats:
     enabled: false
 
 # =============================================================================
-# Disable init containers that require external dependencies
-# Migrations are handled by Helm Hook Job, not init container
+# Init Containers Configuration
+# Migrations are handled automatically by the server at startup
+# (schema_migrations table tracks applied migrations)
+# =============================================================================
 initContainers:
   enabled: true
-  migrate:
-    enabled: false  # migrations handled by Helm Hook
   waitFor:
     dependencies:
-      enabled: true  # Wait for dependencies
+      enabled: true  # Wait for PostgreSQL and NATS before starting
 
 # =============================================================================
 # Service Account Configuration
