@@ -12,6 +12,7 @@ members = [
     "crates/worker/infrastructure",
     "crates/worker/bin",
     "crates/cli",
+    "crates/console-web",
     "proto",
 ]
 
@@ -129,6 +130,12 @@ prost-build = "0.14.1"
 assert_matches = "1.5"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
+
+# Web framework
+leptos = "0.8"
+leptos_router = "0.8"
+leptos_meta = "0.8"
+axum = "0.8"
 
 # Scheduling
 cron = "0.12"

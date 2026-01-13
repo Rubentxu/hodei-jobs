@@ -287,6 +287,8 @@ impl SagaStep for AssignWorkerStep {
     /// EPIC-50 GAP-52-01: Execute worker assignment via CommandBus
     #[instrument(skip(context), fields(step = "AssignWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        info!(job_id = %self.job_id, saga_id = %context.saga_id, "🔍 AssignWorkerStep: Starting execution");
+        
         // GAP-52-01: Get CommandBus from context
         let command_bus = {
             let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -301,6 +303,8 @@ impl SagaStep for AssignWorkerStep {
                 will_compensate: true,
             })?.clone()
         };
+        
+        info!(job_id = %self.job_id, "✓ CommandBus retrieved from SagaServices");
 
         // Idempotency check: skip if already assigned
         if let Some(Ok(true)) = context.get_metadata::<bool>("worker_assignment_done") {
@@ -327,7 +331,9 @@ impl SagaStep for AssignWorkerStep {
 
         info!(
             job_id = %self.job_id,
-            "🔄 Assigning worker via CommandBus (AssignWorkerCommand)..."
+            command_type = "AssignWorkerCommand",
+            saga_id = %context.saga_id,
+            "�� Dispatching command via CommandBus..."
         );
 
         // Dispatch command and handle pre-assigned worker if needed

@@ -1,0 +1,319 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "server"
+  annotations:
+    checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "hodei-jobs-platform.selectorLabels" . | nindent 6 }}
+  {{- if .Values.strategy }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "hodei-jobs-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: "server"
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "hodei-jobs-platform.serviceAccountName" . }}
+
+      {{- if .Values.podSecurityStandard.enforce }}
+      securityContext:
+        seccompProfile:
+          type: {{ .Values.podSecurityStandard.enforce }}
+      {{- else }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      {{- else if .Values.podAntiAffinity.enabled }}
+      topologySpreadConstraints:
+        {{- if .Values.topologySpreadConstraints }}
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "hodei-jobs-platform.selectorLabels" . | nindent 12 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              {{- include "hodei-jobs-platform.selectorLabels" . | nindent 12 }}
+        {{- end }}
+      {{- end }}
+
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: {{ .Values.podAntiAffinity.weight | default 100 }}
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "hodei-jobs-platform.selectorLabels" . | nindent 16 }}
+                topologyKey: {{ .Values.podAntiAffinity.topologyKey | default "kubernetes.io/hostname" }}
+      {{- end }}
+
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- if .Values.securityContext }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        {{- end }}
+
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.port }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.service.grpcPort }}
+          protocol: TCP
+
+        {{- if .Values.livenessProbe }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.livenessProbe.path | default "/health/live" }}
+            port: {{ .Values.livenessProbe.port | default "http" }}
+          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds | default 30 }}
+          periodSeconds: {{ .Values.livenessProbe.periodSeconds | default 10 }}
+          timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds | default 5 }}
+          failureThreshold: {{ .Values.livenessProbe.failureThreshold | default 3 }}
+          successThreshold: {{ .Values.livenessProbe.successThreshold | default 1 }}
+        {{- end }}
+
+        {{- if .Values.readinessProbe }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.readinessProbe.path | default "/health/ready" }}
+            port: {{ .Values.readinessProbe.port | default "http" }}
+          initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds | default 5 }}
+          periodSeconds: {{ .Values.readinessProbe.periodSeconds | default 5 }}
+          timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds | default 3 }}
+          failureThreshold: {{ .Values.readinessProbe.failureThreshold | default 3 }}
+          successThreshold: {{ .Values.readinessProbe.successThreshold | default 1 }}
+        {{- end }}
+
+        {{- if .Values.startupProbe }}
+        startupProbe:
+          httpGet:
+            path: {{ .Values.startupProbe.path | default "/health/startup" }}
+            port: {{ .Values.startupProbe.port | default "http" }}
+          initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds | default 0 }}
+          periodSeconds: {{ .Values.startupProbe.periodSeconds | default 10 }}
+          timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds | default 5 }}
+          failureThreshold: {{ .Values.startupProbe.failureThreshold | default 30 }}
+          successThreshold: {{ .Values.startupProbe.successThreshold | default 1 }}
+        {{- end }}
+
+        {{- if .Values.resources }}
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+        {{- end }}
+
+        env:
+        # NATS configuration
+        - name: HODEI_NATS_URLS
+          value: "nats://{{ include "hodei-jobs-platform.fullname" . }}-nats:4222"
+        - name: HODEI_NATS_ENABLED
+          value: "1"
+
+        # Server configuration
+        - name: GRPC_PORT
+          value: {{ .Values.service.grpcPort | quote }}
+        - name: HODEI_SERVER_HOST
+          value: "0.0.0.0"
+
+        # PostgreSQL configuration
+        - name: SERVER_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.postgresql.auth.existingSecret | default "postgresql" }}
+              key: {{ .Values.postgresql.auth.secretKeys.userPasswordKey | default "password" }}
+
+        # Job configuration
+        - name: HODEI_JOB_CONTROLLER_ENABLED
+          value: "1"
+        - name: HODEI_JOB_CONTROLLER_INTERVAL_MS
+          value: "500"
+
+        # Worker configuration
+        - name: HODEI_WORKER_IMAGE
+          value: "{{ .Values.image.repository }}-worker:{{ .Values.image.tag }}"
+        - name: HODEI_DOCKER_ENABLED
+          value: {{ .Values.dockerProvider.enabled | quote }}
+        - name: HODEI_KUBERNETES_ENABLED
+          value: {{ .Values.kubernetesProvider.enabled | quote }}
+
+        # Logging
+        - name: RUST_LOG
+          value: {{ .Values.logging.level | default "INFO" }}
+
+        {{- if .Values.tracing.enabled }}
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.tracing.endpoint | quote }}
+        - name: OTEL_TRACES_SAMPLER
+          value: "parentbased_always_on"
+        {{- end }}
+
+        {{- if .Values.externalSecrets.enabled }}
+        # External secrets - credentials fetched automatically
+        {{- end }}
+
+        volumeMounts:
+        - name: config
+          mountPath: /etc/hodei/config.yaml
+          subPath: config.yaml
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /var/cache/hodei
+
+        {{- if .Values.volumes.work.enabled }}
+        - name: work
+          mountPath: /var/lib/hodei/work
+        {{- end }}
+
+        {{- if .Values.sidecars }}
+        {{- range $sidecar := .Values.sidecars }}
+        {{- if $sidecar.enabled }}
+        - name: {{ $sidecar.name }}
+          image: {{ $sidecar.image }}
+          {{- if $sidecar.resources }}
+          resources:
+            {{- toYaml $sidecar.resources | nindent 12 }}
+          {{- end }}
+          {{- if $sidecar.volumeMounts }}
+          volumeMounts:
+            {{- toYaml $sidecar.volumeMounts | nindent 12 }}
+          {{- end }}
+          {{- if $sidecar.env }}
+          env:
+            {{- toYaml $sidecar.env | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+
+      {{- if .Values.initContainers.enabled }}
+      initContainers:
+        {{- if .Values.initContainers.migrate.enabled }}
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["hodei-jobs-platform", "migrate"]
+          {{- if .Values.initContainers.migrate.resources }}
+          resources:
+            {{- toYaml .Values.initContainers.migrate.resources | nindent 12 }}
+          {{- end }}
+        {{- end }}
+
+        {{- if .Values.initContainers.waitFor.dependencies.enabled }}
+        - name: wait-for-dependencies
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for NATS..."
+              until nc -z {{ include "hodei-jobs-platform.fullname" . }}-nats 4222; do
+                echo "NATS not ready, waiting..."
+                sleep 2
+              done
+              echo "NATS is ready!"
+              {{- if .Values.postgresql.enabled }}
+              echo "Waiting for PostgreSQL..."
+              until nc -z {{ include "hodei-jobs-platform.fullname" . }}-postgresql 5432; do
+                echo "PostgreSQL not ready, waiting..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+              {{- end }}
+              echo "All dependencies ready!"
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
+        {{- end }}
+      {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "hodei-jobs-platform.fullname" . }}-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: {{ .Values.volumes.tmp.sizeLimit | default "1Gi" }}
+      - name: cache
+        emptyDir:
+          sizeLimit: {{ .Values.volumes.cache.sizeLimit | default "1Gi" }}
+
+      {{- if .Values.volumes.work.enabled }}
+      - name: work
+        persistentVolumeClaim:
+          claimName: {{ include "hodei-jobs-platform.fullname" . }}-work
+      {{- end }}
+
+      {{- if .Values.volumes.extra }}
+      {{- toYaml .Values.volumes.extra | nindent 6 }}
+      {{- end }}
+
+      {{- if .Values.debug.enabled }}
+      {{- if .Values.debug.forceSingleReplica }}
+      terminationGracePeriodSeconds: 0
+      {{- end }}
+      {{- if .Values.debug.disableProbes }}
+      livenessProbe: null
+      readinessProbe: null
+      startupProbe: null
+      {{- end }}
+      {{- end }}
+
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}

@@ -53,10 +53,13 @@ use hodei_server_infrastructure::persistence::postgres::saga_repository::{
     PostgresSagaOrchestrator, PostgresSagaOrchestratorConfig, SagaPoller, SagaPollerConfig,
 };
 
+use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
 use hodei_server_domain::providers::ProviderConfigRepository;
 use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
-use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
+
+use hodei_server_application::command::ProvisioningCommandBusConfig;
+use hodei_server_application::command::register_provisioning_command_handlers;
 
 use hodei_server_infrastructure::messaging::OutboxEventBus;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::{
@@ -560,8 +563,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // EPIC-31: Create providers map early for shared access
     // This is used by JobExecutionService for worker cleanup notifications
     // EPIC-42: DashMap for lock-free concurrency
-    let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> =
-        Arc::new(DashMap::new());
+    let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
 
     // EPIC-31: Use with_cleanup_support to enable JobQueued event publishing
     // The outbox_event_bus is required for reactive job processing (JobCoordinator)
@@ -960,7 +962,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  ✓ Saga orchestrator initialized with PostgreSQL repository");
 
     // GAP-60-01: Create CommandBus for saga command dispatch
-    let command_bus: DynCommandBus = Arc::new(InMemoryErasedCommandBus::new());
+    let command_bus_inner = InMemoryErasedCommandBus::new();
+
+    // Register provisioning command handlers using segregated module
+    let provisioning_service_for_handlers = provisioning_service
+        .clone()
+        .expect("Provisioning service is required for saga command handlers");
+
+    // Arc<dyn WorkerProvisioning> is directly accepted by ProvisioningCommandBusConfig::new
+    let command_bus_config = ProvisioningCommandBusConfig::new(provisioning_service_for_handlers);
+
+    register_provisioning_command_handlers(&command_bus_inner, command_bus_config).await;
+
+    // Wrap in Arc<dyn ErasedCommandBus> for DynCommandBus
+    let command_bus: DynCommandBus = Arc::new(command_bus_inner);
+
+    info!("  ✓ Command handlers registered for saga dispatch");
 
     // Create Provisioning Saga Coordinator (always enabled)
     let config =
@@ -1014,6 +1031,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orchestrator.clone(),
         job_repository.clone(),
         worker_registry.clone(),
+        event_bus.clone(),
+        command_bus.clone(),
         Some(config),
     ));
 
@@ -1076,9 +1095,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // EPIC-42: Start reactive signal consumer if reactive mode is enabled
     // This provides immediate saga execution upon signal, with safety net polling
-    let mut reactive_processor_guard: Option<tokio::task::JoinHandle<()>> = None;
+    let _reactive_processor_guard: Option<tokio::task::JoinHandle<()>>;
     // EPIC-46 GAP-16: Default to reactive mode (EDA pure architecture)
-    let mut use_polling = false;
+    // use_polling is true only when reactive mode is disabled
+    let use_polling = !reactive_mode;
 
     if reactive_mode {
         info!("🚀 Starting Reactive Saga Processor (signal-based execution)...");
@@ -1101,7 +1121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // which handles saga reconstruction from context
         let saga_orchestrator = orchestrator_impl.clone();
 
-        reactive_processor_guard = Some(tokio::spawn(async move {
+        _reactive_processor_guard = Some(tokio::spawn(async move {
             info!("🔄 ReactiveSagaProcessor: Waiting for saga signals...");
 
             let mut interval = tokio::time::interval(safety_polling_interval);
@@ -1184,8 +1204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Keep shutdown sender alive
         let _shutdown_guard = shutdown_tx;
 
-        // Disable legacy poller in reactive mode
-        use_polling = false;
+        // Disable legacy poller in reactive mode - already set by `let use_polling = !reactive_mode;`
         info!(
             safety_polling_interval = %safety_polling_interval.as_secs(),
             "  ✓ ReactiveSagaProcessor started (safety net active)"
@@ -1194,7 +1213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // EPIC-46 GAP-16: Polling is now fallback mode, not default
         info!("ℹ️ Reactive saga processing disabled, falling back to legacy polling mode");
         info!("  ℹ️  Enable reactive mode with: export HODEI_SAGA_REACTIVE_MODE=true");
-        use_polling = true; // Enable polling as fallback when reactive mode is off
+        // use_polling is already true because `let use_polling = !reactive_mode;`
     }
 
     // EPIC-33/EPIC-42: Start Saga Poller (only if not using reactive mode)

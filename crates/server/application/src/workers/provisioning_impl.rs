@@ -65,6 +65,7 @@ impl ProvisioningConfig {
 }
 
 /// Production implementation of WorkerProvisioningService
+#[derive(Clone)]
 pub struct DefaultWorkerProvisioningService {
     /// Worker registry for registration
     registry: Arc<dyn WorkerRegistry>,
@@ -74,6 +75,14 @@ pub struct DefaultWorkerProvisioningService {
     providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
     /// Configuration
     config: ProvisioningConfig,
+}
+
+impl std::fmt::Debug for DefaultWorkerProvisioningService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultWorkerProvisioningService")
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
 impl DefaultWorkerProvisioningService {

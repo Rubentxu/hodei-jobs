@@ -33,8 +33,8 @@ struct AutoTerminateState {
     enabled: bool,
     /// Last job ID that completed (if any)
     last_job_id: Option<String>,
-    /// When the last job completed (for calculating wait time)
-    last_job_completed_at: Option<Instant>,
+    /// When the worker became idle (for calculating wait time)
+    idle_since: Option<Instant>,
     /// Expected cleanup timeout from config
     expected_cleanup_ms: u64,
 }
@@ -44,7 +44,7 @@ impl AutoTerminateState {
         Self {
             enabled: cleanup_timeout_ms > 0,
             last_job_id: None,
-            last_job_completed_at: None,
+            idle_since: Some(Instant::now()), // Start idle timer immediately on creation
             expected_cleanup_ms: cleanup_timeout_ms,
         }
     }
@@ -52,29 +52,28 @@ impl AutoTerminateState {
     /// Called when a job completes
     fn on_job_completed(&mut self, job_id: String) {
         self.last_job_id = Some(job_id);
-        self.last_job_completed_at = Some(Instant::now());
+        self.idle_since = Some(Instant::now());
+    }
+
+    /// Called when a job starts
+    fn on_job_started(&mut self) {
+        self.idle_since = None; // Disable timer while busy
     }
 
     /// Check if we should auto-terminate
     /// Returns Some(actual_wait_ms) if should terminate, None otherwise
-    fn should_terminate(&self) -> Option<u64> {
-        if !self.enabled {
+    fn should_terminate(&self, is_busy: bool) -> Option<u64> {
+        if !self.enabled || is_busy {
             return None;
         }
-        if let Some(completed_at) = self.last_job_completed_at {
-            let elapsed = completed_at.elapsed();
+        if let Some(idle_at) = self.idle_since {
+            let elapsed = idle_at.elapsed();
             let expected = Duration::from_millis(self.expected_cleanup_ms);
             if elapsed >= expected {
                 return Some(elapsed.as_millis() as u64);
             }
         }
         None
-    }
-
-    /// Reset the state (e.g., when receiving a new job)
-    fn reset(&mut self) {
-        self.last_job_id = None;
-        self.last_job_completed_at = None;
     }
 }
 
@@ -303,6 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(15));
+                let mut auto_terminate_interval = tokio::time::interval(Duration::from_millis(500));
                 let mut cached_metrics: Option<CachedResourceUsage> = None;
 
                 // Inner communication loop
@@ -314,17 +314,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
 
-                        // Check auto-termination timeout
-                        should_terminate = async {
-                            // Poll periodically to check if timeout expired
-                            if let Some(expected_ms) = config.cleanup_timeout_ms.checked_sub(100) {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            } else {
-                                tokio::time::sleep(Duration::from_millis(config.cleanup_timeout_ms)).await;
-                            }
-                            auto_terminate_state.lock().await.should_terminate()
-                        } => {
-                            if let Some(actual_wait_ms) = should_terminate {
+// Check auto-termination timeout
+                        _ = auto_terminate_interval.tick() => {
+                            let is_busy = !running_jobs.lock().await.is_empty();
+                            if let Some(actual_wait_ms) = auto_terminate_state.lock().await.should_terminate(is_busy) {
                                 let last_job_id = auto_terminate_state.lock().await.last_job_id.clone();
                                 let expected_ms = auto_terminate_state.lock().await.expected_cleanup_ms;
                                 warn!("🛑 Auto-termination triggered after {}ms (expected: {}ms), last_job: {:?}",
@@ -337,7 +330,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         last_job_id: last_job_id.unwrap_or_default(),
                                         expected_cleanup_ms: expected_ms,
                                         actual_wait_ms,
-                                        reason: "Cleanup timeout expired after job completion".to_string(),
+                                        reason: "Cleanup timeout expired (idle/after job)".to_string(),
                                     }))
                                 };
 
@@ -421,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ServerPayload::RunJob(run_job) => {
                                             info!("🚀 Received job: {}", run_job.job_id);
                                             // Reset auto-termination timer when receiving new job
-                                            auto_terminate_state.lock().await.reset();
+                                            auto_terminate_state.lock().await.on_job_started();
                                             info!("🔄 Auto-termination timer reset (new job received)");
 
                                             let exec = executor.clone();

@@ -99,6 +99,22 @@ impl SagaId {
         Self(uuid)
     }
 
+    /// Creates a deterministic SagaId from a string (for idempotency)
+    /// 
+    /// Uses UUID v5 (SHA-1 namespace) to generate reproducible IDs.
+    /// Same input always produces the same SagaId.
+    /// 
+    /// # Example
+    /// ```
+    /// let saga_id = SagaId::from_string("execution-job123-worker456");
+    /// ```
+    #[inline]
+    pub fn from_string(s: &str) -> Self {
+        // Use DNS namespace as base (standard practice)
+        let namespace = Uuid::NAMESPACE_DNS;
+        Self(Uuid::new_v5(&namespace, s.as_bytes()))
+    }
+
     /// Returns the underlying UUID
     #[inline]
     pub fn into_uuid(self) -> Uuid {

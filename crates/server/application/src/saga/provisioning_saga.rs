@@ -152,7 +152,11 @@ impl DynProvisioningSagaCoordinator {
         }
         context.set_metadata("worker_image", &spec.image).ok();
 
-        let saga = ProvisioningSaga::new(spec.clone(), provider_id.clone());
+        let saga = if let Some(jid) = job_id {
+            ProvisioningSaga::with_job(spec.clone(), provider_id.clone(), jid)
+        } else {
+            ProvisioningSaga::new(spec.clone(), provider_id.clone())
+        };
 
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {

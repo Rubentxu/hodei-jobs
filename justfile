@@ -897,7 +897,7 @@ watch-queue:
 # Start server with Kubernetes provisioning enabled
 dev-k8s:
     @echo "🚀 Starting server with Kubernetes provisioning enabled..."
-    @HODEI_PROVISIONING_ENABLED=1 HODEI_KUBERNETES_ENABLED=1 HODEI_DOCKER_ENABLED=1 DATABASE_URL=postgres://postgres:postgres@localhost:5432/hodei_jobs cargo run --bin hodei-server-bin > /tmp/server-k8s.log 2>&1 &
+    @HODEI_PROVISIONING_ENABLED=1 HODEI_KUBERNETES_ENABLED=1 HODEI_DOCKER_ENABLED=1 HODEI_SERVER_ADDRESS=192.168.39.1 DATABASE_URL=postgres://postgres:postgres@localhost:5432/hodei_jobs cargo run --bin hodei-server-bin > /tmp/server-k8s.log 2>&1 &
     @echo "✅ Server started with Kubernetes provider support"
     @echo "📊 Server logs: /tmp/server-k8s.log"
     @echo "🔍 Monitor: tail -f /tmp/server-k8s.log"

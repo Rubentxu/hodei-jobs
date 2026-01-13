@@ -1,9 +1,12 @@
-//! Command Bus Bootstrap Module
-//!
-//! This module provides bootstrap utilities for registering command handlers
-//! with the CommandBus during application startup.
 //!
 //! EPIC-50: Command Bus Core Infrastructure - Historia de Usuario 56.2
+
+mod provisioning;
+
+pub use provisioning::{
+    ProvisioningCommandBusBuilder, ProvisioningCommandBusConfig,
+    register_provisioning_command_handlers,
+};
 
 use hodei_server_domain::command::{Command, CommandBus};
 use std::sync::Arc;

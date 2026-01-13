@@ -88,7 +88,7 @@ impl Saga for ProvisioningSaga {
             Box::new(CreateInfrastructureStep::new(
                 self.provider_id.clone(),
                 self.spec.clone(),
-            )),
+            ).with_job(self.job_id.clone().unwrap_or_else(JobId::new))),
             // RegisterWorkerStep is NOT needed - workers self-register via OTP on startup
             Box::new(PublishProvisionedEventStep::new()),
         ]

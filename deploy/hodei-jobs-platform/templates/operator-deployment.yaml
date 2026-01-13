@@ -1,0 +1,195 @@
+{{- /*
+Hodei Operator Deployment with Web Dashboard Sidecar
+*/ -}}
+{{- $fullName := include "hodei-jobs-platform.fullname" . -}}
+{{- $chartName := include "hodei-jobs-platform.name" . -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-operator
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "operator"
+spec:
+  replicas: {{ .Values.operator.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "hodei-jobs-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: "operator"
+  template:
+    metadata:
+      labels:
+        {{- include "hodei-jobs-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: "operator"
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "hodei-jobs-platform.serviceAccountName" . }}
+
+      {{- with .Values.operator.securityContext | default .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- /* Init container: copy web assets */ -}}
+      {{- if and .Values.web.enabled .Values.web.initContainer.enabled }}
+      initContainers:
+        - name: init-web-assets
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying web dashboard assets..."
+              cp -r /www/* /web-assets/
+              echo "Assets copied successfully"
+          volumeMounts:
+            - name: web-assets
+              mountPath: /web-assets
+          {{- with .Values.web.initContainer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- end }}
+
+      containers:
+        {{- /* Operator Container */ -}}
+        - name: operator
+          image: "{{ .Values.image.repository }}/operator:{{ .Values.image.operatorTag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /hodei-operator
+          args:
+            - --server-addr={{ .Values.operator.hodeiServer.address }}
+            - --namespace={{ .Values.operator.watchNamespace | default "" }}
+            {{- if .Values.operator.watchAllNamespaces }}
+            - --all-namespaces
+            {{- end }}
+            - --web-port={{ .Values.web.port | default 8080 }}
+            {{- if .Values.operator.logLevel }}
+            - --log-level={{ .Values.operator.logLevel }}
+            {{- end }}
+          {{- with .Values.operator.securityContext | default .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.operator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.operator.logLevel | default "info" }}
+            - name: HODEI_OPERATOR_NAMESPACE
+              value: {{ .Values.operator.watchNamespace | default "default" }}
+          {{- if .Values.operator.livenessProbe.enabled }}
+          livenessProbe:
+            exec:
+              command:
+                - /hodei-operator
+                - health
+            initialDelaySeconds: {{ .Values.operator.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.operator.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.operator.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.operator.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.operator.readinessProbe.enabled }}
+          readinessProbe:
+            exec:
+              command:
+                - /hodei-operator
+                - health
+            initialDelaySeconds: {{ .Values.operator.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.operator.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.operator.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.operator.readinessProbe.failureThreshold }}
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.web.port | default 8080 }}
+              name: web
+              protocol: TCP
+          {{- if .Values.web.enabled }}
+          volumeMounts:
+            - name: web-assets
+              mountPath: /www
+          {{- end }}
+        {{- /* End Operator Container */ -}}
+
+        {{- /* Web Dashboard Container (Sidecar) */ -}}
+        {{- if and .Values.web.enabled .Values.web.sidecar }}
+        - name: web
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.web.port | default 8080 }}
+              name: http-web
+              protocol: TCP
+          {{- with .Values.web.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.web.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.web.livenessProbe.path | default "/health" }}
+              port: {{ .Values.web.port | default 8080 }}
+            initialDelaySeconds: {{ .Values.web.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.web.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.web.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.web.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.web.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.web.readinessProbe.path | default "/health" }}
+              port: {{ .Values.web.port | default 8080 }}
+            initialDelaySeconds: {{ .Values.web.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.web.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.web.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.web.readinessProbe.failureThreshold }}
+          {{- end }}
+          volumeMounts:
+            - name: web-assets
+              mountPath: /www
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting Hodei Operator Web Dashboard..."
+              cd /www
+              echo "Serving files from $(pwd)"
+              ls -la
+              # Start busybox httpd
+              httpd -p 8080 -h /www -c /etc/httpd.conf
+              echo "Web dashboard available on port 8080"
+              # Keep container running
+              tail -f /dev/null
+        {{- end }}
+        {{- /* End Web Dashboard Container */ -}}
+
+      {{- /* Volumes */ -}}
+      {{- if .Values.web.enabled }}
+      volumes:
+        - name: web-assets
+          emptyDir: {}
+      {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

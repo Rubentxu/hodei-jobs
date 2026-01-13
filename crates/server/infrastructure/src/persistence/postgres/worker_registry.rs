@@ -59,10 +59,9 @@ impl WorkerRegistry for PostgresWorkerRegistry {
 
         sqlx::query(
             r#"
-            INSERT INTO workers (id, worker_id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO workers (id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (id) DO UPDATE SET
-                worker_id = EXCLUDED.worker_id,
                 provider_id = EXCLUDED.provider_id,
                 provider_type = EXCLUDED.provider_type,
                 provider_resource_id = EXCLUDED.provider_resource_id,
@@ -74,7 +73,6 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             "#,
         )
         .bind(worker_id)
-        .bind(worker_id.to_string())  // worker_id column is varchar(255)
         .bind(provider_id)
         .bind(handle.provider_type.to_string())
         .bind(handle.provider_resource_id.clone())
@@ -492,8 +490,8 @@ impl WorkerRegistry for PostgresWorkerRegistry {
 
         sqlx::query(
             r#"
-            INSERT INTO workers (id, worker_id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            INSERT INTO workers (id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id, last_heartbeat, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 provider_id = EXCLUDED.provider_id,
                 provider_type = EXCLUDED.provider_type,
@@ -507,7 +505,6 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             "#,
         )
         .bind(worker_id)
-        .bind(worker_id.to_string())  // worker_id column is varchar(255)
         .bind(provider_id)
         .bind(handle.provider_type.to_string())
         .bind(handle.provider_resource_id.clone())

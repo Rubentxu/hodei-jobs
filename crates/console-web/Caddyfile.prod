@@ -1,0 +1,73 @@
+{
+    # Global options
+    admin off
+    auto_https off
+    log {
+        level INFO
+        format console
+    }
+
+    # HTTP server
+    http {
+        # Match all routes for SPA
+        @spa {
+            not path /api/*
+            not path /health
+        }
+
+        # Serve SPA for non-API routes
+        route @spa {
+            uri strip_prefix /www
+            file_server {
+                root /usr/share/caddy/html
+                try_files {path} /index.html
+            }
+        }
+
+        # API routes - forward to operator gRPC
+        route /api/* {
+            reverse_proxy hodei-server:50051 {
+                # gRPC requires HTTP/2
+                transport http {
+                    versions h2c
+                }
+            }
+        }
+
+        # Health check endpoint
+        route /health {
+            respond "OK" 200 {
+                Content-Type text/plain
+            }
+        }
+
+        # Serve WASM pkg files
+        route /pkg/* {
+            file_server {
+                root /usr/share/caddy/html/pkg
+                hide .gitignore
+            }
+        }
+
+        # Serve CSS
+        route /style.css {
+            file_server {
+                root /usr/share/caddy/html
+            }
+        }
+
+        # Serve root
+        route / {
+            file_server {
+                root /usr/share/caddy/html
+                try_files {path} /index.html
+            }
+        }
+    }
+
+    # Server configuration
+    server {
+        listen :{$PORT:-8080}
+        trusted_proxies private_ranges 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+    }
+}

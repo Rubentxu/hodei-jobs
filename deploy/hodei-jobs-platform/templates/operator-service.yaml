@@ -1,0 +1,26 @@
+{{- /*
+Operator Service - exposes operator metrics and web dashboard
+*/ -}}
+{{- $fullName := include "hodei-jobs-platform.fullname" . -}}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-operator
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "operator"
+spec:
+  type: {{ .Values.service.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.service.port | default 50051 }}
+      targetPort: web
+      protocol: TCP
+      name: grpc
+    - port: {{ .Values.web.port | default 8080 }}
+      targetPort: http-web
+      protocol: TCP
+      name: http-web
+  selector:
+    {{- include "hodei-jobs-platform.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: "operator"

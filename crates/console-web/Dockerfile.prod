@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+# Production-ready Dockerfile for operator-web with Caddy server
+
+FROM --platform=$BUILDPLATFORM rust:1.75-slim AS builder
+
+# Install wasm-pack and build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    pkg-config \
+    libssl-dev \
+    binaryen \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install wasm-pack
+RUN cargo install wasm-pack --locked
+
+# Build arguments
+ARG TARGETARCH
+ARG VERSION=latest
+
+# Build the WASM dashboard
+WORKDIR /app
+COPY . .
+RUN wasm-pack build \
+    --target web \
+    --out-dir dist \
+    --release \
+    -- \
+    -p hodei-console-web
+
+# Production stage - Caddy server for static files
+FROM caddy:2.7-alpine
+
+# Labels
+LABEL maintainer="Hodei Team <team@hodei.io>"
+LABEL org.opencontainers.image.source="https://github.com/rubentxu/hodei-jobs"
+LABEL org.opencontainers.image.description="Hodei Console Web - Leptos WASM with Caddy"
+LABEL version="${VERSION}"
+
+# Copy WASM artifacts
+COPY --from=builder /app/crates/console-web/dist /usr/share/caddy/html/pkg
+COPY --from=builder /app/crates/console-web/assets/index.html /usr/share/caddy/html/index.html
+COPY --from=builder /app/crates/console-web/assets/style.css /usr/share/caddy/html/style.css
+
+# Copy Caddyfile for production
+COPY --from=builder /app/crates/console-web/Caddyfile.prod /etc/caddy/Caddyfile
+
+# Environment variables
+ENV PORT=8080
+ENV HOST=0.0.0.0
+
+# Expose web port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Run Caddy
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

@@ -4,10 +4,12 @@
 
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::{
-    ExecutionSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    ExecutionSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaServices,
 };
 use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
+use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::command::DynCommandBus;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -52,6 +54,8 @@ pub struct DynExecutionSagaDispatcher {
     >,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    event_bus: Arc<dyn EventBus + Send + Sync>,
+    command_bus: DynCommandBus,
     config: ExecutionSagaDispatcherConfig,
 }
 
@@ -65,14 +69,22 @@ impl DynExecutionSagaDispatcher {
         >,
         job_repository: Arc<dyn JobRepository + Send + Sync>,
         worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn EventBus + Send + Sync>,
+        command_bus: DynCommandBus,
         config: Option<ExecutionSagaDispatcherConfig>,
     ) -> Self {
         Self {
             orchestrator,
             job_repository,
             worker_registry,
+            event_bus,
+            command_bus,
             config: config.unwrap_or_default(),
         }
+    }
+
+    pub fn builder() -> DynExecutionSagaDispatcherBuilder {
+        DynExecutionSagaDispatcherBuilder::new()
     }
 
     pub async fn execute_execution_saga(
@@ -80,7 +92,7 @@ impl DynExecutionSagaDispatcher {
         job_id: &JobId,
         worker_id: &WorkerId,
     ) -> ExecutionSagaResult<SagaExecutionResult> {
-        info!(job_id = %job_id, worker_id = %worker_id, "📦 Starting execution saga");
+        info!(job_id = %job_id, worker_id = %worker_id, "�� Starting execution saga");
 
         let _job = self
             .job_repository
@@ -104,14 +116,25 @@ impl DynExecutionSagaDispatcher {
                 worker_id: worker_id.to_string(),
             })?;
 
-        let saga_id = SagaId::new();
-        let _saga_id_clone = saga_id.clone();
+        // Deterministic saga_id for idempotency (same job+worker = same saga)
+        let saga_id = SagaId::from_string(&format!("execution-{}-{}", job_id.0, worker_id.0));
         let mut context = SagaContext::new(
             saga_id,
             hodei_server_domain::saga::SagaType::Execution,
             Some(format!("job-{}", job_id.0)),
             Some("job_dispatcher".to_string()),
         );
+
+        // Inject SagaServices into context
+        let services = SagaServices::with_command_bus(
+            self.worker_registry.clone(),
+            self.event_bus.clone(),
+            Some(self.job_repository.clone()),
+            None, // provisioning
+            None, // orchestrator
+            self.command_bus.clone(),
+        );
+        context = context.with_services(Arc::new(services));
 
         context.set_metadata("job_id", &job_id.to_string()).ok();
         context
@@ -171,6 +194,8 @@ pub struct DynExecutionSagaDispatcherBuilder {
     >,
     job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
     worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
+    command_bus: Option<DynCommandBus>,
     config: Option<ExecutionSagaDispatcherConfig>,
 }
 
@@ -180,6 +205,8 @@ impl DynExecutionSagaDispatcherBuilder {
             orchestrator: None,
             job_repository: None,
             worker_registry: None,
+            event_bus: None,
+            command_bus: None,
             config: None,
         }
     }
@@ -212,6 +239,16 @@ impl DynExecutionSagaDispatcherBuilder {
         self
     }
 
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus + Send + Sync>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    pub fn with_command_bus(mut self, command_bus: DynCommandBus) -> Self {
+        self.command_bus = Some(command_bus);
+        self
+    }
+
     pub fn with_config(mut self, config: ExecutionSagaDispatcherConfig) -> Self {
         self.config = Some(config);
         self
@@ -229,11 +266,19 @@ impl DynExecutionSagaDispatcherBuilder {
         let worker_registry = self.worker_registry.ok_or_else(|| {
             DynExecutionSagaDispatcherBuilderError::MissingField("worker_registry")
         })?;
+        let event_bus = self
+            .event_bus
+            .ok_or_else(|| DynExecutionSagaDispatcherBuilderError::MissingField("event_bus"))?;
+        let command_bus = self
+            .command_bus
+            .ok_or_else(|| DynExecutionSagaDispatcherBuilderError::MissingField("command_bus"))?;
 
         Ok(DynExecutionSagaDispatcher::new(
             orchestrator,
             job_repository,
             worker_registry,
+            event_bus,
+            command_bus,
             self.config,
         ))
     }
@@ -253,6 +298,8 @@ where
     orchestrator: Arc<OR>,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    event_bus: Arc<dyn EventBus + Send + Sync>,
+    command_bus: DynCommandBus,
     config: ExecutionSagaDispatcherConfig,
 }
 
@@ -264,12 +311,16 @@ where
         orchestrator: Arc<OR>,
         job_repository: Arc<dyn JobRepository + Send + Sync>,
         worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn EventBus + Send + Sync>,
+        command_bus: DynCommandBus,
         config: Option<ExecutionSagaDispatcherConfig>,
     ) -> Self {
         Self {
             orchestrator,
             job_repository,
             worker_registry,
+            event_bus,
+            command_bus,
             config: config.unwrap_or_default(),
         }
     }
@@ -313,13 +364,25 @@ where
                 worker_id: worker_id.to_string(),
             })?;
 
-        let saga_id = SagaId::new();
+        // Deterministic saga_id for idempotency (same job+worker = same saga)
+        let saga_id = SagaId::from_string(&format!("execution-{}-{}", job_id.0, worker_id.0));
         let mut context = SagaContext::new(
             saga_id,
             hodei_server_domain::saga::SagaType::Execution,
             Some(format!("job-{}", job_id.0)),
             Some("job_dispatcher".to_string()),
         );
+
+        // Inject SagaServices into context
+        let services = SagaServices::with_command_bus(
+            self.worker_registry.clone(),
+            self.event_bus.clone(),
+            Some(self.job_repository.clone()),
+            None, // provisioning
+            None, // orchestrator
+            self.command_bus.clone(),
+        );
+        context = context.with_services(Arc::new(services));
 
         context.set_metadata("job_id", &job_id.to_string()).ok();
         context
@@ -375,6 +438,8 @@ where
     orchestrator: Option<Arc<OR>>,
     job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
     worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
+    command_bus: Option<DynCommandBus>,
     config: Option<ExecutionSagaDispatcherConfig>,
 }
 
@@ -384,6 +449,8 @@ impl<OR: SagaOrchestrator> ExecutionSagaDispatcherBuilder<OR> {
             orchestrator: None,
             job_repository: None,
             worker_registry: None,
+            event_bus: None,
+            command_bus: None,
             config: None,
         }
     }
@@ -409,6 +476,16 @@ impl<OR: SagaOrchestrator> ExecutionSagaDispatcherBuilder<OR> {
         self
     }
 
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus + Send + Sync>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    pub fn with_command_bus(mut self, command_bus: DynCommandBus) -> Self {
+        self.command_bus = Some(command_bus);
+        self
+    }
+
     pub fn with_config(mut self, config: ExecutionSagaDispatcherConfig) -> Self {
         self.config = Some(config);
         self
@@ -424,11 +501,19 @@ impl<OR: SagaOrchestrator> ExecutionSagaDispatcherBuilder<OR> {
         let worker_registry = self
             .worker_registry
             .ok_or_else(|| ExecutionSagaDispatcherBuilderError::MissingField("worker_registry"))?;
+        let event_bus = self
+            .event_bus
+            .ok_or_else(|| ExecutionSagaDispatcherBuilderError::MissingField("event_bus"))?;
+        let command_bus = self
+            .command_bus
+            .ok_or_else(|| ExecutionSagaDispatcherBuilderError::MissingField("command_bus"))?;
 
         Ok(ExecutionSagaDispatcher::new(
             orchestrator,
             job_repository,
             worker_registry,
+            event_bus,
+            command_bus,
             self.config,
         ))
     }
@@ -459,7 +544,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 should_fail: false,
-                executed_sagas: Arc::new(Mutex::new(Vec::new())),
+                executed_sagas: Arc.new(Mutex::new(Vec::new())),
             }
         }
 

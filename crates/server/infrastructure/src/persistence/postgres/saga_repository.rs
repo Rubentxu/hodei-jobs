@@ -491,8 +491,8 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO saga_steps (id, saga_id, step_name, step_order, state, input_data, output_data, compensation_data, started_at, completed_at, error_message, retry_count, step_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            INSERT INTO saga_steps (id, saga_id, step_name, step_order, state, input_data, output_data, compensation_data, started_at, completed_at, error_message, retry_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (id) DO UPDATE SET
                 state = EXCLUDED.state,
                 output_data = EXCLUDED.output_data,
@@ -514,7 +514,6 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(step.completed_at)
         .bind(step.error_message.as_ref())
         .bind(step.retry_count)
-        .bind(step.step_id.0)
         .execute(&self.pool)
         .await
         .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -1056,6 +1055,9 @@ where
                     self.repository
                         .update_step_state(&step_data.step_id, SagaStepState::Completed, None)
                         .await?;
+
+                    // EPIC-45 FIX: Persist updated context (metadata) after each successful step
+                    self.repository.save(&context).await?;
                 }
                 Ok(Err(e)) => {
                     // Step failed - mark it as FAILED first
