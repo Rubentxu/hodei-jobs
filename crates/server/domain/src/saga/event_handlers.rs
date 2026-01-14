@@ -271,7 +271,7 @@ impl SagaEventHandler<SagaLifecycleEvent> for LoggingHandler {
                 ),
             ),
             SagaLifecycleEvent::SagaFailed {
-                last_completed_step,
+                last_completed_step: _,
                 duration_ms,
             } => (
                 LogLevel::Error,

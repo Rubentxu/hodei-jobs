@@ -9,7 +9,9 @@
 //! 4. Completación del job
 
 use crate::command::dispatch_erased;
-use crate::saga::commands::execution::{AssignWorkerCommand, CompleteJobCommand, ExecuteJobCommand};
+use crate::saga::commands::execution::{
+    AssignWorkerCommand, CompleteJobCommand, ExecuteJobCommand,
+};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
 use std::time::Duration;
@@ -288,7 +290,7 @@ impl SagaStep for AssignWorkerStep {
     #[instrument(skip(context), fields(step = "AssignWorker", job_id = %self.job_id))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         info!(job_id = %self.job_id, saga_id = %context.saga_id, "🔍 AssignWorkerStep: Starting execution");
-        
+
         // GAP-52-01: Get CommandBus from context
         let command_bus = {
             let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -297,13 +299,17 @@ impl SagaStep for AssignWorkerStep {
                 will_compensate: true,
             })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-                will_compensate: true,
-            })?.clone()
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: true,
+                })?
+                .clone()
         };
-        
+
         info!(job_id = %self.job_id, "✓ CommandBus retrieved from SagaServices");
 
         // Idempotency check: skip if already assigned
@@ -324,10 +330,7 @@ impl SagaStep for AssignWorkerStep {
         let worker_id = self.worker_id.clone();
 
         // GAP-52-01: Dispatch AssignWorkerCommand via CommandBus
-        let command = AssignWorkerCommand::new(
-            self.job_id.clone(),
-            context.saga_id.to_string(),
-        );
+        let command = AssignWorkerCommand::new(self.job_id.clone(), context.saga_id.to_string());
 
         info!(
             job_id = %self.job_id,
@@ -337,7 +340,7 @@ impl SagaStep for AssignWorkerStep {
         );
 
         // Dispatch command and handle pre-assigned worker if needed
-        let result = if let Some(preassigned_id) = &worker_id {
+        let result = if let Some(_preassigned_id) = &worker_id {
             // For pre-assigned workers, we still use the command for consistency
             // but skip the lookup
             dispatch_erased(&command_bus, command)
@@ -358,7 +361,9 @@ impl SagaStep for AssignWorkerStep {
         };
 
         // Store worker_id from result for subsequent steps
-        let assigned_worker_id = result.worker_id.clone()
+        let assigned_worker_id = result
+            .worker_id
+            .clone()
             .unwrap_or_else(|| worker_id.clone().unwrap_or_else(|| WorkerId::new()));
 
         context
@@ -403,20 +408,26 @@ impl SagaStep for AssignWorkerStep {
         };
 
         // GAP-52-01: Get CommandBus from context
-        let command_bus = {
-            let services = context.services().ok_or_else(|| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: "SagaServices not available".to_string(),
-            })?;
+        let _command_bus = {
+            let services = context
+                .services()
+                .ok_or_else(|| SagaError::CompensationFailed {
+                    step: self.name().to_string(),
+                    message: "SagaServices not available".to_string(),
+                })?;
 
-            services.command_bus.as_ref().ok_or_else(|| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available".to_string(),
-            })?.clone()
+            services
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::CompensationFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available".to_string(),
+                })?
+                .clone()
         };
 
-        let worker_id = WorkerId::from_string(&worker_id_str)
-            .ok_or_else(|| SagaError::CompensationFailed {
+        let worker_id =
+            WorkerId::from_string(&worker_id_str).ok_or_else(|| SagaError::CompensationFailed {
                 step: self.name().to_string(),
                 message: format!("Invalid worker_id in context: {}", worker_id_str),
             })?;
@@ -496,11 +507,15 @@ impl SagaStep for ExecuteJobStep {
                 will_compensate: true,
             })?;
 
-            services.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-                will_compensate: true,
-            })?.clone()
+            services
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: true,
+                })?
+                .clone()
         };
 
         // Idempotency check: skip if already started
@@ -515,8 +530,7 @@ impl SagaStep for ExecuteJobStep {
             .and_then(|r| r.ok())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let worker_id = WorkerId::from_string(&worker_id_str)
-            .unwrap_or_else(|| WorkerId::new());
+        let worker_id = WorkerId::from_string(&worker_id_str).unwrap_or_else(|| WorkerId::new());
 
         info!(
             job_id = %self.job_id,
@@ -525,11 +539,8 @@ impl SagaStep for ExecuteJobStep {
         );
 
         // GAP-52-01: Dispatch ExecuteJobCommand via CommandBus
-        let command = ExecuteJobCommand::new(
-            self.job_id.clone(),
-            worker_id,
-            context.saga_id.to_string(),
-        );
+        let command =
+            ExecuteJobCommand::new(self.job_id.clone(), worker_id, context.saga_id.to_string());
 
         dispatch_erased(&command_bus, command)
             .await
@@ -572,15 +583,21 @@ impl SagaStep for ExecuteJobStep {
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         // GAP-52-01: Get CommandBus from context
         let command_bus = {
-            let services = context.services().ok_or_else(|| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: "SagaServices not available".to_string(),
-            })?;
+            let services = context
+                .services()
+                .ok_or_else(|| SagaError::CompensationFailed {
+                    step: self.name().to_string(),
+                    message: "SagaServices not available".to_string(),
+                })?;
 
-            services.command_bus.as_ref().ok_or_else(|| SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available".to_string(),
-            })?.clone()
+            services
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::CompensationFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available".to_string(),
+                })?
+                .clone()
         };
 
         info!(job_id = %self.job_id, "🔄 Compensating: reverting job state via CommandBus");
@@ -649,11 +666,15 @@ impl SagaStep for CompleteJobStep {
                 will_compensate: false,
             })?;
 
-            services.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-                will_compensate: false,
-            })?.clone()
+            services
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: false,
+                })?
+                .clone()
         };
 
         // Idempotency check: skip if already completed
@@ -679,10 +700,7 @@ impl SagaStep for CompleteJobStep {
         );
 
         // GAP-52-01: Dispatch CompleteJobCommand via CommandBus
-        let command = CompleteJobCommand::success(
-            self.job_id.clone(),
-            context.saga_id.to_string(),
-        );
+        let command = CompleteJobCommand::success(self.job_id.clone(), context.saga_id.to_string());
 
         dispatch_erased(&command_bus, command)
             .await

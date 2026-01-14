@@ -238,7 +238,7 @@ impl IntoSagaCoreError for ExecutionSagaError {
                 message: format!("No available workers for job {}", job_id),
                 saga_id,
             },
-            ExecutionSagaError::JobNotFound { job_id } => SagaCoreError::NotFound { saga_id },
+            ExecutionSagaError::JobNotFound { job_id: _ } => SagaCoreError::NotFound { saga_id },
             ExecutionSagaError::DispatchFailed {
                 job_id,
                 worker_id,
@@ -268,9 +268,10 @@ impl IntoSagaCoreError for ExecutionSagaError {
                     saga_id,
                 }
             }
-            ExecutionSagaError::ExecutionTimeout { job_id, duration } => {
-                SagaCoreError::Timeout { saga_id, duration }
-            }
+            ExecutionSagaError::ExecutionTimeout {
+                job_id: _,
+                duration,
+            } => SagaCoreError::Timeout { saga_id, duration },
             ExecutionSagaError::WorkerDisconnected { worker_id } => {
                 SagaCoreError::ExecutionFailed {
                     message: format!("Worker {} disconnected during execution", worker_id),
@@ -290,7 +291,7 @@ impl IntoSagaCoreError for ExecutionSagaError {
 impl IntoSagaCoreError for ProvisioningSagaError {
     fn into_core_error(self, saga_id: SagaId, _saga_type: SagaType) -> SagaCoreError {
         match self {
-            ProvisioningSagaError::ProviderNotFound { provider_id } => {
+            ProvisioningSagaError::ProviderNotFound { provider_id: _ } => {
                 SagaCoreError::NotFound { saga_id }
             }
             ProvisioningSagaError::ProviderCapacityExceeded { provider_id } => {

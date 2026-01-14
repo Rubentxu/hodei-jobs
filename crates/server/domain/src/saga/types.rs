@@ -100,12 +100,13 @@ impl SagaId {
     }
 
     /// Creates a deterministic SagaId from a string (for idempotency)
-    /// 
+    ///
     /// Uses UUID v5 (SHA-1 namespace) to generate reproducible IDs.
     /// Same input always produces the same SagaId.
-    /// 
+    ///
     /// # Example
     /// ```
+    /// use hodei_server_domain::saga::SagaId;
     /// let saga_id = SagaId::from_string("execution-job123-worker456");
     /// ```
     #[inline]
@@ -633,7 +634,8 @@ pub struct SagaServices {
     /// creation within saga steps.
     pub provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
     /// EPIC-46 GAP-20: Saga orchestrator for nested saga execution
-    pub orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
+    pub orchestrator:
+        Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
     /// EPIC-50: Type-erased CommandBus for dispatching commands from saga steps
     ///
     /// Uses the ErasedCommandBus trait with Arc<dyn ErasedCommandBus> to avoid
@@ -670,7 +672,9 @@ impl SagaServices {
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
         job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
         provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
-        orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
+        orchestrator: Option<
+            Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>,
+        >,
     ) -> Self {
         Self {
             provider_registry,
@@ -692,7 +696,9 @@ impl SagaServices {
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
         job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
         provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
-        orchestrator: Option<Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>>,
+        orchestrator: Option<
+            Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>,
+        >,
         command_bus: crate::command::DynCommandBus,
     ) -> Self {
         Self {
