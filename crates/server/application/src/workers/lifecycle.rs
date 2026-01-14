@@ -15,7 +15,10 @@
 
 use crate::saga::provisioning_saga::{DynProvisioningSagaCoordinator, ProvisioningSagaError};
 use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaError};
-use crate::workers::garbage_collector::{CleanupResult, GarbageCollectorConfig, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector};
+use crate::workers::garbage_collector::{
+    CleanupResult, GarbageCollectorConfig, OrphanCleanupResult, OrphanWorkerInfo,
+    WorkerGarbageCollector,
+};
 use crate::workers::reconciler::{ReconciliationResult, WorkerReconciler};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -75,6 +78,141 @@ impl Default for WorkerLifecycleConfig {
     }
 }
 
+/// Builder for WorkerLifecycleManager
+///
+/// US-4.2: Recovery saga coordinator is REQUIRED - the builder will panic if not provided
+#[derive(Clone)]
+pub struct WorkerLifecycleManagerBuilder {
+    registry: Option<Arc<dyn WorkerRegistry>>,
+    providers: Option<Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>>,
+    config: WorkerLifecycleConfig,
+    event_bus: Option<Arc<dyn EventBus>>,
+    outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
+    reconciler: Option<WorkerReconciler>,
+    garbage_collector: Option<WorkerGarbageCollector>,
+    provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+    recovery_saga_coordinator: Option<Arc<DynRecoverySagaCoordinator>>,
+}
+
+impl Default for WorkerLifecycleManagerBuilder {
+    fn default() -> Self {
+        Self {
+            registry: None,
+            providers: None,
+            config: WorkerLifecycleConfig::default(),
+            event_bus: None,
+            outbox_repository: None,
+            reconciler: None,
+            garbage_collector: None,
+            provisioning_saga_coordinator: None,
+            recovery_saga_coordinator: None,
+        }
+    }
+}
+
+impl WorkerLifecycleManagerBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_registry(mut self, registry: Arc<dyn WorkerRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
+    pub fn with_providers(
+        mut self,
+        providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+    ) -> Self {
+        self.providers = Some(providers);
+        self
+    }
+
+    pub fn with_config(mut self, config: WorkerLifecycleConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    pub fn with_outbox_repository(
+        mut self,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+    ) -> Self {
+        self.outbox_repository = Some(outbox_repository);
+        self
+    }
+
+    pub fn with_reconciler(mut self, reconciler: WorkerReconciler) -> Self {
+        self.reconciler = Some(reconciler);
+        self
+    }
+
+    pub fn with_garbage_collector(mut self, garbage_collector: WorkerGarbageCollector) -> Self {
+        self.garbage_collector = Some(garbage_collector);
+        self
+    }
+
+    pub fn with_provisioning_saga_coordinator(
+        mut self,
+        coordinator: Arc<DynProvisioningSagaCoordinator>,
+    ) -> Self {
+        self.provisioning_saga_coordinator = Some(coordinator);
+        self
+    }
+
+    /// Set recovery saga coordinator (REQUIRED for worker recovery)
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `build()` is called without setting a recovery saga coordinator.
+    pub fn with_recovery_saga_coordinator(
+        mut self,
+        coordinator: Arc<DynRecoverySagaCoordinator>,
+    ) -> Self {
+        self.recovery_saga_coordinator = Some(coordinator);
+        self
+    }
+
+    /// Build the WorkerLifecycleManager
+    ///
+    /// # Panics
+    ///
+    /// Panics if `recovery_saga_coordinator` is not set, as it is required for worker recovery.
+    pub fn build(self) -> WorkerLifecycleManager {
+        let registry = self.registry.expect("WorkerRegistry is required");
+        let providers = self.providers.expect("providers DashMap is required");
+        let event_bus = self.event_bus.expect("EventBus is required");
+        let outbox_repository = self
+            .outbox_repository
+            .expect("OutboxRepository is required");
+        let recovery_saga_coordinator = self.recovery_saga_coordinator
+            .expect("RecoverySagaCoordinator is REQUIRED for worker recovery. Use `with_recovery_saga_coordinator()`.");
+        let config = self.config;
+        let heartbeat_timeout = config.heartbeat_timeout;
+
+        WorkerLifecycleManager {
+            registry,
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+            health_service: Arc::new(
+                WorkerHealthService::builder()
+                    .with_heartbeat_timeout(heartbeat_timeout)
+                    .build(),
+            ),
+            reconciler: self.reconciler.map(Arc::new),
+            garbage_collector: self.garbage_collector.map(Arc::new),
+            provisioning_saga_coordinator: self.provisioning_saga_coordinator,
+            recovery_saga_coordinator,
+        }
+    }
+}
+
 /// Worker Lifecycle Manager
 ///
 /// Responsibilities:
@@ -101,17 +239,38 @@ pub struct WorkerLifecycleManager {
     garbage_collector: Option<Arc<WorkerGarbageCollector>>,
     /// US-2.2: Saga coordinator for worker provisioning with automatic compensation
     provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
-    /// US-4.2: Saga coordinator for worker recovery with automatic compensation
-    recovery_saga_coordinator: Option<Arc<DynRecoverySagaCoordinator>>,
+    /// US-4.2: Saga coordinator for worker recovery (REQUIRED, no legacy fallback)
+    recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator>,
 }
 
 impl WorkerLifecycleManager {
+    /// Creates a new WorkerLifecycleManager.
+    /// Note: `recovery_saga_coordinator` is REQUIRED - use `with_recovery_saga_coordinator` or
+    /// `Builder` to create an instance with saga-based recovery.
+    #[deprecated(
+        since = "1.0.0",
+        note = "Use `with_recovery_saga_coordinator()` or `Builder` instead"
+    )]
     pub fn new(
         registry: Arc<dyn WorkerRegistry>,
         providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
         config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+    ) -> Self {
+        panic!(
+            "WorkerLifecycleManager requires a RecoverySagaCoordinator. Use `with_recovery_saga_coordinator()` or `Builder` instead."
+        );
+    }
+
+    /// Creates a WorkerLifecycleManager with saga-based recovery coordinator (REQUIRED)
+    pub fn with_recovery_saga_coordinator(
+        registry: Arc<dyn WorkerRegistry>,
+        providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+        config: WorkerLifecycleConfig,
+        event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+        recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator>,
     ) -> Self {
         Self {
             registry,
@@ -127,11 +286,12 @@ impl WorkerLifecycleManager {
             reconciler: None,
             garbage_collector: None,
             provisioning_saga_coordinator: None,
-            recovery_saga_coordinator: None,
+            recovery_saga_coordinator,
         }
     }
 
-    /// GAP-GO-02: Initialize with WorkerReconciler and WorkerGarbageCollector
+    /// GAP-GO-02: Initialize with WorkerReconciler, WorkerGarbageCollector and saga coordinators
+    /// Note: `recovery_saga_coordinator` is REQUIRED for worker recovery
     pub fn with_components(
         registry: Arc<dyn WorkerRegistry>,
         providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
@@ -140,6 +300,7 @@ impl WorkerLifecycleManager {
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         reconciler: WorkerReconciler,
         garbage_collector: WorkerGarbageCollector,
+        recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator>,
     ) -> Self {
         Self {
             registry,
@@ -155,7 +316,7 @@ impl WorkerLifecycleManager {
             reconciler: Some(Arc::new(reconciler)),
             garbage_collector: Some(Arc::new(garbage_collector)),
             provisioning_saga_coordinator: None,
-            recovery_saga_coordinator: None,
+            recovery_saga_coordinator,
         }
     }
 
@@ -168,22 +329,10 @@ impl WorkerLifecycleManager {
         self.provisioning_saga_coordinator = Some(coordinator);
     }
 
-    /// Set recovery saga coordinator (US-4.2)
-    /// When set, worker recovery will use saga pattern with automatic compensation
-    pub fn set_recovery_saga_coordinator(&mut self, coordinator: Arc<DynRecoverySagaCoordinator>) {
-        self.recovery_saga_coordinator = Some(coordinator);
-    }
-
     /// Check if saga-based provisioning is enabled
     #[inline]
     pub fn is_saga_provisioning_enabled(&self) -> bool {
         self.provisioning_saga_coordinator.is_some()
-    }
-
-    /// Check if saga-based recovery is enabled (US-4.2)
-    #[inline]
-    pub fn is_saga_recovery_enabled(&self) -> bool {
-        self.recovery_saga_coordinator.is_some()
     }
 
     /// Register a provider with the lifecycle manager
@@ -687,79 +836,49 @@ impl WorkerLifecycleManager {
     }
 
     /// Recover a failed worker and reassign its job (US-4.2)
-    /// Uses saga pattern with automatic compensation when coordinator is configured
+    /// Uses saga pattern with automatic compensation - saga coordinator is REQUIRED
     pub async fn recover_worker(&self, job_id: &JobId, failed_worker_id: &WorkerId) -> Result<()> {
-        // US-4.2: Use saga pattern if coordinator is configured
-        if let Some(ref coordinator) = self.recovery_saga_coordinator {
-            info!(
-                job_id = %job_id,
-                failed_worker_id = %failed_worker_id,
-                "🔄 Recovering worker via saga"
-            );
+        info!(
+            job_id = %job_id,
+            failed_worker_id = %failed_worker_id,
+            "🔄 Recovering worker via RecoverySagaCoordinator"
+        );
 
-            // Execute recovery saga
-            match coordinator
-                .execute_recovery_saga(job_id, failed_worker_id)
-                .await
-            {
-                Ok((saga_id, saga_result)) => {
-                    info!(
-                        job_id = %job_id,
-                        saga_id = %saga_id,
-                        saga_duration_ms = ?saga_result.duration.as_millis(),
-                        "✅ Worker recovered via saga"
-                    );
-                    return Ok(());
-                }
-                Err(RecoverySagaError::Compensated) => {
-                    warn!(
-                        job_id = %job_id,
-                        "⚠️ Recovery saga was compensated"
-                    );
-                    return Err(DomainError::WorkerRecoveryFailed {
-                        message: "Recovery saga was compensated".to_string(),
-                    });
-                }
-                Err(e) => {
-                    error!(
-                        job_id = %job_id,
-                        error = %e,
-                        "❌ Recovery saga failed"
-                    );
-                    return Err(DomainError::WorkerRecoveryFailed {
-                        message: e.to_string(),
-                    });
-                }
+        // Execute recovery saga (coordinator is always available)
+        match self
+            .recovery_saga_coordinator
+            .execute_recovery_saga(job_id, failed_worker_id)
+            .await
+        {
+            Ok((saga_id, saga_result)) => {
+                info!(
+                    job_id = %job_id,
+                    saga_id = %saga_id,
+                    saga_duration_ms = ?saga_result.duration.as_millis(),
+                    "✅ Worker recovered via saga"
+                );
+                Ok(())
+            }
+            Err(RecoverySagaError::Compensated) => {
+                warn!(
+                    job_id = %job_id,
+                    "⚠️ Recovery saga was compensated"
+                );
+                Err(DomainError::WorkerRecoveryFailed {
+                    message: "Recovery saga was compensated".to_string(),
+                })
+            }
+            Err(e) => {
+                error!(
+                    job_id = %job_id,
+                    error = %e,
+                    "❌ Recovery saga failed"
+                );
+                Err(DomainError::WorkerRecoveryFailed {
+                    message: e.to_string(),
+                })
             }
         }
-
-        // Fallback: Legacy recovery when no saga coordinator is configured
-        self.recover_worker_legacy(job_id, failed_worker_id).await
-    }
-
-    /// Legacy recovery method (used when saga coordinator is not configured)
-    async fn recover_worker_legacy(
-        &self,
-        job_id: &JobId,
-        failed_worker_id: &WorkerId,
-    ) -> Result<()> {
-        info!(
-            "Recovering worker {} for job {} (legacy mode)",
-            failed_worker_id, job_id
-        );
-
-        // TODO: Implement legacy recovery logic
-        // 1. Check if failed worker is still reachable
-        // 2. Provision a new worker
-        // 3. Transfer job to new worker
-        // 4. Terminate old worker
-
-        warn!(
-            "Legacy recovery not fully implemented for job {} and worker {}",
-            job_id, failed_worker_id
-        );
-
-        Ok(())
     }
 
     /// Destroy a worker via its provider with retry logic (FIX: Prevents orphaned containers)
@@ -866,7 +985,11 @@ impl WorkerLifecycleManager {
     /// Start monitoring events from all registered providers AND domain events
     /// This enables reactive worker cleanup based on domain events
     pub async fn start_event_monitoring(&self) {
-        let providers: Vec<_> = self.providers.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
+        let providers: Vec<_> = self
+            .providers
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
 
         for (id, provider) in providers {
             let provider = provider.clone();
@@ -1176,12 +1299,11 @@ impl WorkerLifecycleManager {
         // GAP-GO-02: Delegate to WorkerGarbageCollector if available
         if let Some(ref gc) = self.garbage_collector {
             info!("GAP-GO-02: Delegating orphan detection to WorkerGarbageCollector");
-            return gc
-                .detect_and_cleanup_orphans()
-                .await
-                .map_err(|e| DomainError::InfrastructureError {
+            return gc.detect_and_cleanup_orphans().await.map_err(|e| {
+                DomainError::InfrastructureError {
                     message: format!("Orphan detection failed: {}", e),
-                });
+                }
+            });
         }
 
         // Legacy implementation (fallback)
@@ -1404,13 +1526,13 @@ pub struct HealthCheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::command::InMemoryErasedCommandBus;
     use crate::WorkerProvisioningService;
     use crate::provisioning::ProvisioningResult;
     use crate::saga::provisioning_saga::ProvisioningSagaCoordinatorConfig;
     use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
     use futures::stream::BoxStream;
     use hodei_server_domain::command::DynCommandBus;
+    use hodei_server_domain::command::InMemoryErasedCommandBus;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::saga::{
         Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
