@@ -99,6 +99,9 @@ pub enum DomainError {
 
     #[error("Template parameter validation error: {message}")]
     TemplateParameterValidationError { message: String },
+
+    #[error("Saga orchestrator error: {0}")]
+    OrchestratorError(#[from] crate::saga::orchestrator::OrchestratorError),
 }
 
 impl From<sqlx::Error> for DomainError {

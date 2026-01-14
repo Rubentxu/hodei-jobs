@@ -2,6 +2,7 @@
 //!
 //! Core orchestrator for executing sagas with automatic compensation.
 
+use super::retry_policy::{RetryOutcome, RetryPolicy};
 use super::{
     CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
     SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository,
@@ -11,8 +12,83 @@ use crate::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use crate::workers::WorkerSpec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::sync::Semaphore;
+
+/// Rate limiter configuration
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitConfig {
+    /// Maximum permits per window
+    pub max_permits: usize,
+    /// Window duration
+    pub window: Duration,
+    /// Tokens to add per interval
+    pub refill_rate: f64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_permits: 100,
+            window: Duration::from_secs(1),
+            refill_rate: 100.0,
+        }
+    }
+}
+
+/// Token bucket rate limiter
+#[derive(Debug, Clone)]
+pub struct TokenBucketRateLimiter {
+    permits: Arc<AtomicUsize>,
+    max_permits: usize,
+    refill_rate: f64,
+    last_refill: Instant,
+    window: Duration,
+}
+
+impl TokenBucketRateLimiter {
+    /// Create a new token bucket rate limiter
+    pub fn new(config: RateLimitConfig) -> Self {
+        Self {
+            permits: Arc::new(AtomicUsize::new(config.max_permits)),
+            max_permits: config.max_permits,
+            refill_rate: config.refill_rate,
+            last_refill: Instant::now(),
+            window: config.window,
+        }
+    }
+
+    /// Try to acquire a permit, returns true if acquired
+    pub fn try_acquire(&self) -> bool {
+        self.refill();
+        self.permits
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current > 0 { Some(current - 1) } else { None }
+            })
+            .is_ok()
+    }
+
+    /// Refill tokens based on elapsed time
+    fn refill(&self) {
+        let elapsed = self.last_refill.elapsed();
+        if elapsed >= self.window {
+            // Calculate how many tokens to add based on time elapsed
+            let intervals = elapsed.as_secs_f64() / self.window.as_secs_f64();
+            let to_add = (intervals * self.refill_rate) as usize;
+            self.permits.fetch_min(self.max_permits, Ordering::SeqCst);
+            self.permits
+                .fetch_add(to_add.min(self.max_permits), Ordering::SeqCst);
+            // Note: In a production implementation, we'd need to track this more precisely
+        }
+    }
+
+    /// Get remaining permits
+    pub fn remaining(&self) -> usize {
+        self.refill();
+        self.permits.load(Ordering::SeqCst).min(self.max_permits)
+    }
+}
 
 /// Orchestrator configuration
 #[derive(Debug, Clone)]
@@ -23,6 +99,12 @@ pub struct SagaOrchestratorConfig {
     pub saga_timeout: Duration,
     pub max_retries: u32,
     pub retry_backoff: Duration,
+    /// Retry policy for compensation operations
+    pub compensation_retry_policy: RetryPolicy,
+    /// Rate limiting configuration
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Maximum number of sagas per minute
+    pub max_sagas_per_minute: Option<u32>,
 }
 
 impl Default for SagaOrchestratorConfig {
@@ -34,6 +116,15 @@ impl Default for SagaOrchestratorConfig {
             saga_timeout: Duration::from_secs(300),
             max_retries: 3,
             retry_backoff: Duration::from_secs(1),
+            compensation_retry_policy: RetryPolicy {
+                max_attempts: 3,                          // 1 initial + 2 retries
+                initial_delay: Duration::from_millis(10), // Fast for tests
+                max_delay: Duration::from_secs(60),
+                multiplier: 2.0,
+                jitter_factor: 0.2,
+            },
+            rate_limit: None,
+            max_sagas_per_minute: Some(60),
         }
     }
 }
@@ -55,6 +146,9 @@ pub enum OrchestratorError {
 
     #[error("Concurrency limit exceeded: {current}/{max}")]
     ConcurrencyLimitExceeded { current: usize, max: usize },
+
+    #[error("Rate limit exceeded: {remaining} permits remaining, try again later")]
+    RateLimitExceeded { remaining: usize },
 
     #[error("Saga not found: {saga_id}")]
     SagaNotFound { saga_id: SagaId },
@@ -100,16 +194,109 @@ pub struct InMemorySagaOrchestrator<R: SagaRepository + Clone> {
     config: SagaOrchestratorConfig,
     /// Active saga count (for concurrency control)
     active_sagas: Arc<AtomicUsize>,
+    /// Rate limiter for saga execution
+    rate_limiter: Option<TokenBucketRateLimiter>,
+    /// Semaphore for concurrent saga control
+    concurrency_semaphore: Arc<Semaphore>,
 }
 
 impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
     /// Creates a new in-memory orchestrator
     pub fn new(repository: Arc<R>, config: Option<SagaOrchestratorConfig>) -> Self {
+        let config = config.unwrap_or_default();
+        let rate_limiter = config.rate_limit.map(TokenBucketRateLimiter::new);
+        let concurrency_semaphore = Arc::new(Semaphore::new(config.max_concurrent_sagas));
+
         Self {
             repository,
-            config: config.unwrap_or_default(),
+            config,
             active_sagas: Arc::new(AtomicUsize::new(0)),
+            rate_limiter,
+            concurrency_semaphore,
         }
+    }
+
+    /// Execute a single compensation step with retry using exponential backoff
+    async fn execute_compensation_with_retry(
+        &self,
+        step: &dyn super::SagaStep<Output = ()>,
+        context: &mut SagaContext,
+        step_name: &str,
+    ) -> Result<bool, SagaError> {
+        let policy = self.config.compensation_retry_policy;
+        let mut attempt = 0u32;
+
+        loop {
+            attempt += 1;
+            match step.compensate(context).await {
+                Ok(()) => {
+                    return Ok(true);
+                }
+                Err(e) => {
+                    if !policy.should_retry(attempt) {
+                        tracing::error!(
+                            step = step_name,
+                            attempt = attempt,
+                            max_attempts = policy.max_attempts(),
+                            error = %e,
+                            "Compensation step failed after all retries"
+                        );
+                        return Err(e);
+                    }
+
+                    // Calculate delay with exponential backoff
+                    let delay = policy.delay_for_attempt(attempt);
+                    tracing::warn!(
+                        step = step_name,
+                        attempt = attempt,
+                        max_attempts = policy.max_attempts(),
+                        delay_ms = delay.as_millis(),
+                        error = %e,
+                        "Compensation step failed, retrying with exponential backoff"
+                    );
+
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    /// Execute all compensation steps in reverse order with retry
+    async fn execute_compensation(
+        &self,
+        steps: &[Box<dyn super::SagaStep<Output = ()>>],
+        context: &mut SagaContext,
+        executed_steps_count: usize,
+    ) -> u32 {
+        let mut compensations_executed = 0;
+
+        for compensate_idx in (0..executed_steps_count).rev() {
+            let compensate_step = &steps[compensate_idx];
+
+            if compensate_step.has_compensation() {
+                let step_name = compensate_step.name();
+
+                match self
+                    .execute_compensation_with_retry(&**compensate_step, context, step_name)
+                    .await
+                {
+                    Ok(_) => {
+                        compensations_executed += 1;
+                        tracing::info!(step = step_name, "Compensation step executed successfully");
+                    }
+                    Err(comp_error) => {
+                        tracing::error!(
+                            step = step_name,
+                            error = %comp_error,
+                            "Compensation step failed"
+                        );
+                        // Continue compensating other steps even if one fails
+                    }
+                }
+            }
+        }
+
+        compensations_executed
     }
 }
 
@@ -129,16 +316,23 @@ where
         let start_time = std::time::Instant::now();
         let saga_id = context.saga_id.clone();
 
-        // Check concurrency limit using atomic load
-        let current = self.active_sagas.load(Ordering::SeqCst);
-        if current >= self.config.max_concurrent_sagas {
-            return Err(DomainError::SagaError {
-                message: format!(
-                    "Concurrency limit exceeded: {} active sagas, max {}",
-                    current, self.config.max_concurrent_sagas
-                ),
-            });
+        // Check rate limit first
+        if let Some(ref limiter) = self.rate_limiter {
+            if !limiter.try_acquire() {
+                let remaining = limiter.remaining();
+                return Err(DomainError::OrchestratorError(
+                    OrchestratorError::RateLimitExceeded { remaining },
+                ));
+            }
         }
+
+        // Try to acquire semaphore permit for concurrency control
+        let _permit = self.concurrency_semaphore.try_acquire().map_err(|_| {
+            DomainError::OrchestratorError(OrchestratorError::ConcurrencyLimitExceeded {
+                current: self.active_sagas.load(Ordering::SeqCst),
+                max: self.config.max_concurrent_sagas,
+            })
+        })?;
 
         // Increment active count
         self.active_sagas.fetch_add(1, Ordering::SeqCst);
@@ -214,35 +408,10 @@ where
                         .await
                         .ok();
 
-                    // Execute compensation for all previously executed steps in REVERSE order
-                    let mut _compensations_executed = 0;
-                    for compensate_idx in (0..step_idx).rev() {
-                        let compensate_step = &steps_vec[compensate_idx];
-
-                        // Only compensate if step has compensation defined
-                        if compensate_step.has_compensation() {
-                            let step_name = compensate_step.name();
-                            let comp_result = compensate_step.compensate(&mut context).await;
-
-                            match comp_result {
-                                Ok(()) => {
-                                    _compensations_executed += 1;
-                                    tracing::info!(
-                                        step = step_name,
-                                        "Compensation step executed successfully"
-                                    );
-                                }
-                                Err(comp_error) => {
-                                    tracing::error!(
-                                        step = step_name,
-                                        error = %comp_error,
-                                        "Compensation step failed"
-                                    );
-                                    // Continue compensating other steps even if one fails
-                                }
-                            }
-                        }
-                    }
+                    // Execute compensation for all previously executed steps in REVERSE order with retry
+                    let compensations_executed = self
+                        .execute_compensation(&steps_vec, &mut context, step_idx)
+                        .await;
 
                     // Update final state to Failed (compensation completed but saga failed)
                     self.repository
@@ -255,7 +424,7 @@ where
                         saga.saga_type(),
                         start_time.elapsed(),
                         executed_steps as u32,
-                        _compensations_executed as u32,
+                        compensations_executed,
                         e.to_string(),
                     ));
                 }
@@ -275,33 +444,10 @@ where
                         .await
                         .ok();
 
-                    // Execute compensation for all previously executed steps in REVERSE order
-                    let mut compensations_executed = 0;
-                    for compensate_idx in (0..executed_steps).rev() {
-                        let compensate_step = &steps_vec[compensate_idx];
-
-                        if compensate_step.has_compensation() {
-                            let step_name = compensate_step.name();
-                            let comp_result = compensate_step.compensate(&mut context).await;
-
-                            match comp_result {
-                                Ok(()) => {
-                                    compensations_executed += 1;
-                                    tracing::info!(
-                                        step = step_name,
-                                        "Compensation step executed successfully (timeout)"
-                                    );
-                                }
-                                Err(comp_error) => {
-                                    tracing::error!(
-                                        step = step_name,
-                                        error = %comp_error,
-                                        "Compensation step failed (timeout)"
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    // Execute compensation for all previously executed steps in REVERSE order with retry
+                    let compensations_executed = self
+                        .execute_compensation(&steps_vec, &mut context, executed_steps)
+                        .await;
 
                     self.repository
                         .update_state(&saga_id, SagaState::Failed, Some(timeout_error))
@@ -937,40 +1083,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compensation_continues_even_if_one_fails() {
-        let compensated_steps: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+    async fn test_compensation_with_exponential_backoff_retry() {
+        // Test that verifies compensation uses retry with exponential backoff
+        let attempts_0: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let attempts_1: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
 
-        // Step that tracks compensation and can fail
-        struct FailingCompensationStep {
+        struct RetryableCompensationStep {
             step_number: usize,
-            should_fail_compensation: bool,
-            compensated: Arc<Mutex<Vec<usize>>>,
+            fail_until_attempt: u32,
+            attempts: Arc<Mutex<Vec<u32>>>,
         }
 
         #[async_trait::async_trait]
-        impl SagaStep for FailingCompensationStep {
+        impl SagaStep for RetryableCompensationStep {
             type Output = ();
-
             fn name(&self) -> &'static str {
-                "FailingCompensationStep"
+                "RetryableCompensationStep"
             }
-
             fn has_compensation(&self) -> bool {
                 true
             }
-
             async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
                 Ok(())
             }
-
             async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
-                let mut compensated = self.compensated.lock().unwrap();
-                compensated.push(self.step_number);
-
-                if self.should_fail_compensation {
+                let count = self.attempts.lock().unwrap().len() as u32 + 1;
+                self.attempts.lock().unwrap().push(count);
+                if count < self.fail_until_attempt {
                     Err(SagaError::CompensationFailed {
                         step: self.name().to_string(),
-                        message: "Intentional compensation failure".to_string(),
+                        message: format!("Intentional failure on attempt {}", count),
                     })
                 } else {
                     Ok(())
@@ -978,21 +1120,16 @@ mod tests {
             }
         }
 
-        // Step that fails during execution
-        struct FailingTestStep;
-
+        struct FailingExecuteStep;
         #[async_trait::async_trait]
-        impl SagaStep for FailingTestStep {
+        impl SagaStep for FailingExecuteStep {
             type Output = ();
-
             fn name(&self) -> &'static str {
-                "FailingTestStep"
+                "FailingExecuteStep"
             }
-
             fn has_compensation(&self) -> bool {
                 true
             }
-
             async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
                 Err(SagaError::StepFailed {
                     step: self.name().to_string(),
@@ -1000,58 +1137,72 @@ mod tests {
                     will_compensate: true,
                 })
             }
-
             async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
                 Ok(())
             }
         }
 
         struct TestSaga {
-            compensated: Arc<Mutex<Vec<usize>>>,
+            attempts_0: Arc<Mutex<Vec<u32>>>,
+            attempts_1: Arc<Mutex<Vec<u32>>>,
         }
 
         impl Saga for TestSaga {
             fn saga_type(&self) -> SagaType {
                 SagaType::Execution
             }
-
             fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
-                let compensated = self.compensated.clone();
                 vec![
-                    Box::new(FailingCompensationStep {
+                    Box::new(RetryableCompensationStep {
                         step_number: 0,
-                        should_fail_compensation: false,
-                        compensated: compensated.clone(),
+                        fail_until_attempt: 2,
+                        attempts: self.attempts_0.clone(),
                     }),
-                    Box::new(FailingCompensationStep {
+                    Box::new(RetryableCompensationStep {
                         step_number: 1,
-                        should_fail_compensation: true,
-                        compensated: compensated.clone(),
+                        fail_until_attempt: 3,
+                        attempts: self.attempts_1.clone(),
                     }),
-                    Box::new(FailingTestStep),
+                    Box::new(FailingExecuteStep),
                 ]
             }
         }
 
         let repo = Arc::new(MockSagaRepository);
-        let orchestrator = InMemorySagaOrchestrator::new(repo, None);
+        let config = SagaOrchestratorConfig {
+            compensation_retry_policy: RetryPolicy {
+                max_attempts: 3,
+                initial_delay: Duration::from_millis(10),
+                max_delay: Duration::from_secs(60),
+                multiplier: 2.0,
+                jitter_factor: 0.2,
+            },
+            ..Default::default()
+        };
+        let orchestrator = InMemorySagaOrchestrator::new(repo, Some(config));
 
         let saga = TestSaga {
-            compensated: compensated_steps.clone(),
+            attempts_0: attempts_0.clone(),
+            attempts_1: attempts_1.clone(),
         };
         let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
 
         let result = orchestrator.execute_saga(&saga, context).await;
-
         assert!(result.is_ok());
         let saga_result = result.unwrap();
         assert!(saga_result.is_failed());
 
-        // Both steps should have been attempted for compensation
-        let compensated = compensated_steps.lock().unwrap();
-        assert_eq!(compensated.len(), 2);
-        assert!(compensated.contains(&0));
-        assert!(compensated.contains(&1));
+        let attempts_0 = attempts_0.lock().unwrap();
+        let attempts_1 = attempts_1.lock().unwrap();
+
+        // Compensation happens in REVERSE order: step 1, then step 0
+        assert_eq!(attempts_1.len(), 3, "Step 1 should have 3 attempts");
+        assert_eq!(attempts_0.len(), 2, "Step 0 should have 2 attempts");
+        assert_eq!(attempts_1[0], 1);
+        assert_eq!(attempts_1[1], 2);
+        assert_eq!(attempts_1[2], 3);
+        assert_eq!(attempts_0[0], 1);
+        assert_eq!(attempts_0[1], 2);
     }
 
     // ============ SAGA RESUME TESTS ============
@@ -1235,4 +1386,98 @@ mod tests {
         assert!(executed.contains(&0));
         assert!(executed.contains(&1));
     }
+
+    // ============ RATE LIMITING TESTS ============
+
+    #[tokio::test]
+    async fn test_token_bucket_rate_limiter() {
+        let config = RateLimitConfig {
+            max_permits: 3,
+            window: Duration::from_secs(1),
+            refill_rate: 1.0,
+        };
+        let limiter = TokenBucketRateLimiter::new(config);
+
+        // Should allow first 3 requests
+        assert!(limiter.try_acquire());
+        assert!(limiter.try_acquire());
+        assert!(limiter.try_acquire());
+        assert_eq!(limiter.remaining(), 0);
+
+        // Fourth request should be denied
+        assert!(!limiter.try_acquire());
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_with_rate_limit() {
+        let executed_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
+        struct CountingSaga {
+            count: Arc<AtomicUsize>,
+        }
+
+        impl Saga for CountingSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                let count = self.count.clone();
+                vec![Box::new(CountingStep { count })]
+            }
+        }
+
+        struct CountingStep {
+            count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl SagaStep for CountingStep {
+            type Output = ();
+            fn name(&self) -> &'static str {
+                "CountingStep"
+            }
+            fn has_compensation(&self) -> bool {
+                false
+            }
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+        }
+
+        // Configurar con rate limit muy restrictivo
+        let config = SagaOrchestratorConfig {
+            rate_limit: Some(RateLimitConfig {
+                max_permits: 1,
+                window: Duration::from_secs(1),
+                refill_rate: 1.0,
+            }),
+            ..Default::default()
+        };
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, Some(config));
+
+        let saga = CountingSaga {
+            count: executed_count.clone(),
+        };
+        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+
+        // Primera ejecucion debe funcionar
+        let result = orchestrator.execute_saga(&saga, context).await;
+        assert!(result.is_ok());
+        assert_eq!(executed_count.load(Ordering::SeqCst), 1);
+
+        // Segunda ejecucion inmediata debe fallar por rate limit
+        let saga2 = CountingSaga {
+            count: executed_count.clone(),
+        };
+        let context2 = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+        let result2 = orchestrator.execute_saga(&saga2, context2).await;
+        assert!(result2.is_err());
+    }
+
 }

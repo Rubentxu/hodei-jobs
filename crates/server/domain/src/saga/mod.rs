@@ -13,6 +13,7 @@
 //! - **TimeoutSaga**: Job timeout handling
 //! - **CleanupSaga**: Orphaned resource cleanup
 
+pub mod audit_trail;
 pub mod cancellation;
 pub mod circuit_breaker;
 pub mod cleanup;
@@ -64,6 +65,12 @@ pub use metrics::{InMemorySagaMetrics, NoOpSagaMetrics, SagaConcurrencyMetrics, 
 
 // Re-exports from engine_config module
 pub use engine_config::{SagaEngineConfig, SagaFeature};
+
+// Re-exports from audit_trail module (EPIC-85 US-15)
+pub use audit_trail::{
+    SagaAuditConsumer, SagaAuditEntry, SagaAuditEventType, SagaAuditTrail, TracingAuditConsumer,
+    VecAuditConsumer,
+};
 
 // Re-exports from orchestrator module
 pub use orchestrator::{InMemorySagaOrchestrator, OrchestratorError, SagaOrchestratorConfig};

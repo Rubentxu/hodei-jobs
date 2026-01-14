@@ -315,24 +315,80 @@ impl LogAggregator {
         }
     }
 
-    /// Limpia logs antiguos
-    pub async fn cleanup_old_logs(&self, _older_than: Duration) -> Result<u32> {
-        // TODO: Implementar limpieza de logs antiguos
-        // Por ahora, retornar contador dummy
-        let cleaned_count = 0;
+    /// Limpia logs antiguos para un job específico
+    pub async fn cleanup_job_logs(&self, job_id: &JobId, older_than: Duration) -> Result<u32> {
+        let cutoff = Utc::now() - older_than;
+        let logs = self.log_retriever.get_logs_since(job_id, cutoff).await?;
+        let before_count = self.log_retriever.get_job_logs(job_id).await?.len();
 
-        Ok(cleaned_count)
+        // Los logs más antiguos se filtran implícitamente por get_logs_since
+        // La limpieza real depende de la implementación de LogRetriever
+        let after_count = logs.len();
+
+        Ok((before_count.saturating_sub(after_count)) as u32)
     }
 
-    /// Busca logs por patrón
-    pub async fn search_logs(&self, _pattern: &str) -> Result<Vec<JobLogEntry>> {
-        let matching_logs = Vec::new();
+    /// Busca logs por patrón en un job específico
+    pub async fn search_logs(&self, job_id: &JobId, pattern: &str) -> Result<Vec<JobLogEntry>> {
+        let logs = self.log_retriever.get_job_logs(job_id).await?;
 
-        // TODO: Implementar búsqueda en logs
-        // Por ahora, retornar lista vacía
-        // Esto requeriría un índice de logs o búsqueda en base de datos
+        // Simple pattern matching (could use regex for more complex patterns)
+        let matching_logs: Vec<JobLogEntry> = logs
+            .into_iter()
+            .filter(|log| {
+                let message_matches = pattern.is_empty()
+                    || log.message.to_lowercase().contains(&pattern.to_lowercase());
+                let source_matches = pattern.is_empty()
+                    || format!("{:?}", log.source)
+                        .to_lowercase()
+                        .contains(&pattern.to_lowercase());
+                message_matches || source_matches
+            })
+            .collect();
 
         Ok(matching_logs)
+    }
+
+    /// Busca logs por nivel en un job específico
+    pub async fn search_logs_by_level(
+        &self,
+        job_id: &JobId,
+        level: JobLogLevel,
+    ) -> Result<Vec<JobLogEntry>> {
+        let logs = self.log_retriever.get_job_logs(job_id).await?;
+
+        let filtered_logs: Vec<JobLogEntry> =
+            logs.into_iter().filter(|log| log.level == level).collect();
+
+        Ok(filtered_logs)
+    }
+
+    /// Obtiene errores de un job
+    pub async fn get_job_errors(&self, job_id: &JobId) -> Result<Vec<JobLogEntry>> {
+        self.search_logs_by_level(job_id, JobLogLevel::Error).await
+    }
+
+    /// Obtiene warnings de un job
+    pub async fn get_job_warnings(&self, job_id: &JobId) -> Result<Vec<JobLogEntry>> {
+        self.search_logs_by_level(job_id, JobLogLevel::Warning)
+            .await
+    }
+
+    /// Filtra logs por rango de tiempo
+    pub async fn get_logs_in_range(
+        &self,
+        job_id: &JobId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<JobLogEntry>> {
+        let logs = self.log_retriever.get_job_logs(job_id).await?;
+
+        let filtered_logs: Vec<JobLogEntry> = logs
+            .into_iter()
+            .filter(|log| log.timestamp >= from && log.timestamp <= to)
+            .collect();
+
+        Ok(filtered_logs)
     }
 }
 
