@@ -93,46 +93,104 @@ build-minikube worker-only:
 build-minikube no-cache:
     @rust-script scripts/build_minikube.rs --no-cache
 
-# Generate protobuf code
-generate:
-    @echo "📝 Generating protobuf code..."
-    cargo build --package hodei-server-interface
-    @echo "✅ Code generation complete"
-
 # =============================================================================
-# DEVELOPMENT COMMANDS
+# RUST-SCRIPTS (All Development Scripts)
 # =============================================================================
+# Install rust-script: cargo install rust-script
+# Docs: https://rust-script.org
 
-# Start development database (idempotent)
+# Development database
 dev-db:
-    @chmod +x scripts/dev-db.sh && scripts/dev-db.sh
+    @rust-script scripts/dev_db.rs
 
-# Run database migrations
-db-migrate:
-    @echo "📦 Running migrations..."
-    @just stop-server || true
-    @echo "Waiting for port to be free..."
-    @sleep 2
-    @cd crates/server/bin && timeout 5 cargo run --bin hodei-server-bin 2>&1 || true
-    @echo "✅ Migrations complete (server exited after startup)"
-
-# Start server in development mode (auto-compiles + idempotent)
+# Development server
 dev-server:
-    @bash -c 'scripts/dev-start.sh'
+    @rust-script scripts/dev_server.rs
 
-# Start full development environment (idempotent + recompile)
-dev:
-    @echo "🚀 Starting full development environment (server + auto-provisioning workers)..."
-    @just dev-db
-    @just db-migrate
-    @bash scripts/dev-server.sh
+# Development start (full environment)
+dev-start:
+    @rust-script scripts/dev_start.rs
 
-# Start development environment without Docker
-dev-no-docker:
-    @echo "🚀 Starting development environment (NO DOCKER)..."
-    @echo "⚠️  Running without database - limited functionality"
-    @echo "💡 For full functionality, start Docker: sudo systemctl start docker"
-    @bash /home/rubentxu/Proyectos/rust/package/hodei-job-platform/dev_no_docker.sh
+# Clean system
+clean-system:
+    @rust-script scripts/clean_system.rs
+
+# Restart system
+restart-system:
+    @rust-script scripts/restart_system.rs
+
+# System status dashboard
+system-status:
+    @rust-script scripts/system_status.rs
+
+# Local build
+build-local:
+    @rust-script scripts/build_local.rs
+
+# Build and push to registry
+build-and-push:
+    @rust-script scripts/build_and_push.rs
+
+# =============================================================================
+# DEBUG COMMANDS
+# =============================================================================
+
+# Debug jobs
+debug-jobs:
+    @rust-script scripts/debug_job.rs
+
+# Job timeline
+debug-jobs-timeline:
+    @rust-script scripts/debug_job_timeline.rs
+
+# Debug workers
+debug-workers:
+    @rust-script scripts/system_status.rs
+
+# Worker logs
+logs-worker:
+    @echo "💡 Run: docker logs -f hodei-worker"
+    @echo "   Or: kubectl logs -n hodei-jobs -l app.kubernetes.io/name=hodei-worker"
+
+# =============================================================================
+# KUBERNETES COMMANDS
+# =============================================================================
+
+# K8s workflow (build, load, deploy)
+k8s-workflow:
+    @rust-script scripts/k8s_workflow.rs
+
+# Verify K8s jobs
+verify-k8s-jobs:
+    @rust-script scripts/verify_k8s_jobs.rs
+
+# =============================================================================
+# TEST COMMANDS
+# =============================================================================
+
+# Test multi-provider
+test-multi-provider:
+    @rust-script scripts/test_multi_provider.rs
+
+# Test provider selection
+test-provider-selection:
+    @rust-script scripts/test_provider_selection.rs
+
+# Test timeout
+test-timeout:
+    @rust-script scripts/test_timeout.rs
+
+# =============================================================================
+# JOB RUN COMMANDS
+# =============================================================================
+
+# Run job (Docker provider)
+job-run-docker:
+    @rust-script scripts/job_run_docker.rs
+
+# Run job (specific provider)
+job-run-provider:
+    @rust-script scripts/job_run_provider.rs
 
 # =============================================================================
 # DEVSPACE COMMANDS (Fast Development with Minikube)
