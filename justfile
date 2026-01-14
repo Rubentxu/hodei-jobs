@@ -67,6 +67,32 @@ build-cli:
     cargo build --package hodei-jobs-cli
     @echo "✅ CLI build complete"
 
+# =============================================================================
+# RUST-SCRIPTS (Minikube Development)
+# =============================================================================
+# Install rust-script: cargo install rust-script
+# Docs: https://rust-script.org
+
+# Setup Minikube with required addons and namespaces
+setup-minikube:
+    @rust-script scripts/setup_minikube.rs
+
+# Build and load Docker images to minikube
+build-minikube:
+    @rust-script scripts/build_minikube.rs
+
+# Build minikube - server only
+build-minikube server-only:
+    @rust-script scripts/build_minikube.rs --server-only
+
+# Build minikube - worker only
+build-minikube worker-only:
+    @rust-script scripts/build_minikube.rs --worker-only
+
+# Build minikube - no cache
+build-minikube no-cache:
+    @rust-script scripts/build_minikube.rs --no-cache
+
 # Generate protobuf code
 generate:
     @echo "📝 Generating protobuf code..."
