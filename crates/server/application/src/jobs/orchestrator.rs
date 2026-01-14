@@ -3,15 +3,19 @@
 //! Integra el scheduler, lifecycle manager y registros para
 //! la ejecución completa de jobs.
 
+use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaCoordinatorConfig};
 use crate::{
     scheduling::smart_scheduler::{SchedulerConfig, SchedulingService},
     workers::lifecycle::{WorkerLifecycleConfig, WorkerLifecycleManager},
 };
 use dashmap::DashMap;
+use hodei_server_domain::saga::OrchestratorError;
 use hodei_server_domain::{
+    command::DynCommandBus,
     event_bus::EventBus,
     jobs::{Job, JobQueue, JobRepository},
     outbox::{OutboxError, OutboxRepository},
+    saga::{SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaState, SagaType},
     scheduling::{ProviderInfo, SchedulingContext, SchedulingDecision},
     shared_kernel::{DomainError, JobId, ProviderId, WorkerId},
     workers::WorkerProvider,
@@ -41,6 +45,7 @@ impl JobOrchestrator {
         lifecycle_config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+        recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator>,
     ) -> Self {
         let default_worker_spec = WorkerSpec::new(
             "hodei-jobs-worker:latest".to_string(),
@@ -51,12 +56,13 @@ impl JobOrchestrator {
 
         Self {
             scheduler: SchedulingService::new(scheduler_config),
-            lifecycle_manager: WorkerLifecycleManager::new(
+            lifecycle_manager: WorkerLifecycleManager::with_recovery_saga_coordinator(
                 registry.clone(),
                 providers.clone(),
                 lifecycle_config,
                 event_bus,
                 outbox_repository,
+                recovery_saga_coordinator,
             ),
             registry,
             job_repository,
@@ -594,6 +600,93 @@ mod tests {
 
     struct MockOutboxRepository;
 
+    use hodei_server_domain::saga::{
+        SagaContext, SagaExecutionResult, SagaId, SagaState, SagaType,
+    };
+
+    /// Mock SagaOrchestrator for testing
+    struct MockSagaOrchestrator;
+
+    impl MockSagaOrchestrator {
+        fn new() -> Self {
+            Self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SagaOrchestrator for MockSagaOrchestrator {
+        type Error = DomainError;
+
+        async fn execute_saga(
+            &self,
+            saga: &dyn hodei_server_domain::saga::Saga,
+            context: SagaContext,
+        ) -> std::result::Result<SagaExecutionResult, OrchestratorError> {
+            Ok(SagaExecutionResult {
+                saga_id: SagaId::new(),
+                saga_type: saga.saga_type(),
+                state: SagaState::Completed,
+                steps_executed: 1,
+                compensations_executed: 0,
+                duration: Duration::from_millis(10),
+                error_message: None,
+            })
+        }
+
+        async fn execute(
+            &self,
+            context: &SagaContext,
+        ) -> std::result::Result<SagaExecutionResult, OrchestratorError> {
+            Ok(SagaExecutionResult {
+                saga_id: context.saga_id.clone(),
+                saga_type: SagaType::Recovery,
+                state: SagaState::Completed,
+                steps_executed: 0,
+                compensations_executed: 0,
+                duration: Duration::from_millis(5),
+                error_message: None,
+            })
+        }
+
+        async fn get_saga(
+            &self,
+            _saga_id: &SagaId,
+        ) -> std::result::Result<Option<SagaContext>, OrchestratorError> {
+            Ok(None)
+        }
+
+        async fn cancel_saga(
+            &self,
+            _saga_id: &SagaId,
+        ) -> std::result::Result<(), OrchestratorError> {
+            Ok(())
+        }
+    }
+
+    /// Create a mock DynRecoverySagaCoordinator for tests
+    fn create_mock_recovery_coordinator(
+        registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn EventBus + Send + Sync>,
+    ) -> Arc<DynRecoverySagaCoordinator> {
+        use hodei_server_domain::command::InMemoryErasedCommandBus;
+
+        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
+            Arc::new(MockSagaOrchestrator);
+        let saga_config = RecoverySagaCoordinatorConfig::default();
+        let command_bus: DynCommandBus = Arc::new(InMemoryErasedCommandBus::new());
+
+        Arc::new(DynRecoverySagaCoordinator::new(
+            orchestrator,
+            command_bus,
+            registry,
+            event_bus,
+            None,
+            None,
+            Some(saga_config),
+            None,
+        ))
+    }
+
     #[async_trait::async_trait]
     impl OutboxRepository for MockOutboxRepository {
         async fn insert_events(
@@ -675,11 +768,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_creation() {
-        let registry = Arc::new(MockWorkerRegistry);
+        let registry: Arc<dyn WorkerRegistry> = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
-        let event_bus = Arc::new(MockEventBus);
+        let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
         let outbox = Arc::new(MockOutboxRepository);
+        let recovery_coordinator =
+            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
 
         let _orchestrator = JobOrchestrator::new(
             registry,
@@ -689,15 +784,18 @@ mod tests {
             WorkerLifecycleConfig::default(),
             event_bus,
             outbox,
+            recovery_coordinator,
         );
     }
 
     #[tokio::test]
     async fn test_submit_job_enqueues_when_no_resources() {
-        let registry = Arc::new(MockWorkerRegistry);
+        let registry: Arc<dyn WorkerRegistry> = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
-        let event_bus = Arc::new(MockEventBus);
+        let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
+        let recovery_coordinator =
+            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
 
         let orchestrator = JobOrchestrator::new(
             registry,
@@ -707,6 +805,7 @@ mod tests {
             WorkerLifecycleConfig::default(),
             event_bus,
             Arc::new(MockOutboxRepository),
+            recovery_coordinator,
         );
 
         let job = Job::new(JobId::new(), JobSpec::new(vec!["echo".to_string()]));
@@ -719,10 +818,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_stats() {
-        let registry = Arc::new(MockWorkerRegistry);
+        let registry: Arc<dyn WorkerRegistry> = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
-        let event_bus = Arc::new(MockEventBus);
+        let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
+        let recovery_coordinator =
+            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
 
         let orchestrator = JobOrchestrator::new(
             registry,
@@ -732,6 +833,7 @@ mod tests {
             WorkerLifecycleConfig::default(),
             event_bus,
             Arc::new(MockOutboxRepository),
+            recovery_coordinator,
         );
 
         let stats = orchestrator.stats().await.unwrap();
