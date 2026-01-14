@@ -1535,7 +1535,7 @@ mod tests {
     use hodei_server_domain::command::InMemoryErasedCommandBus;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::saga::{
-        Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+        Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaState, SagaType,
     };
     use hodei_server_domain::workers::{
         ProviderType, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLogs,
@@ -1548,6 +1548,26 @@ mod tests {
     /// Helper to create test providers map with DashMap
     fn create_test_providers() -> Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> {
         Arc::new(DashMap::new())
+    }
+
+    /// Helper to create test lifecycle manager with mock recovery coordinator (US-4.2)
+    fn create_test_lifecycle_manager(
+        registry: Arc<dyn WorkerRegistry>,
+        providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+        config: WorkerLifecycleConfig,
+        event_bus: Arc<dyn EventBus>,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
+    ) -> WorkerLifecycleManager {
+        let recovery_coordinator =
+            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
+        WorkerLifecycleManager::with_recovery_saga_coordinator(
+            registry,
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+            recovery_coordinator,
+        )
     }
 
     /// Helper to create test command bus
@@ -1758,6 +1778,31 @@ mod tests {
 
     // Implement WorkerProvider as marker trait (combines all ISP traits)
     impl WorkerProvider for MockWorkerProvider {}
+
+    /// Create a real DynRecoverySagaCoordinator with mock orchestrator for tests (US-4.2)
+    fn create_mock_recovery_coordinator(
+        registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn EventBus + Send + Sync>,
+    ) -> Arc<DynRecoverySagaCoordinator> {
+        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
+            Arc::new(MockSagaOrchestrator::new());
+        let saga_config = RecoverySagaCoordinatorConfig {
+            saga_timeout: Duration::from_secs(300),
+            step_timeout: Duration::from_secs(60),
+        };
+        let command_bus = create_test_command_bus();
+
+        Arc::new(DynRecoverySagaCoordinator::new(
+            orchestrator,
+            command_bus,
+            registry,
+            event_bus,
+            None,
+            None,
+            Some(saga_config),
+            None,
+        ))
+    }
 
     struct MockEventBus {
         published: Arc<Mutex<Vec<DomainEvent>>>,
@@ -2108,8 +2153,13 @@ mod tests {
         let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let _manager =
-            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
+        let _manager = create_test_lifecycle_manager(
+            registry,
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
     }
 
     #[tokio::test]
@@ -2120,8 +2170,13 @@ mod tests {
         let providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let manager =
-            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
+        let manager = create_test_lifecycle_manager(
+            registry,
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         assert!(manager.should_scale_up(1).await);
     }
@@ -2154,7 +2209,7 @@ mod tests {
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let manager = WorkerLifecycleManager::new(
+        let manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2270,7 +2325,7 @@ mod tests {
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let manager = WorkerLifecycleManager::new(
+        let manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2343,7 +2398,7 @@ mod tests {
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let manager = WorkerLifecycleManager::new(
+        let manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2631,8 +2686,13 @@ mod tests {
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let manager =
-            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
+        let manager = create_test_lifecycle_manager(
+            registry,
+            providers,
+            config,
+            event_bus,
+            outbox_repository,
+        );
 
         // THEN: is_saga_provisioning_enabled debe retornar false
         assert!(
@@ -2669,7 +2729,7 @@ mod tests {
 
         let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let mut manager = WorkerLifecycleManager::new(
+        let mut manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2707,7 +2767,7 @@ mod tests {
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let manager = WorkerLifecycleManager::new(
+        let manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2763,7 +2823,7 @@ mod tests {
 
         let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let mut manager = WorkerLifecycleManager::new(
+        let mut manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2822,7 +2882,7 @@ mod tests {
 
         let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let mut manager = WorkerLifecycleManager::new(
+        let mut manager = create_test_lifecycle_manager(
             registry.clone(),
             providers,
             config,
@@ -2848,139 +2908,30 @@ mod tests {
     }
 
     // ============================================================
-    // US-4.2: Saga-based Recovery Tests
+
+    // ============================================================
+    // US-4.2: Saga-based Recovery Tests (RecoverySagaCoordinator REQUIRED)
     // ============================================================
 
     #[tokio::test]
-    async fn test_is_saga_recovery_disabled_by_default() {
-        // GIVEN: Un WorkerLifecycleManager sin coordinador de recovery
-        let registry = Arc::new(MockWorkerRegistry::new());
-        let config = WorkerLifecycleConfig::default();
-        let event_bus = Arc::new(MockEventBus::new());
-        let providers = create_test_providers();
-
-        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
-            Arc::new(MockOutboxRepository);
-        let manager =
-            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
-
-        // THEN: is_saga_recovery_enabled debe retornar false
-        assert!(
-            !manager.is_saga_recovery_enabled(),
-            "Saga recovery should be disabled by default"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_saga_recovery_enabled_after_setting_coordinator() {
-        // GIVEN: Un WorkerLifecycleManager y un DynRecoverySagaCoordinator
-        let registry = Arc::new(MockWorkerRegistry::new());
-        let config = WorkerLifecycleConfig::default();
-        let event_bus = Arc::new(MockEventBus::new());
-        let providers = create_test_providers();
-
-        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
-            Arc::new(MockSagaOrchestrator::new());
-        let saga_config = RecoverySagaCoordinatorConfig {
-            saga_timeout: Duration::from_secs(300),
-            step_timeout: Duration::from_secs(60),
-        };
-        let command_bus = create_test_command_bus();
-
-        let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
-            orchestrator,
-            command_bus,
-            registry.clone(),
-            event_bus.clone(),
-            None,
-            None,
-            Some(saga_config),
-            None,
-        ));
-
-        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
-            Arc::new(MockOutboxRepository);
-        let mut manager = WorkerLifecycleManager::new(
-            registry.clone(),
-            providers,
-            config,
-            event_bus,
-            outbox_repository,
-        );
-
-        // WHEN: Se setea el coordinator
-        manager.set_recovery_saga_coordinator(coordinator);
-
-        // THEN: is_saga_recovery_enabled debe retornar true
-        assert!(
-            manager.is_saga_recovery_enabled(),
-            "Saga recovery should be enabled after setting coordinator"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_recover_worker_uses_legacy_when_no_saga_coordinator() {
-        // GIVEN: Un WorkerLifecycleManager sin coordinator
-        let registry = Arc::new(MockWorkerRegistry::new());
-        let config = WorkerLifecycleConfig::default();
-        let event_bus = Arc::new(MockEventBus::new());
-        let providers = create_test_providers();
-
-        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
-            Arc::new(MockOutboxRepository);
-        let manager =
-            WorkerLifecycleManager::new(registry, providers, config, event_bus, outbox_repository);
-
-        let job_id = JobId::new();
-        let worker_id = WorkerId::new();
-
-        // WHEN: Se llama recover_worker sin coordinator
-        let result = manager.recover_worker(&job_id, &worker_id).await;
-
-        // THEN: Debe usar legacy recovery (que hace warn y retorna Ok)
-        assert!(
-            result.is_ok(),
-            "Legacy recovery should succeed (with warning)"
-        );
-    }
-
-    #[tokio::test]
     async fn test_recover_worker_via_saga() {
-        // GIVEN: Un WorkerLifecycleManager con recovery saga coordinator
+        // GIVEN: Un WorkerLifecycleManager con recovery saga coordinator (siempre requerido)
         let registry = Arc::new(MockWorkerRegistry::new());
         let config = WorkerLifecycleConfig::default();
         let event_bus = Arc::new(MockEventBus::new());
         let providers = create_test_providers();
 
-        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
-            Arc::new(MockSagaOrchestrator::new());
-        let saga_config = RecoverySagaCoordinatorConfig {
-            saga_timeout: Duration::from_secs(300),
-            step_timeout: Duration::from_secs(60),
-        };
-        let command_bus = create_test_command_bus();
-
-        let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
-            orchestrator,
-            command_bus,
-            registry.clone(),
-            event_bus.clone(),
-            None,
-            None,
-            Some(saga_config),
-            None,
-        ));
-
-        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
+        let outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
             Arc::new(MockOutboxRepository);
-        let mut manager = WorkerLifecycleManager::new(
-            registry.clone(),
+
+        // Create manager with mock recovery coordinator (always required)
+        let manager = create_test_lifecycle_manager(
+            registry,
             providers,
             config,
             event_bus,
             outbox_repository,
         );
-        manager.set_recovery_saga_coordinator(coordinator);
 
         let job_id = JobId::new();
         let worker_id = WorkerId::new();
@@ -2988,55 +2939,7 @@ mod tests {
         // WHEN: Se llama recover_worker
         let result = manager.recover_worker(&job_id, &worker_id).await;
 
-        // THEN: Debe caer a legacy recovery
-        assert!(result.is_ok(), "Should fallback to legacy recovery");
-    }
-
-    #[tokio::test]
-    async fn test_recover_worker_uses_saga_when_enabled() {
-        // GIVEN: Un WorkerLifecycleManager con saga recovery habilitado
-        let registry = Arc::new(MockWorkerRegistry::new());
-        let config = WorkerLifecycleConfig::default();
-        let event_bus = Arc::new(MockEventBus::new());
-        let providers = create_test_providers();
-
-        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
-            Arc::new(MockSagaOrchestrator::new());
-        let saga_config = RecoverySagaCoordinatorConfig {
-            saga_timeout: Duration::from_secs(300),
-            step_timeout: Duration::from_secs(60),
-        };
-        let command_bus = create_test_command_bus();
-
-        let coordinator = Arc::new(DynRecoverySagaCoordinator::new(
-            orchestrator,
-            command_bus,
-            registry.clone(),
-            event_bus.clone(),
-            None,
-            None,
-            Some(saga_config),
-            None,
-        ));
-
-        let mut outbox_repository: Arc<dyn OutboxRepository + Send + Sync> =
-            Arc::new(MockOutboxRepository);
-        let mut manager = WorkerLifecycleManager::new(
-            registry.clone(),
-            providers,
-            config,
-            event_bus,
-            outbox_repository,
-        );
-        manager.set_recovery_saga_coordinator(coordinator);
-
-        let job_id = JobId::new();
-        let worker_id = WorkerId::new();
-
-        // WHEN: Se llama recover_worker
-        let result = manager.recover_worker(&job_id, &worker_id).await;
-
-        // THEN: Debe usar saga recovery exitosamente
-        assert!(result.is_ok(), "Saga recovery should succeed");
+        // THEN: Debe usar saga y retornar Ok
+        assert!(result.is_ok(), "Recovery saga should succeed");
     }
 }
