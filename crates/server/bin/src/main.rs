@@ -8,7 +8,11 @@ mod startup;
 mod tests_integration;
 
 use clap::Parser;
-use startup::{AppState, GrpcServerConfig, run, start_job_coordinator};
+use startup::{
+    AppState, GrpcServerConfig, run, start_background_tasks, start_job_coordinator,
+    start_saga_consumers,
+};
+use std::sync::Arc;
 
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -57,6 +61,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_state.event_bus().clone(),
     )
     .await;
+
+    // Start saga consumers for event-driven saga execution
+    use hodei_server_infrastructure::persistence::postgres::{
+        PostgresSagaOrchestrator, PostgresSagaRepository,
+    };
+    let saga_repository = Arc::new(PostgresSagaRepository::new(app_state.pool.clone()));
+    let saga_orchestrator = Arc::new(PostgresSagaOrchestrator::new(saga_repository, None));
+
+    let _saga_consumers_handle = start_saga_consumers(
+        &app_state.nats_event_bus,
+        saga_orchestrator.clone(),
+        app_state.pool.clone(),
+    )
+    .await;
+
+    // Start background tasks (TimeoutChecker)
+    let _background_tasks_handle =
+        start_background_tasks(app_state.pool.clone(), saga_orchestrator.clone()).await;
 
     // Start the gRPC server with all services
     startup::start_grpc_server(

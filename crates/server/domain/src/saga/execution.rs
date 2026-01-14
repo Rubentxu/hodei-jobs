@@ -21,46 +21,46 @@ use tracing::{debug, info, instrument, warn};
 // ExecutionSaga
 // ============================================================================
 
-/// Saga para ejecutar un job en un worker.
+/// Saga for executing a job on a worker.
 ///
-/// # Pasos:
+/// # Steps:
 ///
-/// 1. **ValidateJobStep**: Valida que el job existe, está en estado correcto y tiene especificación válida
-/// 2. **AssignWorkerStep**: Encuentra un worker disponible y lo asigna al job
-/// 3. **ExecuteJobStep**: Actualiza el estado del job a RUNNING y publica el evento
-/// 4. **CompleteJobStep**: Actualiza el estado final del job y publica el evento
+/// 1. **ValidateJobStep**: Validates the job exists and is in correct state
+/// 2. **AssignWorkerStep**: Finds an available worker and assigns it to the job
+/// 3. **ExecuteJobStep**: Updates job state to RUNNING and publishes event
+/// 4. **CompleteJobStep**: Updates final job state and publishes event
 ///
-/// # Error Handling:
+/// # Idempotency:
 ///
-/// Si cualquier paso falla, la saga ejecutará compensación en reversa:
-/// - CompleteJobStep no tiene compensación (el job ya terminó)
-/// - ExecuteJobStep: Deshace el cambio de estado a RUNNING
-/// - AssignWorkerStep: Libera el worker asignado
-/// - ValidateJobStep: No tiene compensación (solo lectura)
+/// Uses the job_id as the idempotency key to prevent duplicate executions.
 #[derive(Debug, Clone)]
 pub struct ExecutionSaga {
-    /// Job ID a ejecutar
+    /// Job ID to execute
     pub job_id: JobId,
-    /// Worker ID opcional (para recuperación)
+    /// Optional worker ID (for recovery)
     pub worker_id: Option<WorkerId>,
+    /// Idempotency key
+    pub idempotency_key: String,
 }
 
 impl ExecutionSaga {
-    /// Crea una nueva ExecutionSaga para el job especificado
+    /// Creates a new ExecutionSaga for the specified job
     #[inline]
     pub fn new(job_id: JobId) -> Self {
         Self {
-            job_id,
+            job_id: job_id.clone(),
             worker_id: None,
+            idempotency_key: format!("execution:{}", job_id),
         }
     }
 
-    /// Crea una ExecutionSaga con worker pre-asignado (para recuperación)
+    /// Creates an ExecutionSaga with pre-assigned worker (for recovery)
     #[inline]
     pub fn with_worker(job_id: JobId, worker_id: WorkerId) -> Self {
         Self {
-            job_id,
+            job_id: job_id.clone(),
             worker_id: Some(worker_id),
+            idempotency_key: format!("execution:{}", job_id),
         }
     }
 }
@@ -83,7 +83,11 @@ impl Saga for ExecutionSaga {
     }
 
     fn timeout(&self) -> Option<Duration> {
-        Some(Duration::from_secs(300)) // 5 minutos para jobs típicos
+        Some(Duration::from_secs(300)) // 5 minutes for typical jobs
+    }
+
+    fn idempotency_key(&self) -> Option<&str> {
+        Some(&self.idempotency_key)
     }
 }
 

@@ -1,6 +1,6 @@
 //! Recovery Saga - EPIC-46 GAP-05
 //!
-//! Saga para la recuperación de workers fallidos y reassignación de jobs.
+//! Saga for recovering from worker failures and reassigning jobs.
 //!
 //! EPIC-50 GAP-CRITICAL-01: Updated to perform real provisioning operations
 //! instead of just storing metadata.
@@ -16,12 +16,14 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tracing::{info, instrument, warn};
 
-/// Saga para recuperar de fallos de workers y reassignar jobs.
+/// Saga for recovering from worker failures and reassigning jobs.
 #[derive(Debug, Clone)]
 pub struct RecoverySaga {
     pub job_id: JobId,
     pub failed_worker_id: WorkerId,
     pub target_provider_id: Option<String>,
+    /// Idempotency key
+    pub idempotency_key: String,
 }
 
 impl RecoverySaga {
@@ -32,9 +34,10 @@ impl RecoverySaga {
         target_provider_id: Option<String>,
     ) -> Self {
         Self {
-            job_id,
-            failed_worker_id,
+            job_id: job_id.clone(),
+            failed_worker_id: failed_worker_id.clone(),
             target_provider_id,
+            idempotency_key: format!("recovery:{}:{}", job_id, failed_worker_id),
         }
     }
 }
@@ -64,6 +67,10 @@ impl Saga for RecoverySaga {
 
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(300))
+    }
+
+    fn idempotency_key(&self) -> Option<&str> {
+        Some(&self.idempotency_key)
     }
 }
 

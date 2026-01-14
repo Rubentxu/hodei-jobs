@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Command to notify a worker that it should stop execution.
 ///
@@ -88,12 +88,10 @@ impl Command for NotifyWorkerCommand {
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
         match &self.worker_id {
-            Some(wid) => {
-                Cow::Owned(format!(
-                    "{}-notify-worker-{}-{}",
-                    self.saga_id, self.job_id, wid
-                ))
-            }
+            Some(wid) => Cow::Owned(format!(
+                "{}-notify-worker-{}-{}",
+                self.saga_id, self.job_id, wid
+            )),
             None => Cow::Owned(format!("{}-notify-worker-{}", self.saga_id, self.job_id)),
         }
     }
@@ -277,11 +275,7 @@ impl UpdateJobStateCommand {
 
     /// Creates a new UpdateJobStateCommand.
     #[inline]
-    pub fn new(
-        job_id: JobId,
-        target_state: JobState,
-        saga_id: String,
-    ) -> Self {
+    pub fn new(job_id: JobId, target_state: JobState, saga_id: String) -> Self {
         let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
         Self {
             job_id,
@@ -424,15 +418,12 @@ where
         let job_id = command.job_id.clone();
         let target_state = command.target_state.clone();
 
-        if let Some(job) = self
-            .job_repository
-            .find_by_id(&job_id)
-            .await
-            .map_err(|e| UpdateJobStateError::UpdateFailed {
+        if let Some(job) = self.job_repository.find_by_id(&job_id).await.map_err(|e| {
+            UpdateJobStateError::UpdateFailed {
                 job_id: job_id.clone(),
                 source: e,
-            })?
-        {
+            }
+        })? {
             if *job.state() == target_state {
                 return Ok(UpdateJobStateResult::already_in_state(target_state));
             }
@@ -504,7 +495,10 @@ impl Command for ReleaseWorkerCommand {
 
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("{}-release-worker-{}", self.saga_id, self.worker_id))
+        Cow::Owned(format!(
+            "{}-release-worker-{}",
+            self.saga_id, self.worker_id
+        ))
     }
 }
 
@@ -692,7 +686,8 @@ mod tests {
         let worker_id = WorkerId::new();
         let job_id = JobId::new();
         let saga_id = "saga-release-with-job".to_string();
-        let cmd = ReleaseWorkerCommand::with_job(worker_id.clone(), job_id.clone(), saga_id.clone());
+        let cmd =
+            ReleaseWorkerCommand::with_job(worker_id.clone(), job_id.clone(), saga_id.clone());
 
         assert_eq!(cmd.job_id, Some(job_id));
     }

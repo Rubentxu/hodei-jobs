@@ -21,36 +21,39 @@ use tracing::{debug, info, instrument, warn};
 // TimeoutSaga
 // ============================================================================
 
-/// Saga para manejar timeout de jobs en ejecución.
+/// Saga for handling job timeouts.
 ///
-/// # Uso:
+/// # Usage:
 ///
-/// Esta saga se dispara cuando un job ha estado en ejecución por más
-/// tiempo que su timeout configurado.
+/// This saga fires when a job has been running longer than its configured timeout.
 ///
-/// # Pasos:
+/// # Steps:
 ///
-/// 1. **ValidateTimeoutStep**: Verifica que el job realmente ha excedido el timeout
-/// 2. **TerminateWorkerStep**: Fuerza la terminación del worker
-/// 3. **MarkJobFailedStep**: Actualiza el job a estado FAILED
-/// 4. **CleanupWorkerStep**: Limpia el worker para nuevos jobs
+/// 1. **ValidateTimeoutStep**: Verifies that the job has actually exceeded the timeout
+/// 2. **TerminateWorkerStep**: Forces worker termination
+/// 3. **MarkJobFailedStep**: Updates the job to FAILED state
+/// 4. **CleanupWorkerStep**: Cleans up the worker for new jobs
 #[derive(Debug, Clone)]
 pub struct TimeoutSaga {
-    /// Job ID que ha excedido el timeout
+    /// Job ID that has exceeded the timeout
     pub job_id: JobId,
-    /// Timeout configurado para el job
+    /// Configured timeout for the job
     pub timeout_duration: Duration,
     /// Reason for timeout (e.g., "user_configured", "system_limit")
     pub reason: String,
+    /// Idempotency key
+    pub idempotency_key: String,
 }
 
 impl TimeoutSaga {
     /// Creates a new TimeoutSaga
     pub fn new(job_id: JobId, timeout_duration: Duration, reason: impl Into<String>) -> Self {
+        let reason_str = reason.into();
         Self {
-            job_id,
+            job_id: job_id.clone(),
             timeout_duration,
-            reason: reason.into(),
+            reason: reason_str.clone(),
+            idempotency_key: format!("timeout:{}:{}", job_id, reason_str),
         }
     }
 }
@@ -78,6 +81,10 @@ impl Saga for TimeoutSaga {
 
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(30))
+    }
+
+    fn idempotency_key(&self) -> Option<&str> {
+        Some(&self.idempotency_key)
     }
 }
 

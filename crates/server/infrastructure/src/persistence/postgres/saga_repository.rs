@@ -5,9 +5,10 @@
 
 use chrono::{DateTime, Utc};
 use hodei_server_domain::saga::{
-    ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga, SagaContext, SagaError,
-    SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository as SagaRepositoryTrait,
-    SagaResult, SagaState, SagaStep, SagaStepData, SagaStepId, SagaStepState, SagaType,
+    CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
+    SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator,
+    SagaRepository as SagaRepositoryTrait, SagaResult, SagaState, SagaStep, SagaStepData,
+    SagaStepId, SagaStepState, SagaType, TimeoutSaga,
 };
 use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::WorkerSpec;
@@ -1328,13 +1329,71 @@ where
                 // BUG-009 Fix: WorkerId is now correctly typed in RecoverySaga
                 Box::new(RecoverySaga::new(JobId::new(), WorkerId::new(), None))
             }
-            SagaType::Cancellation | SagaType::Timeout | SagaType::Cleanup => {
-                // These saga types are not yet fully implemented
-                // Returning a dummy saga that does nothing
-                todo!(
-                    "Saga type not yet implemented in reactive orchestrator: {:?}",
-                    context.saga_type
-                )
+            SagaType::Cancellation => {
+                // Extract job_id and reason from metadata
+                let job_id_str = context
+                    .metadata
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let reason = context
+                    .metadata
+                    .get("cancellation_reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "cancelled".to_string());
+
+                let job_id = if !job_id_str.is_empty() {
+                    JobId(
+                        uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    JobId::new()
+                };
+
+                Box::new(CancellationSaga::new(job_id, reason))
+            }
+            SagaType::Timeout => {
+                // Extract job_id and timeout duration from metadata
+                let job_id_str = context
+                    .metadata
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let timeout_secs = context
+                    .metadata
+                    .get("timeout_seconds")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(300);
+
+                let reason = context
+                    .metadata
+                    .get("timeout_reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "timeout".to_string());
+
+                let job_id = if !job_id_str.is_empty() {
+                    JobId(
+                        uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    )
+                } else {
+                    JobId::new()
+                };
+
+                Box::new(TimeoutSaga::new(
+                    job_id,
+                    Duration::from_secs(timeout_secs as u64),
+                    reason,
+                ))
+            }
+            SagaType::Cleanup => {
+                // CleanupSaga doesn't require metadata - creates with default thresholds
+                Box::new(CleanupSaga::new())
             }
         };
 

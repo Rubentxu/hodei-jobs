@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Command to terminate a worker that has exceeded its timeout.
 ///
@@ -272,11 +272,7 @@ pub struct MarkJobTimedOutCommand {
 impl MarkJobTimedOutCommand {
     /// Creates a new MarkJobTimedOutCommand.
     #[inline]
-    pub fn new(
-        job_id: JobId,
-        timeout_reason: impl Into<String>,
-        saga_id: String,
-    ) -> Self {
+    pub fn new(job_id: JobId, timeout_reason: impl Into<String>, saga_id: String) -> Self {
         let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
         Self {
             job_id,
@@ -332,7 +328,10 @@ impl Command for MarkJobTimedOutCommand {
 
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("{}-mark-job-timed-out-{}", self.saga_id, self.job_id))
+        Cow::Owned(format!(
+            "{}-mark-job-timed-out-{}",
+            self.saga_id, self.job_id
+        ))
     }
 }
 
@@ -432,14 +431,12 @@ where
         let job_id = command.job_id.clone();
 
         // Check if job exists
-        let job_opt = self
-            .job_repository
-            .find_by_id(&job_id)
-            .await
-            .map_err(|e| MarkJobTimedOutError::MarkFailed {
+        let job_opt = self.job_repository.find_by_id(&job_id).await.map_err(|e| {
+            MarkJobTimedOutError::MarkFailed {
                 job_id: job_id.clone(),
                 source: e,
-            })?;
+            }
+        })?;
 
         // If job not found, treat as already timed out (idempotent)
         if job_opt.is_none() {
@@ -514,11 +511,7 @@ mod tests {
     fn mark_job_timed_out_command_idempotency() {
         let job_id = JobId::new();
         let saga_id = "saga-timeout-789".to_string();
-        let cmd = MarkJobTimedOutCommand::new(
-            job_id.clone(),
-            "execution_timeout",
-            saga_id.clone(),
-        );
+        let cmd = MarkJobTimedOutCommand::new(job_id.clone(), "execution_timeout", saga_id.clone());
 
         let key = cmd.idempotency_key();
         assert!(key.contains(&saga_id));

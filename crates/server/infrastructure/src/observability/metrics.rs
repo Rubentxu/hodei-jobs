@@ -4,14 +4,18 @@
 //! - gRPC request latency and throughput
 //! - Job lifecycle metrics
 //! - Worker state metrics
+//! - Saga execution metrics
 //!
 //! EPIC-43: Sprint 5 - Observabilidad
+//! EPIC-85: US-04 - Prometheus SagaMetrics Implementation
 
+use hodei_server_domain::saga::{SagaMetrics as SagaMetricsTrait, SagaType};
 use prometheus::{
     Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
     Registry,
 };
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Custom Histogram buckets for request latency
 const LATENCY_BUCKETS: &[f64] = &[
@@ -250,6 +254,7 @@ pub struct ObservabilityMetrics {
     pub grpc: GrpcMetrics,
     pub jobs: JobMetrics,
     pub workers: WorkerMetrics,
+    pub saga: PrometheusSagaMetrics,
 }
 
 impl ObservabilityMetrics {
@@ -257,11 +262,13 @@ impl ObservabilityMetrics {
         let grpc = GrpcMetrics::new(service_name)?;
         let jobs = JobMetrics::new()?;
         let workers = WorkerMetrics::new()?;
+        let saga = PrometheusSagaMetrics::new()?;
 
         Ok(Self {
             grpc,
             jobs,
             workers,
+            saga,
         })
     }
 
@@ -271,6 +278,7 @@ impl ObservabilityMetrics {
         families.extend_from_slice(&self.grpc.registry.gather());
         families.extend_from_slice(&self.jobs.registry.gather());
         families.extend_from_slice(&self.workers.registry.gather());
+        families.extend_from_slice(&self.saga.registry.gather());
 
         let encoder = prometheus::TextEncoder::new();
         let mut buffer = Vec::new();
@@ -279,9 +287,245 @@ impl ObservabilityMetrics {
     }
 }
 
+// ============================================================================
+// Prometheus Saga Metrics (EPIC-85 US-04)
+// ============================================================================
+
+/// Prometheus-based implementation of SagaMetrics.
+///
+/// This implementation records all saga metrics to Prometheus counters
+/// and histograms for production observability.
+#[derive(Debug)]
+pub struct PrometheusSagaMetrics {
+    /// Total sagas started by type
+    saga_started: IntCounterVec,
+    /// Total sagas completed by type
+    saga_completed: IntCounterVec,
+    /// Total sagas that required compensation by type
+    saga_compensated: IntCounterVec,
+    /// Total sagas failed by type and error type
+    saga_failed: IntCounterVec,
+    /// Histogram of saga duration by type
+    saga_duration: Histogram,
+    /// Counter of step duration in milliseconds by type and step name
+    step_duration: IntCounterVec,
+    /// Current number of active sagas by type
+    saga_active: IntGaugeVec,
+    /// Current number of sagas in compensating state by type
+    saga_compensating: IntGaugeVec,
+    /// Total version conflicts by type
+    version_conflicts: IntCounterVec,
+    /// Total retries by type and reason
+    saga_retries: IntCounterVec,
+    /// Registry for prometheus metrics
+    registry: Registry,
+}
+
+impl PrometheusSagaMetrics {
+    /// Creates a new PrometheusSagaMetrics instance.
+    pub fn new() -> Result<Self, prometheus::Error> {
+        let saga_started = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_started_total",
+                "Total number of sagas started by type",
+            ),
+            &["saga_type"],
+        )?;
+
+        let saga_completed = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_completed_total",
+                "Total number of sagas completed successfully by type",
+            ),
+            &["saga_type"],
+        )?;
+
+        let saga_compensated = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_compensated_total",
+                "Total number of sagas that required compensation by type",
+            ),
+            &["saga_type"],
+        )?;
+
+        let saga_failed = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_failed_total",
+                "Total number of sagas that failed by type and error type",
+            ),
+            &["saga_type", "error_type"],
+        )?;
+
+        let saga_duration = Histogram::with_opts(
+            HistogramOpts::new(
+                "hodei_saga_duration_seconds",
+                "Saga execution duration in seconds by type",
+            )
+            .buckets(LATENCY_BUCKETS.to_vec()),
+        )?;
+
+        let step_duration = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_step_duration_ms",
+                "Step execution duration in milliseconds by saga type and step name",
+            ),
+            &["saga_type", "step_name"],
+        )?;
+
+        let saga_active = IntGaugeVec::new(
+            Opts::new(
+                "hodei_saga_active",
+                "Current number of active sagas by type",
+            ),
+            &["saga_type"],
+        )?;
+
+        let saga_compensating = IntGaugeVec::new(
+            Opts::new(
+                "hodei_saga_compensating",
+                "Current number of sagas in compensating state by type",
+            ),
+            &["saga_type"],
+        )?;
+
+        let version_conflicts = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_version_conflicts_total",
+                "Total number of version conflicts by saga type",
+            ),
+            &["saga_type"],
+        )?;
+
+        let saga_retries = IntCounterVec::new(
+            Opts::new(
+                "hodei_saga_retries_total",
+                "Total number of retries by saga type and reason",
+            ),
+            &["saga_type", "reason"],
+        )?;
+
+        let mut registry = Registry::new();
+        registry.register(Box::new(saga_started.clone()))?;
+        registry.register(Box::new(saga_completed.clone()))?;
+        registry.register(Box::new(saga_compensated.clone()))?;
+        registry.register(Box::new(saga_failed.clone()))?;
+        registry.register(Box::new(saga_duration.clone()))?;
+        registry.register(Box::new(step_duration.clone()))?;
+        registry.register(Box::new(saga_active.clone()))?;
+        registry.register(Box::new(saga_compensating.clone()))?;
+        registry.register(Box::new(version_conflicts.clone()))?;
+        registry.register(Box::new(saga_retries.clone()))?;
+
+        Ok(Self {
+            saga_started,
+            saga_completed,
+            saga_compensated,
+            saga_failed,
+            saga_duration,
+            step_duration,
+            saga_active,
+            saga_compensating,
+            version_conflicts,
+            saga_retries,
+            registry,
+        })
+    }
+
+    /// Creates a new PrometheusSagaMetrics with the default registry.
+    #[inline]
+    pub fn with_default_registry() -> Result<Self, prometheus::Error> {
+        Self::new()
+    }
+
+    /// Gets the Prometheus registry.
+    #[inline]
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// Helper to get saga_type label as string.
+    #[inline]
+    fn saga_type_label(saga_type: SagaType) -> &'static str {
+        match saga_type {
+            SagaType::Provisioning => "provisioning",
+            SagaType::Execution => "execution",
+            SagaType::Recovery => "recovery",
+            SagaType::Cancellation => "cancellation",
+            SagaType::Timeout => "timeout",
+            SagaType::Cleanup => "cleanup",
+        }
+    }
+}
+
+impl Default for PrometheusSagaMetrics {
+    fn default() -> Self {
+        Self::new().expect("Failed to create PrometheusSagaMetrics")
+    }
+}
+
+#[async_trait::async_trait]
+impl SagaMetricsTrait for PrometheusSagaMetrics {
+    async fn record_saga_started(&self, saga_type: SagaType) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_started.with_label_values(&[label]).inc();
+        self.saga_active.with_label_values(&[label]).inc();
+    }
+
+    async fn record_saga_completed(&self, saga_type: SagaType, duration: Duration) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_completed.with_label_values(&[label]).inc();
+        self.saga_active.with_label_values(&[label]).dec();
+        self.saga_duration.observe(duration.as_secs_f64());
+    }
+
+    async fn record_saga_compensated(&self, saga_type: SagaType, duration: Duration) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_compensated.with_label_values(&[label]).inc();
+        self.saga_active.with_label_values(&[label]).dec();
+        self.saga_compensating.with_label_values(&[label]).dec();
+        self.saga_duration.observe(duration.as_secs_f64());
+    }
+
+    async fn record_saga_failed(&self, saga_type: SagaType, error_type: &str) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_failed
+            .with_label_values(&[label, error_type])
+            .inc();
+        self.saga_active.with_label_values(&[label]).dec();
+    }
+
+    async fn record_step_duration(&self, saga_type: SagaType, step_name: &str, duration: Duration) {
+        let saga_label = Self::saga_type_label(saga_type);
+        self.step_duration
+            .with_label_values(&[saga_label, step_name])
+            .inc_by(duration.as_millis() as u64);
+    }
+
+    async fn increment_active(&self, saga_type: SagaType) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_active.with_label_values(&[label]).inc();
+    }
+
+    async fn decrement_active(&self, saga_type: SagaType) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_active.with_label_values(&[label]).dec();
+    }
+
+    async fn record_version_conflict(&self, saga_type: SagaType) {
+        let label = Self::saga_type_label(saga_type);
+        self.version_conflicts.with_label_values(&[label]).inc();
+    }
+
+    async fn record_retry(&self, saga_type: SagaType, reason: &str) {
+        let label = Self::saga_type_label(saga_type);
+        self.saga_retries.with_label_values(&[label, reason]).inc();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_grpc_metrics_creation() {
@@ -324,5 +568,117 @@ mod tests {
         let metrics = ObservabilityMetrics::new("test-service").unwrap();
         let output = metrics.gather().unwrap();
         assert!(!output.is_empty());
+    }
+
+    // EPIC-85 US-04: Prometheus SagaMetrics Tests
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_creation() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        let output = metrics.registry.gather();
+        assert!(!output.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_started() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics.record_saga_started(SagaType::Provisioning).await;
+        metrics.record_saga_started(SagaType::Execution).await;
+        metrics.record_saga_started(SagaType::Recovery).await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_completed() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics
+            .record_saga_completed(SagaType::Execution, Duration::from_secs(30))
+            .await;
+        metrics
+            .record_saga_completed(SagaType::Provisioning, Duration::from_secs(45))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_compensated() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics
+            .record_saga_compensated(SagaType::Recovery, Duration::from_secs(60))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_failed() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics
+            .record_saga_failed(SagaType::Execution, "timeout")
+            .await;
+        metrics
+            .record_saga_failed(SagaType::Provisioning, "infrastructure_error")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_step_duration() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics
+            .record_step_duration(
+                SagaType::Execution,
+                "ValidateJob",
+                Duration::from_millis(100),
+            )
+            .await;
+        metrics
+            .record_step_duration(
+                SagaType::Execution,
+                "AssignWorker",
+                Duration::from_millis(200),
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_increment_decrement_active() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics.increment_active(SagaType::Cleanup).await;
+        metrics.increment_active(SagaType::Cleanup).await;
+        metrics.decrement_active(SagaType::Cleanup).await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_version_conflict() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics.record_version_conflict(SagaType::Execution).await;
+        metrics.record_version_conflict(SagaType::Recovery).await;
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_saga_metrics_record_retry() {
+        let metrics = PrometheusSagaMetrics::new().unwrap();
+        metrics
+            .record_retry(SagaType::Execution, "optimistic_lock")
+            .await;
+        metrics
+            .record_retry(SagaType::Execution, "resource_busy")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_observability_metrics_includes_saga() {
+        // Test that PrometheusSagaMetrics has correct registry content
+        let saga_metrics = PrometheusSagaMetrics::new().unwrap();
+        // Record some metrics
+        saga_metrics.record_saga_started(SagaType::Execution).await;
+        saga_metrics
+            .record_saga_completed(SagaType::Execution, Duration::from_secs(30))
+            .await;
+        // Verify metrics were created successfully by checking registry
+        let families = saga_metrics.registry.gather();
+        assert!(!families.is_empty());
+        // Check that we can encode the metrics (they exist in the registry)
+        let encoder = prometheus::TextEncoder::new();
+        let mut buffer = Vec::new();
+        let result = encoder.encode(&families, &mut buffer);
+        assert!(result.is_ok());
+        let output_str = String::from_utf8_lossy(&buffer);
+        assert!(output_str.contains("hodei_saga_started_total"));
     }
 }

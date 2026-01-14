@@ -14,6 +14,7 @@
 //! - **CleanupSaga**: Orphaned resource cleanup
 
 pub mod cancellation;
+pub mod circuit_breaker;
 pub mod cleanup;
 pub mod commands; // Commands for Command Bus pattern
 pub mod engine_config;
@@ -28,7 +29,8 @@ pub mod repository;
 pub mod retry_policy; // EPIC-46 GAP-25: RetryPolicy with exponential backoff
 pub mod stuck_detector;
 pub mod timeout;
-pub mod types;
+pub mod timeout_config; // EPIC-85: Configurable saga timeouts
+pub mod types; // EPIC-85 US-05: Circuit Breaker for Saga Consumers
 
 // Re-exports from types module
 pub use types::{
@@ -114,4 +116,13 @@ pub use types::{saga_id_for_job, saga_id_for_provisioning, saga_id_for_recovery}
 pub use commands::{
     CreateWorkerCommand, CreateWorkerError, CreateWorkerHandler, DestroyWorkerCommand,
     DestroyWorkerError, DestroyWorkerHandler,
+};
+
+// Re-exports from timeout_config module (EPIC-85)
+pub use timeout_config::{SagaTimeoutConfig, TimeoutAware};
+
+// Re-exports from circuit_breaker module (EPIC-85 US-05)
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitBreakerSagaConsumer,
+    CircuitBreakerStats, CircuitState,
 };

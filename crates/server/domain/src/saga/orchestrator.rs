@@ -7,7 +7,7 @@ use super::{
     SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository,
     SagaState, SagaType, TimeoutSaga,
 };
-use crate::shared_kernel::{JobId, ProviderId, WorkerId};
+use crate::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use crate::workers::WorkerSpec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -119,7 +119,7 @@ impl<R: SagaRepository + Clone + Send + Sync + 'static> SagaOrchestrator
 where
     <R as SagaRepository>::Error: std::fmt::Display + Send + Sync,
 {
-    type Error = OrchestratorError;
+    type Error = DomainError;
 
     async fn execute_saga(
         &self,
@@ -132,9 +132,11 @@ where
         // Check concurrency limit using atomic load
         let current = self.active_sagas.load(Ordering::SeqCst);
         if current >= self.config.max_concurrent_sagas {
-            return Err(OrchestratorError::ConcurrencyLimitExceeded {
-                current,
-                max: self.config.max_concurrent_sagas,
+            return Err(DomainError::SagaError {
+                message: format!(
+                    "Concurrency limit exceeded: {} active sagas, max {}",
+                    current, self.config.max_concurrent_sagas
+                ),
             });
         }
 
@@ -149,7 +151,7 @@ where
         self.repository
             .save(&context)
             .await
-            .map_err(|e| OrchestratorError::PersistenceError {
+            .map_err(|e| DomainError::InfrastructureError {
                 message: e.to_string(),
             })?;
 
@@ -188,7 +190,7 @@ where
                     .await
                     .ok();
 
-                return Err(OrchestratorError::Timeout {
+                return Err(DomainError::SagaTimeout {
                     duration: start_time.elapsed(),
                 });
             }
@@ -306,7 +308,7 @@ where
                         .await
                         .ok();
 
-                    return Err(OrchestratorError::Timeout {
+                    return Err(DomainError::SagaTimeout {
                         duration: self.config.step_timeout,
                     });
                 }
@@ -389,7 +391,7 @@ where
                         uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                     )
                 } else {
-                    return Err(OrchestratorError::PersistenceError {
+                    return Err(DomainError::InfrastructureError {
                         message: "job_id required for CancellationSaga".to_string(),
                     });
                 };
@@ -416,7 +418,7 @@ where
                         uuid::Uuid::parse_str(&job_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                     )
                 } else {
-                    return Err(OrchestratorError::PersistenceError {
+                    return Err(DomainError::InfrastructureError {
                         message: "job_id required for TimeoutSaga".to_string(),
                     });
                 };
@@ -477,7 +479,7 @@ where
         self.repository
             .find_by_id(saga_id)
             .await
-            .map_err(|e| OrchestratorError::PersistenceError {
+            .map_err(|e| DomainError::InfrastructureError {
                 message: e.to_string(),
             })
     }
@@ -486,7 +488,7 @@ where
         self.repository
             .mark_compensating(saga_id)
             .await
-            .map_err(|e| OrchestratorError::PersistenceError {
+            .map_err(|e| DomainError::InfrastructureError {
                 message: e.to_string(),
             })?;
 
@@ -497,7 +499,7 @@ where
                 Some("Cancelled by user".to_string()),
             )
             .await
-            .map_err(|e| OrchestratorError::PersistenceError {
+            .map_err(|e| DomainError::InfrastructureError {
                 message: e.to_string(),
             })?;
 

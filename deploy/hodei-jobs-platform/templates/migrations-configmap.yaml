@@ -7,7 +7,7 @@
 
 {{- $files := $.Files }}
 
-{{- if $files.Get "migrations/core/20241221000000_create_domain_events.sql" }}
+{{- if $files.Get "deploy/hodei-jobs-platform/migrations/core/20241221000000_create_domain_events.sql" }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -19,20 +19,24 @@ metadata:
     app.kubernetes.io/part-of: hodei-jobs-platform
 data:
   00000000000000_create_migrations_table.sql: |
-    {{- $files.Get "migrations/core/00000000000000_create_migrations_table.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/00000000000000_create_migrations_table.sql" | nindent 4 }}
   20241221000000_create_domain_events.sql: |
-    {{- $files.Get "migrations/core/20241221000000_create_domain_events.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20241221000000_create_domain_events.sql" | nindent 4 }}
   20251230_add_saga_tables.sql: |
-    {{- $files.Get "migrations/core/20251230_add_saga_tables.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20251230_add_saga_tables.sql" | nindent 4 }}
   20260101_add_reactive_system_tables.sql: |
-    {{- $files.Get "migrations/core/20260101_add_reactive_system_tables.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20260101_add_reactive_system_tables.sql" | nindent 4 }}
   20260106_add_worker_bootstrap_tokens.sql: |
-    {{- $files.Get "migrations/core/20260106_add_worker_bootstrap_tokens.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20260106_add_worker_bootstrap_tokens.sql" | nindent 4 }}
   20260201_add_job_templates_tables.sql: |
-    {{- $files.Get "migrations/core/20260201_add_job_templates_tables.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20260201_add_job_templates_tables.sql" | nindent 4 }}
+  20260201120000_add_job_spec_column.sql: |
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20260201120000_add_job_spec_column.sql" | nindent 4 }}
+  20260201130000_add_provider_configs.sql: |
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/core/20260201130000_add_provider_configs.sql" | nindent 4 }}
 {{- end }}
 
-{{- if $files.Get "migrations/infra/20241223_add_outbox_events.sql" }}
+{{- if $files.Get "deploy/hodei-jobs-platform/migrations/infra/20241223_add_outbox_events.sql" }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -44,9 +48,9 @@ metadata:
     app.kubernetes.io/part-of: hodei-jobs-platform
 data:
   20241223_add_outbox_events.sql: |
-    {{- $files.Get "migrations/infra/20241223_add_outbox_events.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/infra/20241223_add_outbox_events.sql" | nindent 4 }}
   20251223_add_reconciliation_indexes.sql: |
-    {{- $files.Get "migrations/infra/20251223_add_reconciliation_indexes.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/infra/20251223_add_reconciliation_indexes.sql" | nindent 4 }}
   20260106_add_outbox_notify_trigger.sql: |
-    {{- $files.Get "migrations/infra/20260106_add_outbox_notify_trigger.sql" | nindent 4 }}
+    {{- $files.Get "deploy/hodei-jobs-platform/migrations/infra/20260106_add_outbox_notify_trigger.sql" | nindent 4 }}
 {{- end }}

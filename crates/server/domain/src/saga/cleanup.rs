@@ -35,40 +35,44 @@ const DEFAULT_ORPHANED_JOB_THRESHOLD: Duration = Duration::from_secs(600);
 // CleanupSaga
 // ============================================================================
 
-/// Saga para limpieza de recursos huérfanos y mantenimiento.
+/// Saga for cleaning up orphaned resources and maintenance.
 ///
-/// # Uso:
+/// # Usage:
 ///
-/// Esta saga se ejecuta periódicamente (cron job) para:
+/// This saga runs periodically (cron job) to:
 ///
-/// - Limpiar workers sin heartbeat
-/// - Resetear jobs huérfanos
-/// - Liberar recursos no utilizados
-/// - Publicar métricas de cleanup
+/// - Clean up workers without heartbeat
+/// - Reset orphaned jobs
+/// - Release unused resources
+/// - Publish cleanup metrics
 ///
-/// # Pasos:
+/// # Steps:
 ///
-/// 1. **IdentifyUnhealthyWorkersStep**: Encuentra workers sin heartbeat
-/// 2. **IdentifyOrphanedJobsStep**: Encuentra jobs en estado Running sin actualización
-/// 3. **CleanupUnhealthyWorkersStep**: Limpia workers identificados
-/// 4. **ResetOrphanedJobsStep**: Resetea jobs huérfanos a estado failed
-/// 5. **PublishCleanupMetricsStep**: Publica métricas de cleanup
+/// 1. **IdentifyUnhealthyWorkersStep**: Finds workers without heartbeat
+/// 2. **IdentifyOrphanedJobsStep**: Finds jobs in Running state without update
+/// 3. **CleanupUnhealthyWorkersStep**: Cleans up identified workers
+/// 4. **ResetOrphanedJobsStep**: Resets orphaned jobs to failed state
+/// 5. **PublishCleanupMetricsStep**: Publishes cleanup metrics
 #[derive(Debug, Clone)]
 pub struct CleanupSaga {
-    /// Threshold para considerar un worker como unhealthy
+    /// Threshold for considering a worker as unhealthy
     pub unhealthy_threshold: Duration,
-    /// Threshold para considerar un job como orphaned
+    /// Threshold for considering a job as orphaned
     pub orphaned_job_threshold: Duration,
     /// Whether to actually perform cleanup or just report
     pub dry_run: bool,
+    /// Idempotency key (generated on each cleanup run)
+    pub idempotency_key: String,
 }
 
 impl Default for CleanupSaga {
     fn default() -> Self {
+        let now = chrono::Utc::now();
         Self {
             unhealthy_threshold: DEFAULT_UNHEALTHY_THRESHOLD,
             orphaned_job_threshold: DEFAULT_ORPHANED_JOB_THRESHOLD,
             dry_run: false,
+            idempotency_key: format!("cleanup:{}", now.timestamp()),
         }
     }
 }
@@ -84,10 +88,12 @@ impl CleanupSaga {
         unhealthy_threshold: Duration,
         orphaned_job_threshold: Duration,
     ) -> Self {
+        let now = chrono::Utc::now();
         Self {
             unhealthy_threshold,
             orphaned_job_threshold,
             dry_run: false,
+            idempotency_key: format!("cleanup:{}", now.timestamp()),
         }
     }
 
@@ -121,6 +127,10 @@ impl Saga for CleanupSaga {
 
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(60))
+    }
+
+    fn idempotency_key(&self) -> Option<&str> {
+        Some(&self.idempotency_key)
     }
 }
 
@@ -182,12 +192,12 @@ impl SagaStep for IdentifyUnhealthyWorkersStep {
                 // Check if heartbeat is stale (exceeds threshold)
                 let last_hb = w.last_heartbeat();
                 let elapsed = now.signed_duration_since(last_hb);
-                let is_stale_heartbeat = elapsed.to_std()
-                    .map(|d| d > self.threshold)
-                    .unwrap_or(true); // If conversion fails, consider stale
+                let is_stale_heartbeat =
+                    elapsed.to_std().map(|d| d > self.threshold).unwrap_or(true); // If conversion fails, consider stale
 
                 // Worker is unhealthy if stuck OR has stale heartbeat (and not already terminated)
-                is_stuck_state || (is_stale_heartbeat && !matches!(w.state(), WorkerState::Terminated))
+                is_stuck_state
+                    || (is_stale_heartbeat && !matches!(w.state(), WorkerState::Terminated))
             })
             .map(|w| w.id().clone())
             .collect();
@@ -380,13 +390,16 @@ impl SagaStep for CleanupUnhealthyWorkersStep {
         })?;
 
         // Clone command_bus Arc to avoid borrowing context immutably while mutating it later
-        let command_bus = services.command_bus.as_ref().cloned().ok_or_else(|| {
-            SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available".to_string(),
-                will_compensate: false,
-            }
-        })?;
+        let command_bus =
+            services
+                .command_bus
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available".to_string(),
+                    will_compensate: false,
+                })?;
 
         // Get list of unhealthy workers
         let worker_ids: Vec<String> = context
@@ -503,13 +516,16 @@ impl SagaStep for ResetOrphanedJobsStep {
         })?;
 
         // Clone command_bus Arc
-        let command_bus = services.command_bus.as_ref().cloned().ok_or_else(|| {
-            SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available".to_string(),
-                will_compensate: false,
-            }
-        })?;
+        let command_bus =
+            services
+                .command_bus
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available".to_string(),
+                    will_compensate: false,
+                })?;
 
         let event_bus = &services.event_bus;
 
@@ -552,10 +568,7 @@ impl SagaStep for ResetOrphanedJobsStep {
                 );
 
             // Reset job to failed state via CommandBus
-            let command = MarkJobFailedCommand::new(
-                job_id.clone(),
-                "Orphaned job cleanup",
-            );
+            let command = MarkJobFailedCommand::new(job_id.clone(), "Orphaned job cleanup");
 
             match dispatch_erased(&command_bus, command).await {
                 Ok(_) => {

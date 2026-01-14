@@ -16,20 +16,13 @@ use tracing::{debug, info, instrument, warn};
 // ProvisioningSaga
 // ============================================================================
 
-/// Saga para aprovisionar un nuevo worker on-demand.
+/// Saga para aprovisionar un worker.
 ///
-/// # Pasos:
+/// # Metadata Utilizado:
 ///
-/// 1. **ValidateProviderCapacityStep**: Valida que el provider tenga capacidad
-/// 2. **CreateInfrastructureStep**: Almacena metadata para creación de infraestructura
-/// 3. **RegisterWorkerStep**: Almacena metadata para registro del worker
-/// 4. **PublishProvisionedEventStep**: Almacena metadata para publicación de evento
-///
-/// # Nota:
-///
-/// Esta saga almacena metadatos en el contexto que son utilizados por los
-/// coordinadores en la capa de aplicación para realizar las operaciones reales.
-/// Los pasos saga themselves no realizan operaciones de infraestructura directamente.
+/// - `saga_provider_id`: Provider ID para crear infraestructura
+/// - `worker_id`: ID del worker creado (para compensación)
+/// - `worker_job_id`: Job ID asociado
 #[derive(Debug, Clone)]
 pub struct ProvisioningSaga {
     /// Spec del worker a aprovisionar
@@ -38,38 +31,43 @@ pub struct ProvisioningSaga {
     provider_id: ProviderId,
     /// Job ID asociado (opcional)
     job_id: Option<JobId>,
+    /// Idempotency key generado
+    idempotency_key: String,
 }
 
 impl ProvisioningSaga {
-    /// Crea una nueva ProvisioningSaga
+    /// Creates a new ProvisioningSaga with auto-generated idempotency key
     pub fn new(spec: WorkerSpec, provider_id: ProviderId) -> Self {
+        let job_id = JobId::new();
         Self {
             spec,
-            provider_id,
-            job_id: None,
+            provider_id: provider_id.clone(),
+            job_id: Some(job_id.clone()),
+            idempotency_key: format!("provisioning:{}:{}", provider_id, job_id),
         }
     }
 
-    /// Crea una ProvisioningSaga con job asociado
+    /// Creates a ProvisioningSaga with job associated
     pub fn with_job(spec: WorkerSpec, provider_id: ProviderId, job_id: JobId) -> Self {
         Self {
             spec,
-            provider_id,
-            job_id: Some(job_id),
+            provider_id: provider_id.clone(),
+            job_id: Some(job_id.clone()),
+            idempotency_key: format!("provisioning:{}:{}", provider_id, job_id),
         }
     }
 
-    /// Obtiene el spec del worker
+    /// Gets the worker spec
     pub fn spec(&self) -> &WorkerSpec {
         &self.spec
     }
 
-    /// Obtiene el provider ID
+    /// Gets the provider ID
     pub fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
 
-    /// Obtiene el job ID
+    /// Gets the job ID
     pub fn job_id(&self) -> Option<&JobId> {
         self.job_id.as_ref()
     }
@@ -85,10 +83,10 @@ impl Saga for ProvisioningSaga {
             Box::new(ValidateProviderCapacityStep::new(self.provider_id.clone())),
             // CreateInfrastructureStep creates the Docker container with OTP token
             // The ephemeral worker will self-register when it starts up
-            Box::new(CreateInfrastructureStep::new(
-                self.provider_id.clone(),
-                self.spec.clone(),
-            ).with_job(self.job_id.clone().unwrap_or_else(JobId::new))),
+            Box::new(
+                CreateInfrastructureStep::new(self.provider_id.clone(), self.spec.clone())
+                    .with_job(self.job_id.clone().unwrap_or_else(JobId::new)),
+            ),
             // RegisterWorkerStep is NOT needed - workers self-register via OTP on startup
             Box::new(PublishProvisionedEventStep::new()),
         ]
@@ -96,6 +94,10 @@ impl Saga for ProvisioningSaga {
 
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(300))
+    }
+
+    fn idempotency_key(&self) -> Option<&str> {
+        Some(&self.idempotency_key)
     }
 }
 
@@ -259,13 +261,14 @@ impl SagaStep for CreateInfrastructureStep {
         );
 
         // Dispatch command via CommandBus
-        let provisioning_result = dispatch_erased(&command_bus, command)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to dispatch CreateWorkerCommand: {}", e),
-                will_compensate: true,
-            })?;
+        let provisioning_result =
+            dispatch_erased(&command_bus, command)
+                .await
+                .map_err(|e| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: format!("Failed to dispatch CreateWorkerCommand: {}", e),
+                    will_compensate: true,
+                })?;
 
         // Store worker_id for compensation
         context
@@ -324,12 +327,14 @@ impl SagaStep for CreateInfrastructureStep {
                 message: "SagaServices not available".to_string(),
             })?;
 
-        let command_bus = services.command_bus.as_ref().ok_or_else(|| {
-            SagaError::CompensationFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-            }
-        })?;
+        let command_bus =
+            services
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::CompensationFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                })?;
 
         // Parse worker_id
         let worker_id =
@@ -352,12 +357,12 @@ impl SagaStep for CreateInfrastructureStep {
         );
 
         // Dispatch command
-        dispatch_erased(&command_bus, command)
-            .await
-            .map_err(|e| SagaError::CompensationFailed {
+        dispatch_erased(&command_bus, command).await.map_err(|e| {
+            SagaError::CompensationFailed {
                 step: self.name().to_string(),
                 message: format!("Failed to dispatch DestroyWorkerCommand: {}", e),
-            })?;
+            }
+        })?;
 
         info!(
             worker_id = %worker_id_str,
