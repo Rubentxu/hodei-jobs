@@ -17,8 +17,7 @@ pub use services_init::{
 };
 pub use shutdown::{
     GracefulShutdown, ShutdownConfig, ShutdownHandle, ShutdownReason, ShutdownSignal,
-    ShutdownState, Shutdownable, WithGracefulShutdown, execute_shutdown_sequence,
-    start_signal_handler,
+    ShutdownState, Shutdownable, execute_shutdown_sequence, start_signal_handler,
 };
 
 use backoff::{ExponentialBackoff, future::retry};

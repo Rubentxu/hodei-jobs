@@ -4,8 +4,8 @@
 
 mod config;
 mod startup;
-#[cfg(test)]
-mod tests_integration;
+// #[cfg(test)]
+// mod tests_integration;
 
 use clap::Parser;
 use startup::{

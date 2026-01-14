@@ -3,11 +3,14 @@
 //! Read models are optimized views for querying template data.
 //! They are updated asynchronously by subscribing to domain events.
 
-use crate::jobs::template::queries::{ExecutionSummary, TemplateSummary};
-use hodei_server_domain::jobs::templates::{JobExecution, JobTemplate, JobTemplateId};
+use crate::jobs::template::queries::{ExecutionSummary, ScheduledJobSummary, TemplateSummary};
+use hodei_server_domain::jobs::templates::{
+    JobExecution, JobTemplate, JobTemplateId, ScheduledJob,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Read Model for Templates - in-memory optimized view
 ///
@@ -279,6 +282,190 @@ impl ExecutionReadModelPort for ExecutionReadModel {
         offset: usize,
     ) -> Vec<ExecutionSummary> {
         self.list_by_template(template_id, state, limit, offset)
+            .await
+    }
+}
+
+/// Read Model for Scheduled Jobs - in-memory optimized view for scheduled job queries
+#[derive(Clone, Default)]
+pub struct ScheduledJobReadModel {
+    /// In-memory storage (would be replaced by DB in production)
+    scheduled_jobs: Arc<RwLock<HashMap<Uuid, ScheduledJobSummary>>>,
+}
+
+impl ScheduledJobReadModel {
+    /// Create a new ScheduledJobReadModel
+    pub fn new() -> Self {
+        Self {
+            scheduled_jobs: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Create a scheduled job in the read model
+    pub async fn create(&self, scheduled_job: &ScheduledJob) {
+        let summary = ScheduledJobSummary::from(scheduled_job.clone());
+        let mut jobs = self.scheduled_jobs.write().await;
+        jobs.insert(scheduled_job.id, summary);
+    }
+
+    /// Update a scheduled job in the read model
+    pub async fn update(&self, scheduled_job: &ScheduledJob) {
+        let summary = ScheduledJobSummary::from(scheduled_job.clone());
+        let mut jobs = self.scheduled_jobs.write().await;
+        if let Some(existing) = jobs.get_mut(&scheduled_job.id) {
+            *existing = summary;
+        }
+    }
+
+    /// Delete a scheduled job from the read model
+    pub async fn delete(&self, scheduled_job_id: &Uuid) {
+        let mut jobs = self.scheduled_jobs.write().await;
+        jobs.remove(scheduled_job_id);
+    }
+
+    /// Get a scheduled job by ID
+    pub async fn get_by_id(&self, scheduled_job_id: &Uuid) -> Option<ScheduledJobSummary> {
+        let jobs = self.scheduled_jobs.read().await;
+        jobs.get(scheduled_job_id).cloned()
+    }
+
+    /// List scheduled jobs with optional filters
+    pub async fn list(
+        &self,
+        template_id: Option<&JobTemplateId>,
+        enabled: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<ScheduledJobSummary> {
+        let jobs = self.scheduled_jobs.read().await;
+        let mut results: Vec<ScheduledJobSummary> = jobs
+            .values()
+            .filter(|j| {
+                if let Some(template_filter) = template_id {
+                    &j.template_id == template_filter
+                } else {
+                    true
+                }
+            })
+            .filter(|j| {
+                if let Some(enabled_filter) = enabled {
+                    j.enabled == enabled_filter
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
+        results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        results.into_iter().skip(offset).take(limit).collect()
+    }
+
+    /// Get scheduled jobs that are due for execution
+    pub async fn get_due_jobs(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<ScheduledJobSummary> {
+        let jobs = self.scheduled_jobs.read().await;
+        jobs.values()
+            .filter(|j| j.enabled && j.next_execution_at <= now)
+            .cloned()
+            .collect()
+    }
+
+    /// Get upcoming scheduled executions within a time range
+    pub async fn get_upcoming_executions(
+        &self,
+        from_time: chrono::DateTime<chrono::Utc>,
+        to_time: chrono::DateTime<chrono::Utc>,
+        template_id: Option<&JobTemplateId>,
+        limit: usize,
+    ) -> Vec<(ScheduledJobSummary, chrono::DateTime<chrono::Utc>)> {
+        let jobs = self.scheduled_jobs.read().await;
+        let mut results: Vec<(ScheduledJobSummary, chrono::DateTime<chrono::Utc>)> = jobs
+            .values()
+            .filter(|j| {
+                if let Some(template_filter) = template_id {
+                    &j.template_id == template_filter
+                } else {
+                    true
+                }
+            })
+            .filter(|j| j.next_execution_at >= from_time && j.next_execution_at <= to_time)
+            .filter(|j| j.enabled)
+            .map(|j| (j.clone(), j.next_execution_at))
+            .collect();
+
+        results.sort_by(|a, b| a.1.cmp(&b.1));
+        results.into_iter().take(limit).collect()
+    }
+
+    /// Clear all data (for testing)
+    pub async fn clear(&self) {
+        let mut jobs = self.scheduled_jobs.write().await;
+        jobs.clear();
+    }
+}
+
+/// Port for scheduled job read model persistence
+#[async_trait::async_trait]
+pub trait ScheduledJobReadModelPort: Send + Sync {
+    async fn create(&self, scheduled_job: &ScheduledJob);
+    async fn update(&self, scheduled_job: &ScheduledJob);
+    async fn delete(&self, scheduled_job_id: &Uuid);
+    async fn get_by_id(&self, scheduled_job_id: &Uuid) -> Option<ScheduledJobSummary>;
+    async fn list(
+        &self,
+        template_id: Option<&JobTemplateId>,
+        enabled: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<ScheduledJobSummary>;
+    async fn get_upcoming_executions(
+        &self,
+        from_time: chrono::DateTime<chrono::Utc>,
+        to_time: chrono::DateTime<chrono::Utc>,
+        template_id: Option<&JobTemplateId>,
+        limit: usize,
+    ) -> Vec<(ScheduledJobSummary, chrono::DateTime<chrono::Utc>)>;
+}
+
+#[async_trait::async_trait]
+impl ScheduledJobReadModelPort for ScheduledJobReadModel {
+    async fn create(&self, scheduled_job: &ScheduledJob) {
+        self.create(scheduled_job).await;
+    }
+
+    async fn update(&self, scheduled_job: &ScheduledJob) {
+        self.update(scheduled_job).await;
+    }
+
+    async fn delete(&self, scheduled_job_id: &Uuid) {
+        self.delete(scheduled_job_id).await;
+    }
+
+    async fn get_by_id(&self, scheduled_job_id: &Uuid) -> Option<ScheduledJobSummary> {
+        self.get_by_id(scheduled_job_id).await
+    }
+
+    async fn list(
+        &self,
+        template_id: Option<&JobTemplateId>,
+        enabled: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<ScheduledJobSummary> {
+        self.list(template_id, enabled, limit, offset).await
+    }
+
+    async fn get_upcoming_executions(
+        &self,
+        from_time: chrono::DateTime<chrono::Utc>,
+        to_time: chrono::DateTime<chrono::Utc>,
+        template_id: Option<&JobTemplateId>,
+        limit: usize,
+    ) -> Vec<(ScheduledJobSummary, chrono::DateTime<chrono::Utc>)> {
+        self.get_upcoming_executions(from_time, to_time, template_id, limit)
             .await
     }
 }

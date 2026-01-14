@@ -60,8 +60,10 @@ impl ShutdownConfig {
 pub struct GracefulShutdown {
     /// Broadcast channel for shutdown signal
     shutdown_tx: Arc<broadcast::Sender<ShutdownSignal>>,
-    /// Watch channel for shutdown state
+    /// Watch channel for shutdown state (sender and receiver for consistent state access)
     state_tx: Arc<watch::Sender<ShutdownState>>,
+    /// Receiver for shutdown state (stored for consistent state access)
+    state_rx: Arc<watch::Receiver<ShutdownState>>,
     /// Shutdown config
     config: Arc<ShutdownConfig>,
 }
@@ -70,11 +72,12 @@ impl GracefulShutdown {
     /// Create a new GracefulShutdown coordinator
     pub fn new(config: ShutdownConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(16);
-        let (state_tx, _) = watch::channel(ShutdownState::Running);
+        let (state_tx, state_rx) = watch::channel(ShutdownState::Running);
 
         Self {
             shutdown_tx: Arc::new(shutdown_tx),
             state_tx: Arc::new(state_tx),
+            state_rx: Arc::new(state_rx),
             config: Arc::new(config),
         }
     }
@@ -82,7 +85,7 @@ impl GracefulShutdown {
     /// Get a handle for subscribing to shutdown signals
     pub fn subscribe(&self) -> ShutdownReceiver {
         ShutdownReceiver {
-            rx: self.shutdown_tx.subscribe(),
+            rx: Arc::new(tokio::sync::Mutex::new(self.shutdown_tx.subscribe())),
             state_rx: self.state_tx.subscribe(),
         }
     }
@@ -108,8 +111,9 @@ impl GracefulShutdown {
     /// Run with graceful shutdown support
     pub async fn run_with_shutdown<F, R, E>(&self, task: F, task_name: &str) -> Result<R, E>
     where
-        F: Future<Output = Result<R, E>>,
-        E: std::fmt::Display,
+        F: Future<Output = Result<R, E>> + Send + 'static,
+        R: Send + 'static,
+        E: std::fmt::Display + From<String> + Send + 'static,
     {
         // Spawn the main task
         let task_handle = tokio::spawn(task);
@@ -132,26 +136,27 @@ impl GracefulShutdown {
 
     /// Get current state
     pub fn state(&self) -> ShutdownState {
-        self.state_tx.borrow().clone()
+        (*self.state_rx.borrow()).clone()
     }
 
     /// Check if shutdown has been initiated
     pub fn is_shutting_down(&self) -> bool {
-        matches!(*self.state_tx.borrow(), ShutdownState::ShuttingDown(_))
+        matches!(*self.state_rx.borrow(), ShutdownState::ShuttingDown(_))
     }
 }
 
 /// Receiver for shutdown signals
 #[derive(Clone)]
 pub struct ShutdownReceiver {
-    rx: broadcast::Receiver<ShutdownSignal>,
+    rx: Arc<tokio::sync::Mutex<broadcast::Receiver<ShutdownSignal>>>,
     state_rx: watch::Receiver<ShutdownState>,
 }
 
 impl ShutdownReceiver {
     /// Receive the next shutdown signal
     pub async fn recv(&mut self) -> ShutdownSignal {
-        self.rx.recv().await.unwrap_or_else(|e| {
+        let mut rx = self.rx.lock().await;
+        rx.recv().await.unwrap_or_else(|e| {
             // If sender dropped, use the latest state
             match &*self.state_rx.borrow() {
                 ShutdownState::Running => ShutdownSignal {
@@ -178,33 +183,6 @@ impl ShutdownReceiver {
     /// Check if shutdown has been initiated
     pub fn is_shutting_down(&self) -> bool {
         matches!(&*self.state_rx.borrow(), ShutdownState::ShuttingDown(_))
-    }
-
-    /// As an awaitable future that resolves when shutdown is triggered
-    pub fn on_shutdown(&self) -> ShutdownFuture {
-        ShutdownFuture {
-            rx: self.rx.clone(),
-        }
-    }
-}
-
-/// Future that resolves when shutdown is triggered
-pub struct ShutdownFuture {
-    rx: broadcast::Receiver<ShutdownSignal>,
-}
-
-impl Future for ShutdownFuture {
-    type Output = ShutdownSignal;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match Pin::new(&mut self.rx).poll_recv(cx) {
-            Poll::Ready(Some(signal)) => Poll::Ready(signal),
-            Poll::Ready(None) => Poll::Ready(ShutdownSignal {
-                reason: ShutdownReason::Unknown,
-                timestamp: chrono::Utc::now(),
-            }),
-            Poll::Pending => Poll::Pending,
-        }
     }
 }
 
@@ -263,7 +241,7 @@ pub enum ShutdownState {
 
 /// Component handle for graceful shutdown
 pub struct ShutdownHandle {
-    /// Sender signal component to to stop
+    /// Sender signal component to stop
     stop_tx: Option<oneshot::Sender<()>>,
     /// Join handle for the component task
     _join_handle: tokio::task::JoinHandle<()>,
@@ -271,7 +249,7 @@ pub struct ShutdownHandle {
 
 impl ShutdownHandle {
     /// Create a new shutdown handle
-    pub fn new<F>(mut stop_rx: oneshot::Receiver<()>, f: F) -> Self
+    pub fn new<F>(stop_rx: oneshot::Receiver<()>, f: F) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -302,6 +280,7 @@ impl ShutdownHandle {
 }
 
 /// Trait for components that support graceful shutdown
+#[async_trait::async_trait]
 pub trait Shutdownable: Send {
     /// Signal the component to stop accepting new work
     fn prepare_shutdown(&mut self);
@@ -312,7 +291,7 @@ pub trait Shutdownable: Send {
 /// Execute shutdown sequence for multiple components
 pub async fn execute_shutdown_sequence(
     coordinator: &GracefulShutdown,
-    components: Vec<&mut dyn Shutdownable>,
+    mut components: Vec<&mut dyn Shutdownable>,
     config: &ShutdownConfig,
 ) -> bool {
     info!(
@@ -321,7 +300,7 @@ pub async fn execute_shutdown_sequence(
     );
 
     // Phase 1: Signal all components to stop accepting new work
-    for (i, component) in components.iter().enumerate() {
+    for (i, component) in components.iter_mut().enumerate() {
         info!("Preparing component {} for shutdown", i);
         component.prepare_shutdown();
     }
@@ -375,59 +354,44 @@ pub async fn start_signal_handler(coordinator: &GracefulShutdown) {
         return;
     }
 
+    // Create a clone for the spawned task
+    let coordinator = coordinator.clone();
+
     tokio::spawn(async move {
         // Wait for either SIGTERM or SIGINT
-        tokio::select! {
-            _ = signal::ctrl_c() => {
-                coordinator.shutdown(ShutdownReason::SigInt);
+        let ctrl_c = async {
+            match signal::ctrl_c().await {
+                Ok(()) => ShutdownReason::SigInt,
+                Err(e) => {
+                    tracing::error!("Failed to register ctrl-c handler: {}", e);
+                    ShutdownReason::Unknown
+                }
             }
-            _ = signal::unix::signal(signal::unix::SignalKind::terminate()) => {
-                coordinator.shutdown(ShutdownReason::SigTerm);
-            }
-        }
-    });
-}
+        };
 
-/// Extension trait for graceful shutdown on futures
-pub trait WithGracefulShutdown {
-    /// Run the future with graceful shutdown handling
-    async fn run_with_graceful_shutdown(
-        self,
-        shutdown: &GracefulShutdown,
-        name: &str,
-    ) -> Result<(), Box<dyn std::error::Error>>;
-}
-
-impl<F, T, E> WithGracefulShutdown for F
-where
-    F: Future<Output = Result<T, E>>,
-    E: std::error::Error + 'static,
-{
-    async fn run_with_graceful_shutdown(
-        self,
-        shutdown: &GracefulShutdown,
-        name: &str,
-    ) -> Result<T, Box<dyn std::error::Error>> {
-        let mut receiver = shutdown.subscribe();
-
-        let task = async {
-            match self.await {
-                Ok(result) => Ok(result),
-                Err(e) => Err(Box::new(e) as Box<dyn std::error::Error>),
+        let term = async {
+            // Register for SIGTERM
+            match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+                Ok(mut sig) => {
+                    sig.recv().await;
+                    ShutdownReason::SigTerm
+                }
+                Err(e) => {
+                    tracing::error!("Failed to register SIGTERM handler: {}", e);
+                    ShutdownReason::Unknown
+                }
             }
         };
 
         tokio::select! {
-            result = task => result,
-            _ = receiver.recv() => {
-                info!("Shutdown triggered for {}", name);
-                Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    format!("Shutdown during {}", name),
-                )) as Box<dyn std::error::Error>)
+            reason = ctrl_c => {
+                coordinator.shutdown(reason);
+            }
+            reason = term => {
+                coordinator.shutdown(reason);
             }
         }
-    }
+    });
 }
 
 #[cfg(test)]

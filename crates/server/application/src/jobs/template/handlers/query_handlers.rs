@@ -10,10 +10,10 @@ use crate::jobs::template::queries::{
     ListExecutionsQuery, ListScheduledJobsQuery, ListTemplatesQuery, ScheduledJobSummary,
     TemplateSummary, UpcomingExecutionSummary, ValidateCronQuery,
 };
-use crate::jobs::template::read_models::{ExecutionReadModelPort, TemplateReadModelPort};
-use hodei_server_domain::jobs::templates::{
-    JobExecutionRepository, JobTemplateRepository, ScheduledJobRepository,
+use crate::jobs::template::read_models::{
+    ExecutionReadModelPort, ScheduledJobReadModelPort, TemplateReadModelPort,
 };
+use hodei_server_domain::jobs::templates::{JobExecutionRepository, JobTemplateRepository};
 use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use tracing::{debug, instrument};
@@ -187,12 +187,12 @@ impl QueryHandler<GetExecutionsByJobQuery> for GetExecutionsByJobHandler {
 /// Handler for GetScheduledJobQuery
 #[derive(Clone)]
 pub struct GetScheduledJobHandler {
-    scheduled_repo: Arc<dyn ScheduledJobRepository>,
+    read_model: Arc<dyn ScheduledJobReadModelPort>,
 }
 
 impl GetScheduledJobHandler {
-    pub fn new(scheduled_repo: Arc<dyn ScheduledJobRepository>) -> Self {
-        Self { scheduled_repo }
+    pub fn new(read_model: Arc<dyn ScheduledJobReadModelPort>) -> Self {
+        Self { read_model }
     }
 }
 
@@ -200,23 +200,20 @@ impl GetScheduledJobHandler {
 impl QueryHandler<GetScheduledJobQuery> for GetScheduledJobHandler {
     async fn handle(&self, query: GetScheduledJobQuery) -> Result<Option<ScheduledJobSummary>> {
         debug!("Getting scheduled job: {}", query.scheduled_job_id);
-        let scheduled = self
-            .scheduled_repo
-            .find_by_id(&query.scheduled_job_id)
-            .await?;
-        Ok(scheduled.map(|s| s.into()))
+        let result = self.read_model.get_by_id(&query.scheduled_job_id).await;
+        Ok(result)
     }
 }
 
 /// Handler for ListScheduledJobsQuery
 #[derive(Clone)]
 pub struct ListScheduledJobsHandler {
-    scheduled_repo: Arc<dyn ScheduledJobRepository>,
+    read_model: Arc<dyn ScheduledJobReadModelPort>,
 }
 
 impl ListScheduledJobsHandler {
-    pub fn new(scheduled_repo: Arc<dyn ScheduledJobRepository>) -> Self {
-        Self { scheduled_repo }
+    pub fn new(read_model: Arc<dyn ScheduledJobReadModelPort>) -> Self {
+        Self { read_model }
     }
 }
 
@@ -229,23 +226,13 @@ impl QueryHandler<ListScheduledJobsQuery> for ListScheduledJobsHandler {
         let limit = query.pagination.as_ref().map(|p| p.limit).unwrap_or(50) as usize;
         let offset = query.pagination.as_ref().map(|p| p.offset).unwrap_or(0) as usize;
 
-        // TODO: Implement when persistence layer is ready
-        // let mut scheduled_jobs = self.scheduled_repo.find_all().await?;
-        let scheduled_jobs: Vec<hodei_server_domain::jobs::templates::ScheduledJob> = Vec::new();
+        let results = self
+            .read_model
+            .list(query.template_id.as_ref(), query.enabled, limit + offset, 0)
+            .await;
 
-        // Apply filters
-        if let Some(_template_id) = query.template_id {
-            // scheduled_jobs.retain(|s| s.template_id == template_id);
-        }
-        if let Some(_enabled) = query.enabled {
-            // scheduled_jobs.retain(|s| s.enabled == enabled);
-        }
-
-        // Convert to summaries
-        let summaries: Vec<ScheduledJobSummary> =
-            scheduled_jobs.into_iter().map(|s| s.into()).collect();
-        let total_count = summaries.len();
-        let items = summaries.into_iter().skip(offset).take(limit).collect();
+        let total_count = results.len();
+        let items = results.into_iter().skip(offset).take(limit).collect();
 
         Ok(PaginatedResult::new(
             items,
@@ -299,12 +286,12 @@ impl QueryHandler<ValidateCronQuery> for ValidateCronHandler {
 /// Handler for GetUpcomingExecutionsQuery
 #[derive(Clone)]
 pub struct GetUpcomingExecutionsHandler {
-    scheduled_repo: Arc<dyn ScheduledJobRepository>,
+    read_model: Arc<dyn ScheduledJobReadModelPort>,
 }
 
 impl GetUpcomingExecutionsHandler {
-    pub fn new(scheduled_repo: Arc<dyn ScheduledJobRepository>) -> Self {
-        Self { scheduled_repo }
+    pub fn new(read_model: Arc<dyn ScheduledJobReadModelPort>) -> Self {
+        Self { read_model }
     }
 }
 
@@ -314,40 +301,29 @@ impl QueryHandler<GetUpcomingExecutionsQuery> for GetUpcomingExecutionsHandler {
         &self,
         query: GetUpcomingExecutionsQuery,
     ) -> Result<Vec<UpcomingExecutionSummary>> {
-        // TODO: Implement when persistence layer is ready
-        // let mut scheduled_jobs = self.scheduled_repo.find_all().await?;
-
-        // Filter by enabled jobs and time range
-        // scheduled_jobs.retain(|s| s.enabled);
-
-        // Apply template filter if provided
-        // if let Some(template_id) = query.template_id {
-        //     scheduled_jobs.retain(|s| s.template_id == template_id);
-        // }
-
-        // Filter by time range
-        let mut results = Vec::new();
-        // for job in scheduled_jobs {
-        //     if job.next_execution_at >= query.from_time && job.next_execution_at <= query.to_time {
-        //         results.push(UpcomingExecutionSummary {
-        //             scheduled_job_id: job.id,
-        //             scheduled_job_name: job.name,
-        //             template_id: job.template_id,
-        //             scheduled_for: job.next_execution_at,
-        //             parameters: job.parameters,
-        //         });
-        //     }
-        // }
-
-        // Sort by scheduled_for
-        // results.sort_by(|a, b| a.scheduled_for.cmp(&b.scheduled_for));
-
-        // Limit results
         let limit = query.limit as usize;
-        if results.len() > limit {
-            results.truncate(limit);
-        }
 
-        Ok(results)
+        let results = self
+            .read_model
+            .get_upcoming_executions(
+                query.from_time,
+                query.to_time,
+                query.template_id.as_ref(),
+                limit,
+            )
+            .await;
+
+        let summaries: Vec<UpcomingExecutionSummary> = results
+            .into_iter()
+            .map(|(job, scheduled_for)| UpcomingExecutionSummary {
+                scheduled_job_id: job.id,
+                scheduled_job_name: job.name,
+                template_id: job.template_id,
+                scheduled_for,
+                parameters: job.parameters,
+            })
+            .collect();
+
+        Ok(summaries)
     }
 }

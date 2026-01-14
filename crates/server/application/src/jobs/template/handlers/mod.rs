@@ -13,8 +13,8 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::aggregate::JobSpec;
 use hodei_server_domain::jobs::templates::{
-    JobExecution, JobExecutionRepository, JobTemplate,
-    JobTemplateRepository, ScheduledJobRepository,
+    JobExecution, JobExecutionRepository, JobTemplate, JobTemplateRepository,
+    ScheduledJobRepository,
 };
 use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
@@ -300,6 +300,7 @@ pub struct TriggerRunHandler {
     execution_repo: Arc<dyn JobExecutionRepository>,
     event_bus: Arc<dyn EventBus>,
     read_model: Arc<dyn TemplateReadModelPort>,
+    execution_read_model: Arc<dyn ExecutionReadModelPort>,
 }
 
 impl TriggerRunHandler {
@@ -308,12 +309,14 @@ impl TriggerRunHandler {
         execution_repo: Arc<dyn JobExecutionRepository>,
         event_bus: Arc<dyn EventBus>,
         read_model: Arc<dyn TemplateReadModelPort>,
+        execution_read_model: Arc<dyn ExecutionReadModelPort>,
     ) -> Self {
         Self {
             template_repo,
             execution_repo,
             event_bus,
             read_model,
+            execution_read_model,
         }
     }
 }
@@ -377,23 +380,23 @@ impl CommandHandler<TriggerRunCommand> for TriggerRunHandler {
             }
         })?;
 
-        // TODO: Enable when job mutation is properly implemented
-        // Override job name
-        // job.spec = execution.job_spec.clone();
+        // Extract job_id before job is consumed and before execution is moved
+        let job_id = job.id.clone();
+        let job_id_for_result = job_id.clone();
+        let job_id_for_event = job_id_for_result.clone();
 
         // Link execution to job
-        // execution.job_id = Some(job.id.clone());
+        execution.job_id = Some(job_id);
 
         // Update execution with job_id
-        // self.execution_repo.update(&execution).await?;
+        self.execution_repo.update(&execution).await?;
 
         // Publish TemplateRunCreated event
         let event = DomainEvent::TemplateRunCreated {
             template_id: template.id.to_string(),
             template_name: template.name.clone(),
             execution_id: execution.id.to_string(),
-            // job_id: execution.job_id,
-            job_id: None,
+            job_id: Some(job_id_for_event),
             job_name: job_name.clone(),
             template_version: template.version,
             execution_number,
@@ -417,17 +420,19 @@ impl CommandHandler<TriggerRunCommand> for TriggerRunHandler {
         // self.event_bus.publish(&job_created_event).await?;
 
         // Update read models
-        // TODO: Enable read model updates when implementation is complete
-        // self.read_model
-        //     .increment_run_count(&command.template_id)
-        //     .await;
-        // self.read_model.create_execution(&execution).await;
+        self.read_model
+            .increment_run_count(&command.template_id)
+            .await;
+        self.execution_read_model.create_execution(&execution).await;
 
-        debug!("Triggered run: execution={}, job={}", execution.id, job.id);
+        debug!(
+            "Triggered run: execution={}, job={}",
+            execution.id, job_id_for_result
+        );
 
         Ok(ExecutionResult {
             execution_id: execution.id,
-            job_id: execution.job_id,
+            job_id: Some(job_id_for_result),
             job_name,
             state: execution.state,
             template_id: template.id,
