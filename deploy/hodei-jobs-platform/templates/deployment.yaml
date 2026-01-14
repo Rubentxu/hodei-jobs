@@ -167,6 +167,10 @@ spec:
               name: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
               key: connection-string
 
+        # Migrations paths (mounted from ConfigMaps)
+        - name: HODEI_MIGRATIONS_PATH
+          value: "/app/migrations,/app/infrastructure-migrations"
+
         # Job configuration
         - name: HODEI_JOB_CONTROLLER_ENABLED
           value: "1"
@@ -175,7 +179,7 @@ spec:
 
         # Worker configuration
         - name: HODEI_WORKER_IMAGE
-          value: "{{ .Values.image.repository }}-worker:{{ .Values.image.tag }}"
+          value: "{{ .Values.workerImage.repository }}:{{ .Values.workerImage.tag }}"
         - name: HODEI_DOCKER_ENABLED
           value: {{ .Values.dockerProvider.enabled | quote }}
         - name: HODEI_KUBERNETES_ENABLED
@@ -205,6 +209,14 @@ spec:
           mountPath: /tmp
         - name: cache
           mountPath: /var/cache/hodei
+        - name: logs
+          mountPath: /tmp/hodei-logs
+        - name: migrations
+          mountPath: /app/migrations
+          readOnly: true
+        - name: infra-migrations
+          mountPath: /app/infrastructure-migrations
+          readOnly: true
 
         {{- if .Values.volumes.work.enabled }}
         - name: work
@@ -232,78 +244,6 @@ spec:
         {{- end }}
         {{- end }}
 
-      {{- if .Values.initContainers.enabled }}
-      {{- if .Values.initContainers.waitFor.dependencies.enabled }}
-      initContainers:
-        - name: wait-for-dependencies
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              set -e
-
-              # Función para esperar un servicio con reintentos
-              wait_for_service() {
-                local host=$1
-                local port=$2
-                local name=$3
-                local max_attempts=30
-                local attempt=1
-
-                echo "=== ESPERANDO $name en $host:$port ==="
-
-                while [ $attempt -le $max_attempts ]; do
-                  # Usar nc con timeout de 2 segundos
-                  if nc -zv -w 2 "$host" "$port" 2>/dev/null; then
-                    echo "✓ $name ESTÁ LISTO!"
-                    return 0
-                  fi
-                  echo "  Intento $attempt/$max_attempts: $name no disponible, reintentando en 2s..."
-                  sleep 2
-                  attempt=$((attempt + 1))
-                done
-
-                echo "✗ ERROR: $name no estuvo disponible después de $max_attempts intentos"
-                return 1
-              }
-
-              # Obtener IPs de los servicios desde el DNS de Kubernetes
-              NATS_HOST="{{ include "hodei-jobs-platform.fullname" . }}-nats"
-              NATS_IP=$(getent hosts "$NATS_HOST" 2>/dev/null | awk '{print $1}')
-
-              if [ -z "$NATS_IP" ]; then
-                # Si el DNS falla, intentar con el servicio directamente
-                echo "DNS no resuelto para $NATS_HOST, usando IP del servicio..."
-                # En minikube, podemos usar el nombre directamente
-                wait_for_service "$NATS_HOST" 4222 "NATS"
-              else
-                wait_for_service "$NATS_IP" 4222 "NATS"
-              fi
-
-              {{- if .Values.postgresql.enabled }}
-              POSTGRES_HOST="{{ include "hodei-jobs-platform.fullname" . }}-postgresql"
-              POSTGRES_IP=$(getent hosts "$POSTGRES_HOST" 2>/dev/null | awk '{print $1}')
-
-              if [ -z "$POSTGRES_IP" ]; then
-                echo "DNS no resuelto para $POSTGRES_HOST, usando IP del servicio..."
-                wait_for_service "$POSTGRES_HOST" 5432 "POSTGRESQL"
-              else
-                wait_for_service "$POSTGRES_IP" 5432 "POSTGRESQL"
-              fi
-              {{- end }}
-
-              echo "=== TODOS LOS SERVICIOS ESTÁN LISTOS ==="
-          resources:
-            limits:
-              cpu: 100m
-              memory: 64Mi
-            requests:
-              cpu: 50m
-              memory: 32Mi
-      {{- end }}
-      {{- end }}
-
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -324,6 +264,20 @@ spec:
       - name: cache
         emptyDir:
           sizeLimit: {{ .Values.volumes.cache.sizeLimit | default "1Gi" }}
+      - name: logs
+        {{- if .Values.volumes.logs.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "hodei-jobs-platform.fullname" . }}-logs
+        {{- else }}
+        emptyDir:
+          sizeLimit: {{ .Values.volumes.logs.sizeLimit | default "5Gi" }}
+        {{- end }}
+      - name: migrations
+        configMap:
+          name: {{ include "hodei-jobs-platform.fullname" . }}-migrations
+      - name: infra-migrations
+        configMap:
+          name: {{ include "hodei-jobs-platform.fullname" . }}-migrations-infra
 
       {{- if .Values.volumes.work.enabled }}
       - name: work

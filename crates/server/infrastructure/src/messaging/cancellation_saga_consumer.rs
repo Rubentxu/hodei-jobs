@@ -1,12 +1,12 @@
-//! Cleanup Saga NATS Consumer
+//! Cancellation Saga NATS Consumer
 //!
-//! This module provides reactive cleanup saga triggering by subscribing to
-//! domain events via NATS JetStream when workers or jobs need cleanup.
+//! This module provides reactive cancellation saga triggering by subscribing to
+//! domain events via NATS JetStream when users request job cancellation.
 //!
 //! # Features
-//! - Event-driven cleanup saga triggering
-//! - Automatic resource cleanup when jobs complete or workers terminate
-//! - Support for JobCompleted, JobFailed, and WorkerTerminated events
+//! - Event-driven cancellation saga triggering
+//! - Automatic worker notification for job cancellation
+//! - Support for JobCancelled events from the cancel API
 //! - Durable consumers with checkpointing
 
 use async_nats::Client;
@@ -17,16 +17,15 @@ use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
 use futures::StreamExt;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobRepository;
-use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
-use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
-use hodei_server_domain::workers::WorkerRegistry;
+use hodei_server_domain::saga::{Saga, SagaContext, SagaOrchestrator, SagaType};
+use hodei_server_domain::shared_kernel::{DomainError, JobId};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-use hodei_shared::event_topics::{job_topics, worker_topics};
+use hodei_shared::event_topics::job_topics;
 
 /// Message envelope for NATS transport (matches nats.rs)
 #[derive(Debug, Clone, Deserialize)]
@@ -38,28 +37,22 @@ pub struct NatsMessageEnvelope {
     pub correlation_id: Option<String>,
 }
 
-/// Configuration for cleanup saga consumer
+/// Configuration for cancellation saga consumer
 #[derive(Debug, Clone)]
-pub struct CleanupSagaConsumerConfig {
+pub struct CancellationSagaConsumerConfig {
     /// Consumer name identifier
     pub consumer_name: String,
 
     /// Stream name prefix
     pub stream_prefix: String,
 
-    /// Topic for JobCompleted events
-    pub job_completed_topic: String,
-
-    /// Topic for JobFailed events
-    pub job_failed_topic: String,
-
-    /// Topic for WorkerTerminated events
-    pub worker_terminated_topic: String,
+    /// Topic for JobCancelled events
+    pub job_cancelled_topic: String,
 
     /// Consumer group for load balancing
     pub consumer_group: String,
 
-    /// Maximum concurrent cleanups
+    /// Maximum concurrent cancellations
     pub concurrency: usize,
 
     /// Ack wait timeout
@@ -68,54 +61,53 @@ pub struct CleanupSagaConsumerConfig {
     /// Maximum delivery attempts
     pub max_deliver: i64,
 
-    /// Enable automatic cleanup dispatch
-    pub enable_auto_dispatch: bool,
-
     /// Default saga timeout
     pub saga_timeout: Duration,
 }
 
-impl Default for CleanupSagaConsumerConfig {
+impl Default for CancellationSagaConsumerConfig {
     fn default() -> Self {
         Self {
-            consumer_name: "cleanup-saga-consumer".to_string(),
+            consumer_name: "cancellation-saga-consumer".to_string(),
             stream_prefix: "HODEI".to_string(),
-            job_completed_topic: job_topics::COMPLETED.to_string(),
-            job_failed_topic: job_topics::FAILED.to_string(),
-            worker_terminated_topic: worker_topics::TERMINATED.to_string(),
-            consumer_group: "cleanup-dispatchers".to_string(),
+            job_cancelled_topic: job_topics::CANCELLED.to_string(),
+            consumer_group: "cancellation-processors".to_string(),
             concurrency: 5,
             ack_wait: Duration::from_secs(30),
             max_deliver: 3,
-            enable_auto_dispatch: true,
-            saga_timeout: Duration::from_secs(60),
+            saga_timeout: Duration::from_secs(30),
         }
     }
 }
 
-/// Result of cleanup saga processing
+/// Result of cancellation saga processing
 #[derive(Debug)]
-pub enum CleanupSagaTriggerResult {
-    /// Cleanup dispatched successfully
-    Dispatched,
-    /// No cleanup needed
-    NoCleanupNeeded,
-    /// Resource already cleaned up
-    AlreadyCleanedUp,
-    /// Cleanup trigger failed
+pub enum CancellationSagaTriggerResult {
+    /// Cancellation saga triggered successfully
+    Triggered,
+    /// Job not in cancellable state
+    NotCancellable,
+    /// No worker assigned to job
+    NoWorkerAssigned,
+    /// Cancellation trigger failed
     Failed(String),
 }
 
-/// Cleanup Saga Consumer
+/// Cancellation Saga Consumer
 ///
-/// Consumes JobCompleted, JobFailed, and WorkerTerminated events from NATS JetStream
-/// and triggers cleanup sagas for resource cleanup.
+/// Consumes JobCancelled events from NATS JetStream and triggers CancellationSaga
+/// to handle the graceful termination of running jobs.
+///
+/// The CancellationSaga will:
+/// 1. Validate the job can be cancelled
+/// 2. Notify the worker to stop execution
+/// 3. Update job state to CANCELLED
+/// 4. Release the worker for new jobs
 #[derive(Clone)]
-pub struct CleanupSagaConsumer<SO, JR, WR>
+pub struct CancellationSagaConsumer<SO, JR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
 {
     /// NATS client
     _client: Client,
@@ -126,34 +118,29 @@ where
     /// Saga orchestrator
     orchestrator: Arc<SO>,
 
-    /// Job repository for cleanup operations
+    /// Job repository for validation
     job_repository: Arc<JR>,
 
-    /// Worker registry for cleanup operations
-    worker_registry: Arc<WR>,
-
     /// Consumer configuration
-    config: CleanupSagaConsumerConfig,
+    config: CancellationSagaConsumerConfig,
 
     /// Shutdown signal
     shutdown_tx: mpsc::Sender<()>,
 }
 
-impl<SO, JR, WR> CleanupSagaConsumer<SO, JR, WR>
+impl<SO, JR> CancellationSagaConsumer<SO, JR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
 {
-    /// Create a new CleanupSagaConsumer
+    /// Create a new CancellationSagaConsumer
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Client,
         jetstream: JetStreamContext,
         orchestrator: Arc<SO>,
         job_repository: Arc<JR>,
-        worker_registry: Arc<WR>,
-        config: Option<CleanupSagaConsumerConfig>,
+        config: Option<CancellationSagaConsumerConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
         let (shutdown_tx, _) = mpsc::channel(1);
@@ -163,7 +150,6 @@ where
             jetstream,
             orchestrator,
             job_repository,
-            worker_registry,
             config,
             shutdown_tx,
         }
@@ -172,11 +158,11 @@ where
     /// Start the consumer and begin processing events
     pub async fn start(&self) -> Result<(), DomainError> {
         info!(
-            "🧹 CleanupSagaConsumer: Starting consumer '{}'",
+            "🚫 CancellationSagaConsumer: Starting consumer '{}'",
             self.config.consumer_name
         );
 
-        // Create stream for cleanup events and get stream info
+        // Create stream for cancellation events and get stream info
         let stream_name = {
             let mut stream = self.ensure_stream().await?;
             let stream_info =
@@ -202,7 +188,7 @@ where
                 })?;
 
         info!(
-            "🧹 CleanupSagaConsumer: Started consuming from stream '{}'",
+            "🚫 CancellationSagaConsumer: Started consuming from stream '{}'",
             stream_name
         );
 
@@ -210,15 +196,18 @@ where
             match message_result {
                 Ok(message) => {
                     if let Err(e) = self.process_message(&message.payload).await {
-                        error!("🧹 CleanupSagaConsumer: Error processing message: {}", e);
+                        error!(
+                            "🚫 CancellationSagaConsumer: Error processing message: {}",
+                            e
+                        );
                     }
                     // Ack the message
                     if let Err(e) = message.ack().await {
-                        error!("🧹 CleanupSagaConsumer: Failed to ack message: {}", e);
+                        error!("🚫 CancellationSagaConsumer: Failed to ack message: {}", e);
                     }
                 }
                 Err(e) => {
-                    error!("🧹 CleanupSagaConsumer: Message receive error: {}", e);
+                    error!("🚫 CancellationSagaConsumer: Message receive error: {}", e);
                 }
             }
         }
@@ -242,41 +231,16 @@ where
         })?;
 
         match &event {
-            DomainEvent::JobStatusChanged {
-                job_id, new_state, ..
-            } => {
-                // Check for terminal states that need cleanup
-                let needs_cleanup = matches!(
-                    new_state,
-                    hodei_server_domain::shared_kernel::JobState::Succeeded
-                        | hodei_server_domain::shared_kernel::JobState::Failed
-                        | hodei_server_domain::shared_kernel::JobState::Cancelled
-                        | hodei_server_domain::shared_kernel::JobState::Timeout
-                );
-
-                if needs_cleanup {
-                    info!(
-                        "🧹 CleanupSagaConsumer: Job {} transitioned to terminal state {:?}",
-                        job_id, new_state
-                    );
-                    self.handle_job_completed(job_id).await?;
-                } else {
-                    debug!(
-                        "🧹 CleanupSagaConsumer: Job {} transitioned to state {:?}, skipping cleanup",
-                        job_id, new_state
-                    );
-                }
-            }
-            DomainEvent::WorkerTerminated { worker_id, .. } => {
+            DomainEvent::JobCancelled { job_id, reason, .. } => {
                 info!(
-                    "🧹 CleanupSagaConsumer: Received WorkerTerminated event for worker {}",
-                    worker_id
+                    "🚫 CancellationSagaConsumer: Received JobCancelled event for job {}",
+                    job_id
                 );
-                self.handle_worker_terminated(worker_id).await?;
+                self.handle_job_cancelled(job_id, reason.as_deref()).await?;
             }
             _ => {
                 debug!(
-                    "🧹 CleanupSagaConsumer: Ignoring event type '{}'",
+                    "🚫 CancellationSagaConsumer: Ignoring event type '{}'",
                     event.event_type()
                 );
             }
@@ -285,9 +249,13 @@ where
         Ok(())
     }
 
-    /// Handle JobCompleted event - trigger cleanup saga
-    async fn handle_job_completed(&self, job_id: &JobId) -> Result<(), DomainError> {
-        // Fetch job details
+    /// Handle JobCancelled event - trigger cancellation saga
+    async fn handle_job_cancelled(
+        &self,
+        job_id: &JobId,
+        reason: Option<&str>,
+    ) -> Result<CancellationSagaTriggerResult, DomainError> {
+        // Fetch job details for validation
         let job = self.job_repository.find_by_id(job_id).await.map_err(|e| {
             DomainError::InfrastructureError {
                 message: format!("Failed to fetch job {}: {}", job_id, e),
@@ -296,86 +264,70 @@ where
 
         if job.is_none() {
             debug!(
-                "🧹 CleanupSagaConsumer: Job {} not found, skipping cleanup",
+                "🚫 CancellationSagaConsumer: Job {} not found, skipping cancellation",
                 job_id
             );
-            return Ok(());
+            return Ok(CancellationSagaTriggerResult::Failed(format!(
+                "Job {} not found",
+                job_id
+            )));
         }
 
         let job = job.unwrap();
 
-        // Check if cleanup is needed
-        if job.is_terminal_state() {
+        // Check if job is in cancellable state
+        let cancellable_states = [
+            hodei_server_domain::shared_kernel::JobState::Pending,
+            hodei_server_domain::shared_kernel::JobState::Assigned,
+            hodei_server_domain::shared_kernel::JobState::Running,
+            hodei_server_domain::shared_kernel::JobState::Scheduled,
+        ];
+
+        if !cancellable_states.contains(&job.state()) {
             info!(
-                "🧹 CleanupSagaConsumer: Job {} is in terminal state, triggering cleanup",
-                job_id
+                "🚫 CancellationSagaConsumer: Job {} is in state {:?}, not cancellable",
+                job_id,
+                job.state()
             );
-            self.trigger_cleanup_saga(job_id, "job_completion").await?;
-        } else {
-            debug!(
-                "🧹 CleanupSagaConsumer: Job {} is not in terminal state, skipping",
-                job_id
-            );
+            return Ok(CancellationSagaTriggerResult::NotCancellable);
         }
 
-        Ok(())
+        // Trigger cancellation saga
+        self.trigger_cancellation_saga(job_id, reason.unwrap_or("user_requested"))
+            .await?;
+
+        Ok(CancellationSagaTriggerResult::Triggered)
     }
 
-    /// Handle WorkerTerminated event - trigger cleanup saga
-    async fn handle_worker_terminated(&self, worker_id: &WorkerId) -> Result<(), DomainError> {
-        // Check if worker exists
-        let worker = self.worker_registry.get(worker_id).await.map_err(|e| {
-            DomainError::InfrastructureError {
-                message: format!("Failed to fetch worker {}: {}", worker_id, e),
-            }
-        })?;
-
-        if worker.is_none() {
-            debug!(
-                "🧹 CleanupSagaConsumer: Worker {} not found, skipping cleanup",
-                worker_id
-            );
-            return Ok(());
-        }
-
-        info!(
-            "🧹 CleanupSagaConsumer: Worker {} terminated, triggering cleanup",
-            worker_id
-        );
-
-        self.trigger_cleanup_saga_by_worker(worker_id).await?;
-        Ok(())
-    }
-
-    /// Trigger cleanup saga for a job
-    async fn trigger_cleanup_saga(
+    /// Trigger cancellation saga for a job
+    async fn trigger_cancellation_saga(
         &self,
         job_id: &JobId,
-        trigger_reason: &str,
+        reason: &str,
     ) -> Result<(), DomainError> {
-        // Create saga context with correct saga type
+        // Create saga context with Cancellation saga type
         let saga_id = hodei_server_domain::saga::SagaId::new();
         let mut context = hodei_server_domain::saga::SagaContext::new(
             saga_id,
-            SagaType::Cleanup, // Use correct saga type
-            Some(format!("cleanup-{}", job_id.0)),
-            Some("cleanup_saga_consumer".to_string()),
+            SagaType::Cancellation,
+            Some(format!("cancellation-{}", job_id.0)),
+            Some("cancellation_saga_consumer".to_string()),
         );
 
         context.set_metadata("job_id", &job_id.to_string()).ok();
         context
-            .set_metadata("trigger_reason", &trigger_reason.to_string())
+            .set_metadata("cancellation_reason", &reason.to_string())
             .ok();
 
-        // Create cleanup saga
-        let saga = hodei_server_domain::saga::CleanupSaga::new();
+        // Create cancellation saga
+        let saga = hodei_server_domain::saga::CancellationSaga::new(job_id.clone(), reason);
 
         // Execute saga
         match self.orchestrator.execute_saga(&saga, context).await {
             Ok(result) => {
                 if result.state == hodei_server_domain::saga::SagaState::Completed {
                     info!(
-                        "✅ CleanupSagaConsumer: Cleanup completed for job {}",
+                        "✅ CancellationSagaConsumer: Cancellation completed for job {}",
                         job_id
                     );
                     Ok(())
@@ -383,9 +335,9 @@ where
                     let error_msg = result
                         .error_message
                         .clone()
-                        .unwrap_or_else(|| "Unknown cleanup error".to_string());
+                        .unwrap_or_else(|| "Unknown cancellation error".to_string());
                     error!(
-                        "❌ CleanupSagaConsumer: Cleanup failed for job {}: {}",
+                        "❌ CancellationSagaConsumer: Cancellation failed for job {}: {}",
                         job_id, error_msg
                     );
                     Err(DomainError::SagaError { message: error_msg })
@@ -393,7 +345,7 @@ where
             }
             Err(e) => {
                 error!(
-                    "❌ CleanupSagaConsumer: Orchestrator error for job {}: {}",
+                    "❌ CancellationSagaConsumer: Orchestrator error for job {}: {}",
                     job_id, e
                 );
                 Err(e)
@@ -401,69 +353,14 @@ where
         }
     }
 
-    /// Trigger cleanup saga for a worker
-    async fn trigger_cleanup_saga_by_worker(
-        &self,
-        worker_id: &WorkerId,
-    ) -> Result<(), DomainError> {
-        // Create saga context with correct saga type
-        let saga_id = hodei_server_domain::saga::SagaId::new();
-        let mut context = hodei_server_domain::saga::SagaContext::new(
-            saga_id,
-            SagaType::Cleanup, // Use correct saga type
-            Some(format!("cleanup-worker-{}", worker_id.0)),
-            Some("cleanup_saga_consumer".to_string()),
-        );
-
-        context
-            .set_metadata("worker_id", &worker_id.to_string())
-            .ok();
-        context
-            .set_metadata("trigger_reason", &"worker_termination".to_string())
-            .ok();
-
-        // Create cleanup saga for worker cleanup
-        let saga = hodei_server_domain::saga::CleanupSaga::new();
-
-        // Execute saga
-        match self.orchestrator.execute_saga(&saga, context).await {
-            Ok(result) => {
-                if result.is_success() {
-                    info!(
-                        "✅ CleanupSagaConsumer: Cleanup completed for worker {}",
-                        worker_id
-                    );
-                    Ok(())
-                } else {
-                    let error_msg = result
-                        .error_message
-                        .clone()
-                        .unwrap_or_else(|| "Unknown cleanup error".to_string());
-                    error!(
-                        "❌ CleanupSagaConsumer: Cleanup failed for worker {}: {}",
-                        worker_id, error_msg
-                    );
-                    Err(DomainError::SagaError { message: error_msg })
-                }
-            }
-            Err(e) => {
-                error!(
-                    "❌ CleanupSagaConsumer: Orchestrator error for worker {}: {}",
-                    worker_id, e
-                );
-                Err(e)
-            }
-        }
-    }
-
-    /// Ensure the cleanup events stream exists
+    /// Ensure the cancellation events stream exists
     async fn ensure_stream(&self) -> Result<async_nats::jetstream::stream::Stream, DomainError> {
-        let stream_name = format!("{}_CLEANUP_EVENTS", self.config.stream_prefix);
+        let stream_name = format!("{}_CANCELLATION_EVENTS", self.config.stream_prefix);
 
         match self.jetstream.get_stream(&stream_name).await {
             Ok(stream) => {
                 debug!(
-                    "🧹 CleanupSagaConsumer: Stream '{}' already exists",
+                    "🚫 CancellationSagaConsumer: Stream '{}' already exists",
                     stream_name
                 );
                 Ok(stream)
@@ -473,11 +370,7 @@ where
                     .jetstream
                     .create_stream(StreamConfig {
                         name: stream_name.clone(),
-                        subjects: vec![
-                            self.config.job_completed_topic.clone(),
-                            self.config.job_failed_topic.clone(),
-                            self.config.worker_terminated_topic.clone(),
-                        ],
+                        subjects: vec![self.config.job_cancelled_topic.clone()],
                         retention: RetentionPolicy::WorkQueue,
                         max_messages: 50000,
                         max_bytes: 50 * 1024 * 1024, // 50MB
@@ -488,7 +381,10 @@ where
                         message: format!("Failed to create stream {}: {}", stream_name, e),
                     })?;
 
-                info!("🧹 CleanupSagaConsumer: Created stream '{}'", stream_name);
+                info!(
+                    "🚫 CancellationSagaConsumer: Created stream '{}'",
+                    stream_name
+                );
                 Ok(stream)
             }
         }
@@ -515,7 +411,7 @@ where
         match stream.get_consumer(&consumer_id).await {
             Ok(consumer) => {
                 debug!(
-                    "🧹 CleanupSagaConsumer: Consumer '{}' already exists",
+                    "🚫 CancellationSagaConsumer: Consumer '{}' already exists",
                     consumer_id
                 );
                 Ok(consumer)
@@ -538,7 +434,10 @@ where
                     }
                 })?;
 
-                info!("🧹 CleanupSagaConsumer: Created consumer '{}'", consumer_id);
+                info!(
+                    "🚫 CancellationSagaConsumer: Created consumer '{}'",
+                    consumer_id
+                );
                 Ok(consumer)
             }
         }
@@ -547,31 +446,28 @@ where
     /// Stop the consumer gracefully
     pub async fn stop(&self) {
         let _ = self.shutdown_tx.send(()).await;
-        info!("🧹 CleanupSagaConsumer: Stop signal sent");
+        info!("🚫 CancellationSagaConsumer: Stop signal sent");
     }
 }
 
-/// Builder for CleanupSagaConsumer
+/// Builder for CancellationSagaConsumer
 #[derive(Debug)]
-pub struct CleanupSagaConsumerBuilder<SO, JR, WR>
+pub struct CancellationSagaConsumerBuilder<SO, JR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
 {
     client: Option<Client>,
     jetstream: Option<JetStreamContext>,
     orchestrator: Option<Arc<SO>>,
     job_repository: Option<Arc<JR>>,
-    worker_registry: Option<Arc<WR>>,
-    config: Option<CleanupSagaConsumerConfig>,
+    config: Option<CancellationSagaConsumerConfig>,
 }
 
-impl<SO, JR, WR> Default for CleanupSagaConsumerBuilder<SO, JR, WR>
+impl<SO, JR> Default for CancellationSagaConsumerBuilder<SO, JR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
 {
     fn default() -> Self {
         Self {
@@ -579,17 +475,15 @@ where
             jetstream: None,
             orchestrator: None,
             job_repository: None,
-            worker_registry: None,
             config: None,
         }
     }
 }
 
-impl<SO, JR, WR> CleanupSagaConsumerBuilder<SO, JR, WR>
+impl<SO, JR> CancellationSagaConsumerBuilder<SO, JR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
-    WR: WorkerRegistry + Send + Sync + 'static,
 {
     pub fn new() -> Self {
         Self::default()
@@ -615,17 +509,12 @@ where
         self
     }
 
-    pub fn with_worker_registry(mut self, worker_registry: Arc<WR>) -> Self {
-        self.worker_registry = Some(worker_registry);
-        self
-    }
-
-    pub fn with_config(mut self, config: CleanupSagaConsumerConfig) -> Self {
+    pub fn with_config(mut self, config: CancellationSagaConsumerConfig) -> Self {
         self.config = Some(config);
         self
     }
 
-    pub fn build(self) -> anyhow::Result<CleanupSagaConsumer<SO, JR, WR>> {
+    pub fn build(self) -> anyhow::Result<CancellationSagaConsumer<SO, JR>> {
         let client = self
             .client
             .ok_or_else(|| anyhow::anyhow!("client is required"))?;
@@ -638,17 +527,61 @@ where
         let job_repository = self
             .job_repository
             .ok_or_else(|| anyhow::anyhow!("job_repository is required"))?;
-        let worker_registry = self
-            .worker_registry
-            .ok_or_else(|| anyhow::anyhow!("worker_registry is required"))?;
 
-        Ok(CleanupSagaConsumer::new(
+        Ok(CancellationSagaConsumer::new(
             client,
             jetstream,
             orchestrator,
             job_repository,
-            worker_registry,
             self.config,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hodei_server_domain::saga::SagaType;
+
+    #[test]
+    fn test_cancellation_saga_trigger_result_variants() {
+        let triggered = CancellationSagaTriggerResult::Triggered;
+        let not_cancellable = CancellationSagaTriggerResult::NotCancellable;
+        let no_worker = CancellationSagaTriggerResult::NoWorkerAssigned;
+        let failed = CancellationSagaTriggerResult::Failed("error".to_string());
+
+        assert!(matches!(
+            triggered,
+            CancellationSagaTriggerResult::Triggered
+        ));
+        assert!(matches!(
+            not_cancellable,
+            CancellationSagaTriggerResult::NotCancellable
+        ));
+        assert!(matches!(
+            no_worker,
+            CancellationSagaTriggerResult::NoWorkerAssigned
+        ));
+        assert!(matches!(failed, CancellationSagaTriggerResult::Failed(_)));
+    }
+
+    #[test]
+    fn test_config_default_values() {
+        let config = CancellationSagaConsumerConfig::default();
+        assert_eq!(
+            config.consumer_name,
+            "cancellation-saga-consumer".to_string()
+        );
+        assert_eq!(config.concurrency, 5);
+        assert_eq!(config.max_deliver, 3);
+        assert_eq!(config.saga_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_saga_type_is_cancellation() {
+        assert!(SagaType::Cancellation.is_cancellation());
+        assert!(!SagaType::Execution.is_cancellation());
+        assert!(!SagaType::Recovery.is_cancellation());
+        assert!(!SagaType::Cleanup.is_cancellation());
     }
 }

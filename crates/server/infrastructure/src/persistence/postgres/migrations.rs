@@ -32,8 +32,8 @@ use tracing::{debug, info, warn};
 /// Configuration for the migration service
 #[derive(Debug, Clone)]
 pub struct MigrationConfig {
-    /// Path to the migrations directory
-    pub migrations_path: String,
+    /// Paths to the migrations directories (comma-separated or multiple)
+    pub migrations_paths: Vec<String>,
     /// Enable embedded migrations as fallback
     pub embed_fallback: bool,
     /// Log each migration execution
@@ -45,7 +45,7 @@ pub struct MigrationConfig {
 impl Default for MigrationConfig {
     fn default() -> Self {
         Self {
-            migrations_path: "migrations".to_string(),
+            migrations_paths: vec!["migrations".to_string()],
             embed_fallback: true,
             log_migrations: true,
             fail_on_missing: false,
@@ -57,8 +57,41 @@ impl MigrationConfig {
     /// Create a new configuration with the specified migrations path
     pub fn new<P: Into<String>>(migrations_path: P) -> Self {
         Self {
-            migrations_path: migrations_path.into(),
+            migrations_paths: vec![migrations_path.into()],
             ..Default::default()
+        }
+    }
+
+    /// Add an additional migrations path
+    pub fn with_additional_path<P: Into<String>>(mut self, path: P) -> Self {
+        self.migrations_paths.push(path.into());
+        self
+    }
+
+    /// Create with multiple migrations paths
+    pub fn with_paths(paths: Vec<String>) -> Self {
+        Self {
+            migrations_paths: paths,
+            ..Default::default()
+        }
+    }
+
+    /// Load migrations path from environment variable
+    pub fn from_env() -> Self {
+        let env_paths = std::env::var("HODEI_MIGRATIONS_PATH")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+
+        if env_paths.is_empty() {
+            Self::default()
+        } else {
+            Self {
+                migrations_paths: env_paths,
+                ..Default::default()
+            }
         }
     }
 
@@ -142,60 +175,145 @@ impl MigrationService {
         Ok(results)
     }
 
-    /// Run migrations from SQL files in the migrations directory
+    /// Run migrations from SQL files in all configured migration directories
     async fn run_file_migrations(&self) -> Result<Vec<MigrationResult>, MigrationError> {
-        let path = Path::new(&self.config.migrations_path);
+        let mut all_entries: Vec<std::path::PathBuf> = Vec::new();
 
-        if !path.exists() {
-            if self.config.fail_on_missing {
-                return Err(MigrationError::DirectoryNotFound {
-                    path: self.config.migrations_path.clone(),
-                });
+        // Collect migration files from all configured paths
+        for migrations_path in &self.config.migrations_paths {
+            let path = Path::new(migrations_path);
+
+            tracing::debug!(
+                "Checking migration path: {} (exists: {})",
+                migrations_path,
+                path.exists()
+            );
+
+            if !path.exists() {
+                if self.config.fail_on_missing {
+                    return Err(MigrationError::DirectoryNotFound {
+                        path: migrations_path.clone(),
+                    });
+                }
+                if self.config.log_migrations {
+                    warn!(
+                        "Migration directory not found: {}, skipping",
+                        migrations_path
+                    );
+                }
+                continue;
             }
+
+            let entries: Vec<_> = std::fs::read_dir(path)
+                .map_err(|e| MigrationError::DirectoryNotFound {
+                    path: e.to_string(),
+                })?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().map(|e| e == "sql").unwrap_or(false))
+                .collect();
+
+            info!(
+                "Read {} entries from {}, first 5: {:?}",
+                entries.len(),
+                migrations_path,
+                entries
+                    .iter()
+                    .take(5)
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+            );
+
+            if self.config.log_migrations && !entries.is_empty() {
+                info!("Found {} SQL files in {}", entries.len(), migrations_path);
+            }
+
+            all_entries.extend(entries);
+        }
+
+        if all_entries.is_empty() {
             if self.config.log_migrations {
-                warn!(
-                    "Migration directory not found: {}, skipping file migrations",
-                    self.config.migrations_path
-                );
+                warn!("No SQL migration files found in any configured path");
             }
             return Ok(Vec::new());
         }
 
-        // Collect migration files
-        let mut entries: Vec<_> = std::fs::read_dir(path)
-            .map_err(|e| MigrationError::DirectoryNotFound {
-                path: e.to_string(),
-            })?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && p.extension().map(|e| e == "sql").unwrap_or(false))
-            .collect();
+        // Sort by filename (which includes version) to ensure correct order
+        all_entries.sort_by(|a, b| {
+            a.file_name()
+                .unwrap_or_default()
+                .cmp(b.file_name().unwrap_or_default())
+        });
 
-        if entries.is_empty() {
-            if self.config.log_migrations {
-                warn!(
-                    "No SQL migration files found in {}",
-                    self.config.migrations_path
-                );
-            }
-            return Ok(Vec::new());
-        }
-
-        // Sort by filename (which includes version)
-        entries.sort();
-
-        // Group by migration (up.sql + optional down.sql)
-        let migrations = Self::group_migrations(&entries);
-
-        if self.config.log_migrations {
-            info!("Found {} migration(s) to apply", migrations.len());
-        }
+        // Apply each migration file directly
+        info!("Applying {} migration files directly", all_entries.len());
 
         let mut results = Vec::new();
 
-        for (name, _up_path, _down_path) in migrations {
-            let result = self.apply_migration(&name).await?;
-            results.push(result);
+        for file_path in &all_entries {
+            let name = file_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+
+            info!("Applying migration: {} from {}", name, file_path.display());
+
+            // Skip if file doesn't exist
+            if !file_path.exists() {
+                warn!("Migration file not found: {}", file_path.display());
+                continue;
+            }
+
+            // Read and execute SQL
+            let sql = match std::fs::read_to_string(file_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "Failed to read migration file {}: {}",
+                        file_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let start = std::time::Instant::now();
+            match self.pool.execute(sql.as_str()).await {
+                Ok(_) => {
+                    let duration = start.elapsed();
+                    info!(
+                        "Migration {} applied successfully in {}ms",
+                        name,
+                        duration.as_millis()
+                    );
+                    results.push(MigrationResult {
+                        version: Self::extract_version(&name),
+                        description: name,
+                        executed_at: chrono::Utc::now(),
+                        duration_ms: duration.as_millis() as u64,
+                        success: true,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    let duration = start.elapsed();
+                    warn!(
+                        "Migration {} failed after {}ms: {}",
+                        name,
+                        duration.as_millis(),
+                        e
+                    );
+                    results.push(MigrationResult {
+                        version: Self::extract_version(&name),
+                        description: name,
+                        executed_at: chrono::Utc::now(),
+                        duration_ms: duration.as_millis() as u64,
+                        success: false,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
         }
 
         Ok(results)
@@ -205,52 +323,73 @@ impl MigrationService {
     fn group_migrations(
         entries: &[std::path::PathBuf],
     ) -> Vec<(String, std::path::PathBuf, Option<std::path::PathBuf>)> {
+        info!("group_migrations called with {} entries", entries.len());
+
         let mut migrations = Vec::new();
 
-        for entry in entries {
-            let filename = entry.file_stem().unwrap_or_default().to_string_lossy();
+        for (i, entry) in entries.iter().enumerate() {
+            let path_str = entry.display().to_string();
+            let filename_os = entry.file_name();
+            let filename = filename_os.unwrap_or_default().to_string_lossy();
+            let stem = entry.file_stem().unwrap_or_default().to_string_lossy();
             let extension = entry.extension().unwrap_or_default().to_string_lossy();
 
-            // Only process files ending in _up.sql or files without _up/_down suffix
-            if extension == "sql" {
-                let is_up = filename.ends_with("_up");
-                let base_name = if is_up {
-                    &filename[..filename.len() - 3] // Remove "_up"
-                } else {
-                    &filename
-                };
+            info!(
+                "Entry {}: path={}, filename={}, stem={}, ext={}",
+                i, path_str, filename, stem, extension
+            );
 
-                // Check if this is a paired migration
-                let up_path = if is_up {
-                    entry.clone()
-                } else {
-                    std::path::PathBuf::from(format!("{}_up.sql", base_name))
-                };
+            // Only process .sql files
+            if extension != "sql" {
+                info!("  -> Skipping (not .sql)");
+                continue;
+            }
 
+            // Check if this is a paired migration (xxx_up.sql + xxx_down.sql)
+            // or a standalone migration (xxx.sql)
+            let ends_up = stem.ends_with("_up");
+            let ends_down = stem.ends_with("_down");
+
+            info!("  -> ends_up={}, ends_down={}", ends_up, ends_down);
+
+            if ends_up {
+                // This is an explicit _up migration, look for _down pair
+                let base_name = &stem[..stem.len() - 3]; // Remove "_up"
+                let up_path = entry.clone();
                 let down_path = std::path::PathBuf::from(format!("{}_down.sql", base_name));
-
-                // Only add if up.sql exists
-                if up_path.exists() {
-                    migrations.push((base_name.to_string(), up_path, Some(down_path)));
-                }
+                migrations.push((base_name.to_string(), up_path, Some(down_path)));
+                info!("  -> Added as up/down pair: {}", base_name);
+            } else if !ends_down {
+                // This is a standalone migration (no _up or _down suffix)
+                let up_path = entry.clone();
+                let down_path = std::path::PathBuf::from(format!("{}_down.sql", stem));
+                migrations.push((stem.to_string(), up_path, Some(down_path)));
+                info!("  -> Added as standalone: {}", stem);
+            } else {
+                info!("  -> Skipping _down file");
             }
         }
 
+        info!("group_migrations returning {} migrations", migrations.len());
         migrations
     }
 
-    /// Apply a single migration
-    async fn apply_migration(&self, name: &str) -> Result<MigrationResult, MigrationError> {
-        let up_path = format!("{}/{}_up.sql", self.config.migrations_path, name);
-        let path = Path::new(&up_path);
-
-        if !path.exists() {
-            return Err(MigrationError::FileNotFound { name: up_path });
+    /// Apply a single migration from a specific file path
+    async fn apply_migration_from_path(
+        &self,
+        name: &str,
+        file_path: &std::path::PathBuf,
+    ) -> Result<MigrationResult, MigrationError> {
+        if !file_path.exists() {
+            return Err(MigrationError::FileNotFound {
+                name: file_path.display().to_string(),
+            });
         }
 
         let start = std::time::Instant::now();
-        let sql = std::fs::read_to_string(path)
-            .map_err(|e| MigrationError::FileNotFound { name: up_path })?;
+        let sql = std::fs::read_to_string(file_path).map_err(|_| MigrationError::FileNotFound {
+            name: file_path.display().to_string(),
+        })?;
 
         // Extract version from name
         let version = Self::extract_version(name);
@@ -333,7 +472,9 @@ impl MigrationService {
             success: Option<bool>,
         }
 
-        let rows: Vec<MigrationRow> = sqlx::query_as(
+        // Get migration history - if table doesn't exist, return empty (first run)
+        // Note: The migrations table is created by the first migration (00000000000000)
+        let result = sqlx::query_as::<_, MigrationRow>(
             r#"
             SELECT version, description, installed_on, execution_time, success
             FROM __sqlx_migrations
@@ -341,8 +482,16 @@ impl MigrationService {
             "#,
         )
         .fetch_all(&self.pool)
-        .await
-        .map_err(|e| MigrationError::Migration { source: e.into() })?;
+        .await;
+
+        let rows = match result {
+            Ok(rows) => rows,
+            Err(sqlx::Error::Database(e)) if e.message().contains("does not exist") => {
+                // Table doesn't exist yet (first run), return empty history
+                vec![]
+            }
+            Err(e) => return Err(MigrationError::Migration { source: e.into() }),
+        };
 
         Ok(rows
             .into_iter()
@@ -376,31 +525,41 @@ impl MigrationService {
         })
     }
 
-    /// Count expected migrations from the migrations directory
+    /// Count expected migrations from all configured migration directories
     fn count_expected_migrations(&self) -> Result<usize, MigrationError> {
-        let path = Path::new(&self.config.migrations_path);
+        let mut total_count = 0;
 
-        if !path.exists() {
-            return Ok(0);
+        for migrations_path in &self.config.migrations_paths {
+            let path = Path::new(migrations_path);
+
+            if !path.exists() {
+                continue;
+            }
+
+            let count = std::fs::read_dir(path)
+                .map_err(|e| MigrationError::DirectoryNotFound {
+                    path: e.to_string(),
+                })?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().map(|e| e == "sql").unwrap_or(false))
+                .count();
+
+            total_count += count;
         }
 
-        let count = std::fs::read_dir(path)
-            .map_err(|e| MigrationError::DirectoryNotFound {
-                path: e.to_string(),
-            })?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && p.extension().map(|e| e == "sql").unwrap_or(false)
-                    && p.file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .ends_with("_up")
-            })
-            .count();
+        Ok(total_count)
+    }
 
-        Ok(count)
+    /// Find a migration file across all configured paths
+    fn find_migration_file(&self, filename: &str) -> Option<std::path::PathBuf> {
+        for migrations_path in &self.config.migrations_paths {
+            let file_path = Path::new(migrations_path).join(filename);
+            if file_path.exists() {
+                return Some(file_path);
+            }
+        }
+        None
     }
 
     /// Revert the last applied migration
@@ -408,26 +567,23 @@ impl MigrationService {
         // Get the last applied migration
         let history = self.history().await?;
         let last = history.last().ok_or_else(|| MigrationError::NoMigrations {
-            path: self.config.migrations_path.clone(),
+            path: self.config.migrations_paths.join(", "),
         })?;
 
-        // Look for down.sql
-        let down_path = format!(
-            "{}/{}_down.sql",
-            self.config.migrations_path, last.description
-        );
+        // Look for down.sql in all configured paths
+        let down_filename = format!("{}_down.sql", last.description);
+        let down_path = self.find_migration_file(&down_filename).ok_or_else(|| {
+            MigrationError::FileNotFound {
+                name: down_filename.clone(),
+            }
+        })?;
 
-        let path = Path::new(&down_path);
-        if !path.exists() {
-            return Err(MigrationError::FileNotFound {
-                name: format!("{}_down.sql", last.description),
-            });
-        }
+        let sql =
+            std::fs::read_to_string(&down_path).map_err(|_| MigrationError::FileNotFound {
+                name: down_path.display().to_string(),
+            })?;
 
-        let sql = std::fs::read_to_string(path)
-            .map_err(|e| MigrationError::FileNotFound { name: down_path })?;
-
-        // Execute rollback - use as_str() to avoid sqlx Execute trait issues
+        // Execute rollback
         self.pool
             .execute(sql.as_str())
             .await
@@ -446,17 +602,15 @@ impl MigrationService {
         let history = self.history().await?;
 
         for migration in history.iter().rev() {
-            let down_path = format!(
-                "{}/{}_down.sql",
-                self.config.migrations_path, migration.description
-            );
+            let down_filename = format!("{}_down.sql", migration.description);
 
-            let path = Path::new(&down_path);
-            if path.exists() {
-                let sql = std::fs::read_to_string(path)
-                    .map_err(|e| MigrationError::FileNotFound { name: down_path })?;
+            if let Some(down_path) = self.find_migration_file(&down_filename) {
+                let sql = std::fs::read_to_string(&down_path).map_err(|_| {
+                    MigrationError::FileNotFound {
+                        name: down_path.display().to_string(),
+                    }
+                })?;
 
-                // Execute rollback - use as_str() to avoid sqlx Execute trait issues
                 self.pool
                     .execute(sql.as_str())
                     .await
@@ -521,9 +675,11 @@ impl SchemaValidationResult {
     }
 }
 
-/// Helper function to run migrations on application startup
+/// Helper function to run migrations on application startup.
+/// Uses `HODEI_MIGRATIONS_PATH` environment variable if set,
+/// otherwise falls back to default "migrations" path.
 pub async fn run_migrations(pool: &PgPool) -> Result<SchemaValidationResult, MigrationError> {
-    let config = MigrationConfig::default();
+    let config = MigrationConfig::from_env();
     let service = MigrationService::new(pool.clone(), config);
 
     // Check connection first

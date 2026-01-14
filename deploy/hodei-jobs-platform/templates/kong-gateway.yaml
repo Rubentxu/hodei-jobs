@@ -1,0 +1,62 @@
+{{- if and .Values.gateway.enabled (eq .Values.gateway.type "kong") -}}
+{{- $fullName := include "hodei-jobs-platform.fullname" . -}}
+{{- $gateway := .Values.gateway.kong -}}
+{{- $svcPort := 8080 -}}
+---
+# Standard Kubernetes Service - exposes the application
+# Using Kong via annotations instead of CRDs (CRDs in minikube are limited)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-grpc
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+  annotations:
+    # Kong proxy configuration via annotations
+    konghq.com/protocols: "http"
+    konghq.com/strip-path: "false"
+    {{- if $gateway.plugins.rateLimiting.enabled }}
+    konghq.com/plugins: {{ $fullName }}-rate-limit
+    {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $svcPort }}
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "hodei-jobs-platform.selectorLabels" . | nindent 4 }}
+---
+# Kong Plugin - Rate Limiting (standalone CRD)
+{{- if $gateway.plugins.rateLimiting.enabled }}
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: {{ $fullName }}-rate-limit
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+plugin: rate-limiting
+config:
+  minute: {{ $gateway.plugins.rateLimiting.minute }}
+  policy: "local"
+{{- end }}
+---
+# Kong Plugin - Request Transformer (standalone CRD)
+{{- if $gateway.plugins.requestTransformer.enabled }}
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: {{ $fullName }}-request-transformer
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+plugin: response-transformer
+config:
+  add:
+    headers:
+      - "X-Kong-Proxy:true"
+  remove:
+    headers:
+      - "connection"
+{{- end }}
+{{- end -}}

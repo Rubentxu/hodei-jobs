@@ -1,0 +1,21 @@
+{{- if and .Values.volumes.logs.enabled .Values.volumes.logs.persistent }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-logs
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+    app.kubernetes.io/part-of: hodei-jobs-platform
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.volumes.logs.size | default "5Gi" }}
+  {{- if .Values.volumes.logs.storageClass }}
+  storageClassName: {{ .Values.volumes.logs.storageClass }}
+  {{- end }}
+{{- end }}

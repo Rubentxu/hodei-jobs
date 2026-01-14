@@ -19,16 +19,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use hodei_server_domain::JobCreated;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
+use hodei_shared::event_topics::ALL_EVENTS;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
-use hodei_server_domain::JobCreated;
-use hodei_shared::event_topics::ALL_EVENTS;
 
 /// NATS connection configuration.
 ///
@@ -498,17 +498,22 @@ impl NatsEventBus {
         consumer_name: &str,
         filter_subject: Option<&str>,
     ) -> Result<PullConsumer, EventBusError> {
+        // First, get stream info (needs mutable stream)
         let mut stream = self.ensure_stream(subject).await?;
         let stream_info = stream
             .info()
             .await
             .map_err(|e| EventBusError::ConnectionError(e.to_string()))?;
         let stream_name = stream_info.config.name.clone();
+
         // Consumer ID includes filter_subject to ensure uniqueness
         let filter_suffix = filter_subject
             .map(|f| format!("-{}", f.replace('.', "-")))
             .unwrap_or_default();
         let consumer_id = format!("{}{}-{}", stream_name, filter_suffix, consumer_name);
+
+        // Re-obtain stream for consumer operations
+        let mut stream = self.ensure_stream(subject).await?;
 
         // Try to get existing consumer
         match stream.get_consumer(&consumer_id).await {
@@ -518,7 +523,6 @@ impl NatsEventBus {
             }
             Err(_) => {
                 // Consumer doesn't exist, create it
-                // Consumer ID includes filter_subject for uniqueness, so no need to delete duplicates
                 info!(
                     "Creating consumer {} for stream {} with filter {:?}",
                     consumer_id, stream_name, filter_subject
@@ -532,9 +536,8 @@ impl NatsEventBus {
             deliver_policy: DeliverPolicy::All,
             ack_policy: AckPolicy::Explicit,
             ack_wait: Duration::from_secs(30),
-            max_deliver: 5, // Retry up to 5 times
+            max_deliver: 5,
             max_ack_pending: 1000,
-            // For WorkQueue streams, filter_subject is required for multiple consumers
             filter_subject: filter_subject.map(|s| s.to_string()).unwrap_or_default(),
             ..Default::default()
         };

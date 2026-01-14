@@ -26,6 +26,13 @@ pub mod repositories {
     pub use crate::persistence::postgres::in_memory::test_in_memory::*;
 }
 
+// TDD Test Infrastructure (US-8410)
+#[cfg(feature = "test-utils")]
+pub mod testing {
+    pub use fixtures::{JobTestFixtures, SagaTestFixtures};
+    pub use mocks::{MockEventBus, MockJobRepository, MockSagaMetrics, MockSagaOrchestrator};
+}
+
 #[cfg(test)]
 pub mod test_infrastructure {
     use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobsFilter};

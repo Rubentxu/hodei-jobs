@@ -1,60 +1,67 @@
-# Hodei Worker Kubernetes Image
-# Optimized for Kubernetes deployments with health checks and graceful shutdown
-
 # =============================================================================
-# Stage 1: Builder
+# Hodei Jobs Platform - Worker Dockerfile
+# Standard multi-stage build (sin cargo-chef)
 # =============================================================================
-FROM rust:latest AS builder
+# syntax=docker/dockerfile:1.4
 
-WORKDIR /app
+# -----------------------------------------------------------------------------
+# Stage 1: Builder - Compile worker binary
+# -----------------------------------------------------------------------------
+FROM rust:1.92-slim AS builder
 
-# Install build dependencies (for Rust worker and asdf compilation)
 RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
     pkg-config \
     libssl-dev \
-    protobuf-compiler \
-    golang-go \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace files
+WORKDIR /app
+
+# Copy source files
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY proto ./proto
+COPY proto/ proto/
+COPY crates/ crates/
 
-# Build release binary
-RUN cargo build --release -p hodei-worker-bin
+ENV SQLX_OFFLINE=true
 
-# Build asdf binary and copy complete directory
+# Build worker binary
+RUN cargo build --release -p hodei-worker-bin && \
+    cp /app/target/release/hodei-worker-bin /app/hodei-worker-bin
+
+# -----------------------------------------------------------------------------
+# Stage 2: Build asdf (separate stage)
+# -----------------------------------------------------------------------------
+FROM golang:1.24-bookworm AS asdf-builder
+
 RUN git clone https://github.com/asdf-vm/asdf.git /tmp/asdf \
     && cd /tmp/asdf \
     && make \
-    && cp -r . /app/asdf
+    && cp -r . /asdf
 
-# =============================================================================
-# Stage 2: Runtime (minimal dependencies)
-# =============================================================================
-FROM debian:stable-slim AS runtime
+# -----------------------------------------------------------------------------
+# Stage 3: Runtime - Minimal production image
+# -----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
 
-# Install ONLY runtime dependencies needed for job execution
+# Install runtime dependencies for job execution
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    libssl3 \
     git \
     curl \
     unzip \
     tar \
-    # Dependencies needed by asdf plugins (Node.js, etc.)
     dirmngr \
     gpg \
     wget \
     python3 \
-    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy asdf complete directory from builder to standard location
-COPY --from=builder /app/asdf /usr/local/lib/asdf
+# Copy asdf from builder
+COPY --from=asdf-builder /asdf /usr/local/lib/asdf
 
-# Create asdf wrapper script that sets ASDF_DIR
+# Create asdf wrapper script
 RUN cat > /usr/local/bin/asdf <<'EOF'
 #!/usr/bin/env bash
 export ASDF_DIR="/usr/local/lib/asdf"
@@ -64,52 +71,35 @@ EOF
 RUN chmod +x /usr/local/bin/asdf \
     && echo '. /usr/local/lib/asdf/asdf.sh' >> /etc/bash.bashrc
 
-# Set ASDF_DIR environment variable
 ENV ASDF_DIR=/usr/local/lib/asdf
 
 # Copy worker binary
-COPY --from=builder /app/target/release/hodei-worker-bin /usr/local/bin/hodei-jobs-worker
+COPY --from=builder /app/hodei-worker-bin /usr/local/bin/hodei-jobs-worker
 
-# Tag the image with the correct name
-ARG IMAGE_TAG=hodei-jobs-worker
-
-# Create non-root user with writable home (T2.5)
-# Using /home/hodei for better isolation and consistency (T2.6)
-RUN mkdir -p /home/hodei \
-    /home/hodei/jobs \
-    /home/hodei/workspace \
+# Create non-root user with writable directories
+RUN mkdir -p /home/hodei /home/hodei/jobs /home/hodei/workspace \
     && useradd -r -u 1000 -g root -d /home/hodei hodei \
     && chown -R hodei:root /home/hodei \
-    && mkdir -p /tmp/hodei \
-    && chown -R hodei:root /tmp/hodei \
+    && mkdir -p /tmp/hodei /tmp/hodei-logs \
+    && chown -R hodei:root /tmp/hodei /tmp/hodei-logs \
     && chmod -R 755 /home/hodei/jobs /home/hodei/workspace
 
-# Set working directory to /home/hodei (T2.6)
 WORKDIR /home/hodei
 
-# Create writable log directory (mounted as tmpfs in Kubernetes for read-only root fs)
-# This allows the worker to persist logs locally when filesystem is writable
-# Path: /tmp/hodei-logs (matches Kubernetes hodei-tmp volume mount at /tmp)
-RUN mkdir -p /tmp/hodei-logs \
-    && chmod 755 /tmp/hodei-logs \
-    && chown -R hodei:root /tmp/hodei-logs
-
-# Set asdf directories to writable locations
+# asdf directories
 ENV ASDF_DATA_DIR=/home/hodei/.asdf
 ENV ASDF_CONFIG_FILE=/home/hodei/.asdfrc
 
 USER hodei
 
-# Environment variables (overridden at runtime via Pod spec)
+# Runtime environment variables (overridden by Pod spec)
 ENV HODEI_WORKER_ID=""
 ENV HODEI_SERVER_ADDRESS=""
 ENV HODEI_OTP_TOKEN=""
 ENV HODEI_LOG_LEVEL="info"
 ENV RUST_LOG="info"
 
-# Expose metrics port (if enabled)
 EXPOSE 9090
 
-# Default command
 ENTRYPOINT ["/usr/local/bin/hodei-jobs-worker"]
 CMD []

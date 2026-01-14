@@ -4,9 +4,14 @@
 
 mod config;
 mod startup;
+#[cfg(test)]
+mod tests_integration;
 
 use clap::Parser;
-use startup::run;
+use startup::{AppState, GrpcServerConfig, run, start_job_coordinator};
+
+use tracing::info;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 /// CLI arguments for hodei-server
 #[derive(clap::Parser, Debug)]
@@ -31,22 +36,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     setup_logging(args.debug);
 
-    // Build configuration
+    info!("╔═══════════════════════════════════════════════════════════════╗");
+    info!("║           Hodei Jobs Platform - gRPC Server                   ║");
+    info!("╚═══════════════════════════════════════════════════════════════╝");
+
+    // Get configuration
     let config = startup::StartupConfig::from_env()?;
+    let grpc_config = GrpcServerConfig::from_env();
 
-    // Run the application
-    run(config).await?;
+    info!("🚀 Starting Hodei Jobs Platform on {}", grpc_config.addr);
 
-    // Keep the application running
-    keep_running().await;
+    // Run the application (connects to DB, runs migrations, connects to NATS, initializes services)
+    let app_state = run(config).await?;
+
+    // Start JobCoordinator in background for reactive job processing
+    let _coordinator_handle = start_job_coordinator(
+        app_state.pool.clone(),
+        app_state.worker_registry.clone(),
+        app_state.job_repository.clone(),
+        app_state.event_bus().clone(),
+    )
+    .await;
+
+    // Start the gRPC server with all services
+    startup::start_grpc_server(
+        grpc_config.addr,
+        app_state,
+        grpc_config.enable_cors,
+        grpc_config.enable_grpc_web,
+    )
+    .await?;
 
     Ok(())
 }
 
 /// Setup logging based on debug flag.
 fn setup_logging(debug: bool) {
-    use tracing_subscriber::{EnvFilter, FmtSubscriber};
-
     let level = if debug { "debug" } else { "info" };
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
@@ -56,14 +81,4 @@ fn setup_logging(debug: bool) {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
-}
-
-/// Keep the application running until interrupted.
-async fn keep_running() {
-    // Wait for Ctrl+C
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!("Failed to setup signal handler: {}", e);
-    }
-
-    tracing::info!("Shutting down gracefully...");
 }

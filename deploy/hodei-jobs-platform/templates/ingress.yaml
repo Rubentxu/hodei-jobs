@@ -1,41 +1,200 @@
-{{- if .Values.ingress.enabled -}}
+{{- /*
+  Gateway-aware Ingress Template
+
+  Supports multiple gateway types:
+  - nginx: Standard NGINX Ingress Controller
+  - kong: Kong Gateway (Kubernetes Ingress)
+  - istio: Istio VirtualService and Gateway
+  - traefik: Traefik IngressRoute
+  - none: No ingress (use direct service access)
+*/ -}}
+
+{{- $fullName := include "hodei-jobs-platform.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{- $grpcPort := .Values.service.grpcPort -}}
+{{- $gateway := .Values.gateway -}}
+
+{{- /* NGINX Ingress */ -}}
+{{- if and $gateway.enabled (eq $gateway.type "nginx") }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "hodei-jobs-platform.fullname" . }}
+  name: {{ $fullName }}
   labels:
     {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-spec:
-  {{- if .Values.ingress.className }}
-  ingressClassName: {{ .Values.ingress.className }}
-  {{- end }}
-  {{- if .Values.ingress.tls }}
-  tls:
-    {{- range .Values.ingress.tls }}
-    - hosts:
-        {{- range .hosts }}
-        - {{ . | quote }}
-        {{- end }}
-      secretName: {{ .secretName }}
+    {{- if $gateway.nginx.annotations }}
+    {{- toYaml $gateway.nginx.annotations | nindent 4 }}
     {{- end }}
+    {{- if $gateway.nginx.grpcAnnotations.enabled }}
+    # gRPC-Web support for browser clients
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    {{- end }}
+spec:
+  {{- if $gateway.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $gateway.host | quote }}
+      secretName: {{ $gateway.tls.secretName }}
   {{- end }}
   rules:
-    {{- range .Values.ingress.hosts }}
-    - host: {{ .host | quote }}
+    - host: {{ $gateway.host | quote }}
       http:
         paths:
-          {{- range .paths }}
+          {{- range $gateway.paths }}
           - path: {{ .path }}
-            pathType: {{ .pathType }}
+            pathType: {{ .pathType | default "Prefix" }}
             backend:
               service:
-                name: {{ include "hodei-jobs-platform.fullname" $ }}
+                name: {{ $fullName }}
                 port:
-                  number: {{ $.Values.service.port }}
+                  number: {{ $svcPort }}
           {{- end }}
+{{- end }}
+
+{{- /* Kong Ingress */ -}}
+{{- if and $gateway.enabled (eq $gateway.type "kong") }}
+# Kong Gateway configuration is handled by kong-gateway.yaml template
+# This is a fallback Kubernetes Ingress for Kong
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-kong
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: "kong"
+    konghq.com/protocol: "http"
+spec:
+  {{- if $gateway.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $gateway.host | quote }}
+      secretName: {{ $gateway.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $gateway.host | quote }}
+      http:
+        paths:
+          {{- range $gateway.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "ImplementationSpecific" }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+{{- end }}
+
+{{- /* Istio Gateway and VirtualService */ -}}
+{{- if and $gateway.enabled (eq $gateway.type "istio") }}
+{{- $istio := $gateway.istio }}
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: {{ $fullName }}-gateway
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+spec:
+  servers:
+    - port:
+        number: {{ $svcPort }}
+        name: http
+        protocol: HTTP
+      {{- if $gateway.tls.enabled }}
+      tls:
+        mode: {{ $istio.tls.mode }}
+        credentialName: {{ $istio.tls.credentialName }}
+      {{- end }}
+      hosts:
+        {{- range $istio.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+    {{- if $gateway.tls.enabled }}
+    - port:
+        number: {{ $grpcPort }}
+        name: grpc
+        protocol: GRPC
+      tls:
+        mode: {{ $istio.tls.mode }}
+        credentialName: {{ $istio.tls.credentialName }}
+      hosts:
+        {{- range $istio.hosts }}
+        - {{ . | quote }}
+        {{- end }}
     {{- end }}
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+spec:
+  hosts:
+    {{- range $istio.hosts }}
+    - {{ . | quote }}
+    {{- end }}
+  gateways:
+    - {{ $fullName }}-gateway
+  http:
+    - match:
+        - uri:
+            prefix: "/"
+      route:
+        - destination:
+            host: {{ $fullName }}
+            port:
+              number: {{ $svcPort }}
+    - name: grpc-route
+      match:
+        - uri:
+            prefix: "/"
+        - port: {{ $grpcPort }}
+      route:
+        - destination:
+            host: {{ $fullName }}
+            port:
+              number: {{ $grpcPort }}
+{{- end }}
+
+{{- /* Traefik IngressRoute */ -}}
+{{- if and $gateway.enabled (eq $gateway.type "traefik") }}
+{{- $traefik := $gateway.traefik }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+  annotations:
+    {{- if $traefik.annotations }}
+    {{- toYaml $traefik.annotations | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if $gateway.tls.enabled }}
+  tls:
+    secretName: {{ $gateway.tls.secretName }}
+  {{- end }}
+  routes:
+    - kind: Rule
+      match: Host(`{{ $gateway.host }}`)
+      priority: 10
+      services:
+        - name: {{ $fullName }}
+          port: {{ $svcPort }}
+      {{- if $traefik.middlewares }}
+      middlewares:
+        {{- range $traefik.middlewares }}
+        - name: {{ .name }}
+        {{- end }}
+      {{- end }}
+{{- end }}
+
+{{- /* Direct Service access (no ingress) */ -}}
+{{- if or (not $gateway.enabled) (eq $gateway.type "none") }}
+# No ingress configured. Access the service directly:
+# - HTTP: {{ $fullName }}.{{ .Release.Namespace }}.svc.cluster.local:{{ $svcPort }}
+# - gRPC: {{ $fullName }}.{{ .Release.Namespace }}.svc.cluster.local:{{ $grpcPort }}
 {{- end }}

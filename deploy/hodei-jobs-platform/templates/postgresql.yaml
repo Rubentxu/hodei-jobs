@@ -52,11 +52,35 @@ spec:
           {{- toYaml .Values.postgresql.primary.resources | nindent 10 }}
       volumes:
       - name: postgresql-data
+        {{- if .Values.postgresql.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
+        {{- else }}
         emptyDir: {}
+        {{- end }}
       - name: postgresql-socket
         emptyDir:
           medium: Memory
           sizeLimit: 8Mi
+---
+{{- if .Values.postgresql.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.postgresql.persistence.size | default "10Gi" }}
+  {{- if .Values.postgresql.persistence.storageClass }}
+  storageClassName: {{ .Values.postgresql.persistence.storageClass }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

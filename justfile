@@ -108,6 +108,85 @@ dev-no-docker:
     @echo "💡 For full functionality, start Docker: sudo systemctl start docker"
     @bash /home/rubentxu/Proyectos/rust/package/hodei-job-platform/dev_no_docker.sh
 
+# =============================================================================
+# DEVSPACE COMMANDS (Fast Development with Minikube)
+# =============================================================================
+# Workflow: Binary sync + USR1 signal = ~6-11 seconds per change
+# No Docker image rebuild needed
+
+# Compile and start DevSpace development
+devspace-dev:
+    @echo "╔═══════════════════════════════════════════════════════════════╗"
+    @echo "║         HODEI JOBS - DESARROLLO RÁPIDO DEVSPACE               ║"
+    @echo "╚═══════════════════════════════════════════════════════════════╝"
+    @echo ""
+    @echo "🔨 Compilando hodei-server-bin..."
+    cargo build -p hodei-server-bin
+    @echo ""
+    @echo "🚀 Ejecuta: devspace dev"
+    @echo ""
+    @echo "En la terminal del pod:"
+    @echo "  • El servidor arrancará automáticamente"
+    @echo "  • Para recargar cambios: kill -USR1 \$$(cat /tmp/server.pid)"
+    @echo ""
+    @echo "O desde OTRA terminal local: just reload"
+
+# Compile and restart process (main reload command)
+reload:
+    @echo "╔═══════════════════════════════════════════════════════════════╗"
+    @echo "║         COMPILANDO + REINICIANDO PROCESO                      ║"
+    @echo "╚═══════════════════════════════════════════════════════════════╝"
+    @echo ""
+    @echo "🔨 Compilando..."
+    cargo build -p hodei-server-bin
+    @echo ""
+    @echo "🔄 Enviando señal USR1 para reiniciar proceso..."
+    @kubectl exec -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform -- \
+        sh -c 'kill -USR1 $$(cat /tmp/server.pid 2>/dev/null)' 2>/dev/null || \
+        echo "⚠️  ERROR: Asegúrate de que devspace dev esté ejecutándose"
+    @echo ""
+    @echo "✅ Listo! El servidor se ha recargado (~6-11 segundos)"
+
+# Check server status in pod
+devspace-status:
+    @echo "╔═══════════════════════════════════════════════════════════════╗"
+    @echo "║              ESTADO DEL SERVIDOR                              ║"
+    @echo "╚═══════════════════════════════════════════════════════════════╝"
+    @echo ""
+    @echo "Pods en hodei-jobs:"
+    kubectl get pods -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform
+    @echo ""
+    @echo "Proceso del servidor:"
+    kubectl exec -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform -- \
+        sh -c 'cat /tmp/server.pid 2>/dev/null && \
+               ps aux | grep hodei-server | grep -v grep || \
+               echo "⚠️  Proceso no encontrado"' 2>/dev/null || \
+        echo "⚠️  Pod no disponible"
+
+# Stream server logs
+devspace-logs:
+    @echo "📝 Logs del servidor (Ctrl+C para salir):"
+    kubectl logs -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform --follow --tail=50
+
+# Only sync files (no restart)
+devspace-sync:
+    devspace sync
+
+# Restart only the process (alternative to reload)
+devspace-restart-process:
+    @echo "🔄 Reiniciando proceso del servidor..."
+    kubectl exec -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform -- \
+        sh -c 'kill -USR1 $$(cat /tmp/server.pid 2>/dev/null)' 2>/dev/null || \
+        echo "⚠️  No se pudo reiniciar. Ejecuta: devspace dev"
+    @echo "✅ Señal USR1 enviada"
+
+# Restart full pod (slower, use only if needed)
+devspace-restart-pod:
+    @echo "🔄 Reiniciando pod completo..."
+    kubectl delete pod -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform
+    @echo "⏳ Esperando a que el pod esté listo..."
+    kubectl rollout status deployment -n hodei-jobs hodei-hodei-jobs-platform --timeout=60s
+
 # Stop any running server
 stop-server:
     @echo "Checking if server is running on port 50051..."
@@ -935,3 +1014,26 @@ check-provider-health:
 # Restart entire system (clean + start)
 restart-all:
     @./scripts/restart-system.sh
+
+# =============================================================================
+# RUST-SCRIPTS (scripts/system-*.rs)
+# =============================================================================
+# Development automation scripts using rust-script
+# Install: cargo install rust-script
+# Docs: https://rust-script.org
+
+# System status dashboard (requires K8s)
+system-status:
+    @rust-script scripts/system-status.rs --once
+
+# System status with continuous refresh
+system-status-watch:
+    @rust-script scripts/system-status.rs
+
+# Debug job by ID
+debug-job id:
+    @rust-script scripts/debug-job.rs --job-id {{id}}
+
+# Debug job by correlation ID
+debug-job-corr corr:
+    @rust-script scripts/debug-job.rs --correlation-id {{corr}}

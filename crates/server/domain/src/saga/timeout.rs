@@ -7,22 +7,13 @@
 //! 2. Notificación al worker para terminación (via CommandBus)
 //! 3. Actualización del job a estado FAILED (via CommandBus)
 //! 4. Liberación del worker para nuevos jobs (via CommandBus)
-//!
-//! EPIC-53: Timeout Compensation Fix - Enhanced compensation logic
-//! - TerminateWorkerStep now has proper compensation
-//! - Added ReleaseWorkerStep to return worker to available pool
-//! - Better idempotency and error handling
-//!
-//! GAP-52-03: TimeoutSaga now uses CommandBus for all step operations
 
+use crate::WorkerState;
 use crate::command::erased::dispatch_erased;
 use crate::saga::commands::cancellation::ReleaseWorkerCommand;
-use crate::saga::commands::timeout::{
-    MarkJobTimedOutCommand, TerminateWorkerCommand,
-};
+use crate::saga::commands::timeout::{MarkJobTimedOutCommand, TerminateWorkerCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
-use crate::WorkerState;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -269,11 +260,15 @@ impl SagaStep for TerminateWorkerStep {
                 will_compensate: true,
             })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-                will_compensate: true,
-            })?.clone()
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: true,
+                })?
+                .clone()
         };
 
         // Check if we should skip (job not in running state)
@@ -465,11 +460,15 @@ impl SagaStep for MarkJobFailedStep {
                 will_compensate: true,
             })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-                will_compensate: true,
-            })?.clone()
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: true,
+                })?
+                .clone()
         };
 
         // Check skip flag
@@ -609,11 +608,15 @@ impl SagaStep for ReleaseWorkerStep {
                 will_compensate: true,
             })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: "CommandBus not available in SagaServices".to_string(),
-                will_compensate: true,
-            })?.clone()
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: "CommandBus not available in SagaServices".to_string(),
+                    will_compensate: true,
+                })?
+                .clone()
         };
 
         // Check skip flag (job was not in running state)

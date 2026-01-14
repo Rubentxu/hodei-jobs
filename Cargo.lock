@@ -1887,6 +1887,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "tokio",
+ "tokio-stream",
  "tonic 0.14.2",
  "tonic-reflection",
  "tonic-web",

@@ -16,9 +16,15 @@ global:
 replicaCount: 1
 
 image:
-  repository: hodei-jobs-platform
+  repository: localhost:5000/hodei-jobs-server
   pullPolicy: Never
-  tag: "local"
+  tag: "latest"
+
+# Worker image configuration (separate from server image)
+workerImage:
+  repository: localhost:5000/hodei-jobs-worker
+  pullPolicy: Never
+  tag: "latest"
 
 # Disable autoscaling for local development
 autoscaling:
@@ -27,6 +33,11 @@ autoscaling:
 # Disable PDB for local development
 podDisruptionBudget:
   enabled: false
+
+# Disable startup probe (server doesn't have /health/startup endpoint)
+startupProbe: null
+livenessProbe: null
+readinessProbe: null
 
 # =============================================================================
 # NATS Configuration (using simplified settings)
@@ -95,15 +106,30 @@ nats:
     enabled: false
 
 # =============================================================================
-# Init Containers Configuration
-# Migrations are handled automatically by the server at startup
-# (schema_migrations table tracks applied migrations)
+# Volume Claims & Storage
 # =============================================================================
-initContainers:
-  enabled: true
-  waitFor:
-    dependencies:
-      enabled: true  # Wait for PostgreSQL and NATS before starting
+volumes:
+  # Temporary storage (ephemeral)
+  tmp:
+    enabled: true
+    sizeLimit: "1Gi"
+  # Cache volume (ephemeral)
+  cache:
+    enabled: true
+    sizeLimit: "1Gi"
+  # Log storage (persistent - survives pod restarts)
+  logs:
+    enabled: true
+    persistent: true
+    storageClass: "standard"
+    size: "5Gi"
+  # Work volume for job execution
+  work:
+    enabled: false
+    storageClass: ""
+    size: "10Gi"
+  # Custom volumes
+  extra: []
 
 # =============================================================================
 # Service Account Configuration
@@ -135,7 +161,40 @@ web:
   enabled: false
 
 # =============================================================================
-# Disable ingress for local development
+# Gateway Configuration (Kong API Gateway for local development)
+# =============================================================================
+gateway:
+  enabled: true
+  type: "kong"  # Using Kong API Gateway with Minikube
+  host: "hodei.local"
+  tls:
+    enabled: false  # Disable TLS for local development
+  kong:
+    enabled: true
+    adminPort: 8001
+    proxyPort: 80
+    proxyTLSPort: 443
+    plugins:
+      rateLimiting:
+        enabled: true
+        minute: 1000
+      requestTransformer:
+        enabled: true
+    upstream:
+      target: "hodei-jobs-platform.hodei-jobs.svc.cluster.local"
+      port: 8080
+      healthchecks:
+        active:
+          concurrency: 10
+          healthy:
+            httpStatuses: [200, 201, 204]
+            interval: 5
+          unhealthy:
+            httpFailures: 5
+            interval: 10
+
+# =============================================================================
+# Legacy Ingress (disabled - using Kong gateway instead)
 # =============================================================================
 ingress:
   enabled: false

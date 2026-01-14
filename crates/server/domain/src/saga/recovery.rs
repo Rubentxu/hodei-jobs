@@ -8,8 +8,10 @@
 use super::Saga;
 use super::types::{SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::command::erased::dispatch_erased;
-use crate::saga::commands::{CreateWorkerCommand, DestroyOldWorkerCommand, DestroyWorkerCommand, TransferJobCommand};
-use crate::shared_kernel::{JobId, WorkerId, JobState};
+use crate::saga::commands::{
+    CreateWorkerCommand, DestroyOldWorkerCommand, DestroyWorkerCommand, TransferJobCommand,
+};
+use crate::shared_kernel::{JobId, JobState, WorkerId};
 use async_trait::async_trait;
 use std::time::Duration;
 use tracing::{info, instrument, warn};
@@ -143,26 +145,32 @@ impl SagaStep for ProvisionNewWorkerStep {
         "ProvisionNewWorker"
     }
 
-    /// EPIC-50 GAP-CRITICAL-01: Execute with real provisioning operations
+    /// Execute with real provisioning operations
     #[instrument(skip(context), fields(step = "ProvisionNewWorker"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        // Check idempotency - skip if already provisioned
+        if let Some(Ok(true)) = context.get_metadata::<bool>("recovery_provisioning_done") {
+            info!(job_id = %self.job_id, "Recovery provisioning already done, skipping");
+            return Ok(());
+        }
+
         // Get command bus from context (clone to release borrow)
         let command_bus = {
-            let services_ref = context
-                .services()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "SagaServices not available in context".to_string(),
-                    will_compensate: false,
-                })?;
+            let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: false,
+            })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| {
-                SagaError::StepFailed {
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
                     step: self.name().to_string(),
                     message: "CommandBus not available in SagaServices".to_string(),
                     will_compensate: false,
-                }
-            })?.clone()
+                })?
+                .clone()
         };
 
         let provider_id_str = self
@@ -171,15 +179,16 @@ impl SagaStep for ProvisionNewWorkerStep {
             .unwrap_or_else(|| "default".to_string());
 
         // Parse provider ID
-        let provider_uuid = uuid::Uuid::parse_str(&provider_id_str)
-            .unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let provider_uuid =
+            uuid::Uuid::parse_str(&provider_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4());
         let provider_id = crate::ProviderId::from_uuid(provider_uuid);
 
         // Build worker spec for recovery
         let worker_spec = crate::workers::WorkerSpec::new(
             "hodei-jobs-worker:latest".to_string(),
             "http://localhost:50051".to_string(),
-        ).with_label("recovery", "true");
+        )
+        .with_label("recovery", "true");
 
         // Create command
         let command = CreateWorkerCommand::new(
@@ -190,13 +199,14 @@ impl SagaStep for ProvisionNewWorkerStep {
         );
 
         // Dispatch command via CommandBus
-        let result = dispatch_erased(&command_bus, command)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to dispatch CreateWorkerCommand: {}", e),
-                will_compensate: true,
-            })?;
+        let result =
+            dispatch_erased(&command_bus, command)
+                .await
+                .map_err(|e| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: format!("Failed to dispatch CreateWorkerCommand: {}", e),
+                    will_compensate: true,
+                })?;
 
         // Store metadata for compensation
         context
@@ -224,7 +234,7 @@ impl SagaStep for ProvisionNewWorkerStep {
         Ok(())
     }
 
-    /// EPIC-50 GAP-CRITICAL-01: Compensate by destroying provisioned worker
+    /// Compensate by destroying provisioned worker
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         // Check if we actually provisioned a worker
         let provisioning_done = context
@@ -252,17 +262,19 @@ impl SagaStep for ProvisionNewWorkerStep {
                         message: "SagaServices not available".to_string(),
                     })?;
 
-                services.command_bus.as_ref().ok_or_else(|| {
-                    SagaError::CompensationFailed {
+                services
+                    .command_bus
+                    .as_ref()
+                    .ok_or_else(|| SagaError::CompensationFailed {
                         step: self.name().to_string(),
                         message: "CommandBus not available".to_string(),
-                    }
-                })?.clone()
+                    })?
+                    .clone()
             };
 
             // Parse worker ID
-            let worker_id = WorkerId::from_string(&worker_id_str)
-                .unwrap_or_else(|| WorkerId::new());
+            let worker_id =
+                WorkerId::from_string(&worker_id_str).unwrap_or_else(|| WorkerId::new());
 
             let provider_id = crate::ProviderId::new(); // Placeholder, command will use what's needed
 
@@ -315,7 +327,10 @@ pub struct TransferJobStep {
 impl TransferJobStep {
     #[inline]
     pub fn new(job_id: JobId, old_worker_id: WorkerId) -> Self {
-        Self { job_id, old_worker_id }
+        Self {
+            job_id,
+            old_worker_id,
+        }
     }
 }
 
@@ -327,26 +342,32 @@ impl SagaStep for TransferJobStep {
         "TransferJob"
     }
 
-    /// EPIC-50 GAP-CRITICAL-01: Execute real job transfer operations
+    /// Execute real job transfer operations
     #[instrument(skip(context), fields(step = "TransferJob"))]
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+        // Check idempotency - skip if already transferred
+        if let Some(Ok(true)) = context.get_metadata::<bool>("job_transfer_done") {
+            info!(job_id = %self.job_id, "Job transfer already done, skipping");
+            return Ok(());
+        }
+
         // Get command bus from context (clone to release borrow)
         let command_bus = {
-            let services_ref = context
-                .services()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "SagaServices not available in context".to_string(),
-                    will_compensate: false,
-                })?;
+            let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: false,
+            })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| {
-                SagaError::StepFailed {
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
                     step: self.name().to_string(),
                     message: "CommandBus not available in SagaServices".to_string(),
                     will_compensate: false,
-                }
-            })?.clone()
+                })?
+                .clone()
         };
 
         // Get the new worker ID from previous step
@@ -359,8 +380,8 @@ impl SagaStep for TransferJobStep {
                 will_compensate: true,
             })?;
 
-        let new_worker_id = WorkerId::from_string(&new_worker_id_str)
-            .unwrap_or_else(|| WorkerId::new());
+        let new_worker_id =
+            WorkerId::from_string(&new_worker_id_str).unwrap_or_else(|| WorkerId::new());
 
         // Create TransferJobCommand
         let command = TransferJobCommand::new(
@@ -371,13 +392,14 @@ impl SagaStep for TransferJobStep {
         );
 
         // Dispatch command via CommandBus
-        let _result = dispatch_erased(&command_bus, command)
-            .await
-            .map_err(|e| SagaError::StepFailed {
-                step: self.name().to_string(),
-                message: format!("Failed to dispatch TransferJobCommand: {}", e),
-                will_compensate: true,
-            })?;
+        let _result =
+            dispatch_erased(&command_bus, command)
+                .await
+                .map_err(|e| SagaError::StepFailed {
+                    step: self.name().to_string(),
+                    message: format!("Failed to dispatch TransferJobCommand: {}", e),
+                    will_compensate: true,
+                })?;
 
         // Store metadata
         context
@@ -399,7 +421,7 @@ impl SagaStep for TransferJobStep {
         Ok(())
     }
 
-    /// EPIC-50 GAP-CRITICAL-01: Compensate by reverting job assignment
+    /// Compensate by reverting job assignment
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         let transfer_done = context
             .get_metadata::<bool>("job_transfer_done")
@@ -474,21 +496,21 @@ impl SagaStep for TerminateOldWorkerStep {
     async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
         // Get command bus from context (clone to release borrow)
         let command_bus = {
-            let services_ref = context
-                .services()
-                .ok_or_else(|| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: "SagaServices not available in context".to_string(),
-                    will_compensate: false,
-                })?;
+            let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available in context".to_string(),
+                will_compensate: false,
+            })?;
 
-            services_ref.command_bus.as_ref().ok_or_else(|| {
-                SagaError::StepFailed {
+            services_ref
+                .command_bus
+                .as_ref()
+                .ok_or_else(|| SagaError::StepFailed {
                     step: self.name().to_string(),
                     message: "CommandBus not available in SagaServices".to_string(),
                     will_compensate: false,
-                }
-            })?.clone()
+                })?
+                .clone()
         };
 
         let provider_id = crate::ProviderId::new(); // Placeholder as DestroyOldWorkerCommand handles ID lookup if needed

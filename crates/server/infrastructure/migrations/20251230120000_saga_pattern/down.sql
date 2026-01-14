@@ -1,6 +1,0 @@
--- Rollback: Saga Pattern
--- Version: 20251230120000
-
-DROP TABLE IF EXISTS saga_audit_events CASCADE;
-DROP TABLE IF EXISTS saga_steps CASCADE;
-DROP TABLE IF EXISTS sagas CASCADE;

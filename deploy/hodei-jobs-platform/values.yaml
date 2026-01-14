@@ -80,17 +80,99 @@ service:
   annotations: {}
 
 # =============================================================================
-# Ingress Configuration
+# Gateway Configuration (Ingress / API Gateway)
+# =============================================================================
+# Select gateway type: "nginx", "kong", "istio", "traefik", or "none"
+gateway:
+  enabled: true
+  type: "nginx"  # nginx, kong, istio, traefik, none
+
+  # Common settings for all gateways
+  host: "hodei.example.com"
+  tls:
+    enabled: true
+    secretName: "hodei-tls"
+
+  # Kong Gateway specific settings
+  kong:
+    enabled: false
+    adminPort: 8001
+    proxyPort: 8000
+    proxyTLSPort: 8443
+    # Kong Plugin configuration
+    plugins:
+      rateLimiting:
+        enabled: true
+        minute: 100
+      requestTransformer:
+        enabled: true
+    # Upstream configuration - use Hodei service name
+    upstream:
+      target: "hodei-jobs-platform"  # Will be resolved to FQDN at runtime
+      port: 8080
+      healthchecks:
+        active:
+          concurrency: 10
+          healthy:
+            httpStatuses: [200, 201, 204]
+            interval: 5
+          unhealthy:
+            httpFailures: 5
+            interval: 10
+
+  # NGINX Ingress specific settings
+  nginx:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+      # gRPC specific
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    # Alternative gRPC annotation for newer versions
+    grpcAnnotations:
+      enabled: true
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+
+  # Istio Gateway settings
+  istio:
+    enabled: false
+    gateway:
+      selector: "istio=ingressgateway"
+    tls:
+      mode: "SIMPLE"
+      credentialName: "hodei-tls"
+    hosts:
+      - "hodei.example.com"
+
+  # Traefik settings
+  traefik:
+    enabled: false
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    middlewares:
+      - name: "hodei-stripprefix"
+      - name: "hodei-compress"
+
+  # Path configuration
+  paths:
+    - path: "/"
+      pathType: "Prefix"
+
+  # HTTP only (no TLS) - for development
+  httpOnly: false
+
+# =============================================================================
+# Legacy Ingress Configuration (DEPRECATED - Use gateway instead)
 # =============================================================================
 ingress:
-  enabled: true
+  enabled: false  # Disabled in favor of gateway configuration
   className: "nginx"
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  annotations: {}
   hosts:
     - host: hodei.example.com
       paths:
@@ -343,8 +425,6 @@ postgresql:
     password: "postgres"
   # Resources
   primary:
-    persistence:
-      enabled: false
     resources:
       limits:
         cpu: 1000m
@@ -355,6 +435,11 @@ postgresql:
   # Pod disruption budget
   pdb:
     enabled: false  # Disabled for local development
+  # Persistence configuration
+  persistence:
+    enabled: true  # Enable PVC for data persistence
+    size: 10Gi
+    storageClass: standard
 
 # =============================================================================
 # External Secrets Configuration (GitOps)
@@ -646,14 +731,19 @@ sidecars:
 # Volume Claims & Storage
 # =============================================================================
 volumes:
-  # Temporary storage
+  # Temporary storage (ephemeral)
   tmp:
     enabled: true
     sizeLimit: "1Gi"
-  # Cache volume
+  # Cache volume (ephemeral)
   cache:
     enabled: true
     sizeLimit: "1Gi"
+  # Log storage (persistent - survives pod restarts)
+  logs:
+    enabled: true
+    storageClass: ""  # Use default storage class
+    size: "5Gi"
   # Work volume for job execution
   work:
     enabled: false

@@ -140,7 +140,6 @@ where
 
         // Create or get the stream
         let mut stream = self.ensure_stream().await?;
-
         let stream_info = stream
             .info()
             .await
@@ -148,13 +147,16 @@ where
         let stream_name = stream_info.config.name.clone();
         let consumer_id = format!("{}-{}", stream_name, self.config.durable_name);
 
+        // Re-obtain stream for consumer operations
+        let mut stream = self.ensure_stream().await?;
+
         // Create durable consumer with pull configuration
         let consumer_config = PullConsumerConfig {
             durable_name: Some(consumer_id.clone()),
             deliver_policy: DeliverPolicy::All,
             ack_policy: AckPolicy::Explicit,
             ack_wait: Duration::from_secs(30),
-            max_deliver: self.config.max_deliver as i64, // EPIC-43: Use configured max_deliver
+            max_deliver: self.config.max_deliver as i64,
             max_ack_pending: self.config.concurrency as i64,
             ..Default::default()
         };

@@ -16,6 +16,7 @@ hodei-jobs = { workspace = true }
 
 # Async & Runtime
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 serde = { workspace = true, features = ["derive"] }
