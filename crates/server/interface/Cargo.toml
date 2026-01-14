@@ -22,6 +22,7 @@ http-body-util = { workspace = true }
 tonic = { workspace = true }
 tonic-web = { workspace = true }
 tonic-reflection = { workspace = true }
+tonic-health = "0.12"
 prost = { workspace = true }
 
 # Utils
