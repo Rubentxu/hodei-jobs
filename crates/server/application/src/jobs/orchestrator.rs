@@ -9,7 +9,6 @@ use crate::{
     workers::lifecycle::{WorkerLifecycleConfig, WorkerLifecycleManager},
 };
 use dashmap::DashMap;
-use hodei_server_domain::saga::OrchestratorError;
 use hodei_server_domain::{
     command::DynCommandBus,
     event_bus::EventBus,
@@ -621,7 +620,7 @@ mod tests {
             &self,
             saga: &dyn hodei_server_domain::saga::Saga,
             context: SagaContext,
-        ) -> std::result::Result<SagaExecutionResult, OrchestratorError> {
+        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
             Ok(SagaExecutionResult {
                 saga_id: SagaId::new(),
                 saga_type: saga.saga_type(),
@@ -636,7 +635,7 @@ mod tests {
         async fn execute(
             &self,
             context: &SagaContext,
-        ) -> std::result::Result<SagaExecutionResult, OrchestratorError> {
+        ) -> std::result::Result<SagaExecutionResult, Self::Error> {
             Ok(SagaExecutionResult {
                 saga_id: context.saga_id.clone(),
                 saga_type: SagaType::Recovery,
@@ -651,14 +650,11 @@ mod tests {
         async fn get_saga(
             &self,
             _saga_id: &SagaId,
-        ) -> std::result::Result<Option<SagaContext>, OrchestratorError> {
+        ) -> std::result::Result<Option<SagaContext>, Self::Error> {
             Ok(None)
         }
 
-        async fn cancel_saga(
-            &self,
-            _saga_id: &SagaId,
-        ) -> std::result::Result<(), OrchestratorError> {
+        async fn cancel_saga(&self, _saga_id: &SagaId) -> std::result::Result<(), Self::Error> {
             Ok(())
         }
     }
