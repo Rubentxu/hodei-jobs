@@ -9,10 +9,11 @@ mod tests_integration;
 
 use clap::Parser;
 use startup::{
-    AppState, GrpcServerConfig, run, start_background_tasks, start_job_coordinator,
-    start_saga_consumers,
+    AppState, GracefulShutdown, GrpcServerConfig, ShutdownConfig, run, start_background_tasks,
+    start_job_coordinator, start_saga_consumers, start_signal_handler,
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -30,6 +31,10 @@ struct Args {
     /// Enable debug mode
     #[arg(short, long)]
     debug: bool,
+
+    /// Shutdown timeout in seconds
+    #[arg(long, default_value = "30")]
+    shutdown_timeout: u64,
 }
 
 #[tokio::main]
@@ -43,6 +48,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("╔═══════════════════════════════════════════════════════════════╗");
     info!("║           Hodei Jobs Platform - gRPC Server                   ║");
     info!("╚═══════════════════════════════════════════════════════════════╝");
+
+    // Initialize graceful shutdown coordinator
+    let shutdown_config =
+        ShutdownConfig::default().with_timeout(Duration::from_secs(args.shutdown_timeout));
+    let shutdown = GracefulShutdown::new(shutdown_config);
+
+    // Start signal handlers (SIGTERM, SIGINT)
+    start_signal_handler(&shutdown).await;
+    info!("✓ Signal handlers started");
 
     // Get configuration
     let config = startup::StartupConfig::from_env()?;
@@ -80,15 +94,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _background_tasks_handle =
         start_background_tasks(app_state.pool.clone(), saga_orchestrator.clone()).await;
 
-    // Start the gRPC server with all services
-    startup::start_grpc_server(
-        grpc_config.addr,
-        app_state,
-        grpc_config.enable_cors,
-        grpc_config.enable_grpc_web,
-    )
-    .await?;
+    // Wait for shutdown signal
+    info!("Server running. Waiting for shutdown signal (SIGTERM/SIGINT)...");
 
+    // Start the gRPC server with shutdown integration
+    tokio::select! {
+        result = startup::start_grpc_server(
+            grpc_config.addr,
+            app_state,
+            grpc_config.enable_cors,
+            grpc_config.enable_grpc_web,
+        ) => {
+            match result {
+                Ok(_) => info!("gRPC server stopped"),
+                Err(e) => tracing::error!("gRPC server error: {}", e),
+            }
+        }
+        signal = shutdown.wait_for_signal() => {
+            info!("Shutdown signal received: {}", signal);
+        }
+    }
+
+    info!("Shutting down gracefully...");
     Ok(())
 }
 

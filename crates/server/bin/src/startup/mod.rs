@@ -3,15 +3,22 @@
 //! Uses exponential backoff for resilient connections to database and NATS.
 //! Separates gRPC server lifecycle into dedicated grpc_server module.
 //! Separates service initialization into services_init module.
+//! Provides graceful shutdown coordination via shutdown module.
 
 mod grpc_server;
 mod services_init;
+mod shutdown;
 
 pub use grpc_server::{GrpcServerConfig, start_grpc_server};
 pub use services_init::{
     BackgroundTasksShutdownHandle, CoordinatorShutdownHandle, GrpcServices,
     SagaConsumersShutdownHandle, initialize_grpc_services, start_background_tasks,
     start_job_coordinator, start_saga_consumers,
+};
+pub use shutdown::{
+    GracefulShutdown, ShutdownConfig, ShutdownHandle, ShutdownReason, ShutdownSignal,
+    ShutdownState, Shutdownable, WithGracefulShutdown, execute_shutdown_sequence,
+    start_signal_handler,
 };
 
 use backoff::{ExponentialBackoff, future::retry};

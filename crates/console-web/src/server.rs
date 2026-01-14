@@ -269,6 +269,7 @@ mod tests {
         unsafe {
             std::env::remove_var("HODEI_GRPC_ADDRESS");
             std::env::remove_var("HODEI_GRPC_PROXY");
+            std::env::remove_var("HODEI_SERVER_HOST");
         }
 
         let state = ServerState::from_env().unwrap();
