@@ -27,8 +27,14 @@ pub use shutdown::{
 };
 
 use backoff::{ExponentialBackoff, future::retry};
+use dashmap::DashMap;
+use hodei_server_application::workers::lifecycle::{
+    WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
+};
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::saga::{InMemorySagaOrchestrator, SagaOrchestrator};
+use hodei_server_domain::shared_kernel::ProviderId;
+use hodei_server_domain::workers::WorkerProvider;
 use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
 use hodei_server_infrastructure::persistence::postgres::PostgresSagaRepository;
@@ -302,13 +308,37 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
     info!("✓ ProviderConfigRepository initialized");
 
-    // Step 8: Initialize providers
-    let provider_init_result = initialize_providers(
+    // Step 8: Initialize WorkerLifecycleManager with empty providers map
+    // The providers will be registered during provider initialization
+    let providers_map: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
+    let lifecycle_manager = WorkerLifecycleManagerBuilder::new()
+        .with_registry(worker_registry.clone())
+        .with_providers(providers_map.clone())
+        .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
+        .with_outbox_repository(outbox_repository.clone())
+        .build();
+    let lifecycle_manager = Arc::new(lifecycle_manager);
+    info!("✓ WorkerLifecycleManager initialized with empty providers map");
+
+    // Step 9: Initialize providers and register them in lifecycle manager
+    let registry = Arc::new(
+        hodei_server_application::providers::registry::ProviderRegistry::new(
+            provider_config_repository.clone(),
+        ),
+    );
+    let provider_init_config = ProvidersInitConfig::default();
+    let initializer = ProvidersInitializer::new(
         provider_config_repository.clone(),
-        Some(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>),
+        registry,
+        provider_init_config,
     )
-    .await
-    .map_err(|e| anyhow::anyhow!("Provider initialization failed: {}", e))?;
+    .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
+    .with_lifecycle_manager(lifecycle_manager.clone());
+
+    let provider_init_result = initializer
+        .initialize()
+        .await
+        .map_err(|e| anyhow::anyhow!("Provider initialization failed: {}", e))?;
 
     info!(
         "✓ Providers initialized: {}",

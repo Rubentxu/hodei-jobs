@@ -14,9 +14,9 @@
 //!
 //! The initialization happens in the following order:
 //! 1. Load enabled providers from the database
-//! 2. Validate each provider's connectivity and permissions
-//! 3. Build provider runtime instances
-//! 4. Register providers in the registry
+//! 2. Validate each provider's connectivity and permissions using KubernetesConnectionValidator
+//! 3. Build provider runtime instances (KubernetesProvider, DockerProvider, etc.)
+//! 4. Register providers in ProviderRegistry for lifecycle management
 //! 5. Return summary of initialization results
 //!
 //! # Error Handling
@@ -30,19 +30,50 @@
 use hodei_server_application::providers::bootstrap::ProviderBootstrap;
 use hodei_server_application::providers::registry::ProviderRegistry;
 use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::providers::config::{
-    ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
+    DockerConfig, KubernetesConfig, ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
 };
 use hodei_server_domain::providers::errors::{
     ErrorMessage, InitializationSummary, ProviderInitializationError, ProviderInitializationResult,
 };
-use hodei_server_domain::providers::validator::ValidationReport;
+use hodei_server_domain::providers::validator::ProviderConnectionValidator;
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, ProviderStatus};
-use hodei_server_domain::workers::ProviderType;
+use hodei_server_domain::workers::{ProviderType, WorkerProvider};
+use hodei_server_infrastructure::providers::docker::DockerProvider;
+use hodei_server_infrastructure::providers::kubernetes::KubernetesProvider;
+use hodei_server_infrastructure::providers::kubernetes_validator::KubernetesConnectionValidator;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
+
+/// Metrics for provider initialization
+#[derive(Debug, Clone, Default)]
+pub struct ProviderInitMetrics {
+    pub duration_ms: u64,
+    pub providers_total: usize,
+    pub providers_successful: usize,
+    pub providers_failed: usize,
+    pub providers_with_warnings: usize,
+}
+
+impl ProviderInitMetrics {
+    pub fn record(
+        &mut self,
+        duration_ms: u64,
+        total: usize,
+        successful: usize,
+        failed: usize,
+        warnings: usize,
+    ) {
+        self.duration_ms = duration_ms;
+        self.providers_total = total;
+        self.providers_successful = successful;
+        self.providers_failed = failed;
+        self.providers_with_warnings = warnings;
+    }
+}
 
 /// Configuration for provider initialization
 #[derive(Debug, Clone)]
@@ -162,12 +193,14 @@ impl ProvidersInitResult {
 pub struct ProvidersInitializer {
     /// Provider configuration repository
     repository: Arc<dyn ProviderConfigRepository>,
-    /// Provider registry for runtime management
+    /// Provider registry for runtime management (configuration)
     registry: Arc<ProviderRegistry>,
     /// Event bus for domain events
     event_bus: Option<Arc<dyn EventBus>>,
     /// Configuration for initialization
     config: ProvidersInitConfig,
+    /// Optional lifecycle manager for registering runtime providers
+    lifecycle_manager: Option<Arc<hodei_server_application::workers::WorkerLifecycleManager>>,
 }
 
 impl ProvidersInitializer {
@@ -182,6 +215,7 @@ impl ProvidersInitializer {
             registry,
             event_bus: None,
             config,
+            lifecycle_manager: None,
         }
     }
 
@@ -191,16 +225,28 @@ impl ProvidersInitializer {
         self
     }
 
+    /// Set the lifecycle manager for registering runtime providers
+    pub fn with_lifecycle_manager(
+        mut self,
+        lifecycle_manager: Arc<hodei_server_application::workers::WorkerLifecycleManager>,
+    ) -> Self {
+        self.lifecycle_manager = Some(lifecycle_manager);
+        self
+    }
+
     /// Initialize all providers
     ///
     /// This method:
     /// 1. Loads enabled providers from the database
-    /// 2. Validates connectivity for each provider
-    /// 3. Registers providers in the registry
+    /// 2. Validates connectivity for each provider using ProviderConnectionValidator
+    /// 3. Creates runtime provider instances (KubernetesProvider, DockerProvider, etc.)
+    /// 4. Registers providers in the lifecycle manager for worker provisioning
+    /// 5. Publishes ProviderRegistered events
     ///
     /// Returns an error if `fail_if_no_providers` is true and no providers
     /// are available, or if all providers fail initialization.
     pub async fn initialize(&self) -> Result<ProvidersInitResult, ProviderInitializationError> {
+        let start_time = Instant::now();
         info!("Starting provider initialization...");
 
         // Step 1: Load enabled providers from database
@@ -246,15 +292,16 @@ impl ProvidersInitializer {
         let mut successful = Vec::new();
         let mut failed = Vec::new();
         let mut warnings = Vec::new();
+        let mut initialized_providers: Vec<(ProviderId, Arc<dyn WorkerProvider>)> = Vec::new();
 
-        for provider in &providers {
-            match self.initialize_provider(provider).await {
-                Ok(_warning) => {
-                    // Provider initialized successfully (with potential warnings)
-                    successful.push(provider.id.clone());
+        for provider_config in &providers {
+            match self.create_and_register_provider(provider_config).await {
+                Ok(provider) => {
+                    successful.push(provider_config.id.clone());
+                    initialized_providers.push((provider_config.id.clone(), provider));
                     info!(
-                        "✓ Provider '{}' ({}) initialized successfully",
-                        provider.name, provider.provider_type
+                        "✓ Provider '{}' ({}) initialized and registered successfully",
+                        provider_config.name, provider_config.provider_type
                     );
                 }
                 Err(ref err) => {
@@ -267,95 +314,265 @@ impl ProvidersInitializer {
                         }
                         DomainError::InvalidProviderConfig { message } => {
                             ProviderInitializationError::InvalidConfiguration {
-                                provider_id: provider.id.clone(),
-                                provider_type: provider.provider_type.clone(),
+                                provider_id: provider_config.id.clone(),
+                                provider_type: provider_config.provider_type.clone(),
                                 reason: message.clone(),
                             }
                         }
                         _ => ProviderInitializationError::UnexpectedError {
-                            provider_id: provider.id.clone(),
-                            provider_type: provider.provider_type.clone(),
+                            provider_id: provider_config.id.clone(),
+                            provider_type: provider_config.provider_type.clone(),
                             source: ErrorMessage::from(err.to_string()),
                         },
                     };
 
                     if init_err.is_fatal() {
-                        failed.push((provider.id.clone(), init_err));
+                        failed.push((provider_config.id.clone(), init_err));
                         error!(
                             "✗ Provider '{}' ({}) failed fatally: {}",
-                            provider.name, provider.provider_type, err
+                            provider_config.name, provider_config.provider_type, err
                         );
                     } else {
-                        warnings.push((provider.id.clone(), init_err));
+                        warnings.push((provider_config.id.clone(), init_err));
                         warn!(
                             "! Provider '{}' ({}) initialized with warnings: {}",
-                            provider.name, provider.provider_type, err
+                            provider_config.name, provider_config.provider_type, err
                         );
                     }
                 }
             }
         }
 
-        let result =
-            ProvidersInitResult::with_failures(successful, failed, warnings, providers.len());
+        // Step 5: Register all successfully initialized providers in lifecycle manager
+        if let Some(ref lifecycle) = self.lifecycle_manager {
+            for (provider_id, provider) in &initialized_providers {
+                lifecycle.register_provider(provider.clone()).await;
+                debug!("Registered provider {} in lifecycle manager", provider_id);
+            }
+        }
 
-        // Step 5: Check if we have any usable providers
+        // Calculate duration
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        let result = ProvidersInitResult::with_failures(
+            successful.clone(),
+            failed.clone(),
+            warnings.clone(),
+            providers.len(),
+        );
+
+        // Step 6: Check if we have any usable providers
         if !result.has_any_provider() && self.config.fail_if_no_providers {
             error!("All providers failed initialization, failing startup");
             return Err(ProviderInitializationError::NoActiveProviders.into());
         }
 
-        info!("{}", result.summary_message());
+        // Step 7: Publish ProviderRegistered events for successful providers
+        self.publish_provider_registered_events(&successful).await;
+
+        // Record metrics
+        info!(
+            "Provider initialization completed in {}ms: {} successful, {} failed, {} warnings",
+            duration_ms,
+            successful.len(),
+            failed.len(),
+            warnings.len()
+        );
+
         Ok(result)
     }
 
-    /// Initialize a single provider
-    async fn initialize_provider(
+    /// Create and register a provider from configuration
+    async fn create_and_register_provider(
         &self,
         config: &ProviderConfig,
-    ) -> std::result::Result<ProviderInitializationError, DomainError> {
-        // Validate provider if configured
-        if self.config.validate_providers
-            && !self
-                .config
-                .skip_validation_for
-                .contains(&config.provider_type)
-        {
-            // For now, we skip detailed validation and just check config is valid
-            // In production, this would use ProviderConnectionValidator
-            info!(
-                "Skipping detailed validation for provider '{}' ({}), config is valid",
-                config.name, config.provider_type
-            );
-        }
+    ) -> std::result::Result<Arc<dyn WorkerProvider>, DomainError> {
+        // Step 1: Validate provider configuration and connectivity
+        self.validate_provider(config).await?;
 
-        // Provider is ready for use (with zero warnings)
-        Ok(ProviderInitializationError::ValidationWarnings {
-            provider_id: config.id.clone(),
-            provider_type: config.provider_type.clone(),
-            warnings_count: 0,
-        })
+        // Step 2: Create provider instance based on type
+        let provider: Arc<dyn WorkerProvider> = match &config.type_config {
+            ProviderTypeConfig::Kubernetes(k8s_config) => {
+                let k8s_provider = self.create_kubernetes_provider(config, k8s_config).await?;
+                Arc::new(k8s_provider) as Arc<dyn WorkerProvider>
+            }
+            ProviderTypeConfig::Docker(docker_config) => {
+                let docker_provider = self.create_docker_provider(config, docker_config).await?;
+                Arc::new(docker_provider) as Arc<dyn WorkerProvider>
+            }
+            _ => {
+                // Unsupported provider type - return error
+                return Err(DomainError::InvalidProviderConfig {
+                    message: format!(
+                        "Provider type '{}' is not supported in this build",
+                        config.provider_type
+                    ),
+                });
+            }
+        };
+
+        Ok(provider)
     }
 
-    /// Validate a provider's connectivity
-    async fn validate_provider(
+    /// Create a KubernetesProvider from configuration
+    async fn create_kubernetes_provider(
         &self,
         config: &ProviderConfig,
-    ) -> Result<ValidationReport, ProviderInitializationError> {
-        // TODO: Implement actual provider validation using ProviderConnectionValidator
-        // For now, we just check that the provider config is valid
-        debug!(
-            "Validating provider '{}' ({})",
-            config.name, config.provider_type
+        k8s_config: &hodei_server_domain::providers::KubernetesConfig,
+    ) -> std::result::Result<KubernetesProvider, DomainError> {
+        // Use the ProviderId from the config, not a new one
+        let provider_id = config.id.clone();
+
+        // Convert domain config to infrastructure config
+        let tolerations: Vec<hodei_server_infrastructure::providers::KubernetesToleration> =
+            k8s_config
+                .tolerations
+                .iter()
+                .map(
+                    |t| hodei_server_infrastructure::providers::KubernetesToleration {
+                        key: Some(t.key.clone()),
+                        operator: Some(t.operator.clone()),
+                        value: t.value.clone(),
+                        effect: Some(t.effect.clone()),
+                        toleration_seconds: None,
+                    },
+                )
+                .collect();
+
+        let infra_k8s_config = hodei_server_infrastructure::providers::KubernetesConfig {
+            namespace: k8s_config.namespace.clone(),
+            enable_dynamic_namespaces: false,
+            namespace_prefix: "hodei".to_string(),
+            kubeconfig_path: k8s_config.kubeconfig_path.clone(),
+            context: None,
+            service_account: Some(k8s_config.service_account.clone()),
+            base_labels: k8s_config.node_selector.clone(),
+            base_annotations: HashMap::new(),
+            node_selector: k8s_config.node_selector.clone(),
+            tolerations,
+            pod_affinity: None,
+            pod_anti_affinity: None,
+            image_pull_secrets: k8s_config.image_pull_secrets.clone(),
+            default_cpu_request: "100m".to_string(),
+            default_memory_request: "128Mi".to_string(),
+            default_cpu_limit: "1000m".to_string(),
+            default_memory_limit: "512Mi".to_string(),
+            ttl_seconds_after_finished: None,
+            creation_timeout_secs: 300,
+            pod_security_standard:
+                hodei_server_infrastructure::providers::PodSecurityStandard::Baseline,
+            security_context:
+                hodei_server_infrastructure::providers::SecurityContextConfig::default(),
+            enable_hpa: false,
+            hpa_config: hodei_server_infrastructure::providers::HPAConfig::default(),
+        };
+
+        // Create KubernetesProvider with the infrastructure config
+        let provider = KubernetesProvider::with_provider_id(provider_id, infra_k8s_config)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!(
+                    "Failed to create KubernetesProvider for '{}': {}",
+                    config.name, e
+                ),
+            })?;
+
+        info!(
+            "Created KubernetesProvider '{}' with namespace '{}'",
+            config.name, k8s_config.namespace
         );
 
-        // Return a successful validation report (no actual validation done yet)
-        Ok(ValidationReport::success(
-            config.id.clone(),
-            config.name.clone(),
-            0,
-            vec![],
-        ))
+        Ok(provider)
+    }
+
+    /// Create a DockerProvider from configuration
+    async fn create_docker_provider(
+        &self,
+        config: &ProviderConfig,
+        docker_config: &DockerConfig,
+    ) -> std::result::Result<DockerProvider, DomainError> {
+        let provider = DockerProvider::with_config(docker_config.clone())
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!(
+                    "Failed to create DockerProvider for '{}': {}",
+                    config.name, e
+                ),
+            })?;
+
+        info!(
+            "Created DockerProvider '{}' with socket '{}'",
+            config.name, docker_config.socket_path
+        );
+
+        Ok(provider)
+    }
+
+    /// Validate a provider's connectivity and permissions
+    async fn validate_provider(&self, config: &ProviderConfig) -> Result<(), DomainError> {
+        // Skip validation for test providers
+        if config.provider_type == ProviderType::Test {
+            return Ok(());
+        }
+
+        // Create validator based on provider type
+        let validator: Box<dyn ProviderConnectionValidator> = match &config.type_config {
+            ProviderTypeConfig::Kubernetes(_) => Box::new(KubernetesConnectionValidator::new()),
+            _ => {
+                // For other types, skip validation for now
+                debug!(
+                    "Skipping validation for provider type '{}'",
+                    config.provider_type
+                );
+                return Ok(());
+            }
+        };
+
+        // Run validation with timeout
+        let validation_result =
+            tokio::time::timeout(self.config.validation_timeout, validator.validate(config))
+                .await
+                .map_err(|_| DomainError::InfrastructureError {
+                    message: format!(
+                        "Validation timed out for provider '{}' after {}s",
+                        config.name,
+                        self.config.validation_timeout.as_secs()
+                    ),
+                })?
+                .map_err(|e| DomainError::InfrastructureError {
+                    message: format!("Validation failed for provider '{}': {}", config.name, e),
+                });
+
+        match validation_result {
+            Ok(()) => {
+                debug!("Provider '{}' validation passed", config.name);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Publish ProviderRegistered events for all successfully initialized providers
+    async fn publish_provider_registered_events(&self, provider_ids: &[ProviderId]) {
+        if let Some(ref event_bus) = self.event_bus {
+            for provider_id in provider_ids {
+                let event = DomainEvent::ProviderRegistered {
+                    provider_id: provider_id.clone(),
+                    provider_type: "unknown".to_string(), // Could fetch from registry
+                    config_summary: format!("Provider {} registered at startup", provider_id),
+                    occurred_at: chrono::Utc::now(),
+                    correlation_id: Some("startup".to_string()),
+                    actor: Some("provider-initializer".to_string()),
+                };
+
+                if let Err(e) = event_bus.publish(&event).await {
+                    error!(
+                        "Failed to publish ProviderRegistered event for {}: {}",
+                        provider_id, e
+                    );
+                }
+            }
+        }
     }
 
     /// Run provider bootstrap from configuration file

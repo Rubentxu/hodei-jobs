@@ -21,7 +21,7 @@ pub use firecracker::{
 };
 pub use kubernetes::{
     KubernetesConfig, KubernetesConfigBuilder, KubernetesProvider, KubernetesProviderBuilder,
-    KubernetesToleration, PodSecurityStandard,
+    KubernetesToleration, PodSecurityStandard, SecurityContextConfig,
 };
 pub use kubernetes_health::{
     HealthCheckResult, HealthStatus, KubernetesHealthChecker, KubernetesSLIs, KubernetesSLOs,
@@ -29,7 +29,7 @@ pub use kubernetes_health::{
 pub use kubernetes_hpa::{HPAConfig, KubernetesHPAManager};
 pub use kubernetes_metrics::KubernetesProviderMetrics;
 pub use kubernetes_validator::KubernetesConnectionValidator;
-pub use pod_spec_factory::{PodSpecFactory, PodSpecFactoryConfig, PodSpecBuildResult};
+pub use pod_spec_factory::{PodSpecBuildResult, PodSpecFactory, PodSpecFactoryConfig};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_worker_provider;
