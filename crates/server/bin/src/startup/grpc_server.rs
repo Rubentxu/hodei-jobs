@@ -13,7 +13,7 @@ use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
-use super::{AppState, initialize_grpc_services};
+use super::AppState;
 use hodei_jobs::{
     job_execution_service_server::JobExecutionServiceServer,
     log_stream_service_server::LogStreamServiceServer,
@@ -97,18 +97,12 @@ pub async fn start_grpc_server(
         GrpcWebLayer::new()
     };
 
-    // Initialize all gRPC services with their dependencies
-    let event_bus = app_state.event_bus();
-    info!("Starting initialization of gRPC services...");
-    let services = initialize_grpc_services(
-        app_state.pool.clone(),
-        app_state.worker_registry,
-        app_state.job_repository,
-        app_state.token_store,
-        event_bus,
-        app_state.outbox_repository,
-    );
-    info!("Finished initialization of gRPC services.");
+    // Use gRPC services from app_state (already initialized for job coordinator)
+    let services = app_state
+        .grpc_services
+        .as_ref()
+        .expect("gRPC services must be initialized before starting the server");
+    info!("Using pre-initialized gRPC services");
 
     // Add reflection service for debugging
     info!("Building reflection service...");
@@ -120,7 +114,7 @@ pub async fn start_grpc_server(
     info!("✓ Reflection service built");
 
     // Create LogStreamServiceGrpc wrapper
-    let log_stream_grpc = LogStreamServiceGrpc::new(services.log_stream_service);
+    let log_stream_grpc = LogStreamServiceGrpc::new(services.log_stream_service.clone());
     info!("✓ LogStreamServiceGrpc created");
 
     // Build server with all services
@@ -130,16 +124,20 @@ pub async fn start_grpc_server(
         .http2_keepalive_timeout(Some(Duration::from_secs(10)))
         .layer(cors)
         .layer(grpc_web_layer)
-        .add_service(WorkerAgentServiceServer::new(services.worker_agent_service))
-        .add_service(JobExecutionServiceServer::new(
-            services.job_execution_service,
+        .add_service(WorkerAgentServiceServer::new(
+            services.worker_agent_service.clone(),
         ))
-        .add_service(SchedulerServiceServer::new(services.scheduler_service))
+        .add_service(JobExecutionServiceServer::new(
+            services.job_execution_service.clone(),
+        ))
+        .add_service(SchedulerServiceServer::new(
+            services.scheduler_service.clone(),
+        ))
         .add_service(ProviderManagementServiceServer::new(
-            services.provider_management_service,
+            services.provider_management_service.clone(),
         ))
         .add_service(LogStreamServiceServer::new(log_stream_grpc))
-        .add_service(MetricsServiceServer::new(services.metrics_service))
+        .add_service(MetricsServiceServer::new(services.metrics_service.clone()))
         .add_service(reflection_service);
 
     info!("✓ All gRPC services registered, binding to {}", addr);

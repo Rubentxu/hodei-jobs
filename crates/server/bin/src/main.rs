@@ -9,8 +9,8 @@ mod startup;
 
 use clap::Parser;
 use startup::{
-    AppState, GracefulShutdown, GrpcServerConfig, ShutdownConfig, run, start_background_tasks,
-    start_job_coordinator, start_saga_consumers, start_signal_handler,
+    AppState, GracefulShutdown, GrpcServerConfig, ShutdownConfig, initialize_grpc_services, run,
+    start_background_tasks, start_job_coordinator, start_saga_consumers, start_signal_handler,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,14 +67,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the application (connects to DB, runs migrations, connects to NATS, initializes services)
     let app_state = run(config).await?;
 
+    // Initialize gRPC services first (before starting job coordinator)
+    let event_bus = app_state.event_bus();
+    let grpc_services = initialize_grpc_services(
+        app_state.pool.clone(),
+        app_state.worker_registry.clone(),
+        app_state.job_repository.clone(),
+        app_state.token_store.clone(),
+        event_bus,
+        app_state.outbox_repository.clone(),
+    );
+    info!("✓ gRPC services initialized");
+
     // Start JobCoordinator in background for reactive job processing
     let _coordinator_handle = start_job_coordinator(
         app_state.pool.clone(),
         app_state.worker_registry.clone(),
         app_state.job_repository.clone(),
         app_state.event_bus().clone(),
+        app_state.token_store.clone(),
+        app_state.lifecycle_manager.clone(),
+        grpc_services.worker_agent_service.clone(),
+        app_state.saga_orchestrator.clone(),
     )
     .await;
+
+    // Store gRPC services in app_state for gRPC server
+    let mut app_state = app_state;
+    app_state.grpc_services = Some(Arc::new(grpc_services));
 
     // Start saga consumers for event-driven saga execution
     use hodei_server_infrastructure::persistence::postgres::{

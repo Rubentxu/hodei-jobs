@@ -28,9 +28,11 @@ pub use shutdown::{
 
 use backoff::{ExponentialBackoff, future::retry};
 use dashmap::DashMap;
+use hodei_server_application::saga::recovery_saga::DynRecoverySagaCoordinator;
 use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
 };
+use hodei_server_domain::command::InMemoryErasedCommandBus;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::saga::{InMemorySagaOrchestrator, SagaOrchestrator};
 use hodei_server_domain::shared_kernel::ProviderId;
@@ -76,8 +78,12 @@ pub struct AppState {
     pub saga_orchestrator: Arc<
         dyn SagaOrchestrator<Error = hodei_server_domain::shared_kernel::DomainError> + Send + Sync,
     >,
+    /// Worker lifecycle manager for provisioning and recovery
+    pub lifecycle_manager: Arc<WorkerLifecycleManager>,
     /// Provider initialization result
     pub provider_init_result: Option<ProvidersInitResult>,
+    /// gRPC services container (for sharing between coordinator and server)
+    pub grpc_services: Option<Arc<GrpcServices>>,
 }
 
 impl AppState {
@@ -96,7 +102,9 @@ impl AppState {
                 + Send
                 + Sync,
         >,
+        lifecycle_manager: Arc<WorkerLifecycleManager>,
         provider_init_result: Option<ProvidersInitResult>,
+        grpc_services: Option<Arc<GrpcServices>>,
     ) -> Self {
         Self {
             pool,
@@ -107,7 +115,9 @@ impl AppState {
             nats_event_bus,
             outbox_repository,
             saga_orchestrator,
+            lifecycle_manager,
             provider_init_result,
+            grpc_services,
         }
     }
 
@@ -308,7 +318,20 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
     info!("✓ ProviderConfigRepository initialized");
 
-    // Step 8: Initialize WorkerLifecycleManager with empty providers map
+    // Step 8: Initialize recovery saga coordinator
+    let command_bus: Arc<InMemoryErasedCommandBus> = Arc::new(InMemoryErasedCommandBus::new());
+    let recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator> = Arc::new(
+        DynRecoverySagaCoordinator::builder()
+            .with_orchestrator(saga_orchestrator.clone())
+            .with_command_bus(command_bus)
+            .with_worker_registry(worker_registry.clone())
+            .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
+            .build()
+            .expect("Failed to build recovery saga coordinator"),
+    );
+    info!("✓ RecoverySagaCoordinator initialized");
+
+    // Step 9: Initialize WorkerLifecycleManager with empty providers map
     // The providers will be registered during provider initialization
     let providers_map: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
     let lifecycle_manager = WorkerLifecycleManagerBuilder::new()
@@ -316,11 +339,12 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         .with_providers(providers_map.clone())
         .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
         .with_outbox_repository(outbox_repository.clone())
+        .with_recovery_saga_coordinator(recovery_saga_coordinator.clone())
         .build();
     let lifecycle_manager = Arc::new(lifecycle_manager);
     info!("✓ WorkerLifecycleManager initialized with empty providers map");
 
-    // Step 9: Initialize providers and register them in lifecycle manager
+    // Step 10: Initialize providers and register them in lifecycle manager
     let registry = Arc::new(
         hodei_server_application::providers::registry::ProviderRegistry::new(
             provider_config_repository.clone(),
@@ -356,7 +380,9 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         nats_event_bus,
         outbox_repository,
         saga_orchestrator,
+        lifecycle_manager,
         Some(provider_init_result),
+        None, // grpc_services will be initialized later as Arc
     ))
 }
 

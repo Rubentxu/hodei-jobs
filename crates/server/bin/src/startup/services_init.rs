@@ -13,9 +13,16 @@ use tracing::info;
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::create::CreateJobUseCase;
 use hodei_server_application::jobs::dispatcher::JobDispatcher;
+use hodei_server_application::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_application::providers::ProviderRegistry;
+use hodei_server_application::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use hodei_server_application::saga::timeout_checker::DynTimeoutChecker;
 use hodei_server_application::scheduling::SchedulerConfig;
+use hodei_server_application::workers::lifecycle::WorkerLifecycleManager;
+use hodei_server_application::workers::provisioning::WorkerProvisioningService;
+use hodei_server_application::workers::provisioning_impl::{
+    DefaultWorkerProvisioningService, ProvisioningConfig,
+};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::iam::WorkerBootstrapTokenStore;
 use hodei_server_domain::jobs::JobQueue;
@@ -33,11 +40,12 @@ use hodei_server_infrastructure::persistence::postgres::{
 };
 use hodei_server_interface::grpc::{
     JobExecutionServiceImpl, LogStreamService, MetricsServiceImpl, ProviderManagementServiceImpl,
-    SchedulerServiceImpl, WorkerAgentServiceImpl,
+    SchedulerServiceImpl, WorkerAgentServiceImpl, worker_command_sender::GrpcWorkerCommandSender,
 };
 
 /// Container for all initialized gRPC services.
 /// Used to register them with the tonic Server.
+#[derive(Clone)]
 pub struct GrpcServices {
     pub worker_agent_service: WorkerAgentServiceImpl,
     pub job_execution_service: JobExecutionServiceImpl,
@@ -191,11 +199,29 @@ async fn process_pending_job(job_queue: &Arc<dyn JobQueue>) -> anyhow::Result<()
 ///
 /// This processor polls the job queue and dispatches jobs to workers.
 /// It runs as a separate Tokio task for reactive event processing.
+///
+/// # Arguments
+/// * `pool` - Database connection pool
+/// * `worker_registry` - Worker registry for registration
+/// * `job_repository` - Job repository for persistence
+/// * `event_bus` - Event bus for publishing events
+/// * `token_store` - OTP token store for worker authentication
+/// * `lifecycle_manager` - Worker lifecycle manager for provisioning
+/// * `saga_orchestrator` - Saga orchestrator for saga-based workflows
 pub async fn start_job_coordinator(
     pool: sqlx::PgPool,
     worker_registry: Arc<dyn WorkerRegistry>,
     job_repository: Arc<dyn JobRepository>,
     event_bus: Arc<dyn EventBus>,
+    token_store: Arc<dyn WorkerBootstrapTokenStore>,
+    lifecycle_manager: Arc<WorkerLifecycleManager>,
+    worker_agent_service: WorkerAgentServiceImpl,
+    saga_orchestrator: Arc<
+        dyn hodei_server_domain::saga::SagaOrchestrator<
+                Error = hodei_server_domain::shared_kernel::DomainError,
+            > + Send
+            + Sync,
+    >,
 ) -> CoordinatorShutdownHandle {
     info!("Initializing job coordinator for reactive job processing...");
 
@@ -218,21 +244,45 @@ pub async fn start_job_coordinator(
             ),
         );
 
-    // Create JobDispatcher with minimal dependencies for dispatch
+    // Create ProvisioningService with real implementation
+    let server_address =
+        std::env::var("HODEI_GRPC_ADDRESS").unwrap_or_else(|_| "http://localhost:9090".to_string());
+    let provisioning_config = ProvisioningConfig::new(server_address);
+    let providers_map = lifecycle_manager.providers_map();
+    let provisioning_service: Arc<dyn WorkerProvisioningService> =
+        Arc::new(DefaultWorkerProvisioningService::new(
+            worker_registry.clone(),
+            token_store.clone(),
+            providers_map,
+            provisioning_config,
+        ));
+    info!("✓ WorkerProvisioningService initialized");
+
+    // Create scheduler config
     let scheduler_config = hodei_server_domain::scheduling::SchedulerConfig::default();
+
+    // Create WorkerCommandSender with real gRPC implementation
+    let grpc_command_sender = GrpcWorkerCommandSender::new(worker_agent_service);
+    let worker_command_sender: Arc<
+        dyn hodei_server_application::workers::commands::WorkerCommandSender,
+    > = Arc::new(grpc_command_sender);
+    info!("✓ GrpcWorkerCommandSender initialized");
+
+    // Create JobDispatcher with real provisioning_service
     let job_dispatcher = Arc::new(JobDispatcher::new(
         job_queue.clone(),
         job_repository.clone(),
         worker_registry.clone(),
         provider_registry.clone(),
         scheduler_config,
-        Arc::new(hodei_server_application::workers::commands::NoopWorkerCommandSender),
+        worker_command_sender,
         event_bus.clone(),
         outbox_repository.clone(),
-        None, // provisioning_service
-        None, // execution_saga_dispatcher
-        None, // provisioning_saga_coordinator
+        Some(provisioning_service), // Now we have real provisioning!
+        None,                       // execution_saga_dispatcher (optional)
+        None,                       // provisioning_saga_coordinator (optional)
     ));
+    info!("✓ JobDispatcher initialized with provisioning service");
 
     // Start the job dispatcher in background
     let dispatcher = job_dispatcher.clone();
