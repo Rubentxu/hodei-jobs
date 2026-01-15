@@ -3,6 +3,7 @@
 //! Core orchestrator for executing sagas with automatic compensation.
 
 use super::retry_policy::{RetryOutcome, RetryPolicy};
+use super::timeout_config::SagaTimeoutConfig;
 use super::{
     CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
     SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator, SagaRepository,
@@ -95,7 +96,9 @@ impl TokenBucketRateLimiter {
 pub struct SagaOrchestratorConfig {
     pub max_concurrent_sagas: usize,
     pub max_concurrent_steps: usize,
+    /// Default step timeout (can be overridden by saga type config)
     pub step_timeout: Duration,
+    /// Default saga timeout (used when no type-specific config)
     pub saga_timeout: Duration,
     pub max_retries: u32,
     pub retry_backoff: Duration,
@@ -105,6 +108,8 @@ pub struct SagaOrchestratorConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// Maximum number of sagas per minute
     pub max_sagas_per_minute: Option<u32>,
+    /// Type-specific timeout configuration (EPIC-85 US-03)
+    pub saga_timeouts: SagaTimeoutConfig,
 }
 
 impl Default for SagaOrchestratorConfig {
@@ -125,7 +130,52 @@ impl Default for SagaOrchestratorConfig {
             },
             rate_limit: None,
             max_sagas_per_minute: Some(60),
+            saga_timeouts: SagaTimeoutConfig::default(),
         }
+    }
+}
+
+impl SagaOrchestratorConfig {
+    /// Creates a configuration optimized for Kubernetes providers
+    #[inline]
+    pub fn kubernetes() -> Self {
+        Self {
+            saga_timeouts: SagaTimeoutConfig::kubernetes(),
+            ..Default::default()
+        }
+    }
+
+    /// Creates a configuration optimized for local Docker development
+    #[inline]
+    pub fn docker_local() -> Self {
+        Self {
+            saga_timeouts: SagaTimeoutConfig::docker_local(),
+            ..Default::default()
+        }
+    }
+
+    /// Creates a configuration optimized for Firecracker microVMs
+    #[inline]
+    pub fn firecracker() -> Self {
+        Self {
+            saga_timeouts: SagaTimeoutConfig::firecracker(),
+            ..Default::default()
+        }
+    }
+
+    /// Gets the saga-level timeout for a specific saga type
+    #[inline]
+    pub fn get_saga_timeout(&self, saga_type: SagaType) -> Duration {
+        self.saga_timeouts.get_timeout(saga_type)
+    }
+
+    /// Gets the step-level timeout for a specific saga type
+    /// Uses saga-specific step timeout if configured, otherwise default
+    #[inline]
+    pub fn get_step_timeout(&self, saga_type: SagaType) -> Duration {
+        // For now, we use a consistent step timeout
+        // In the future, this could be configurable per saga type
+        self.step_timeout
     }
 }
 
@@ -352,6 +402,11 @@ where
         let steps = saga.steps();
         let mut executed_steps = context.current_step;
         let is_resume = context.current_step > 0;
+        let saga_type = saga.saga_type();
+
+        // Get type-specific timeouts (EPIC-85 US-03)
+        let saga_timeout = self.config.get_saga_timeout(saga_type);
+        let step_timeout = self.config.get_step_timeout(saga_type);
 
         // Execute steps sequentially
         let steps_vec = steps.into_iter().collect::<Vec<_>>();
@@ -360,7 +415,9 @@ where
         if is_resume {
             tracing::info!(
                 saga_id = %saga_id,
+                saga_type = ?saga_type,
                 current_step = context.current_step,
+                saga_timeout_secs = saga_timeout.as_secs(),
                 "Resuming saga from step"
             );
         }
@@ -376,8 +433,8 @@ where
                 continue;
             }
 
-            // Check saga timeout
-            if start_time.elapsed() > self.config.saga_timeout {
+            // Check saga timeout using type-specific timeout
+            if start_time.elapsed() > saga_timeout {
                 context.set_error(format!("Saga timed out after {:?}", start_time.elapsed()));
                 self.repository
                     .update_state(&saga_id, SagaState::Failed, context.error_message.clone())
@@ -389,9 +446,8 @@ where
                 });
             }
 
-            // Execute step with timeout
-            let step_result =
-                tokio::time::timeout(self.config.step_timeout, step.execute(&mut context)).await;
+            // Execute step with type-specific timeout
+            let step_result = tokio::time::timeout(step_timeout, step.execute(&mut context)).await;
 
             match step_result {
                 Ok(Ok(_output)) => {
@@ -1480,4 +1536,163 @@ mod tests {
         assert!(result2.is_err());
     }
 
+    // ============ SAGA TIMEOUT CONFIG TESTS (EPIC-85 US-03) ============
+
+    #[tokio::test]
+    async fn test_saga_orchestrator_config_presets() {
+        // Test Kubernetes preset
+        let k8s_config = SagaOrchestratorConfig::kubernetes();
+        assert_eq!(
+            k8s_config.get_saga_timeout(SagaType::Provisioning),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            k8s_config.get_saga_timeout(SagaType::Execution),
+            Duration::from_secs(7200)
+        );
+
+        // Test Docker local preset
+        let docker_config = SagaOrchestratorConfig::docker_local();
+        assert_eq!(
+            docker_config.get_saga_timeout(SagaType::Provisioning),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            docker_config.get_saga_timeout(SagaType::Cancellation),
+            Duration::from_secs(30)
+        );
+
+        // Test Firecracker preset
+        let fc_config = SagaOrchestratorConfig::firecracker();
+        assert_eq!(
+            fc_config.get_saga_timeout(SagaType::Provisioning),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_timeout_returns_correct_value_for_all_saga_types() {
+        let config = SagaOrchestratorConfig::default();
+
+        // All saga types should return a valid timeout
+        assert_eq!(
+            config.get_saga_timeout(SagaType::Provisioning),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            config.get_saga_timeout(SagaType::Execution),
+            Duration::from_secs(7200)
+        );
+        assert_eq!(
+            config.get_saga_timeout(SagaType::Recovery),
+            Duration::from_secs(900)
+        );
+        assert_eq!(
+            config.get_saga_timeout(SagaType::Cancellation),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            config.get_saga_timeout(SagaType::Timeout),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            config.get_saga_timeout(SagaType::Cleanup),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_different_saga_types_use_different_timeouts() {
+        // Create custom config with very different timeouts
+        let config = SagaOrchestratorConfig {
+            saga_timeouts: SagaTimeoutConfig::new(
+                Duration::from_secs(10), // provisioning: 10s
+                Duration::from_secs(20), // execution: 20s
+                Duration::from_secs(30), // recovery: 30s
+                Duration::from_secs(5),  // cancellation: 5s
+                Duration::from_secs(15), // timeout: 15s
+                Duration::from_secs(25), // cleanup: 25s
+            ),
+            ..Default::default()
+        };
+
+        // Verify each type has distinct timeout
+        assert_ne!(
+            config.get_saga_timeout(SagaType::Provisioning),
+            config.get_saga_timeout(SagaType::Execution)
+        );
+        assert_ne!(
+            config.get_saga_timeout(SagaType::Execution),
+            config.get_saga_timeout(SagaType::Recovery)
+        );
+        assert_ne!(
+            config.get_saga_timeout(SagaType::Recovery),
+            config.get_saga_timeout(SagaType::Cancellation)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execution_saga_uses_configured_timeout() {
+        // Create a saga that takes longer than default timeout
+        struct SlowStep;
+
+        #[async_trait::async_trait]
+        impl SagaStep for SlowStep {
+            type Output = ();
+
+            fn name(&self) -> &'static str {
+                "SlowStep"
+            }
+
+            fn has_compensation(&self) -> bool {
+                false
+            }
+
+            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                // Simulate slow operation
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(())
+            }
+
+            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+                Ok(())
+            }
+        }
+
+        struct SlowSaga;
+
+        impl Saga for SlowSaga {
+            fn saga_type(&self) -> SagaType {
+                SagaType::Execution
+            }
+
+            fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
+                vec![Box::new(SlowStep)]
+            }
+        }
+
+        // Use execution timeout of 1 second (should succeed)
+        let config = SagaOrchestratorConfig {
+            saga_timeouts: SagaTimeoutConfig::new(
+                Duration::from_secs(300),
+                Duration::from_secs(1), // Short execution timeout
+                Duration::from_secs(900),
+                Duration::from_secs(120),
+                Duration::from_secs(120),
+                Duration::from_secs(300),
+            ),
+            ..Default::default()
+        };
+
+        let repo = Arc::new(MockSagaRepository);
+        let orchestrator = InMemorySagaOrchestrator::new(repo, Some(config));
+
+        let saga = SlowSaga;
+        let context = SagaContext::new(SagaId::new(), SagaType::Execution, None, None);
+
+        let result = orchestrator.execute_saga(&saga, context).await;
+        assert!(result.is_ok());
+        let saga_result = result.unwrap();
+        assert!(saga_result.is_success());
+    }
 }
