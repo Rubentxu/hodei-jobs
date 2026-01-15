@@ -51,8 +51,19 @@ securityContext:
   privileged: false
   readOnlyRootFilesystem: false
 
-# Cargo cache PVC
+# Volume configuration with proper structure for templates
 volumes:
+  logs:
+    enabled: true
+    persistent: true
+    storageClass: ""
+    size: "5Gi"
+  tmp:
+    enabled: true
+    sizeLimit: "1Gi"
+  cache:
+    enabled: true
+    sizeLimit: "1Gi"
   extra:
     - name: cargo-cache
       persistentVolumeClaim:

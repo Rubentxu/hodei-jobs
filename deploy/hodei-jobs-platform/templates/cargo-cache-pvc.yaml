@@ -1,0 +1,16 @@
+{{- if and .Values.development.enabled .Values.development.cargoCache.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.development.cargoCache.pvcName | default "hodei-cargo-cache" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.development.cargoCache.size | default "10Gi" }}
+  storageClassName: {{ .Values.development.cargoCache.storageClass | default "standard" }}
+{{- end }}
