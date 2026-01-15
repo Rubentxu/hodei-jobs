@@ -31,6 +31,21 @@ pub struct ProviderConfig {
     pub created_at: ::prost::alloc::string::String,
     #[prost(string, tag = "13")]
     pub updated_at: ::prost::alloc::string::String,
+    /// EPIC-86: Filtering fields
+    #[prost(string, optional, tag = "14")]
+    pub preferred_region: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "15")]
+    pub allowed_regions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(map = "string, string", tag = "16")]
+    pub required_labels: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    #[prost(map = "string, string", tag = "17")]
+    pub annotations: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 /// Provider capabilities
 #[derive(Clone, PartialEq, ::prost::Message)]
