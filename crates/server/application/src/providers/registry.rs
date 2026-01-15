@@ -252,39 +252,161 @@ impl ProviderRegistry {
         provider: &ProviderConfig,
         requirements: &JobRequirements,
     ) -> bool {
-        let caps = &provider.capabilities;
-
-        // Verificar CPU
-        if caps.max_resources.max_cpu_cores < requirements.resources.cpu_cores {
+        // Validar CPU
+        if !self.validate_cpu_requirements(provider, requirements) {
             return false;
         }
 
-        // Verificar memoria
-        if caps.max_resources.max_memory_bytes < requirements.resources.memory_bytes {
+        // Validar memoria
+        if !self.validate_memory_requirements(provider, requirements) {
             return false;
         }
 
-        // Verificar GPU si es requerido
-        if requirements.resources.gpu_count > 0 && !caps.gpu_support {
+        // Validar GPU si es requerido
+        if !self.validate_gpu_requirements(provider, requirements) {
             return false;
         }
 
-        // Verificar timeout
+        // Validar timeout
+        if !self.validate_timeout_requirements(provider, requirements) {
+            return false;
+        }
+
+        // Validar arquitectura
+        if !self.validate_architecture_requirements(provider, requirements) {
+            return false;
+        }
+
+        // Validar regiones permitidas
+        if !self.validate_region_requirements(provider, requirements) {
+            return false;
+        }
+
+        // Validar labels requeridos
+        if !self.validate_labels_requirements(provider, requirements) {
+            return false;
+        }
+
+        // Validar annotations requeridas
+        if !self.validate_annotations_requirements(provider, requirements) {
+            return false;
+        }
+
+        true
+    }
+
+    /// Valida los requisitos de CPU del provider
+    fn validate_cpu_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        provider.capabilities.max_resources.max_cpu_cores >= requirements.resources.cpu_cores
+    }
+
+    /// Valida los requisitos de memoria del provider
+    fn validate_memory_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        provider.capabilities.max_resources.max_memory_bytes >= requirements.resources.memory_bytes
+    }
+
+    /// Valida los requisitos de GPU del provider
+    fn validate_gpu_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        if requirements.resources.gpu_count > 0 && !provider.capabilities.gpu_support {
+            return false;
+        }
+        true
+    }
+
+    /// Valida los requisitos de timeout del provider
+    fn validate_timeout_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
         if let Some(required_timeout) = requirements.timeout {
-            if let Some(_max_timeout) = caps.max_execution_time.filter(|&t| t < required_timeout) {
+            if let Some(max_timeout) = provider.capabilities.max_execution_time {
+                if max_timeout < required_timeout {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Valida los requisitos de arquitectura del provider
+    fn validate_architecture_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        if let Some(required_arch) = &requirements.architecture {
+            if !provider.capabilities.architectures.contains(required_arch) {
                 return false;
             }
         }
+        true
+    }
 
-        // Verificar arquitectura si es especificada
-        if let Some(ref _required_arch) = requirements
-            .architecture
-            .as_ref()
-            .filter(|&a| !caps.architectures.contains(a))
-        {
-            return false;
+    /// Valida los requisitos de región del provider
+    fn validate_region_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        // Si el job tiene regiones permitidas, verificar intersección
+        if !requirements.allowed_regions.is_empty() {
+            // Provider sin regiones = acepta cualquiera (sin restricción)
+            // Provider con regiones = debe haber intersección
+            if !provider.allowed_regions.is_empty() {
+                let has_match = requirements
+                    .allowed_regions
+                    .iter()
+                    .any(|r| provider.allowed_regions.contains(r));
+                if !has_match {
+                    return false;
+                }
+            }
         }
+        true
+    }
 
+    /// Valida los labels requeridos del provider
+    fn validate_labels_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        // El job puede requerir labels específicos en el provider
+        for (key, value) in &requirements.required_labels {
+            match provider.required_labels.get(key) {
+                Some(v) if v == value => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Valida las annotations requeridas del provider
+    fn validate_annotations_requirements(
+        &self,
+        provider: &ProviderConfig,
+        requirements: &JobRequirements,
+    ) -> bool {
+        // El job puede requerir annotations específicas en el provider
+        for (key, value) in &requirements.required_annotations {
+            match provider.annotations.get(key) {
+                Some(v) if v == value => {}
+                _ => return false,
+            }
+        }
         true
     }
 
@@ -732,5 +854,263 @@ mod tests {
         // No event should be published
         let events = event_bus.published.lock().unwrap();
         assert!(events.is_empty());
+    }
+
+    // ========================================================================
+    // Tests de validación de requisitos (EPIC-86)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_validate_region_requirements_job_no_restriction() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_allowed_regions(vec!["us-east-1".to_string()]);
+
+        // Job sin restricción de regiones = provider con regiones cualquiera pasa
+        let requirements = JobRequirements::default();
+        let result = registry.validate_region_requirements(&provider, &requirements);
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_region_requirements_match() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_allowed_regions(vec!["us-east-1".to_string(), "us-west-2".to_string()]);
+
+        let mut requirements = JobRequirements::default();
+        requirements.allowed_regions = vec!["us-west-2".to_string()];
+        let result = registry.validate_region_requirements(&provider, &requirements);
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_region_requirements_no_match() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_allowed_regions(vec!["us-east-1".to_string()]);
+
+        let mut requirements = JobRequirements::default();
+        requirements.allowed_regions = vec!["eu-west-1".to_string()];
+        let result = registry.validate_region_requirements(&provider, &requirements);
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_region_requirements_provider_no_regions() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        // Provider sin regiones = acepta cualquier job
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        );
+
+        let mut requirements = JobRequirements::default();
+        requirements.allowed_regions = vec!["eu-west-1".to_string()];
+        let result = registry.validate_region_requirements(&provider, &requirements);
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_labels_requirements_match() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_required_label("team", "platform")
+        .with_required_label("env", "production");
+
+        let mut requirements = JobRequirements::default();
+        requirements.required_labels =
+            HashMap::from([("team".to_string(), "platform".to_string())]);
+        let result = registry.validate_labels_requirements(&provider, &requirements);
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_labels_requirements_no_match() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_required_label("team", "platform");
+
+        let mut requirements = JobRequirements::default();
+        requirements.required_labels =
+            HashMap::from([("team".to_string(), "data-science".to_string())]);
+        let result = registry.validate_labels_requirements(&provider, &requirements);
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_labels_requirements_missing_label() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_required_label("team", "platform");
+
+        let mut requirements = JobRequirements::default();
+        requirements.required_labels = HashMap::from([
+            ("team".to_string(), "platform".to_string()),
+            ("missing".to_string(), "value".to_string()),
+        ]);
+        let result = registry.validate_labels_requirements(&provider, &requirements);
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_annotations_requirements_match() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_annotation("owner", "team-platform");
+
+        let mut requirements = JobRequirements::default();
+        requirements.required_annotations =
+            HashMap::from([("owner".to_string(), "team-platform".to_string())]);
+        let result = registry.validate_annotations_requirements(&provider, &requirements);
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_annotations_requirements_no_match() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_annotation("owner", "team-platform");
+
+        let mut requirements = JobRequirements::default();
+        requirements.required_annotations =
+            HashMap::from([("owner".to_string(), "other-team".to_string())]);
+        let result = registry.validate_annotations_requirements(&provider, &requirements);
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_can_fulfill_requirements_with_regions() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_allowed_regions(vec!["us-east-1".to_string()]);
+
+        let mut requirements = JobRequirements::default();
+        requirements.allowed_regions = vec!["us-east-1".to_string()];
+
+        assert!(registry.can_fulfill_requirements(&provider, &requirements));
+
+        requirements.allowed_regions = vec!["eu-west-1".to_string()];
+        assert!(!registry.can_fulfill_requirements(&provider, &requirements));
+    }
+
+    #[tokio::test]
+    async fn test_can_fulfill_requirements_with_labels() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        let provider = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_required_label("env", "production");
+
+        let mut requirements = JobRequirements::default();
+        requirements.required_labels =
+            HashMap::from([("env".to_string(), "production".to_string())]);
+
+        assert!(registry.can_fulfill_requirements(&provider, &requirements));
+
+        requirements.required_labels = HashMap::from([("env".to_string(), "staging".to_string())]);
+        assert!(!registry.can_fulfill_requirements(&provider, &requirements));
+    }
+
+    #[tokio::test]
+    async fn test_select_best_provider_with_region_filter() {
+        let repo = Arc::new(MockProviderConfigRepository::new());
+        let registry = ProviderRegistry::new(repo);
+
+        // Provider en us-east-1
+        let provider_east = ProviderConfig::new(
+            "provider-east".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_allowed_regions(vec!["us-east-1".to_string()])
+        .with_priority(10);
+
+        // Provider en us-west-2
+        let provider_west = ProviderConfig::new(
+            "provider-west".to_string(),
+            ProviderType::Docker,
+            create_docker_config(),
+        )
+        .with_allowed_regions(vec!["us-west-2".to_string()])
+        .with_priority(100); // Mayor prioridad
+
+        registry
+            .register_provider_with_config(provider_east)
+            .await
+            .unwrap();
+        registry
+            .register_provider_with_config(provider_west)
+            .await
+            .unwrap();
+
+        // Job que requiere us-east-1
+        let mut requirements = JobRequirements::default();
+        requirements.allowed_regions = vec!["us-east-1".to_string()];
+
+        let selected = registry.select_best_provider(&requirements).await.unwrap();
+        assert!(selected.is_some());
+        assert_eq!(selected.unwrap().name, "provider-east");
     }
 }
