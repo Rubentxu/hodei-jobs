@@ -1031,6 +1031,10 @@ pub struct JobRequirements {
     pub allowed_regions: Vec<String>,
     pub timeout: Option<Duration>,
     pub preferred_category: Option<ProviderCategory>,
+    /// Región preferida para la ejecución del job
+    pub preferred_region: Option<String>,
+    /// Annotations requeridas en el provider
+    pub required_annotations: HashMap<String, String>,
 }
 
 impl Default for JobRequirements {
@@ -1043,6 +1047,8 @@ impl Default for JobRequirements {
             allowed_regions: vec![],
             timeout: None,
             preferred_category: None,
+            preferred_region: None,
+            required_annotations: HashMap::new(),
         }
     }
 }
