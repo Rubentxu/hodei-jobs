@@ -8,6 +8,7 @@
 //! - Automatic job dispatch when workers become ready
 //! - Support for JobQueued and WorkerReady events
 //! - Durable consumers with checkpointing
+//! - Circuit breaker integration for resilience (EPIC-85 US-05)
 
 use async_nats::Client;
 use async_nats::jetstream::Context as JetStreamContext;
@@ -17,6 +18,9 @@ use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
 use futures::StreamExt;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::saga::circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
+};
 use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
@@ -25,7 +29,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use hodei_shared::event_topics::{job_topics, worker_topics};
 
@@ -71,6 +75,12 @@ pub struct ExecutionSagaConsumerConfig {
 
     /// Default saga timeout
     pub saga_timeout: Duration,
+
+    /// EPIC-85 US-05: Circuit breaker configuration
+    pub circuit_breaker_failure_threshold: u64,
+    pub circuit_breaker_open_duration: Duration,
+    pub circuit_breaker_success_threshold: u64,
+    pub circuit_breaker_call_timeout: Duration,
 }
 
 impl Default for ExecutionSagaConsumerConfig {
@@ -86,6 +96,11 @@ impl Default for ExecutionSagaConsumerConfig {
             max_deliver: 3,
             enable_auto_dispatch: true,
             saga_timeout: Duration::from_secs(60),
+            // EPIC-85 US-05: Circuit breaker defaults
+            circuit_breaker_failure_threshold: 5,
+            circuit_breaker_open_duration: Duration::from_secs(30),
+            circuit_breaker_success_threshold: 2,
+            circuit_breaker_call_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -108,6 +123,7 @@ pub enum ExecutionSagaTriggerResult {
 /// Consumes JobQueued and WorkerReady events from NATS JetStream
 /// and triggers execution sagas for job dispatch.
 /// Uses trait objects for dynamic dispatch with the SagaOrchestrator.
+/// Includes circuit breaker integration for resilience (EPIC-85 US-05).
 #[derive(Clone)]
 pub struct ExecutionSagaConsumer {
     /// NATS client
@@ -128,6 +144,9 @@ pub struct ExecutionSagaConsumer {
     /// Consumer configuration
     config: ExecutionSagaConsumerConfig,
 
+    /// EPIC-85 US-05: Circuit breaker for resilience
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+
     /// Shutdown signal
     shutdown_tx: mpsc::Sender<()>,
 }
@@ -146,6 +165,19 @@ impl ExecutionSagaConsumer {
         let config = config.unwrap_or_default();
         let (shutdown_tx, _) = mpsc::channel(1);
 
+        // EPIC-85 US-05: Initialize circuit breaker
+        let circuit_breaker = Arc::new(CircuitBreaker::new(
+            format!("execution-saga-{}", config.consumer_name),
+            CircuitBreakerConfig {
+                failure_threshold: config.circuit_breaker_failure_threshold,
+                open_duration: config.circuit_breaker_open_duration,
+                success_threshold: config.circuit_breaker_success_threshold,
+                call_timeout: config.circuit_breaker_call_timeout,
+                failure_rate_threshold: 50,
+                failure_rate_window: 100,
+            },
+        ));
+
         Self {
             _client: client,
             jetstream,
@@ -153,8 +185,25 @@ impl ExecutionSagaConsumer {
             job_repository,
             worker_registry,
             config,
+            circuit_breaker: Some(circuit_breaker),
             shutdown_tx,
         }
+    }
+
+    /// EPIC-85 US-05: Get current circuit breaker state
+    pub fn circuit_breaker_state(&self) -> CircuitState {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.state())
+            .unwrap_or(CircuitState::Closed)
+    }
+
+    /// EPIC-85 US-05: Check if circuit allows requests
+    pub fn is_circuit_closed(&self) -> bool {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.allow_request())
+            .unwrap_or(true)
     }
 
     /// Start the consumer and begin processing events
@@ -194,18 +243,81 @@ impl ExecutionSagaConsumer {
             stream_name
         );
 
+        // EPIC-85 US-05: Get circuit breaker reference for the loop
+        let circuit_breaker = self.circuit_breaker.clone();
+
         while let Some(message_result) = messages.next().await {
             match message_result {
                 Ok(message) => {
-                    if let Err(e) = self.process_message(&message.payload).await {
-                        error!("📦 ExecutionSagaConsumer: Error processing message: {}", e);
+                    // EPIC-85 US-05: Check circuit breaker before processing
+                    let can_process = circuit_breaker
+                        .as_ref()
+                        .map(|cb| cb.allow_request())
+                        .unwrap_or(true);
+
+                    if can_process {
+                        let payload = message.payload.clone();
+                        // EPIC-85 US-05: Process with circuit breaker protection
+                        let result = match &circuit_breaker {
+                            Some(cb) => {
+                                let process_future = self.process_message(&payload);
+                                cb.execute(async {
+                                    process_future.await.map_err(|e| {
+                                        DomainError::InfrastructureError {
+                                            message: e.to_string(),
+                                        }
+                                    })
+                                })
+                                .await
+                                .map_err(|e| match e {
+                                    CircuitBreakerError::Open => DomainError::InfrastructureError {
+                                        message: "Circuit breaker open".to_string(),
+                                    },
+                                    CircuitBreakerError::Timeout => {
+                                        DomainError::InfrastructureError {
+                                            message: "Circuit breaker timeout".to_string(),
+                                        }
+                                    }
+                                    CircuitBreakerError::Failed(e) => e,
+                                })
+                            }
+                            None => self.process_message(&payload).await,
+                        };
+
+                        match result {
+                            Ok(()) => {
+                                // EPIC-85 US-05: Record success
+                                if let Some(ref cb) = circuit_breaker {
+                                    cb.record_success();
+                                }
+                            }
+                            Err(e) => {
+                                error!("📦 ExecutionSagaConsumer: Error processing message: {}", e);
+                                // EPIC-85 US-05: Record failure
+                                if let Some(ref cb) = circuit_breaker {
+                                    cb.record_failure();
+                                }
+                            }
+                        }
+                    } else {
+                        // Circuit is open - log warning
+                        warn!("📦 ExecutionSagaConsumer: Circuit breaker open, skipping message");
+                        // EPIC-85 US-05: Record failure for circuit being open
+                        if let Some(ref cb) = circuit_breaker {
+                            cb.record_failure();
+                        }
                     }
-                    // Ack the message
+
+                    // Ack the message (we always ack to avoid redelivery)
                     if let Err(e) = message.ack().await {
                         error!("📦 ExecutionSagaConsumer: Failed to ack message: {}", e);
                     }
                 }
                 Err(e) => {
+                    // EPIC-85 US-05: Record failure in circuit breaker
+                    if let Some(ref cb) = circuit_breaker {
+                        cb.record_failure();
+                    }
                     error!("📦 ExecutionSagaConsumer: Message receive error: {}", e);
                 }
             }

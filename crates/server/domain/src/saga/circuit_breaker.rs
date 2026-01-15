@@ -218,7 +218,7 @@ impl CircuitBreaker {
 
     /// Records a successful call.
     #[inline]
-    fn record_success(&self) {
+    pub fn record_success(&self) {
         self.state.total_calls.fetch_add(1, Ordering::SeqCst);
 
         // Record in circular buffer
@@ -256,7 +256,7 @@ impl CircuitBreaker {
 
     /// Records a failed call.
     #[inline]
-    fn record_failure(&self) {
+    pub fn record_failure(&self) {
         self.state.total_calls.fetch_add(1, Ordering::SeqCst);
         self.state.total_failures.fetch_add(1, Ordering::SeqCst);
 

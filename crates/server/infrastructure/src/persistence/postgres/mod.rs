@@ -1,6 +1,7 @@
 pub mod audit_repository;
 pub mod in_memory;
 pub mod job_execution_repository;
+pub mod job_log_repository;
 pub mod job_queue;
 pub mod job_repository;
 pub mod job_repository_tx;
