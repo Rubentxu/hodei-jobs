@@ -447,6 +447,12 @@ mod tests {
         healthy: bool,
     }
 
+    impl MockHealthChecker {
+        fn new(name: String, healthy: bool) -> Self {
+            Self { name, healthy }
+        }
+    }
+
     #[async_trait]
     impl HealthChecker for MockHealthChecker {
         fn name(&self) -> &str {

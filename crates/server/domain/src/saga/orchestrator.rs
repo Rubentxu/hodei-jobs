@@ -1,7 +1,9 @@
 //! Saga Orchestrator
 //!
 //! Core orchestrator for executing sagas with automatic compensation.
+//! Includes integrated audit trail for compliance and debugging.
 
+use super::audit_trail::{SagaAuditConsumer, SagaAuditEntry, SagaAuditTrail};
 use super::retry_policy::{RetryOutcome, RetryPolicy};
 use super::timeout_config::SagaTimeoutConfig;
 use super::{
@@ -248,6 +250,10 @@ pub struct InMemorySagaOrchestrator<R: SagaRepository + Clone> {
     rate_limiter: Option<TokenBucketRateLimiter>,
     /// Semaphore for concurrent saga control
     concurrency_semaphore: Arc<Semaphore>,
+    /// Audit trail for this orchestrator (US-15)
+    audit_trail: Arc<SagaAuditTrail>,
+    /// Audit consumers for dispatching audit events
+    audit_consumers: Vec<Arc<dyn SagaAuditConsumer>>,
 }
 
 impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
@@ -263,6 +269,34 @@ impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
             active_sagas: Arc::new(AtomicUsize::new(0)),
             rate_limiter,
             concurrency_semaphore,
+            audit_trail: Arc::new(SagaAuditTrail::new()),
+            audit_consumers: Vec::new(),
+        }
+    }
+
+    /// Create with custom audit consumers (US-15)
+    pub fn with_audit_consumers(
+        repository: Arc<R>,
+        config: Option<SagaOrchestratorConfig>,
+        consumers: Vec<Arc<dyn SagaAuditConsumer>>,
+    ) -> Self {
+        let mut orchestrator = Self::new(repository, config);
+        orchestrator.audit_consumers = consumers;
+        orchestrator
+    }
+
+    /// Get the audit trail
+    pub fn audit_trail(&self) -> &Arc<SagaAuditTrail> {
+        &self.audit_trail
+    }
+
+    /// Record an audit entry and dispatch to consumers (US-15)
+    fn record_audit(&self, entry: SagaAuditEntry) {
+        // Record in local trail
+        self.audit_trail.record(entry.clone());
+        // Dispatch to all consumers
+        for consumer in &self.audit_consumers {
+            consumer.consume(&entry);
         }
     }
 
@@ -272,17 +306,56 @@ impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
         step: &dyn super::SagaStep<Output = ()>,
         context: &mut SagaContext,
         step_name: &str,
+        step_idx: usize,
+        saga_type: SagaType,
+        saga_id: &SagaId,
     ) -> Result<bool, SagaError> {
         let policy = self.config.compensation_retry_policy;
         let mut attempt = 0u32;
 
+        // Record compensation started (US-15)
+        self.record_audit(
+            SagaAuditEntry::new(
+                saga_id.clone(),
+                saga_type,
+                super::audit_trail::SagaAuditEventType::CompensationStarted,
+            )
+            .with_step(step_name, step_idx)
+            .with_attempt(0),
+        );
+
         loop {
             attempt += 1;
+            let comp_start = std::time::Instant::now();
             match step.compensate(context).await {
                 Ok(()) => {
+                    // Record compensation completed (US-15)
+                    let comp_duration = comp_start.elapsed();
+                    self.record_audit(
+                        SagaAuditEntry::new(
+                            saga_id.clone(),
+                            saga_type,
+                            super::audit_trail::SagaAuditEventType::CompensationCompleted,
+                        )
+                        .with_step(step_name, step_idx)
+                        .with_attempt(attempt)
+                        .with_duration(comp_duration),
+                    );
                     return Ok(true);
                 }
                 Err(e) => {
+                    // Record compensation failed (US-15)
+                    self.record_audit(
+                        SagaAuditEntry::new(
+                            saga_id.clone(),
+                            saga_type,
+                            super::audit_trail::SagaAuditEventType::CompensationFailed,
+                        )
+                        .with_step(step_name, step_idx)
+                        .with_attempt(attempt)
+                        .with_error(&e.to_string()),
+                    );
+
                     if !policy.should_retry(attempt) {
                         tracing::error!(
                             step = step_name,
@@ -317,6 +390,8 @@ impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
         steps: &[Box<dyn super::SagaStep<Output = ()>>],
         context: &mut SagaContext,
         executed_steps_count: usize,
+        saga_type: SagaType,
+        saga_id: &SagaId,
     ) -> u32 {
         let mut compensations_executed = 0;
 
@@ -327,7 +402,14 @@ impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
                 let step_name = compensate_step.name();
 
                 match self
-                    .execute_compensation_with_retry(&**compensate_step, context, step_name)
+                    .execute_compensation_with_retry(
+                        &**compensate_step,
+                        context,
+                        step_name,
+                        compensate_idx,
+                        saga_type,
+                        saga_id,
+                    )
                     .await
                 {
                     Ok(_) => {
@@ -365,6 +447,14 @@ where
     ) -> Result<SagaExecutionResult, Self::Error> {
         let start_time = std::time::Instant::now();
         let saga_id = context.saga_id.clone();
+        let saga_type = saga.saga_type();
+
+        // Record saga started event (US-15)
+        self.record_audit(SagaAuditEntry::new(
+            saga_id.clone(),
+            saga_type,
+            super::audit_trail::SagaAuditEventType::Started,
+        ));
 
         // Check rate limit first
         if let Some(ref limiter) = self.rate_limiter {
@@ -433,6 +523,17 @@ where
                 continue;
             }
 
+            // Record step started (US-15)
+            let step_start = std::time::Instant::now();
+            self.record_audit(
+                SagaAuditEntry::new(
+                    saga_id.clone(),
+                    saga_type,
+                    super::audit_trail::SagaAuditEventType::StepStarted,
+                )
+                .with_step(step.name(), step_idx),
+            );
+
             // Check saga timeout using type-specific timeout
             if start_time.elapsed() > saga_timeout {
                 context.set_error(format!("Saga timed out after {:?}", start_time.elapsed()));
@@ -451,10 +552,31 @@ where
 
             match step_result {
                 Ok(Ok(_output)) => {
-                    // Step succeeded
+                    // Step succeeded - record audit (US-15)
+                    let step_duration = step_start.elapsed();
+                    self.record_audit(
+                        SagaAuditEntry::new(
+                            saga_id.clone(),
+                            saga_type,
+                            super::audit_trail::SagaAuditEventType::StepCompleted,
+                        )
+                        .with_step(step.name(), step_idx)
+                        .with_duration(step_duration),
+                    );
                     executed_steps += 1;
                 }
                 Ok(Err(e)) => {
+                    // Step failed - record audit (US-15)
+                    self.record_audit(
+                        SagaAuditEntry::new(
+                            saga_id.clone(),
+                            saga_type,
+                            super::audit_trail::SagaAuditEventType::StepFailed,
+                        )
+                        .with_step(step.name(), step_idx)
+                        .with_error(&e.to_string())
+                        .with_compensation(true),
+                    );
                     // Step failed - start REAL compensation in REVERSE order
                     context.set_error(e.to_string());
                     context.is_compensating = true;
@@ -466,8 +588,29 @@ where
 
                     // Execute compensation for all previously executed steps in REVERSE order with retry
                     let compensations_executed = self
-                        .execute_compensation(&steps_vec, &mut context, step_idx)
+                        .execute_compensation(
+                            &steps_vec,
+                            &mut context,
+                            step_idx,
+                            saga_type,
+                            &saga_id,
+                        )
                         .await;
+
+                    // Record saga failed event (US-15)
+                    self.record_audit(
+                        SagaAuditEntry::new(
+                            saga_id.clone(),
+                            saga_type,
+                            super::audit_trail::SagaAuditEventType::Failed,
+                        )
+                        .with_error(&e.to_string())
+                        .with_metadata("steps_executed", serde_json::json!(executed_steps))
+                        .with_metadata(
+                            "compensations_executed",
+                            serde_json::json!(compensations_executed),
+                        ),
+                    );
 
                     // Update final state to Failed (compensation completed but saga failed)
                     self.repository
@@ -502,8 +645,29 @@ where
 
                     // Execute compensation for all previously executed steps in REVERSE order with retry
                     let compensations_executed = self
-                        .execute_compensation(&steps_vec, &mut context, executed_steps)
+                        .execute_compensation(
+                            &steps_vec,
+                            &mut context,
+                            executed_steps,
+                            saga_type,
+                            &saga_id,
+                        )
                         .await;
+
+                    // Record saga timed out event (US-15)
+                    self.record_audit(
+                        SagaAuditEntry::new(
+                            saga_id.clone(),
+                            saga_type,
+                            super::audit_trail::SagaAuditEventType::TimedOut,
+                        )
+                        .with_error(&timeout_error)
+                        .with_metadata("steps_executed", serde_json::json!(executed_steps))
+                        .with_metadata(
+                            "compensations_executed",
+                            serde_json::json!(compensations_executed),
+                        ),
+                    );
 
                     self.repository
                         .update_state(&saga_id, SagaState::Failed, Some(timeout_error))
@@ -517,7 +681,18 @@ where
             }
         }
 
-        // All steps completed successfully
+        // All steps completed successfully - record completion (US-15)
+        let total_duration = start_time.elapsed();
+        self.record_audit(
+            SagaAuditEntry::new(
+                saga_id.clone(),
+                saga_type,
+                super::audit_trail::SagaAuditEventType::Completed,
+            )
+            .with_duration(total_duration)
+            .with_metadata("steps_executed", serde_json::json!(executed_steps)),
+        );
+
         self.repository
             .update_state(&saga_id, SagaState::Completed, None)
             .await
@@ -526,7 +701,7 @@ where
         Ok(SagaExecutionResult::completed_with_steps(
             saga_id,
             saga.saga_type(),
-            start_time.elapsed(),
+            total_duration,
             executed_steps as u32,
         ))
     }
