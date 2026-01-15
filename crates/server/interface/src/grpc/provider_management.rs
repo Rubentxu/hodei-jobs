@@ -21,6 +21,7 @@ use hodei_server_domain::workers::ProviderType;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+#[derive(Clone)]
 pub struct ProviderManagementServiceImpl {
     registry: Arc<ProviderRegistry>,
 }
