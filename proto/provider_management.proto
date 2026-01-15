@@ -79,6 +79,11 @@ message ProviderConfig {
     map<string, string> metadata = 11;
     string created_at = 12;
     string updated_at = 13;
+    // EPIC-86: Filtering fields
+    optional string preferred_region = 14;
+    repeated string allowed_regions = 15;
+    map<string, string> required_labels = 16;
+    map<string, string> annotations = 17;
 }
 
 // Provider capabilities

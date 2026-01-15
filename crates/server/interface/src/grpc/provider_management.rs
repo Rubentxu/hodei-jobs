@@ -45,6 +45,11 @@ impl ProviderManagementServiceImpl {
             metadata: config.metadata.clone(),
             created_at: config.created_at.to_rfc3339(),
             updated_at: config.updated_at.to_rfc3339(),
+            // EPIC-86: Filtering fields
+            preferred_region: config.preferred_region.clone(),
+            allowed_regions: config.allowed_regions.clone(),
+            required_labels: config.required_labels.clone(),
+            annotations: config.annotations.clone(),
         }
     }
 
@@ -293,11 +298,65 @@ impl ProviderManagementService for ProviderManagementServiceImpl {
         &self,
         request: Request<UpdateProviderRequest>,
     ) -> Result<Response<UpdateProviderResponse>, Status> {
-        // For now, just return the provider as-is
-        // Full update implementation would convert proto to domain and save
         let req = request.into_inner();
+
+        let proto_provider = req
+            .provider
+            .ok_or_else(|| Status::invalid_argument("Provider config required"))?;
+
+        let id = ProviderId::from_uuid(
+            uuid::Uuid::parse_str(&proto_provider.id)
+                .map_err(|e| Status::invalid_argument(format!("Invalid provider ID: {}", e)))?,
+        );
+
+        // Obtener provider existente
+        let mut config = self
+            .registry
+            .get_provider(&id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("Provider not found"))?;
+
+        // Actualizar campos desde el proto
+        if proto_provider.priority != 0 || config.priority == 0 {
+            config.priority = proto_provider.priority;
+        }
+        if proto_provider.max_workers != 0 || config.max_workers == 0 {
+            config.max_workers = proto_provider.max_workers;
+        }
+        if !proto_provider.tags.is_empty() {
+            config.tags = proto_provider.tags;
+        }
+        if !proto_provider.metadata.is_empty() {
+            config.metadata = proto_provider.metadata;
+        }
+
+        // EPIC-86: Actualizar campos de filtrado
+        if proto_provider.preferred_region.is_some() {
+            config.preferred_region = proto_provider.preferred_region;
+        }
+        if !proto_provider.allowed_regions.is_empty() {
+            config.allowed_regions = proto_provider.allowed_regions;
+        }
+        if !proto_provider.required_labels.is_empty() {
+            config.required_labels = proto_provider.required_labels;
+        }
+        if !proto_provider.annotations.is_empty() {
+            config.annotations = proto_provider.annotations;
+        }
+
+        // Actualizar timestamp
+        use chrono::Utc;
+        config.updated_at = Utc::now();
+
+        // Guardar cambios
+        self.registry
+            .update_provider(config.clone())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
         Ok(Response::new(UpdateProviderResponse {
-            provider: req.provider,
+            provider: Some(self.domain_to_proto_provider(&config)),
         }))
     }
 
