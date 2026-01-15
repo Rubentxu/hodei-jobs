@@ -13,6 +13,9 @@ pub mod providers;
 // Security
 pub mod credentials;
 
+// Health check implementations (US-17)
+pub mod health;
+
 // Legacy
 pub mod provisioning;
 

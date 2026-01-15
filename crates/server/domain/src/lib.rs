@@ -11,6 +11,7 @@
 // - iam: Tokens OTP y autenticación
 
 pub mod event_bus;
+pub mod health;
 pub mod outbox;
 pub mod shared_kernel;
 pub mod telemetry;
