@@ -20,7 +20,7 @@ const ADDONS: &[&str] = &[
     "registry",
     "registry-aliases",
     "metrics-server",
-    "kong",
+    "ingress",
     "ingress-dns",
 ];
 
@@ -45,9 +45,9 @@ fn start_minikube() -> Result<()> {
     let status = Command::new("minikube")
         .args(&[
             "start",
-            "--cpus=4",
-            "--memory=8192",
-            "--disk-size=40g",
+            "--cpus=12",
+            "--memory=24576",
+            "--disk-size=60g",
             "--driver=docker",
             "--kubernetes-version=stable",
         ])

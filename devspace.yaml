@@ -19,16 +19,22 @@ deployments:
         name: ./deploy/hodei-jobs-platform
       values:
         image:
-          repository: localhost:5000/hodei-jobs-server
+          repository: hodei-jobs-server
           tag: "dev"
           pullPolicy: Always
+        resources:
+          limits:
+            cpu: "3"
+            memory: "12Gi"
+          requests:
+            cpu: "2"
+            memory: "8Gi"
       valuesFiles:
         - ./deploy/hodei-jobs-platform/values.yaml
         - ./deploy/hodei-jobs-platform/values-dev.yaml
 
 dev:
   app:
-    # devImage: "" prevents DevSpace from replacing the container image
     devImage: "localhost:5000/hodei-jobs-server:dev"
 
     # Select the pod via labelSelector

@@ -10,12 +10,12 @@
 replicaCount: 1
 
 image:
-  repository: localhost:5000/hodei-jobs-server
+  repository: hodei-jobs-server
   tag: "dev"
   pullPolicy: Always
 
 workerImage:
-  repository: localhost:5000/hodei-jobs-worker
+  repository: hodei-jobs-worker
   tag: ""
   pullPolicy: Always
 
@@ -30,14 +30,14 @@ livenessProbe: null
 readinessProbe: null
 startupProbe: null
 
-# Resources for development (HIGH PERFORMANCE: 4 CPU, 8GB RAM)
+# Resources for development (HIGH PERFORMANCE)
 resources:
   limits:
-    cpu: "4"
-    memory: "8Gi"
+    cpu: "3"
+    memory: "12Gi"
   requests:
     cpu: "2"
-    memory: "4Gi"
+    memory: "8Gi"
 
 podSecurityContext:
   runAsUser: 0

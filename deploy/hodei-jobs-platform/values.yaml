@@ -190,13 +190,8 @@ ingress:
 # =============================================================================
 # Resources & Scaling
 # =============================================================================
-resources:
-  limits:
-    cpu: 2000m
-    memory: 2Gi
-  requests:
-    cpu: 500m
-    memory: 512Mi
+# Resources are configured per-environment (devspace.yaml for dev, defaults here for prod)
+# resources:
 
 autoscaling:
   enabled: false # Disabled for local development (requires metrics-server)
