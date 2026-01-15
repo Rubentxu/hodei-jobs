@@ -3,13 +3,19 @@
 //! Uses exponential backoff for resilient connections to database and NATS.
 //! Separates gRPC server lifecycle into dedicated grpc_server module.
 //! Separates service initialization into services_init module.
+//! Separates provider initialization into providers_init module.
 //! Provides graceful shutdown coordination via shutdown module.
 
 mod grpc_server;
+mod providers_init;
 mod services_init;
 mod shutdown;
 
 pub use grpc_server::{GrpcServerConfig, start_grpc_server};
+pub use providers_init::{
+    ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer, initialize_providers,
+    initialize_providers_with_config,
+};
 pub use services_init::{
     BackgroundTasksShutdownHandle, CoordinatorShutdownHandle, GrpcServices,
     SagaConsumersShutdownHandle, initialize_grpc_services, start_background_tasks,
@@ -21,6 +27,7 @@ pub use shutdown::{
 };
 
 use backoff::{ExponentialBackoff, future::retry};
+use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::saga::{InMemorySagaOrchestrator, SagaOrchestrator};
 use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
@@ -29,7 +36,8 @@ use hodei_server_infrastructure::persistence::postgres::migrations::{
     MigrationConfig, run_migrations,
 };
 use hodei_server_infrastructure::persistence::postgres::{
-    PostgresJobRepository, PostgresWorkerBootstrapTokenStore, PostgresWorkerRegistry,
+    PostgresJobRepository, PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore,
+    PostgresWorkerRegistry,
 };
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
@@ -51,6 +59,9 @@ pub struct AppState {
     pub job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
     /// Token store for worker bootstrap tokens
     pub token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
+    /// Provider configuration repository
+    pub provider_config_repository:
+        Arc<dyn hodei_server_domain::providers::config::ProviderConfigRepository>,
     /// NATS EventBus for messaging
     pub nats_event_bus: NatsEventBus,
     /// Outbox repository for transactional outbox pattern
@@ -59,6 +70,8 @@ pub struct AppState {
     pub saga_orchestrator: Arc<
         dyn SagaOrchestrator<Error = hodei_server_domain::shared_kernel::DomainError> + Send + Sync,
     >,
+    /// Provider initialization result
+    pub provider_init_result: Option<ProvidersInitResult>,
 }
 
 impl AppState {
@@ -67,6 +80,9 @@ impl AppState {
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
         token_store: Arc<dyn hodei_server_domain::iam::WorkerBootstrapTokenStore>,
+        provider_config_repository: Arc<
+            dyn hodei_server_domain::providers::config::ProviderConfigRepository,
+        >,
         nats_event_bus: NatsEventBus,
         outbox_repository: Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>,
         saga_orchestrator: Arc<
@@ -74,15 +90,18 @@ impl AppState {
                 + Send
                 + Sync,
         >,
+        provider_init_result: Option<ProvidersInitResult>,
     ) -> Self {
         Self {
             pool,
             worker_registry,
             job_repository,
             token_store,
+            provider_config_repository,
             nats_event_bus,
             outbox_repository,
             saga_orchestrator,
+            provider_init_result,
         }
     }
 
@@ -277,6 +296,25 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(InMemorySagaOrchestrator::new(saga_repository, None));
     info!("✓ SagaOrchestrator initialized");
 
+    // Step 7: Initialize provider configuration repository
+    let provider_config_repository: Arc<
+        dyn hodei_server_domain::providers::config::ProviderConfigRepository,
+    > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
+    info!("✓ ProviderConfigRepository initialized");
+
+    // Step 8: Initialize providers
+    let provider_init_result = initialize_providers(
+        provider_config_repository.clone(),
+        Some(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Provider initialization failed: {}", e))?;
+
+    info!(
+        "✓ Providers initialized: {}",
+        provider_init_result.summary_message()
+    );
+
     info!("✓ All connections established, ready for gRPC");
 
     Ok(AppState::new(
@@ -284,9 +322,11 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         worker_registry,
         job_repository,
         token_store,
+        provider_config_repository,
         nats_event_bus,
         outbox_repository,
         saga_orchestrator,
+        Some(provider_init_result),
     ))
 }
 
