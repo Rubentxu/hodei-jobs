@@ -348,6 +348,51 @@ impl WorkerLifecycleManager {
         self.providers.remove(provider_id);
     }
 
+    /// Get all registered providers (US-86.3: for scheduler integration)
+    pub fn get_registered_providers(&self) -> Vec<(ProviderId, Arc<dyn WorkerProvider>)> {
+        self.providers
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
+    }
+
+    /// Get available (healthy) providers for scheduling (US-86.3 requirement)
+    /// Filters out unhealthy providers based on health check results
+    pub async fn get_available_providers(&self) -> Vec<(ProviderId, Arc<dyn WorkerProvider>)> {
+        let providers = self.get_registered_providers();
+
+        let mut available = Vec::new();
+        for (provider_id, provider) in providers {
+            // Perform a quick health check to determine availability
+            match provider.health_check().await {
+                Ok(status) => {
+                    // Only include healthy or degraded providers
+                    use hodei_server_domain::workers::HealthStatus;
+                    match status {
+                        HealthStatus::Healthy | HealthStatus::Degraded { .. } => {
+                            available.push((provider_id, provider));
+                        }
+                        HealthStatus::Unhealthy { .. } | HealthStatus::Unknown => {
+                            tracing::debug!(
+                                "Provider {} excluded from scheduling: unhealthy",
+                                provider_id
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "Provider {} health check failed: {}, excluding from scheduling",
+                        provider_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        available
+    }
+
     /// Process heartbeat from a worker
     pub async fn process_heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
         self.registry.heartbeat(worker_id).await?;

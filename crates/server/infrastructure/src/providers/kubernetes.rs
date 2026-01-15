@@ -7,7 +7,9 @@
 
 use async_trait::async_trait;
 use futures::Stream;
-use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, ResourceRequirements as K8sResourceRequirements};
+use k8s_openapi::api::core::v1::{
+    Container, EnvVar, Pod, ResourceRequirements as K8sResourceRequirements,
+};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::{
     Client, Config,
@@ -1212,19 +1214,26 @@ impl WorkerLogs for KubernetesProvider {
 #[async_trait]
 impl WorkerHealth for KubernetesProvider {
     async fn health_check(&self) -> std::result::Result<HealthStatus, ProviderError> {
+        // Health check with explicit 5-second timeout (US-86.3 requirement)
+        let timeout_duration = std::time::Duration::from_secs(5);
+
         // Try to list pods in the namespace to verify connectivity
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
+        let list_params = ListParams::default().limit(1);
 
-        match pods.list(&ListParams::default().limit(1)).await {
-            Ok(_) => Ok(HealthStatus::Healthy),
-            Err(kube::Error::Api(ae)) if ae.code == 403 => Ok(HealthStatus::Degraded {
+        match tokio::time::timeout(timeout_duration, pods.list(&list_params)).await {
+            Ok(Ok(_)) => Ok(HealthStatus::Healthy),
+            Ok(Err(kube::Error::Api(ae))) if ae.code == 403 => Ok(HealthStatus::Degraded {
                 reason: format!(
                     "Insufficient permissions in namespace {}",
                     self.config.namespace
                 ),
             }),
-            Err(e) => Ok(HealthStatus::Unhealthy {
+            Ok(Err(e)) => Ok(HealthStatus::Unhealthy {
                 reason: format!("Failed to connect to Kubernetes API: {}", e),
+            }),
+            Err(_) => Ok(HealthStatus::Unhealthy {
+                reason: "Health check timed out after 5 seconds".to_string(),
             }),
         }
     }

@@ -1028,7 +1028,9 @@ pub struct JobRequirements {
     pub architecture: Option<Architecture>,
     pub required_capabilities: Vec<String>,
     pub required_labels: HashMap<String, String>,
+    pub required_annotations: HashMap<String, String>, // US-86.7
     pub allowed_regions: Vec<String>,
+    pub preferred_region: Option<String>, // US-86.7
     pub timeout: Option<Duration>,
     pub preferred_category: Option<ProviderCategory>,
 }
@@ -1040,7 +1042,9 @@ impl Default for JobRequirements {
             architecture: None,
             required_capabilities: vec![],
             required_labels: HashMap::new(),
+            required_annotations: HashMap::new(),
             allowed_regions: vec![],
+            preferred_region: None,
             timeout: None,
             preferred_category: None,
         }
