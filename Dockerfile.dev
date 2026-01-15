@@ -1,0 +1,122 @@
+# DevSpace Development Image - Includes Rust toolchain for in-pod compilation
+FROM ubuntu:22.04
+
+# Install Rust and dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    git \
+    inotify-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+
+# Add Rust to PATH
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Create directories
+WORKDIR /app
+RUN mkdir -p /var/lib/hodei /tmp/hodei-logs /tmp/server-bin
+
+# Create entrypoint script
+COPY <<'EOF' /entrypoint.sh
+#!/bin/bash
+set -e
+
+SERVER_BIN="/usr/local/bin/hodei-jobs-server"
+PID_FILE="/tmp/server.pid"
+SYNC_DIR="/tmp/server-bin"
+SOURCE_DIR="/app"
+
+echo "🚀 Hodei Jobs Server - Dev Mode"
+echo "================================"
+
+# Wait for DevSpace to sync code (if not already present)
+wait_for_code() {
+    echo "⏳ Waiting for source code to be synced by DevSpace..."
+    while [ ! -f "$SOURCE_DIR/Cargo.toml" ]; do
+        if [ -f "$SYNC_DIR/Cargo.toml" ]; then
+            cp -r "$SYNC_DIR"/* "$SOURCE_DIR/"
+            break
+        fi
+        sleep 2
+    done
+    if [ -f "$SOURCE_DIR/Cargo.toml" ]; then
+        echo "✅ Source code found!"
+    else
+        echo "⚠️  No source code found. DevSpace will sync it."
+    fi
+}
+
+# Try to find existing binary first
+try_existing_binary() {
+    if [ -f "$SOURCE_DIR/target/release/hodei-server-bin" ]; then
+        cp "$SOURCE_DIR/target/release/hodei-server-bin" "$SERVER_BIN"
+        chmod +x "$SERVER_BIN"
+        echo "📦 Using existing binary!"
+        return 0
+    fi
+    return 1
+}
+
+# Compile if no binary
+compile_if_needed() {
+    if [ -f "$SERVER_BIN" ]; then
+        echo "✅ Binary already exists at $SERVER_BIN"
+        return 0
+    fi
+
+    if [ ! -f "$SOURCE_DIR/Cargo.toml" ]; then
+        echo "❌ No source code found. Run: devspace dev"
+        echo "   DevSpace will sync the code and you can compile manually."
+        exit 1
+    fi
+
+    echo "🔨 Compiling in pod..."
+    cd "$SOURCE_DIR"
+    cargo build --release -p hodei-server-bin
+
+    if [ -f "$SOURCE_DIR/target/release/hodei-server-bin" ]; then
+        cp "$SOURCE_DIR/target/release/hodei-server-bin" "$SERVER_BIN"
+        chmod +x "$SERVER_BIN"
+        echo "✅ Compilation successful!"
+    else
+        echo "❌ Compilation failed"
+        exit 1
+    fi
+}
+
+# Main flow
+wait_for_code
+try_existing_binary || compile_if_needed
+
+# Write PID
+echo $$ > "$PID_FILE"
+
+echo ""
+echo "📦 Binary info:"
+ls -la "$SERVER_BIN" 2>/dev/null || echo "Binary not found"
+file "$SERVER_BIN" 2>/dev/null || echo ""
+
+echo ""
+echo "🚀 Starting server..."
+exec "$SERVER_BIN"
+EOF
+
+RUN chmod +x /entrypoint.sh && \
+    useradd -r -u 2000 -g root -d /var/lib/hodei hodei && \
+    chown -R hodei:root /var/lib/hodei
+
+USER hodei
+
+ENV HODEI_MIGRATIONS_PATH=/app/migrations
+ENV RUST_LOG=info
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=false
+
+EXPOSE 9090
+
+ENTRYPOINT ["/entrypoint.sh"]
