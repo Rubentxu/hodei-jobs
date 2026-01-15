@@ -4,14 +4,15 @@
 //! Uses bollard for Docker API communication.
 
 use async_trait::async_trait;
+use bollard::service::{EventActor, EventMessage, EventMessageTypeEnum};
 use bollard::{
     Docker,
     container::LogOutput,
     models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig},
     query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
-        LogsOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
-        StopContainerOptionsBuilder,
+        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, EventsOptions,
+        InspectContainerOptions, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+        StartContainerOptions, StopContainerOptionsBuilder,
     },
 };
 use chrono::Utc;
@@ -23,7 +24,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::providers::metrics_collector::ProviderMetricsCollector;
@@ -772,25 +773,130 @@ impl WorkerEventSource for DockerProvider {
 
         let active_workers = self.active_workers.clone();
         let provider_id = self.provider_id.clone();
+        let client = self.client.clone();
 
         // Create a channel to bridge between stream and our consumers
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<WorkerInfrastructureEvent>>(100);
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<std::result::Result<WorkerInfrastructureEvent, ProviderError>>(100);
 
-        // Spawn a task to process events - simplified implementation
-        // In production, use Docker events API: GET /events
+        // Spawn a task to process events from Docker Events API
         let _handle = tokio::spawn(async move {
-            // For now, we just log that events subscription is active
-            // Real Docker events would require the events API
             info!("Docker events stream active for provider {}", provider_id);
 
-            // This is a placeholder - in production, connect to Docker events API
-            // For now, we just keep the channel open but don't emit any events
-            // until Docker events API is properly integrated
+            // Subscribe to Docker events using bollard API
+            let events = client.events(Some(EventsOptions::default()));
+
+            tokio::pin!(events);
+
+            while let Some(event_result) = events.next().await {
+                match event_result {
+                    Ok(event) => {
+                        if let Some(worker_event) =
+                            parse_docker_event(&event, &provider_id, &active_workers).await
+                        {
+                            if tx.send(Ok(worker_event)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Docker event error: {}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+
+            info!("Docker events stream closed for provider {}", provider_id);
         });
 
-        // Return empty stream - Docker events API integration requires
-        // additional bollard configuration not yet in place
-        Ok(Box::pin(futures::stream::empty()))
+        // Return the receiver as a stream using unfold
+        Ok(Box::pin(futures::stream::unfold(rx, |mut rx| async move {
+            match rx.recv().await {
+                Some(result) => Some((result, rx)),
+                None => None,
+            }
+        })))
+    }
+}
+
+/// Parse Docker events to WorkerInfrastructureEvent
+async fn parse_docker_event(
+    event: &EventMessage,
+    provider_id: &ProviderId,
+    active_workers: &Arc<RwLock<HashMap<String, WorkerHandle>>>,
+) -> Option<WorkerInfrastructureEvent> {
+    let event_type = event.typ.as_ref()?;
+    let action = event.action.as_ref()?;
+
+    if *event_type != EventMessageTypeEnum::CONTAINER {
+        return None;
+    }
+
+    let actor = event.actor.as_ref()?;
+    let attributes = actor.attributes.as_ref()?;
+    let container_id = attributes.get("name")?.clone();
+    let container_id_short = container_id.chars().take(12).collect::<String>();
+
+    match action.as_str() {
+        "start" => {
+            let workers = active_workers.read().await;
+            if workers.contains_key(&container_id) {
+                Some(WorkerInfrastructureEvent::WorkerStarted {
+                    provider_resource_id: container_id,
+                    timestamp: Utc::now(),
+                })
+            } else {
+                None
+            }
+        }
+        "die" | "kill" => {
+            let workers = active_workers.read().await;
+            if workers.contains_key(&container_id) {
+                let exit_code = attributes.get("exitCode").and_then(|s| s.parse().ok());
+                let reason = if action == "kill" {
+                    Some("forced".to_string())
+                } else {
+                    None
+                };
+                Some(WorkerInfrastructureEvent::WorkerStopped {
+                    provider_resource_id: container_id,
+                    timestamp: Utc::now(),
+                    reason,
+                    exit_code,
+                })
+            } else {
+                None
+            }
+        }
+        "health_status" | "healthcheck" => {
+            let workers = active_workers.read().await;
+            if workers.contains_key(&container_id) {
+                let status_str = attributes
+                    .get("healthStatus")
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                let status = if status_str == "healthy" {
+                    HealthStatus::Healthy
+                } else if status_str == "unhealthy" {
+                    HealthStatus::Unhealthy {
+                        reason: format!("Container {} health check failed", container_id_short),
+                    }
+                } else {
+                    HealthStatus::Unknown
+                };
+                Some(WorkerInfrastructureEvent::WorkerHealthChanged {
+                    provider_resource_id: container_id,
+                    status,
+                    timestamp: Utc::now(),
+                })
+            } else {
+                None
+            }
+        }
+        _ => {
+            debug!("Ignored Docker event: {}", action);
+            None
+        }
     }
 }
 
