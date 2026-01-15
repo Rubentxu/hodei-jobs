@@ -288,8 +288,8 @@ pub async fn start_saga_consumers(
     let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
     let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool.clone()));
 
-    let (cancellation_stop_tx, _) = tokio::sync::broadcast::channel(1);
-    let (cleanup_stop_tx, _) = tokio::sync::broadcast::channel(1);
+    let (cancellation_stop_tx, cancellation_stop_rx) = tokio::sync::broadcast::channel(1);
+    let (cleanup_stop_tx, cleanup_stop_rx) = tokio::sync::broadcast::channel(1);
 
     // Start CancellationSagaConsumer
     let cancellation_consumer = CancellationSagaConsumer::new(
@@ -301,7 +301,11 @@ pub async fn start_saga_consumers(
     );
 
     tokio::spawn(async move {
-        if let Err(e) = cancellation_consumer.start().await {
+        // US-18: Pass shutdown receiver for graceful drain
+        if let Err(e) = cancellation_consumer
+            .start(Some(cancellation_stop_rx))
+            .await
+        {
             tracing::error!("❌ CancellationSagaConsumer failed: {:?}", e);
         }
     });
@@ -318,7 +322,8 @@ pub async fn start_saga_consumers(
     );
 
     tokio::spawn(async move {
-        if let Err(e) = cleanup_consumer.start().await {
+        // US-18: Pass shutdown receiver for graceful drain
+        if let Err(e) = cleanup_consumer.start(Some(cleanup_stop_rx)).await {
             tracing::error!("❌ CleanupSagaConsumer failed: {:?}", e);
         }
     });

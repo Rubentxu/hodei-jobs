@@ -23,7 +23,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tokio::time;
+use tracing::{debug, error, info, warn};
 
 use hodei_shared::event_topics::job_topics;
 
@@ -156,7 +157,14 @@ where
     }
 
     /// Start the consumer and begin processing events
-    pub async fn start(&self) -> Result<(), DomainError> {
+    ///
+    /// # Arguments
+    /// * `shutdown_rx` - Optional broadcast receiver for shutdown signals. If provided, the consumer
+    ///   will drain in-flight messages for the configured drain timeout before stopping.
+    pub async fn start(
+        &self,
+        shutdown_rx: Option<tokio::sync::broadcast::Receiver<()>>,
+    ) -> Result<(), DomainError> {
         info!(
             "🚫 CancellationSagaConsumer: Starting consumer '{}'",
             self.config.consumer_name
@@ -192,26 +200,77 @@ where
             stream_name
         );
 
+        // Drain timeout configuration (US-18: Graceful Shutdown)
+        let drain_timeout = Duration::from_secs(10);
+        let mut drain_deadline = None;
+        let mut in_shutdown = false;
+        let mut shutdown_rx = shutdown_rx;
+
         while let Some(message_result) = messages.next().await {
+            // Check if shutdown signal received
+            if !in_shutdown {
+                if let Some(ref mut rx) = shutdown_rx {
+                    match rx.try_recv() {
+                        Ok(()) | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                            info!(
+                                "🚫 CancellationSagaConsumer: Shutdown signal received, starting drain phase"
+                            );
+                            in_shutdown = true;
+                            drain_deadline = Some(std::time::Instant::now() + drain_timeout);
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                            info!(
+                                "🚫 CancellationSagaConsumer: Receiver lagged, entering drain phase"
+                            );
+                            in_shutdown = true;
+                            drain_deadline = Some(std::time::Instant::now() + drain_timeout);
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+                    }
+                }
+            } else if let Some(deadline) = drain_deadline {
+                if std::time::Instant::now() >= deadline {
+                    warn!("🚫 CancellationSagaConsumer: Drain timeout exceeded, forcing shutdown");
+                    break;
+                }
+            }
+
             match message_result {
                 Ok(message) => {
+                    if in_shutdown {
+                        if let Err(e) = message.ack().await {
+                            error!(
+                                "🚫 CancellationSagaConsumer: Failed to ack message during drain: {}",
+                                e
+                            );
+                        }
+                        continue;
+                    }
+
                     if let Err(e) = self.process_message(&message.payload).await {
                         error!(
                             "🚫 CancellationSagaConsumer: Error processing message: {}",
                             e
                         );
                     }
-                    // Ack the message
                     if let Err(e) = message.ack().await {
                         error!("🚫 CancellationSagaConsumer: Failed to ack message: {}", e);
                     }
                 }
                 Err(e) => {
+                    if in_shutdown {
+                        error!(
+                            "🚫 CancellationSagaConsumer: Message receive error during drain: {}, exiting",
+                            e
+                        );
+                        break;
+                    }
                     error!("🚫 CancellationSagaConsumer: Message receive error: {}", e);
                 }
             }
         }
 
+        info!("🚫 CancellationSagaConsumer: Consumer stopped");
         Ok(())
     }
 

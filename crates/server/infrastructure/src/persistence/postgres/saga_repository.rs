@@ -4,6 +4,7 @@
 //! Provides persistence for saga instances and steps with full audit trail.
 
 use chrono::{DateTime, Utc};
+use hodei_server_domain::saga::orchestrator::{RateLimitConfig, TokenBucketRateLimiter};
 use hodei_server_domain::saga::{
     CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
     SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator,
@@ -16,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -855,12 +857,22 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Configuration for PostgresSagaOrchestrator
 #[derive(Debug, Clone)]
 pub struct PostgresSagaOrchestratorConfig {
+    /// Maximum concurrent sagas allowed
     pub max_concurrent_sagas: usize,
+    /// Maximum concurrent steps per saga
     pub max_concurrent_steps: usize,
+    /// Timeout for individual steps
     pub step_timeout: Duration,
+    /// Timeout for entire saga execution
     pub saga_timeout: Duration,
+    /// Maximum retry attempts for failed steps
     pub max_retries: u32,
+    /// Base delay for exponential backoff
     pub retry_backoff: Duration,
+    /// Rate limiting configuration (US-14: Production-Ready Gaps)
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Maximum sagas per minute
+    pub max_sagas_per_minute: Option<u32>,
 }
 
 impl Default for PostgresSagaOrchestratorConfig {
@@ -872,6 +884,8 @@ impl Default for PostgresSagaOrchestratorConfig {
             saga_timeout: Duration::from_secs(300),
             max_retries: 3,
             retry_backoff: Duration::from_secs(1),
+            rate_limit: None,
+            max_sagas_per_minute: Some(60),
         }
     }
 }
@@ -881,16 +895,27 @@ impl Default for PostgresSagaOrchestratorConfig {
 pub struct PostgresSagaOrchestrator<R: SagaRepositoryTrait + Clone> {
     repository: Arc<R>,
     config: PostgresSagaOrchestratorConfig,
+    /// Active saga count (for concurrency control)
     active_sagas: Arc<AtomicUsize>,
+    /// Rate limiter for saga execution (US-14: Production-Ready Gaps)
+    rate_limiter: Option<TokenBucketRateLimiter>,
+    /// Semaphore for concurrent saga control
+    concurrency_semaphore: Arc<Semaphore>,
 }
 
 impl<R: SagaRepositoryTrait + Clone> PostgresSagaOrchestrator<R> {
     /// Creates a new production-ready saga orchestrator
     pub fn new(repository: Arc<R>, config: Option<PostgresSagaOrchestratorConfig>) -> Self {
+        let config = config.unwrap_or_default();
+        let rate_limiter = config.rate_limit.map(TokenBucketRateLimiter::new);
+        let concurrency_semaphore = Arc::new(Semaphore::new(config.max_concurrent_sagas));
+
         Self {
             repository,
-            config: config.unwrap_or_default(),
+            config,
             active_sagas: Arc::new(AtomicUsize::new(0)),
+            rate_limiter,
+            concurrency_semaphore,
         }
     }
 }
@@ -916,25 +941,42 @@ where
         let start_time = std::time::Instant::now();
         let saga_id = context.saga_id.clone();
 
-        // Check concurrency limit
-        let current = self.active_sagas.load(Ordering::SeqCst);
-        if current >= self.config.max_concurrent_sagas {
-            return Err(Self::Error::from(
-                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
-                    message: format!(
-                        "Concurrency limit exceeded: {}/{}",
-                        current, self.config.max_concurrent_sagas
+        // US-14: Check rate limit first (Token Bucket Rate Limiting)
+        if let Some(ref limiter) = self.rate_limiter {
+            if !limiter.try_acquire() {
+                let remaining = limiter.remaining();
+                return Err(Self::Error::from(
+                    hodei_server_domain::shared_kernel::DomainError::OrchestratorError(
+                        hodei_server_domain::saga::orchestrator::OrchestratorError::RateLimitExceeded { remaining },
                     ),
-                },
-            ));
+                ));
+            }
         }
+
+        // Check concurrency limit using semaphore
+        match self.concurrency_semaphore.try_acquire() {
+            Ok(_permit) => { /* permit acquired, guard will release */ }
+            Err(_) => {
+                return Err(Self::Error::from(
+                    hodei_server_domain::shared_kernel::DomainError::OrchestratorError(
+                        hodei_server_domain::saga::orchestrator::OrchestratorError::ConcurrencyLimitExceeded {
+                            current: self.active_sagas.load(Ordering::SeqCst),
+                            max: self.config.max_concurrent_sagas,
+                        },
+                    ),
+                ));
+            }
+        };
 
         // Increment active count
         self.active_sagas.fetch_add(1, Ordering::SeqCst);
 
-        // Ensure we decrement on exit
+        // Ensure we decrement on exit (RAII guard)
         let active_sagas = self.active_sagas.clone();
-        let _guard = DropGuard(active_sagas);
+        let _guard = DropGuard {
+            active_sagas,
+            semaphore: self.concurrency_semaphore.clone(),
+        };
 
         // Save initial context
         self.repository.save(&context).await?;
@@ -1420,12 +1462,17 @@ where
     }
 }
 
-/// Simple guard to decrement active saga count
-struct DropGuard(Arc<AtomicUsize>);
+/// RAII guard to decrement active saga count and release semaphore permit
+struct DropGuard {
+    active_sagas: Arc<AtomicUsize>,
+    semaphore: Arc<Semaphore>,
+}
 
 impl Drop for DropGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.active_sagas.fetch_sub(1, Ordering::SeqCst);
+        // Release semaphore permit
+        self.semaphore.add_permits(1);
     }
 }
 
