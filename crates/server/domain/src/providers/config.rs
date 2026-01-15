@@ -35,14 +35,6 @@ pub struct ProviderConfig {
     pub tags: Vec<String>,
     /// Metadata adicional
     pub metadata: HashMap<String, String>,
-    /// Región preferida del provider (US-86.7)
-    pub preferred_region: Option<String>,
-    /// Regiones donde el provider puede ejecutar jobs (US-86.7)
-    pub allowed_regions: Vec<String>,
-    /// Labels requeridos que el provider debe tener (US-86.7)
-    pub required_labels: HashMap<String, String>,
-    /// Annotations requeridas que el provider debe tener (US-86.7)
-    pub annotations: HashMap<String, String>,
 }
 
 impl ProviderConfig {
@@ -62,10 +54,6 @@ impl ProviderConfig {
             updated_at: now,
             tags: vec![],
             metadata: HashMap::new(),
-            preferred_region: None,
-            allowed_regions: vec![],
-            required_labels: HashMap::new(),
-            annotations: HashMap::new(),
         }
     }
 
@@ -91,10 +79,6 @@ impl ProviderConfig {
             updated_at: now,
             tags: vec![],
             metadata: HashMap::new(),
-            preferred_region: None,
-            allowed_regions: vec![],
-            required_labels: HashMap::new(),
-            annotations: HashMap::new(),
         }
     }
 
@@ -118,97 +102,12 @@ impl ProviderConfig {
         self
     }
 
-    /// Set preferred region for this provider (US-86.7)
-    pub fn with_preferred_region(mut self, region: impl Into<String>) -> Self {
-        self.preferred_region = Some(region.into());
-        self
-    }
-
-    /// Add allowed region for this provider (US-86.7)
-    pub fn with_allowed_region(mut self, region: impl Into<String>) -> Self {
-        self.allowed_regions.push(region.into());
-        self
-    }
-
-    /// Set allowed regions for this provider (US-86.7)
-    pub fn with_allowed_regions(mut self, regions: Vec<String>) -> Self {
-        self.allowed_regions = regions;
-        self
-    }
-
-    /// Add required label for this provider (US-86.7)
-    pub fn with_required_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.required_labels.insert(key.into(), value.into());
-        self
-    }
-
-    /// Add annotation for this provider (US-86.7)
-    pub fn with_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.annotations.insert(key.into(), value.into());
-        self
-    }
-
-    /// Check if provider can run in the specified region (US-86.7)
-    pub fn can_run_in_region(&self, region: &str) -> bool {
-        // If no restrictions, provider can run anywhere
-        if self.allowed_regions.is_empty() {
-            return true;
-        }
-        self.allowed_regions.iter().any(|r| r == region)
-    }
-
-    /// Check if provider can run in any of the specified regions (US-86.7)
-    pub fn can_run_in_region_any(&self, regions: &[String]) -> bool {
-        // If provider has no restrictions, it can run anywhere
-        if self.allowed_regions.is_empty() {
-            return true;
-        }
-        // If no regions specified, provider can run
-        if regions.is_empty() {
-            return true;
-        }
-        // Check if any of the allowed regions matches
-        regions.iter().any(|r| self.allowed_regions.contains(r))
-    }
-
-    /// Check if provider has all required labels (US-86.7)
-    pub fn has_required_labels(&self, required: &HashMap<String, String>) -> bool {
-        if required.is_empty() {
-            return true;
-        }
-        required.iter().all(|(key, value)| {
-            self.required_labels
-                .get(key)
-                .map(|v| v == value)
-                .unwrap_or(false)
-        })
-    }
-
-    /// Check if provider has all required annotations (US-86.7)
-    pub fn has_required_annotations(&self, required: &HashMap<String, String>) -> bool {
-        if required.is_empty() {
-            return true;
-        }
-        required.iter().all(|(key, value)| {
-            self.annotations
-                .get(key)
-                .map(|v| v == value)
-                .unwrap_or(false)
-        })
-    }
-
     pub fn is_enabled(&self) -> bool {
         matches!(self.status, ProviderStatus::Active)
     }
 
     pub fn has_capacity(&self) -> bool {
         self.active_workers < self.max_workers
-    }
-
-    /// Check if provider is operational (Active status AND has capacity)
-    /// Used by scheduler to exclude unhealthy providers (US-86.3)
-    pub fn is_operational(&self) -> bool {
-        matches!(self.status, ProviderStatus::Active) && self.has_capacity()
     }
 
     pub fn increment_workers(&mut self) {

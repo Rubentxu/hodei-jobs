@@ -61,32 +61,11 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
             }
         })?;
 
-        let allowed_regions_json =
-            serde_json::to_value(&provider.allowed_regions).map_err(|e| {
-                DomainError::InfrastructureError {
-                    message: format!("Failed to serialize provider allowed regions: {}", e),
-                }
-            })?;
-
-        let required_labels_json =
-            serde_json::to_value(&provider.required_labels).map_err(|e| {
-                DomainError::InfrastructureError {
-                    message: format!("Failed to serialize provider required labels: {}", e),
-                }
-            })?;
-
-        let annotations_json = serde_json::to_value(&provider.annotations).map_err(|e| {
-            DomainError::InfrastructureError {
-                message: format!("Failed to serialize provider annotations: {}", e),
-            }
-        })?;
-
         sqlx::query(
             r#"
             INSERT INTO provider_configs
-                (id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                 preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                (id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (name) DO UPDATE SET
                 config = EXCLUDED.config,
                 status = EXCLUDED.status,
@@ -94,10 +73,6 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
                 max_workers = EXCLUDED.max_workers,
                 tags = EXCLUDED.tags,
                 metadata = EXCLUDED.metadata,
-                preferred_region = EXCLUDED.preferred_region,
-                allowed_regions = EXCLUDED.allowed_regions,
-                required_labels = EXCLUDED.required_labels,
-                annotations = EXCLUDED.annotations,
                 updated_at = now()
             "#,
         )
@@ -110,10 +85,6 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
         .bind(provider.max_workers as i32)
         .bind(tags_json)
         .bind(metadata_json)
-        .bind(provider.preferred_region.as_deref())
-        .bind(allowed_regions_json)
-        .bind(required_labels_json)
-        .bind(annotations_json)
         .bind(provider.created_at)
         .bind(provider.updated_at)
         .execute(&self.pool)
@@ -128,8 +99,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     async fn find_by_id(&self, provider_id: &ProviderId) -> Result<Option<ProviderConfig>> {
         let row_opt = sqlx::query(
             r#"
-            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                   preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at
+            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
             WHERE id = $1
             "#,
@@ -151,8 +121,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     async fn find_by_name(&self, name: &str) -> Result<Option<ProviderConfig>> {
         let row_opt = sqlx::query(
             r#"
-            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                   preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at
+            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
             WHERE name = $1
             "#,
@@ -174,8 +143,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     async fn find_all(&self) -> Result<Vec<ProviderConfig>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                   preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at
+            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
             ORDER BY priority DESC, name ASC
             "#,
@@ -200,8 +168,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     ) -> Result<Vec<ProviderConfig>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                   preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at
+            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
             WHERE provider_type = $1
             ORDER BY priority DESC, name ASC
@@ -225,8 +192,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     async fn find_enabled(&self) -> Result<Vec<ProviderConfig>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                   preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at
+            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
             WHERE status = 'ACTIVE'
             ORDER BY priority DESC, name ASC
@@ -249,8 +215,7 @@ impl ProviderConfigRepository for PostgresProviderConfigRepository {
     async fn find_with_capacity(&self) -> Result<Vec<ProviderConfig>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata,
-                   preferred_region, allowed_regions, required_labels, annotations, created_at, updated_at
+            SELECT id, name, provider_type, config, status, priority, max_workers, tags, metadata, created_at, updated_at
             FROM provider_configs
             WHERE status = 'ACTIVE'
             ORDER BY priority DESC, name ASC
@@ -310,10 +275,6 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
     let max_workers: i32 = row.get("max_workers");
     let tags_json: serde_json::Value = row.get("tags");
     let metadata_json: serde_json::Value = row.get("metadata");
-    let preferred_region_json: Option<String> = row.get("preferred_region");
-    let allowed_regions_json: serde_json::Value = row.get("allowed_regions");
-    let required_labels_json: serde_json::Value = row.get("required_labels");
-    let annotations_json: serde_json::Value = row.get("annotations");
     let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
     let updated_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
 
@@ -352,12 +313,6 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
     let tags: Vec<String> = serde_json::from_value(tags_json).unwrap_or_default();
     let metadata: std::collections::HashMap<String, String> =
         serde_json::from_value(metadata_json).unwrap_or_default();
-    let allowed_regions: Vec<String> =
-        serde_json::from_value(allowed_regions_json).unwrap_or_default();
-    let required_labels: std::collections::HashMap<String, String> =
-        serde_json::from_value(required_labels_json).unwrap_or_default();
-    let annotations: std::collections::HashMap<String, String> =
-        serde_json::from_value(annotations_json).unwrap_or_default();
 
     Ok(ProviderConfig {
         id: ProviderId(id),
@@ -371,10 +326,6 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
         active_workers: 0,
         tags,
         metadata,
-        preferred_region: preferred_region_json,
-        allowed_regions,
-        required_labels,
-        annotations,
         created_at,
         updated_at,
     })
