@@ -88,7 +88,7 @@ spec:
 
       containers:
       - name: {{ .Chart.Name }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: "{{ .Values.image.repository }}{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.securityContext }}
         securityContext:
@@ -179,7 +179,7 @@ spec:
 
         # Worker configuration
         - name: HODEI_WORKER_IMAGE
-          value: "{{ .Values.workerImage.repository }}:{{ .Values.workerImage.tag }}"
+          value: "{{ .Values.workerImage.repository }}{{ if .Values.workerImage.tag }}:{{ .Values.workerImage.tag }}{{ end }}"
         - name: HODEI_DOCKER_ENABLED
           value: {{ .Values.dockerProvider.enabled | quote }}
         - name: HODEI_KUBERNETES_ENABLED
@@ -211,6 +211,7 @@ spec:
           mountPath: /var/cache/hodei
         - name: logs
           mountPath: /tmp/hodei-logs
+
         - name: migrations
           mountPath: /app/migrations
           readOnly: true

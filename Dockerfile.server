@@ -1,66 +1,66 @@
-# =============================================================================
-# Hodei Jobs Platform - Server Dockerfile
-# Standard multi-stage build (sin cargo-chef)
-# =============================================================================
-# syntax=docker/dockerfile:1.4
+# Dockerfile for DevSpace development - optimized for binary sync
+# The actual binary is synced by DevSpace to /tmp/server-bin
+# This image provides the runtime environment
+FROM ubuntu:24.04
 
-# -----------------------------------------------------------------------------
-# Stage 1: Builder - Compile server binary
-# -----------------------------------------------------------------------------
-FROM rust:1.92-slim AS builder
-
-RUN apt-get update && apt-get install -y \
-    protobuf-compiler \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Copy source files
-COPY Cargo.toml Cargo.lock ./
-COPY proto/ proto/
-COPY crates/ crates/
-
-ENV SQLX_OFFLINE=true
-
-# Build server binary
-RUN cargo build --release -p hodei-server-bin && \
-    cp /app/target/release/hodei-server-bin /app/hodei-server-bin
-
-# -----------------------------------------------------------------------------
-# Stage 2: Runtime - Minimal production image
-# -----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
-
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
+    libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
 
+# Create directories
 WORKDIR /app
+RUN mkdir -p /var/lib/hodei /tmp/hodei-logs /tmp/server-bin
 
-# Create migration directories (mounted from ConfigMap in K8s)
-RUN mkdir -p /app/migrations /app/infrastructure-migrations
+# Create entrypoint script that waits for binary sync
+COPY <<'EOF' /entrypoint.sh
+#!/bin/bash
+set -e
 
-# Copy server binary
-COPY --from=builder /app/hodei-server-bin /usr/local/bin/hodei-jobs-server
+SERVER_BIN="/usr/local/bin/hodei-jobs-server"
+SYNC_DIR="/tmp/server-bin"
+PID_FILE="/tmp/server.pid"
 
-# Create non-root user
-RUN useradd -r -u 1000 -g root -d /var/lib/hodei hodei \
-    && mkdir -p /var/lib/hodei \
-    && chown -R hodei:root /var/lib/hodei /app
+echo "🚀 Hodei Jobs Server - DevSpace Mode"
+echo "===================================="
+
+# Wait for DevSpace to sync the binary
+echo "⏳ Waiting for binary sync..."
+while [ ! -f "$SYNC_DIR" ]; do
+    sleep 1
+done
+
+echo "✅ Binary synced!"
+
+# Copy and make executable
+cp "$SYNC_DIR" "$SERVER_BIN"
+chmod +x "$SERVER_BIN"
+
+# Write PID for reload support
+echo $$ > "$PID_FILE"
+
+echo "📦 Binary info:"
+ls -la "$SERVER_BIN"
+file "$SERVER_BIN"
+
+echo ""
+echo "🚀 Starting server..."
+exec "$SERVER_BIN"
+EOF
+
+RUN chmod +x /entrypoint.sh && \
+    useradd -r -u 2000 -g root -d /var/lib/hodei hodei && \
+    chown -R hodei:root /var/lib/hodei
 
 USER hodei
 
 # Environment variables
-ENV HODEI_MIGRATIONS_PATH=/app/migrations,/app/infrastructure-migrations
+ENV HODEI_MIGRATIONS_PATH=/app/migrations
 ENV RUST_LOG=info
 
+# Expose gRPC port
 EXPOSE 9090
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["/usr/local/bin/hodei-jobs-server", "--health-check"] || exit 1
-
-ENTRYPOINT ["/usr/local/bin/hodei-jobs-server"]
-CMD []
+# Entry point with binary sync handling
+ENTRYPOINT ["/entrypoint.sh"]

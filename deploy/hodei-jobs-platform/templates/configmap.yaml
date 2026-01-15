@@ -164,7 +164,7 @@ data:
     # Worker Configuration
     # =============================================================================
     worker:
-      image: "{{ .Values.image.repository }}-worker:{{ .Values.image.tag }}"
+      image: "{{ .Values.workerImage.repository }}:{{ .Values.workerImage.tag | default "latest" }}"
       {{- if .Values.dockerProvider.enabled }}
       docker:
         enabled: true

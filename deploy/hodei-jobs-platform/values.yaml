@@ -23,12 +23,16 @@ global:
 # =============================================================================
 # Server Configuration
 # =============================================================================
-replicaCount: 1  # Reduced for local development
+replicaCount: 1 # Reduced for local development
 
 image:
-  repository: hodei-jobs-platform
-  pullPolicy: Never  # Use local images only
-  tag: "local"
+  repository: localhost:5000/hodei-jobs-server
+  pullPolicy: IfNotPresent
+
+# Worker image configuration
+workerImage:
+  repository: localhost:5000/hodei-jobs-worker
+  pullPolicy: IfNotPresent
 
 # Image pull secrets (use external-secrets for production)
 imagePullSecrets: []
@@ -85,7 +89,7 @@ service:
 # Select gateway type: "nginx", "kong", "istio", "traefik", or "none"
 gateway:
   enabled: true
-  type: "nginx"  # nginx, kong, istio, traefik, none
+  type: "nginx" # nginx, kong, istio, traefik, none
 
   # Common settings for all gateways
   host: "hodei.example.com"
@@ -108,7 +112,7 @@ gateway:
         enabled: true
     # Upstream configuration - use Hodei service name
     upstream:
-      target: "hodei-jobs-platform"  # Will be resolved to FQDN at runtime
+      target: "hodei-jobs-platform" # Will be resolved to FQDN at runtime
       port: 8080
       healthchecks:
         active:
@@ -170,7 +174,7 @@ gateway:
 # Legacy Ingress Configuration (DEPRECATED - Use gateway instead)
 # =============================================================================
 ingress:
-  enabled: false  # Disabled in favor of gateway configuration
+  enabled: false # Disabled in favor of gateway configuration
   className: "nginx"
   annotations: {}
   hosts:
@@ -195,7 +199,7 @@ resources:
     memory: 512Mi
 
 autoscaling:
-  enabled: false  # Disabled for local development (requires metrics-server)
+  enabled: false # Disabled for local development (requires metrics-server)
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
   # Behavior for gradual scaling
@@ -290,13 +294,13 @@ topologySpreadConstraints:
 # =============================================================================
 # Prometheus configuration
 prometheus:
-  enabled: false  # Disable for now, requires Prometheus Operator
+  enabled: false # Disable for now, requires Prometheus Operator
   prometheus:
     enabled: false
 
 # Prometheus ServiceMonitor
 serviceMonitor:
-  enabled: false  # Disable for now, requires Prometheus Operator
+  enabled: false # Disable for now, requires Prometheus Operator
   labels:
     prometheus.io/scrape: "true"
     hodei.io/monitor: "true"
@@ -333,7 +337,7 @@ logging:
   # Optional: External log aggregation
   external:
     enabled: false
-    type: "loki"  # loki, elasticsearch, cloudwatch
+    type: "loki" # loki, elasticsearch, cloudwatch
     endpoint: ""
     username: ""
     password: ""
@@ -343,7 +347,7 @@ logging:
 # Distributed tracing
 tracing:
   enabled: true
-  exporter: "otlp"  # otlp, jaeger, zipkin
+  exporter: "otlp" # otlp, jaeger, zipkin
   endpoint: ""
   sampleRate: 1.0
   propagation: "w3c"
@@ -354,7 +358,7 @@ tracing:
 nats:
   enabled: true
   # Number of NATS replicas
-  replicaCount: 1  # Reduced for development
+  replicaCount: 1 # Reduced for development
   # Use local image for minikube
   image:
     registry: docker.io
@@ -418,9 +422,9 @@ postgresql:
   connectionString: ""
   # Internal PostgreSQL settings
   auth:
-    postgresPassword: "postgres"  # For local development only
+    postgresPassword: "postgres" # For local development only
     database: "hodei_jobs"
-    existingSecret: ""  # Disabled for local development
+    existingSecret: "" # Disabled for local development
     username: "postgres"
     password: "postgres"
   # Resources
@@ -434,10 +438,10 @@ postgresql:
         memory: 512Mi
   # Pod disruption budget
   pdb:
-    enabled: false  # Disabled for local development
+    enabled: false # Disabled for local development
   # Persistence configuration
   persistence:
-    enabled: true  # Enable PVC for data persistence
+    enabled: true # Enable PVC for data persistence
     size: 10Gi
     storageClass: standard
 
@@ -445,13 +449,13 @@ postgresql:
 # External Secrets Configuration (GitOps)
 # =============================================================================
 externalSecrets:
-  enabled: false  # Disabled for local development
+  enabled: false # Disabled for local development
   # Secret Store provider
   secretStore:
     # Use ClusterSecretStore for cluster-wide access
-    create: false  # Disabled for local development
+    create: false # Disabled for local development
     name: "hodei-secret-store"
-    provider: "aws"  # aws, gcp, azure, vault
+    provider: "aws" # aws, gcp, azure, vault
     # AWS Secrets Manager
     aws:
       region: "us-east-1"
@@ -581,8 +585,8 @@ jobExecution:
 # =============================================================================
 backup:
   enabled: true
-  schedule: "0 2 * * *"  # Daily at 2 AM
-  retention: "720h"  # 30 days
+  schedule: "0 2 * * *" # Daily at 2 AM
+  retention: "720h" # 30 days
   # Backup targets
   targets:
     postgresql:
@@ -593,7 +597,7 @@ backup:
       type: "jetstream"
   # Storage backend
   storage:
-    type: "s3"  # s3, gcs, azure, filesystem
+    type: "s3" # s3, gcs, azure, filesystem
     bucket: "hodei-backups"
     region: "us-east-1"
     endpoint: ""
@@ -602,11 +606,6 @@ backup:
     keyId: ""
     secretKey: ""
     encryptionKey: ""
-  # Retention policy
-  retention:
-    daily: 7
-    weekly: 4
-    monthly: 12
 
 # =============================================================================
 # Network Policies
@@ -742,7 +741,7 @@ volumes:
   # Log storage (persistent - survives pod restarts)
   logs:
     enabled: true
-    storageClass: ""  # Use default storage class
+    storageClass: "" # Use default storage class
     size: "5Gi"
   # Work volume for job execution
   work:
@@ -790,7 +789,7 @@ operator:
   replicaCount: 1
 
   # Operator settings
-  watchNamespace: ""  # Empty = all namespaces
+  watchNamespace: "" # Empty = all namespaces
   watchAllNamespaces: false
   logLevel: "info"
 
@@ -898,3 +897,10 @@ web:
           - path: /
             pathType: Prefix
     tls: []
+
+# Development configuration
+development:
+  enabled: false
+  cargoCache:
+    enabled: false
+    pvcName: ""

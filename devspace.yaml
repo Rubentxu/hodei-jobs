@@ -1,309 +1,58 @@
-version: v2
+version: v2beta1
 
 name: hodei-jobs
 
-# =============================================================================
-# DESARROLLO RÁPIDO RUST + MINIKUBE CON DEVSPACE
-# =============================================================================
-# Flujo optimizado:
-# 1. Compila Rust localmente: cargo build -p hodei-server-bin
-# 2. DevSpace sincroniza el binario al pod
-# 3. Reinicio del proceso (no contenedor) con señal USR1
-#
-# Tiempo de reload: ~2-5 segundos (solo sincronización de binario)
-# Sin rebuild de imagen Docker
-# =============================================================================
+# Note: No 'images' section - we use binary sync instead of docker builds
+# Image is managed by Helm via values-dev.yaml (tag: "dev")
 
-config:
-  activation:
-    - command: dev
-      profile: minikube
-    - command: minikube
-      profile: minikube
+pipelines:
+  dev:
+    run: |-
+      create_deployments --all
+      start_dev app
 
-profiles:
-  # Perfil para desarrollo en Minikube
-  - name: minikube
-    patches:
-      - op: replace
-        path: dev.env
-        value:
-          - name: RUST_LOG
-            value: debug
-          - name: HODEI_DEV_MODE
-            value: "1"
-
-# =============================================================================
-# DESARROLLO
-# =============================================================================
-dev:
-  # Imagen base (solo para entorno, el proceso se reemplaza)
-  imageSelector: localhost:5000/hodei-jobs-server:latest
-
-  # Terminal interactiva
-  terminal:
-    command: |
-      echo "╔═══════════════════════════════════════════════════════════════╗"
-      echo "║         HODEI JOBS - DESARROLLO RÁPIDO RUST                    ║"
-      echo "╚═══════════════════════════════════════════════════════════════╝"
-      echo ""
-      echo "📦 FLUJO DE DESARROLLO:"
-      echo "   1. Compila localmente: cargo build -p hodei-server-bin"
-      echo "   2. El binario se sincroniza automáticamente"
-      echo "   3. Reinicia el proceso: kill -USR1 \$(cat /tmp/server.pid)"
-      echo ""
-      echo "📝 O usa el comando: devspace restart-process"
-      echo ""
-      echo "💡 El binario en target/debug/hodei-server-bin → /tmp/server-bin"
-      echo ""
-
-      # Script de gestión del servidor
-      start_server() {
-        if [ -f /tmp/server-bin ]; then
-          cp /tmp/server-bin /usr/local/bin/hodei-server-bin
-          chmod +x /usr/local/bin/hodei-server-bin
-          echo "🚀 Iniciando hodei-server..."
-          /usr/local/bin/hodei-server-bin &
-          echo $! > /tmp/server.pid
-          echo "✅ Servidor iniciado (PID: $(cat /tmp/server.pid))"
-        else
-          echo "⚠️  Binario no encontrado. Compila con: cargo build -p hodei-server-bin"
-        fi
-      }
-
-      # Manejador de señal USR1 para hot reload
-      handle_reload() {
-        echo ""
-        echo "🔄 🔄 🔄 RECARGANDO 🔄 🔄 🔄"
-        if [ -f /tmp/server.pid ]; then
-          PID=$(cat /tmp/server.pid)
-          if kill -0 $PID 2>/dev/null; then
-            echo "🛑 Deteniendo servidor (PID: $PID)..."
-            kill $PID 2>/dev/null || true
-            sleep 1
-          fi
-        fi
-        start_server
-      }
-
-      trap 'handle_reload' USR1
-
-      # Iniciar servidor inicial
-      start_server
-
-      # Loop de supervisión
-      while true; do
-        sleep 5
-
-        # Verificar si el proceso sigue vivo
-        if [ -f /tmp/server.pid ]; then
-          PID=$(cat /tmp/server.pid)
-          if ! kill -0 $PID 2>/dev/null; then
-            echo "⚠️  Servidor murió, reiniciando..."
-            start_server
-          fi
-        fi
-      done
-    workDir: /app
-
-  # =============================================================================
-  # SINCRONIZACIÓN DE BINARIO ( bidireccional )
-  # =============================================================================
-  sync:
-    # Sincronizar binario compilado al pod
-    - localPath: target/debug/hodei-server-bin
-      remotePath: /tmp/server-bin
-      fileMode: 493 # 0755
-      downloadExclude: []
-      uploadExclude: []
-      # NO restartContainer - usamos señal USR1 manualmente
-
-    # Sincronizar código fuente (para debugging/editor)
-    - localPath: crates/
-      remotePath: /app/crates/
-      downloadExclude:
-        - "**/target/**"
-      uploadExclude:
-        - "**/target/**"
-
-    # Sincronizar proto files
-    - localPath: proto/
-      remotePath: /app/proto/
-
-  # =============================================================================
-  # REINICIO DE PROCESO (no contenedor)
-  # =============================================================================
-  # Comandos ejecutados después de sincronizar archivos
-  onUpload:
-    exec:
-      # Este comando se ejecuta en el contenedor después de cada sync
-      - name: notify-reload
-        command: |
-          # Solo notificar, no reiniciar automáticamente
-          # El usuario debe enviar señal USR1 manualmente o usar devspace restart-process
-          true
-        failOnError: false
-        once: false
-
-  # =============================================================================
-  # PUERTOS
-  # =============================================================================
-  ports:
-    - port: 9090
-      localPort: 9090
-      name: gRPC Server
-      bindAddress: "0.0.0.0"
-
-  # =============================================================================
-  # VARIABLES DE ENTORNO
-  # =============================================================================
-  env:
-    - name: RUST_LOG
-      value: debug
-    - name: HODEI_DEV_MODE
-      value: "1"
-    - name: SERVER_DATABASE_URL
-      value: postgres://postgres:postgres@hodei-postgresql.hodei-jobs.svc.cluster.local:5432/hodei_jobs
-    - name: HODEI_NATS_URLS
-      value: nats://hodei-nats.hodei-jobs.svc.cluster.local:4222
-    - name: HODEI_K8S_ENABLED
-      value: "1"
-    - name: HODEI_DOCKER_ENABLED
-      value: "0"
-    - name: HODEI_MIGRATIONS_PATH
-      value: /app/migrations,/app/infrastructure-migrations
-
-# =============================================================================
-# DEPLOYMENT (Helm)
-# =============================================================================
 deployments:
-  - name: hodei
+  hodei:
+    updateImageTags: true
     helm:
       chart:
         name: ./deploy/hodei-jobs-platform
-      release:
-        name: hodei
-        namespace: hodei-jobs
-      valuesFiles:
-        - ./deploy/hodei-jobs-platform/values-dev.yaml
       values:
         image:
           repository: localhost:5000/hodei-jobs-server
-          tag: latest
-          pullPolicy: Never
+          tag: "dev"
+          pullPolicy: Always
+      valuesFiles:
+        - ./deploy/hodei-jobs-platform/values.yaml
+        - ./deploy/hodei-jobs-platform/values-dev.yaml
 
-# =============================================================================
-# COMANDOS PERSONALIZADOS
-# =============================================================================
-commands:
-  # Compilar y empezar desarrollo
-  - name: dev
-    command: |
-      echo "╔═══════════════════════════════════════════════════════════════╗"
-      echo "║         COMPILANDO RUST + INICIANDO DEVSPACE                  ║"
-      echo "╚═══════════════════════════════════════════════════════════════╝"
-      echo ""
+dev:
+  app:
+    # devImage: "" prevents DevSpace from replacing the container image
+    devImage: "localhost:5000/hodei-jobs-server:dev"
 
-      # Compilar Rust
-      echo "🔨 Compilando hodei-server-bin..."
-      cargo build -p hodei-server-bin 2>&1 | tail -10
+    # Select the pod via labelSelector
+    labelSelector:
+      app.kubernetes.io/name: hodei-jobs-platform
+      app.kubernetes.io/component: server
+    # Sync configuration
+    sync:
+      - path: ./:/app
+        excludePaths:
+          - target/
+          - .git/
+          - .idea/
+          - .vscode/
+          - .cargo/
 
-      if [ ${PIPESTATUS[0]} -eq 0 ]; then
-        echo ""
-        echo "✅ Compilación exitosa!"
-        echo ""
-        echo "╔═══════════════════════════════════════════════════════════════╗"
-        echo "║         ¡LISTO PARA DESARROLLO!                               ║"
-        echo "╚═══════════════════════════════════════════════════════════════╝"
-        echo ""
-        echo "🚀 Ejecuta: devspace dev"
-        echo ""
-        echo "En la terminal del pod:"
-        echo "  1. El servidor arrancará automáticamente"
-        echo "  2. Cuando quieras recargar:"
-        echo "     kill -USR1 \$(cat /tmp/server.pid)"
-        echo ""
-        echo "O desde otra terminal local:"
-        echo "  devspace restart-process"
-      else
-        echo "❌ Error en compilación"
-        exit 1
-      fi
-    description: Compile and prepare for dev mode
+    # Port forwarding
+    ports:
+      - port: 9090:9090
 
-  # Reiniciar solo el proceso (no el contenedor)
-  - name: restart-process
-    command: |
-      echo "🔄 Reiniciando proceso del servidor..."
-      # Enviar señal USR1 al proceso del servidor
-      kubectl exec -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform -- \
-        sh -c 'kill -USR1 $(cat /tmp/server.pid 2>/dev/null)' 2>/dev/null || \
-        echo "⚠️  No se pudo reiniciar. Asegúrate de que devspace dev esté ejecutándose."
-      echo "✅ Señal USR1 enviada"
-    description: Restart server process (not container)
+    # Log streaming
+    logs:
+      enabled: true
 
-  # Ver estado del servidor en el pod
-  - name: status
-    command: |
-      echo "=== Pods ==="
-      kubectl get pods -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform
-      echo ""
-      echo "=== Proceso del servidor ==="
-      kubectl exec -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform -- \
-        sh -c 'cat /tmp/server.pid 2>/dev/null && ps aux | grep hodei-server || echo "No encontrado"' 2>/dev/null || echo "Pod no disponible"
-    description: Show server status in pod
-
-  # Ver logs del servidor
-  - name: logs
-    command: |
-      kubectl logs -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform --follow --tail=100
-    description: Stream server logs
-
-  # Solo sincronización
-  - name: sync
-    command: devspace sync
-    description: Start file sync only
-
-  # Deploy completo (para producción)
-  - name: deploy
-    command: |
-      echo "=== Compilando (release) ==="
-      cargo build --release -p hodei-server-bin
-
-      echo ""
-      echo "=== Build imagen Docker ==="
-      docker build -f Dockerfile.server -t localhost:5000/hodei-jobs-server:latest --load .
-
-      echo ""
-      echo "=== Cargando a minikube ==="
-      minikube image load localhost:5000/hodei-jobs-server:latest
-
-      echo ""
-      echo "=== Deploy Helm ==="
-      helm upgrade --install hodei ./deploy/hodei-jobs-platform \
-        -n hodei-jobs \
-        -f ./deploy/hodei-jobs-platform/values-dev.yaml \
-        --wait --timeout 5m
-
-      echo ""
-      echo "=== Logs ==="
-      kubectl logs -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform -f
-    description: Full build and deploy
-
-  # Puerto forwarding
-  - name: port-forward
-    command: |
-      kubectl port-forward -n hodei-jobs svc/hodei-hodei-jobs-platform 9090:9090
-    description: Port forward to gRPC server
-
-  # Uninstall
-  - name: uninstall
-    command: |
-      helm uninstall hodei -n hodei-jobs 2>/dev/null
-      kubectl delete namespace hodei-jobs hodei-jobs-workers 2>/dev/null || true
-      echo "✅ Desinstalado"
-    description: Remove deployment
-
-vars:
-  - name: VERSION
-    value: ${VERSION:-latest}
+    # Terminal
+    terminal:
+      command: /app/scripts/devspace-start.sh
