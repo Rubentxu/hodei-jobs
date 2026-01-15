@@ -17,10 +17,11 @@ pub mod audit_trail;
 pub mod cancellation;
 pub mod circuit_breaker;
 pub mod cleanup;
-pub mod commands; // Commands for Command Bus pattern
+pub mod commands;
 pub mod engine_config;
-pub mod errors; // EPIC-46 GAP-21: Strongly typed error enums
-pub mod event_handlers; // EPIC-46 GAP-10/11: Reactive event handlers
+pub mod errors;
+pub mod event_handlers;
+pub mod event_sourcing;
 pub mod execution;
 pub mod metrics;
 pub mod orchestrator;
@@ -119,17 +120,23 @@ pub use stuck_detector::{
 // Idempotency helpers
 pub use types::{saga_id_for_job, saga_id_for_provisioning, saga_id_for_recovery};
 
-// Commands re-exports (Épica 52: Saga Refactoring to Use Command Bus)
+// Commands re-exports
 pub use commands::{
     CreateWorkerCommand, CreateWorkerError, CreateWorkerHandler, DestroyWorkerCommand,
     DestroyWorkerError, DestroyWorkerHandler,
 };
 
-// Re-exports from timeout_config module (EPIC-85)
+// Re-exports from timeout_config module
 pub use timeout_config::{SagaTimeoutConfig, TimeoutAware};
 
-// Re-exports from circuit_breaker module (EPIC-85 US-05)
+// Re-exports from circuit_breaker module
 pub use circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitBreakerSagaConsumer,
     CircuitBreakerStats, CircuitState,
+};
+
+// Re-exports from event_sourcing module
+pub use event_sourcing::{
+    EventSourcedSagaState, EventSourcingBuilder, EventSourcingLayer, InMemorySagaEventStore,
+    SAGA_EVENT_VERSION, SagaEvent, SagaEventId, SagaEventStore, SagaEventStoreError, SagaEventType,
 };
