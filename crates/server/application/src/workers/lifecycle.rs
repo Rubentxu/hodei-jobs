@@ -348,6 +348,12 @@ impl WorkerLifecycleManager {
         self.providers.remove(provider_id);
     }
 
+    /// Get the providers map (for WorkerProvisioningService)
+    #[inline]
+    pub fn providers_map(&self) -> Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> {
+        self.providers.clone()
+    }
+
     /// Process heartbeat from a worker
     pub async fn process_heartbeat(&self, worker_id: &WorkerId) -> Result<()> {
         self.registry.heartbeat(worker_id).await?;
