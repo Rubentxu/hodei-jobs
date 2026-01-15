@@ -35,6 +35,14 @@ pub struct ProviderConfig {
     pub tags: Vec<String>,
     /// Metadata adicional
     pub metadata: HashMap<String, String>,
+    /// Región preferida del provider
+    pub preferred_region: Option<String>,
+    /// Regiones donde puede ejecutar jobs
+    pub allowed_regions: Vec<String>,
+    /// Labels requeridos para el provider
+    pub required_labels: HashMap<String, String>,
+    /// Annotations del provider
+    pub annotations: HashMap<String, String>,
 }
 
 impl ProviderConfig {
@@ -54,6 +62,10 @@ impl ProviderConfig {
             updated_at: now,
             tags: vec![],
             metadata: HashMap::new(),
+            preferred_region: None,
+            allowed_regions: vec![],
+            required_labels: HashMap::new(),
+            annotations: HashMap::new(),
         }
     }
 
@@ -79,6 +91,10 @@ impl ProviderConfig {
             updated_at: now,
             tags: vec![],
             metadata: HashMap::new(),
+            preferred_region: None,
+            allowed_regions: vec![],
+            required_labels: HashMap::new(),
+            annotations: HashMap::new(),
         }
     }
 
@@ -99,6 +115,41 @@ impl ProviderConfig {
 
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
+        self
+    }
+
+    pub fn with_preferred_region(mut self, region: impl Into<String>) -> Self {
+        self.preferred_region = Some(region.into());
+        self
+    }
+
+    pub fn with_allowed_regions(mut self, regions: Vec<String>) -> Self {
+        self.allowed_regions = regions;
+        self
+    }
+
+    pub fn add_allowed_region(mut self, region: impl Into<String>) -> Self {
+        self.allowed_regions.push(region.into());
+        self
+    }
+
+    pub fn with_required_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.required_labels.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_required_labels(mut self, labels: HashMap<String, String>) -> Self {
+        self.required_labels = labels;
+        self
+    }
+
+    pub fn with_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.annotations.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_annotations(mut self, annotations: HashMap<String, String>) -> Self {
+        self.annotations = annotations;
         self
     }
 
@@ -571,5 +622,120 @@ mod tests {
         } else {
             panic!("Wrong variant");
         }
+    }
+
+    #[test]
+    fn test_provider_config_with_preferred_region() {
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .with_preferred_region("us-east-1");
+
+        assert_eq!(config.preferred_region, Some("us-east-1".to_string()));
+    }
+
+    #[test]
+    fn test_provider_config_with_allowed_regions() {
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .with_allowed_regions(vec!["us-east-1".to_string(), "us-west-2".to_string()]);
+
+        assert_eq!(config.allowed_regions.len(), 2);
+        assert!(config.allowed_regions.contains(&"us-east-1".to_string()));
+        assert!(config.allowed_regions.contains(&"us-west-2".to_string()));
+    }
+
+    #[test]
+    fn test_provider_config_add_allowed_region() {
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .add_allowed_region("eu-west-1")
+        .add_allowed_region("ap-northeast-1");
+
+        assert_eq!(config.allowed_regions.len(), 2);
+    }
+
+    #[test]
+    fn test_provider_config_with_required_labels() {
+        let mut labels = HashMap::new();
+        labels.insert("team".to_string(), "platform".to_string());
+        labels.insert("env".to_string(), "production".to_string());
+
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .with_required_labels(labels.clone());
+
+        assert_eq!(config.required_labels, labels);
+    }
+
+    #[test]
+    fn test_provider_config_with_required_label() {
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .with_required_label("team", "data-science");
+
+        assert_eq!(
+            config.required_labels.get("team"),
+            Some(&"data-science".to_string())
+        );
+    }
+
+    #[test]
+    fn test_provider_config_with_annotations() {
+        let mut annotations = HashMap::new();
+        annotations.insert("owner".to_string(), "team-platform".to_string());
+        annotations.insert("cost-center".to_string(), "12345".to_string());
+
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .with_annotations(annotations.clone());
+
+        assert_eq!(config.annotations, annotations);
+    }
+
+    #[test]
+    fn test_provider_config_with_annotation() {
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Kubernetes,
+            ProviderTypeConfig::Kubernetes(KubernetesConfig::default()),
+        )
+        .with_annotation("monitoring", "prometheus");
+
+        assert_eq!(
+            config.annotations.get("monitoring"),
+            Some(&"prometheus".to_string())
+        );
+    }
+
+    #[test]
+    fn test_provider_config_filtering_fields_default_to_empty() {
+        let config = ProviderConfig::new(
+            "test".to_string(),
+            ProviderType::Docker,
+            ProviderTypeConfig::Docker(DockerConfig::default()),
+        );
+
+        assert!(config.preferred_region.is_none());
+        assert!(config.allowed_regions.is_empty());
+        assert!(config.required_labels.is_empty());
+        assert!(config.annotations.is_empty());
     }
 }
