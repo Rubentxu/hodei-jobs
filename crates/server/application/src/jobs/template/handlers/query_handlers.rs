@@ -164,12 +164,12 @@ impl QueryHandler<ListExecutionsQuery> for ListExecutionsHandler {
 /// Handler for GetExecutionsByJobQuery
 #[derive(Clone)]
 pub struct GetExecutionsByJobHandler {
-    read_model: Arc<dyn ExecutionReadModelPort>,
+    execution_repo: Arc<dyn JobExecutionRepository>,
 }
 
 impl GetExecutionsByJobHandler {
-    pub fn new(read_model: Arc<dyn ExecutionReadModelPort>) -> Self {
-        Self { read_model }
+    pub fn new(execution_repo: Arc<dyn JobExecutionRepository>) -> Self {
+        Self { execution_repo }
     }
 }
 
@@ -177,10 +177,18 @@ impl GetExecutionsByJobHandler {
 impl QueryHandler<GetExecutionsByJobQuery> for GetExecutionsByJobHandler {
     async fn handle(&self, query: GetExecutionsByJobQuery) -> Result<Vec<ExecutionSummary>> {
         debug!("Getting executions for job: {}", query.job_id);
-        // This is a simplified implementation
-        // In production, we'd query by job_id directly
-        // Return empty for now
-        Ok(Vec::new())
+
+        // Query executions by job_id from the repository
+        let execution = self.execution_repo.find_by_job_id(&query.job_id).await?;
+
+        match execution {
+            Some(exec) => {
+                // Convert to summary using the From trait
+                let summary = ExecutionSummary::from(exec);
+                Ok(vec![summary])
+            }
+            None => Ok(Vec::new()),
+        }
     }
 }
 

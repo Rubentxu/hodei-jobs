@@ -10,7 +10,8 @@ use crate::jobs::template::commands::{
 };
 use crate::jobs::template::read_models::{ExecutionReadModelPort, TemplateReadModelPort};
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::DomainEvent::JobCreated as JobCreatedEvent;
+use hodei_server_domain::events::{DomainEvent, JobCreated};
 use hodei_server_domain::jobs::aggregate::JobSpec;
 use hodei_server_domain::jobs::templates::{
     JobExecution, JobExecutionRepository, JobTemplate, JobTemplateRepository,
@@ -408,16 +409,24 @@ impl CommandHandler<TriggerRunCommand> for TriggerRunHandler {
         };
         self.event_bus.publish(&event).await?;
 
-        // TODO: Enable when job queue integration is complete
         // Publish JobCreated event (for job queue processing)
-        // let job_created_event = DomainEvent::JobCreated {
-        //     job_id: job.id.clone(),
-        //     spec: job.spec.clone(),
-        //     occurred_at: execution.queued_at,
-        //     correlation_id: Some(execution.id.to_string()),
-        //     actor: execution.triggered_by_user.clone(),
-        // };
-        // self.event_bus.publish(&job_created_event).await?;
+        // The job is created from the template and ready for processing
+        let job_spec = job.spec.clone();
+        let job_created_event = DomainEvent::JobCreated(JobCreated {
+            job_id: job_id_for_result.clone(),
+            spec: job_spec,
+            occurred_at: execution.queued_at,
+            correlation_id: Some(execution.id.to_string()),
+            actor: execution.triggered_by_user.clone(),
+        });
+        self.event_bus
+            .publish(&job_created_event)
+            .await
+            .map_err(
+                |e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Failed to publish JobCreated event: {}", e),
+                },
+            )?;
 
         // Update read models
         self.read_model

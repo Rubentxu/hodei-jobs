@@ -165,6 +165,16 @@ pub trait LogRetriever: Send + Sync {
     ) -> Result<Vec<JobLogEntry>>;
     async fn add_log_entry(&self, log_entry: JobLogEntry) -> Result<()>;
     async fn clear_job_logs(&self, job_id: &JobId) -> Result<()>;
+    async fn delete_logs_older_than(
+        &self,
+        job_id: &JobId,
+        older_than: DateTime<Utc>,
+    ) -> Result<u32> {
+        // Default implementation: not supported, return 0
+        // Implementations should override this for actual cleanup
+        let _ = (job_id, older_than);
+        Ok(0)
+    }
     async fn get_aggregated_logs(&self, job_id: &JobId) -> Result<Vec<JobLogEntry>>;
 }
 
@@ -316,16 +326,14 @@ impl LogAggregator {
     }
 
     /// Limpia logs antiguos para un job específico
+    /// Returns the number of logs deleted
     pub async fn cleanup_job_logs(&self, job_id: &JobId, older_than: Duration) -> Result<u32> {
         let cutoff = Utc::now() - older_than;
-        let logs = self.log_retriever.get_logs_since(job_id, cutoff).await?;
-        let before_count = self.log_retriever.get_job_logs(job_id).await?.len();
-
-        // Los logs más antiguos se filtran implícitamente por get_logs_since
-        // La limpieza real depende de la implementación de LogRetriever
-        let after_count = logs.len();
-
-        Ok((before_count.saturating_sub(after_count)) as u32)
+        let deleted_count = self
+            .log_retriever
+            .delete_logs_older_than(job_id, cutoff)
+            .await?;
+        Ok(deleted_count)
     }
 
     /// Busca logs por patrón en un job específico
