@@ -7,9 +7,7 @@
 //! - Coordination between all background tasks
 
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, oneshot, watch};
@@ -156,7 +154,7 @@ impl ShutdownReceiver {
     /// Receive the next shutdown signal
     pub async fn recv(&mut self) -> ShutdownSignal {
         let mut rx = self.rx.lock().await;
-        rx.recv().await.unwrap_or_else(|e| {
+        rx.recv().await.unwrap_or_else(|_e| {
             // If sender dropped, use the latest state
             match &*self.state_rx.borrow() {
                 ShutdownState::Running => ShutdownSignal {
@@ -249,7 +247,7 @@ pub struct ShutdownHandle {
 
 impl ShutdownHandle {
     /// Create a new shutdown handle
-    pub fn new<F>(stop_rx: oneshot::Receiver<()>, f: F) -> Self
+    pub fn new<F>(_stop_rx: oneshot::Receiver<()>, f: F) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -290,7 +288,7 @@ pub trait Shutdownable: Send {
 
 /// Execute shutdown sequence for multiple components
 pub async fn execute_shutdown_sequence(
-    coordinator: &GracefulShutdown,
+    _coordinator: &GracefulShutdown,
     mut components: Vec<&mut dyn Shutdownable>,
     config: &ShutdownConfig,
 ) -> bool {

@@ -9,15 +9,19 @@
 
 replicaCount: 1
 
+# Disable restricted pod security for development
+podSecurityStandard:
+  enforce: "privileged"
+
 image:
-  repository: hodei-jobs-server
+  repository: 10.43.54.80:5000/hodei-jobs-server
   tag: "dev"
   pullPolicy: Always
 
 workerImage:
-  repository: hodei-jobs-worker
-  tag: ""
-  pullPolicy: Always
+  repository: 10.43.54.80:5000/hodei-jobs-worker
+  tag: "dev"
+  pullPolicy: Never
 
 autoscaling:
   enabled: false
@@ -51,6 +55,10 @@ securityContext:
   privileged: false
   readOnlyRootFilesystem: false
 
+# Image pull secrets for local registry
+imagePullSecrets:
+  - name: docker-registry-secret
+
 # Volume configuration with proper structure for templates
 volumes:
   logs:
@@ -71,7 +79,7 @@ volumes:
 
 volumeMounts:
   - name: cargo-cache
-    mountPath: /usr/local/cargo/registry
+    mountPath: /root/.cargo/registry
 
 # Environment
 env:
@@ -91,7 +99,7 @@ nats:
     tag: 2.10-alpine
   persistence:
     enabled: true
-    storageClass: standard
+    storageClass: local-path
     size: 512Mi
   jetstream:
     enabled: true
@@ -107,15 +115,13 @@ nats:
 # PostgreSQL
 postgresql:
   enabled: true
-  image:
-    registry: docker.io
-    repository: library/postgres
-    tag: 16-alpine
   auth:
     postgresPassword: "postgres"
     database: "hodei_jobs"
     username: "postgres"
     password: "postgres"
+  persistence:
+    enabled: false # Disable PVC for development (use emptyDir)
   primary:
     persistence:
       enabled: false
@@ -164,9 +170,12 @@ ingress:
 
 development:
   enabled: true
+  devspace:
+    enabled: false # Set to true when using DevSpace for hot-reload development
   cargoCache:
     enabled: true
     pvcName: hodei-cargo-cache
+    storageClass: local-path
   binarySync:
     enabled: true
     sourcePath: target/release/hodei-server-bin

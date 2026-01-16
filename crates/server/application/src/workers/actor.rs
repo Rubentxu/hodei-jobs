@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time::interval;
 use tracing::{debug, info, warn};
 
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId, WorkerState};

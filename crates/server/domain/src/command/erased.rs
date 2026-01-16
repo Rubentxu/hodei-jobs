@@ -164,7 +164,7 @@ impl ErasedCommandBus for InMemoryErasedCommandBus {
         );
 
         // Debug: Log all registered type_ids
-        for (registered_type_id, _) in &dispatchers.dispatchers {
+        for registered_type_id in dispatchers.dispatchers.keys() {
             tracing::debug!(
                 registered_type_id = ?registered_type_id,
                 is_match = (registered_type_id == &command_type_id),

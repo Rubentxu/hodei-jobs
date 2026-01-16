@@ -11,7 +11,7 @@ use opentelemetry::Context;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;

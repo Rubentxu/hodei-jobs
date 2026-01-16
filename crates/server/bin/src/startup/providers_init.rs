@@ -32,13 +32,13 @@ use hodei_server_application::providers::registry::ProviderRegistry;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::providers::config::{
-    DockerConfig, KubernetesConfig, ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
+    DockerConfig, ProviderConfig, ProviderConfigRepository, ProviderTypeConfig,
 };
 use hodei_server_domain::providers::errors::{
-    ErrorMessage, InitializationSummary, ProviderInitializationError, ProviderInitializationResult,
+    ErrorMessage, InitializationSummary, ProviderInitializationError,
 };
 use hodei_server_domain::providers::validator::ProviderConnectionValidator;
-use hodei_server_domain::shared_kernel::{DomainError, ProviderId, ProviderStatus};
+use hodei_server_domain::shared_kernel::{DomainError, ProviderId};
 use hodei_server_domain::workers::{ProviderType, WorkerProvider};
 use hodei_server_infrastructure::providers::docker::DockerProvider;
 use hodei_server_infrastructure::providers::kubernetes::KubernetesProvider;

@@ -1,4 +1,4 @@
-{{- if and .Values.development.enabled .Values.development.cargoCache.enabled }}
+{{- if and .Values.development.enabled .Values.development.devspace.enabled .Values.development.cargoCache.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -6,6 +6,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+  annotations:
+    # Preserve PVC on helm uninstall (recreate on reinstall)
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

@@ -17,10 +17,8 @@ use hodei_server_domain::{
     shared_kernel::{JobId, WorkerId, WorkerState},
     workers::WorkerRegistry,
 };
-use prost_types::Timestamp;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 

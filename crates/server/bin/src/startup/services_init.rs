@@ -13,9 +13,7 @@ use tracing::info;
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::create::CreateJobUseCase;
 use hodei_server_application::jobs::dispatcher::JobDispatcher;
-use hodei_server_application::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_application::providers::ProviderRegistry;
-use hodei_server_application::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use hodei_server_application::saga::timeout_checker::DynTimeoutChecker;
 use hodei_server_application::scheduling::SchedulerConfig;
 use hodei_server_application::workers::lifecycle::WorkerLifecycleManager;
@@ -28,8 +26,6 @@ use hodei_server_domain::iam::WorkerBootstrapTokenStore;
 use hodei_server_domain::jobs::JobQueue;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::outbox::OutboxRepository;
-use hodei_server_domain::saga::SagaOrchestrator;
-use hodei_server_domain::shared_kernel::DomainError;
 use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_infrastructure::messaging::cancellation_saga_consumer::CancellationSagaConsumer;
 use hodei_server_infrastructure::messaging::cleanup_saga_consumer::CleanupSagaConsumer;
@@ -216,7 +212,7 @@ pub async fn start_job_coordinator(
     token_store: Arc<dyn WorkerBootstrapTokenStore>,
     lifecycle_manager: Arc<WorkerLifecycleManager>,
     worker_agent_service: WorkerAgentServiceImpl,
-    saga_orchestrator: Arc<
+    _saga_orchestrator: Arc<
         dyn hodei_server_domain::saga::SagaOrchestrator<
                 Error = hodei_server_domain::shared_kernel::DomainError,
             > + Send

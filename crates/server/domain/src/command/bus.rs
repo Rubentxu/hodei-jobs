@@ -3,7 +3,7 @@
 use super::*;
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::Duration;
 
 /// Configuration for the command bus.
@@ -34,7 +34,12 @@ pub struct InMemoryCommandBus {
     pub registry: Arc<Mutex<HandlerRegistry>>,
     tx: mpsc::Sender<CommandMessage>,
     pub idempotency: Arc<Mutex<InMemoryIdempotencyChecker>>,
-    shutdown_rx: Option<oneshot::Receiver<()>>,
+}
+
+impl Default for InMemoryCommandBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryCommandBus {
@@ -46,21 +51,12 @@ impl InMemoryCommandBus {
         let (tx, rx) = mpsc::channel(config.queue_depth);
         let registry = Arc::new(Mutex::new(HandlerRegistry::new()));
         let idempotency = Arc::new(Mutex::new(InMemoryIdempotencyChecker::new()));
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         tokio::spawn(async move {
             let mut rx = rx;
-            let mut shutdown_tx = shutdown_tx;
             loop {
-                tokio::select! {
-                    Some(msg) = rx.recv() => {
-                        if let CommandMessage::Shutdown = msg {
-                            break;
-                        }
-                    }
-                    _ = shutdown_tx.closed() => {
-                        break;
-                    }
+                match rx.recv().await {
+                    Some(CommandMessage::Shutdown) | None => break,
                 }
             }
         });
@@ -69,7 +65,6 @@ impl InMemoryCommandBus {
             registry,
             tx,
             idempotency,
-            shutdown_rx: Some(shutdown_rx),
         }
     }
 
@@ -83,7 +78,6 @@ impl InMemoryCommandBus {
             registry,
             tx,
             idempotency,
-            shutdown_rx: None,
         }
     }
 }
@@ -112,11 +106,12 @@ impl CommandBus for InMemoryCommandBus {
 
         // Get handler from registry
         let registry = self.registry.lock().await;
-        let handler_box = registry.get_handler::<C>().ok_or_else(|| {
-            CommandError::HandlerNotFound {
-                command_type: std::any::type_name::<C>().to_string(),
-            }
-        })?;
+        let handler_box =
+            registry
+                .get_handler::<C>()
+                .ok_or_else(|| CommandError::HandlerNotFound {
+                    command_type: std::any::type_name::<C>().to_string(),
+                })?;
 
         // Downcast handler to correct type
         use std::any::Any;
@@ -128,12 +123,16 @@ impl CommandBus for InMemoryCommandBus {
             })?;
 
         // Execute handler (clone key for use after handler execution)
-        let key_for_marking = if key.is_empty() { None } else { Some(key_str.to_string()) };
+        let key_for_marking = if key.is_empty() {
+            None
+        } else {
+            Some(key_str.to_string())
+        };
         let result = handler.handle(command).await;
 
         // Mark as processed if idempotency key was provided
         if let Some(key_to_mark) = key_for_marking {
-            let mut idempotency = self.idempotency.lock().await;
+            let idempotency = self.idempotency.lock().await;
             idempotency.mark_processed(&key_to_mark).await;
         }
 

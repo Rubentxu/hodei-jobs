@@ -51,8 +51,10 @@ impl std::str::FromStr for JobTemplateId {
 
 /// Status of a JobTemplate
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum JobTemplateStatus {
     /// Template is active and can be used to create runs
+    #[default]
     Active,
     /// Template is disabled and cannot create new runs
     Disabled,
@@ -60,11 +62,6 @@ pub enum JobTemplateStatus {
     Archived,
 }
 
-impl Default for JobTemplateStatus {
-    fn default() -> Self {
-        Self::Active
-    }
-}
 
 impl std::fmt::Display for JobTemplateStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -835,8 +832,8 @@ impl JobTemplateParameter {
                 match num {
                     Ok(parsed) => {
                         // Range validation
-                        if let Some(min) = self.min_value {
-                            if parsed < min {
+                        if let Some(min) = self.min_value
+                            && parsed < min {
                                 return Err(ValidationError::OutOfRange {
                                     parameter_name: self.name.clone(),
                                     value: value.to_string(),
@@ -845,10 +842,9 @@ impl JobTemplateParameter {
                                 }
                                 .into());
                             }
-                        }
 
-                        if let Some(max) = self.max_value {
-                            if parsed > max {
+                        if let Some(max) = self.max_value
+                            && parsed > max {
                                 return Err(ValidationError::OutOfRange {
                                     parameter_name: self.name.clone(),
                                     value: value.to_string(),
@@ -857,7 +853,6 @@ impl JobTemplateParameter {
                                 }
                                 .into());
                             }
-                        }
                     }
                     Err(_) => {
                         return Err(ValidationError::InvalidType {

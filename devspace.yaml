@@ -19,37 +19,66 @@ deployments:
         name: ./deploy/hodei-jobs-platform
       values:
         image:
-          repository: hodei-jobs-server
+          repository: registry.local:31500/hodei-jobs-server
           tag: "dev"
-          pullPolicy: Always
+          pullPolicy: Never
         resources:
           limits:
-            cpu: "3"
+            cpu: "8"
             memory: "12Gi"
           requests:
-            cpu: "2"
+            cpu: "6"
             memory: "8Gi"
+        # Enable DevSpace mode for cargo cache PVC
+        development:
+          enabled: true
+          devspace:
+            enabled: true
+        volumes:
+          extra:
+            - name: cargo-cache
+              persistentVolumeClaim:
+                claimName: hodei-cargo-cache
+        volumeMounts:
+          - name: cargo-cache
+            mountPath: /root/.cargo/registry
       valuesFiles:
         - ./deploy/hodei-jobs-platform/values.yaml
         - ./deploy/hodei-jobs-platform/values-dev.yaml
 
 dev:
   app:
-    devImage: "localhost:5000/hodei-jobs-server:dev"
+    devImage: 10.43.54.80:5000/hodei-jobs-server:dev
 
     # Select the pod via labelSelector
     labelSelector:
       app.kubernetes.io/name: hodei-jobs-platform
       app.kubernetes.io/component: server
-    # Sync configuration
+    # Sync configuration - exclude mounted configmaps and read-only paths
     sync:
       - path: ./:/app
-        excludePaths:
+        # Prefer local files over container files (avoid overwriting mounted ConfigMaps)
+        initialSync: preferLocal
+        # Upload exclusions
+        uploadExcludePaths:
           - target/
           - .git/
           - .idea/
           - .vscode/
           - .cargo/
+          - Cargo.lock
+          - docs/
+          - .github/
+          - build/
+          - logs/
+          - monitoring/
+          - web/
+          - /app/migrations/
+          - /app/infrastructure-migrations/
+          - /app/config.yaml
+          - /app/target/
+          - /app/*.log
+          - "**/..data*"
 
     # Port forwarding
     ports:

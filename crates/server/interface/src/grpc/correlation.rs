@@ -26,10 +26,8 @@
 use hodei_server_domain::events::EventMetadata;
 use hodei_server_domain::shared_kernel::CorrelationId;
 use std::future::Future;
-use std::pin::Pin;
 use tonic::{Request, Status};
-use tracing::{Level, Span, debug, info, span};
-use uuid::Uuid;
+use tracing::{Level, Span, debug, info};
 
 /// Header name for correlation ID
 pub const CORRELATION_ID_HEADER: &str = "x-correlation-id";
@@ -235,8 +233,8 @@ impl CorrelationIdManager {
     pub fn create_span(
         &self,
         correlation_id: &CorrelationId,
-        name: &'static str,
-        level: Level,
+        _name: &'static str,
+        _level: Level,
     ) -> Span {
         let span = Span::current();
         let correlation_id_str = correlation_id.to_string_value();

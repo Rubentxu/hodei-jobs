@@ -16,28 +16,25 @@
 use crate::saga::provisioning_saga::{DynProvisioningSagaCoordinator, ProvisioningSagaError};
 use crate::saga::recovery_saga::{DynRecoverySagaCoordinator, RecoverySagaError};
 use crate::workers::garbage_collector::{
-    CleanupResult, GarbageCollectorConfig, OrphanCleanupResult, OrphanWorkerInfo,
-    WorkerGarbageCollector,
+    CleanupResult, OrphanCleanupResult, OrphanWorkerInfo, WorkerGarbageCollector,
 };
 use crate::workers::reconciler::{ReconciliationResult, WorkerReconciler};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use dashmap::DashMap;
 use futures::StreamExt;
 use hodei_server_domain::{
     event_bus::EventBus,
     events::DomainEvent,
-    outbox::{OutboxError, OutboxEventInsert, OutboxRepository},
+    outbox::{OutboxEventInsert, OutboxRepository},
     shared_kernel::{DomainError, JobId, ProviderId, Result, WorkerId, WorkerState},
     workers::WorkerProvider,
     workers::health::WorkerHealthService,
-    workers::provider_api::{
-        HealthStatus, WorkerInfrastructureEvent, WorkerLifecycle, WorkerProviderIdentity,
-    },
+    workers::provider_api::{HealthStatus, WorkerInfrastructureEvent},
     workers::{Worker, WorkerFilter, WorkerSpec},
     workers::{WorkerRegistry, WorkerRegistryStats},
 };
 use hodei_shared::event_topics::worker_topics;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for Worker Lifecycle Manager
@@ -416,8 +413,6 @@ impl WorkerLifecycleManager {
 
     /// Legacy reconciliation implementation (used when WorkerReconciler is not configured)
     async fn run_reconciliation_legacy(&self) -> Result<ReconciliationResult> {
-        use hodei_server_domain::outbox::OutboxEventInsert;
-
         let mut result = ReconciliationResult::default();
 
         // Find workers with stale heartbeats
@@ -656,7 +651,6 @@ impl WorkerLifecycleManager {
     /// Legacy cleanup implementation (used when WorkerGarbageCollector is not configured)
     async fn cleanup_workers_legacy(&self) -> Result<CleanupResult> {
         use hodei_server_domain::events::DomainEvent;
-        use hodei_server_domain::outbox::OutboxEventInsert;
 
         let mut result = CleanupResult::default();
 
@@ -1318,8 +1312,6 @@ impl WorkerLifecycleManager {
 
     /// Legacy orphan detection implementation
     async fn detect_and_cleanup_orphans_legacy(&self) -> Result<OrphanCleanupResult> {
-        use hodei_server_domain::outbox::OutboxEventInsert;
-
         let mut result = OrphanCleanupResult::default();
         let start_time = Utc::now();
 

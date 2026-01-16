@@ -140,18 +140,19 @@ impl SmartScheduler {
         };
 
         // Step 2: Filter workers by required labels (EPIC-21 US-07)
-        if let Some(ref req) = worker_requirements {
-            if req.has_requirements() {
+        if let Some(ref req) = worker_requirements
+            && req.has_requirements() {
                 eligible_workers.retain(|w| req.matches(w));
             }
-        }
 
         if eligible_workers.is_empty() {
             return None;
         }
 
         // Step 3: Apply selection strategy
-        let result = match self.config.worker_strategy {
+        
+
+        match self.config.worker_strategy {
             WorkerSelectionStrategy::FirstAvailable => {
                 FirstAvailableWorkerSelector.select_worker(job, &eligible_workers)
             }
@@ -174,7 +175,9 @@ impl SmartScheduler {
                 // Check for job type affinity in worker labels
                 let job_image = job.spec.image.as_deref();
 
-                let result = eligible_workers
+                
+
+                eligible_workers
                     .iter()
                     .find(|w| {
                         let worker_image_type = w.spec().labels.get("image_type");
@@ -187,13 +190,9 @@ impl SmartScheduler {
                             .iter()
                             .find(|w| w.state().can_accept_jobs())
                     })
-                    .map(|w| w.id().clone());
-
-                result
+                    .map(|w| w.id().clone())
             }
-        };
-
-        result
+        }
     }
 
     /// Select a provider using the configured strategy
@@ -456,8 +455,8 @@ impl SmartScheduler {
                 let selected = filtered_providers
                     .iter()
                     .find(|p| p.provider_id == provider_id);
-                if let Some(p) = selected {
-                    if !p.supports_region(preferred_region) {
+                if let Some(p) = selected
+                    && !p.supports_region(preferred_region) {
                         // Selected provider doesn't match region - log warning
                         tracing::warn!(
                             job_id = %job.id,
@@ -466,7 +465,6 @@ impl SmartScheduler {
                             "Job has region preference but selected provider doesn't support it"
                         );
                     }
-                }
             }
             return Some(provider_id);
         }

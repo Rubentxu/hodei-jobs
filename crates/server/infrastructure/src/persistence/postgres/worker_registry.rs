@@ -11,7 +11,7 @@ use sqlx::{Pool, Postgres, Row};
 
 use async_trait::async_trait;
 use hodei_server_domain::shared_kernel::{
-    DomainError, JobId, ProviderId, Result, WorkerId, WorkerState,
+    JobId, ProviderId, Result, WorkerId, WorkerState,
 };
 use hodei_server_domain::workers::{
     Worker, WorkerHandle, WorkerSpec,

@@ -13,7 +13,7 @@ use crate::jobs::template::queries::{
 use crate::jobs::template::read_models::{
     ExecutionReadModelPort, ScheduledJobReadModelPort, TemplateReadModelPort,
 };
-use hodei_server_domain::jobs::templates::{JobExecutionRepository, JobTemplateRepository};
+use hodei_server_domain::jobs::templates::JobExecutionRepository;
 use hodei_server_domain::shared_kernel::Result;
 use std::sync::Arc;
 use tracing::{debug, instrument};

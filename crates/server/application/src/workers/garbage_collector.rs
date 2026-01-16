@@ -20,7 +20,7 @@ use hodei_server_domain::{
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Resultado de la limpieza de workers
 #[derive(Debug, Default)]

@@ -7,17 +7,16 @@ use chrono::{DateTime, Utc};
 use hodei_server_domain::saga::orchestrator::{RateLimitConfig, TokenBucketRateLimiter};
 use hodei_server_domain::saga::{
     CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
-    SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator,
-    SagaRepository as SagaRepositoryTrait, SagaResult, SagaState, SagaStep, SagaStepData,
-    SagaStepId, SagaStepState, SagaType, TimeoutSaga,
+    SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    SagaRepository as SagaRepositoryTrait, SagaState, SagaStepData, SagaStepId, SagaStepState,
+    SagaType, TimeoutSaga,
 };
 use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
-use hodei_server_domain::workers::WorkerSpec;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
@@ -1001,7 +1000,7 @@ where
 
             // Identify the failed step (the last one that started but didn't complete,
             // or the last completed one if all started ones completed)
-            let last_failed_message = context
+            let _last_failed_message = context
                 .error_message
                 .clone()
                 .unwrap_or_else(|| "Resuming compensation".to_string());
@@ -1332,7 +1331,7 @@ where
                 };
 
                 // Extract worker_spec from metadata
-                let spec_str = context
+                let _spec_str = context
                     .metadata
                     .get("worker_spec")
                     .and_then(|v| v.as_str())

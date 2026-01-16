@@ -3,11 +3,10 @@
 //! Centralized conversion functions between domain types and Protocol Buffer messages.
 //! This module ensures consistent mapping across all gRPC services.
 
-use hodei_jobs::job::ResourceRequirements;
-use hodei_jobs::job::{JobSpec as GrpcJobSpec, JobTemplate, TemplateExecution};
+use hodei_jobs::job::JobSpec as GrpcJobSpec;
 use hodei_jobs::{
-    ExecutionId, JobDefinition, JobExecution, JobStatus, JobSummary, LabelSelector, SchedulingInfo,
-    TimeoutConfig, Toleration,
+    ExecutionId, JobDefinition, JobExecution, JobStatus, JobSummary, SchedulingInfo,
+    TimeoutConfig,
 };
 // Temporarily commented out until template module is fixed
 // use hodei_server_application::jobs::template::queries::{ExecutionSummary, TemplateSummary};

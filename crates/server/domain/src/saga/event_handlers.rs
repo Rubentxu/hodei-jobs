@@ -167,15 +167,13 @@ impl<H: SagaEventHandler<SagaLifecycleEvent>> Default for SagaEventHandlerRegist
 }
 
 /// A handler that records metrics for saga lifecycle events
-#[derive(Debug)]
-pub struct MetricsRecordingHandler {
-    saga_type: SagaType,
-}
+#[derive(Debug, Default)]
+pub struct MetricsRecordingHandler;
 
 impl MetricsRecordingHandler {
     /// Creates a new metrics recording handler
-    pub fn new(saga_type: SagaType) -> Self {
-        Self { saga_type }
+    pub fn new(_saga_type: SagaType) -> Self {
+        Self
     }
 }
 

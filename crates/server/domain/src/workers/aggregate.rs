@@ -196,17 +196,14 @@ pub enum ProviderCategory {
 
 /// Arquitectura del worker
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Architecture {
+    #[default]
     Amd64,
     Arm64,
     Arm,
 }
 
-impl Default for Architecture {
-    fn default() -> Self {
-        Self::Amd64
-    }
-}
 
 /// Recursos requeridos para un worker
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -869,7 +866,7 @@ impl Worker {
     /// - Draining → Ready, Terminating, Terminated
     /// - Terminating → Terminated
     /// - Terminated → (sin transiciones salientes)
-    fn transition_to(&mut self, new_state: WorkerState, reason: &str) -> Result<()> {
+    fn transition_to(&mut self, new_state: WorkerState, _reason: &str) -> Result<()> {
         let current_state = self.state.clone();
 
         // Validar que la transición es permitida

@@ -222,10 +222,10 @@ impl PodSpecFactory {
         let pod_name = self.pod_name(&spec.worker_id);
 
         // Build labels
-        let mut labels = self.build_labels(spec, provider_id);
+        let labels = self.build_labels(spec, provider_id);
 
         // Build annotations
-        let mut annotations = self.build_annotations(spec);
+        let annotations = self.build_annotations(spec);
 
         // Build environment variables
         let env_vars = self.build_env_vars(spec, otp_token);

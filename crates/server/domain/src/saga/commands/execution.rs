@@ -448,7 +448,7 @@ impl CommandHandler<ExecuteJobCommand> for ExecuteJobHandler {
         let worker_id = command.worker_id.clone();
 
         // Verify job exists
-        let job = self
+        let _job = self
             .job_repository
             .find_by_id(&job_id)
             .await
@@ -660,8 +660,8 @@ impl CommandHandler<CompleteJobCommand> for CompleteJobHandler {
             })?;
 
         // If job is completed, release the worker
-        if final_state.is_terminal() {
-            if let Ok(Some(worker)) = self.worker_registry.get_by_job_id(&job_id).await {
+        if final_state.is_terminal()
+            && let Ok(Some(worker)) = self.worker_registry.get_by_job_id(&job_id).await {
                 self.worker_registry
                     .update_state(worker.id(), WorkerState::Terminated)
                     .await
@@ -670,7 +670,6 @@ impl CommandHandler<CompleteJobCommand> for CompleteJobHandler {
                         source: e,
                     })?;
             }
-        }
 
         Ok(JobCompletionResult::new(command.final_state))
     }

@@ -5,7 +5,7 @@
 
 use super::PostgresJobRepository;
 use super::job_repository::map_row_to_job as map_job_row;
-use hodei_server_domain::jobs::{Job, JobRepository, JobRepositoryTx};
+use hodei_server_domain::jobs::{Job, JobRepositoryTx};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use sqlx::PgTransaction;
 

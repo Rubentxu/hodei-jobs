@@ -13,7 +13,7 @@
 
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
+use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_server_domain::workers::{WorkerFilter, WorkerRegistry};
 use hodei_shared::states::JobState;

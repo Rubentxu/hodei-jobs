@@ -8,14 +8,12 @@
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
 use crate::jobs::JobRepository;
-use crate::saga::SagaServices;
 use crate::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use crate::workers::WorkerRegistry;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
-use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Command to terminate a worker that has exceeded its timeout.
@@ -205,12 +203,11 @@ where
             })?;
 
         // Idempotency: if already terminated, return success
-        if let Some(ref worker) = worker_opt {
-            if *worker.state() == WorkerState::Terminated {
+        if let Some(ref worker) = worker_opt
+            && *worker.state() == WorkerState::Terminated {
                 debug!(worker_id = %worker_id, "Worker already terminated");
                 return Ok(TerminateWorkerResult::already_terminated());
             }
-        }
 
         // If worker not found, treat as already terminated (idempotent)
         if worker_opt.is_none() {
@@ -445,12 +442,11 @@ where
         }
 
         // Idempotency: if already failed, return success
-        if let Some(job) = job_opt {
-            if *job.state() == JobState::Failed {
+        if let Some(job) = job_opt
+            && *job.state() == JobState::Failed {
                 debug!(job_id = %job_id, "Job already failed");
                 return Ok(MarkJobTimedOutResult::already_timed_out());
             }
-        }
 
         // Mark job as timed out
         self.job_repository

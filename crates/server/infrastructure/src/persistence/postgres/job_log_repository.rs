@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 use hodei_server_domain::jobs::coordination::{JobLogEntry, JobLogLevel, LogRetriever, LogSource};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use sqlx::postgres::PgPool;
-use sqlx::{Row, query, query_as};
+use sqlx::{Row, query};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 /// Postgres implementation of LogRetriever
 ///

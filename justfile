@@ -68,26 +68,30 @@ build-cli:
     @echo "✅ CLI build complete"
 
 # =============================================================================
-# RUST-SCRIPTS (Minikube Development)
+# RUST-SCRIPTS (k3s Development)
 # =============================================================================
 # Install rust-script: cargo install rust-script
 # Docs: https://rust-script.org
+#
+# k3s is a lightweight Kubernetes that comes with containerd built-in.
+# Installation: curl -sfL https://get.k3s.io | sh -
+# Configure: export KUBECONFIG=/etc/rancher/k3s/k3s.yaml or copy to ~/.kube/config
 
-# Setup Minikube with required addons and namespaces
-setup-minikube:
-    @rust-script scripts/setup_minikube.rs
+# Setup k3s with required namespaces
+setup-k3s:
+    @rust-script scripts/setup_k3s.rs
 
-# Build and load Docker images to minikube (default)
-build-minikube:
-    @rust-script scripts/build_minikube.rs
+# Build and load images to k3s containerd
+build-k3s:
+    @rust-script scripts/build_k3s.rs
 
-# Build minikube - worker only
-build-minikube-worker:
-    @rust-script scripts/build_minikube.rs --worker-only
+# Build k3s - worker only
+build-k3s-worker:
+    @rust-script scripts/build_k3s.rs --worker-only
 
-# Build minikube - no cache
-build-minikube-no-cache:
-    @rust-script scripts/build_minikube.rs --no-cache
+# Build k3s - no cache
+build-k3s-no-cache:
+    @rust-script scripts/build_k3s.rs --no-cache
 
 # =============================================================================
 # RUST-SCRIPTS (All Development Scripts)
@@ -219,7 +223,7 @@ devspace-dev:
     @echo ""
     @echo "🛑 Para SALIR: Ctrl+C (los recursos se limpian automáticamente)"
     @echo ""
-    devspace dev --namespace hodei-jobs
+    KUBECONFIG=/etc/rancher/k3s/k3s.yaml devspace dev --namespace hodei-jobs
 
 # Cleanup DevSpace + Docker space
 devspace-cleanup-all:

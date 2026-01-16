@@ -255,7 +255,7 @@ impl NatsEventBus {
     /// Returns an error if connection to NATS fails
     pub async fn new_with_pool(
         config: NatsConfig,
-        pool: Option<Arc<PgPool>>,
+        _pool: Option<Arc<PgPool>>,
     ) -> Result<Self, EventBusError> {
         let connection_timeout = Duration::from_secs(config.connection_timeout_secs);
 
@@ -388,7 +388,7 @@ impl NatsEventBus {
 
     /// Gets the stream name for a subject
     /// Uses HODEI_EVENTS stream for all events (per EPIC design)
-    fn stream_name_for_subject(&self, subject: &str) -> String {
+    fn stream_name_for_subject(&self, _subject: &str) -> String {
         // All subjects map to HODEI_EVENTS stream
         format!("{}_EVENTS", self.stream_prefix)
     }
@@ -513,7 +513,7 @@ impl NatsEventBus {
         let consumer_id = format!("{}{}-{}", stream_name, filter_suffix, consumer_name);
 
         // Re-obtain stream for consumer operations
-        let mut stream = self.ensure_stream(subject).await?;
+        let stream = self.ensure_stream(subject).await?;
 
         // Try to get existing consumer
         match stream.get_consumer(&consumer_id).await {

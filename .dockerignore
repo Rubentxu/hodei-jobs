@@ -45,8 +45,9 @@ Dockerfile*
 docker-compose*.yml
 .dockerignore
 
-# Scripts not needed in runtime
+# Scripts - keep entrypoint.sh for dev image
 scripts/
+!scripts/entrypoint.sh
 deploy/
 
 # Web frontend (built separately)

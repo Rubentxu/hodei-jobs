@@ -21,7 +21,6 @@ pub use in_memory::*;
 pub use job_execution_repository::*;
 pub use job_queue::*;
 pub use job_repository::*;
-pub use job_repository_tx::*;
 pub use job_template_repository::*;
 pub use log_file_repository::*;
 pub use migrations::*;

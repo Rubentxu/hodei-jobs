@@ -27,16 +27,14 @@
 //!                                         └──────────────────┘
 //! ```
 
-use crate::persistence::outbox::postgres::PostgresOutboxRepository;
-use hodei_server_domain::event_bus::{EventBus, EventBusError};
-use hodei_server_domain::outbox::{OutboxError, OutboxEventView, OutboxRepository};
+use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::outbox::OutboxRepository;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 

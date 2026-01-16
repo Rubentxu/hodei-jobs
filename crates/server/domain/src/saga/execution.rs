@@ -186,7 +186,7 @@ impl SagaStep for ValidateJobStep {
             JobState::Scheduled,
         ];
 
-        if !valid_states.contains(&current_state) {
+        if !valid_states.contains(current_state) {
             return Err(SagaError::StepFailed {
                 step: self.name().to_string(),
                 message: format!(
@@ -368,7 +368,7 @@ impl SagaStep for AssignWorkerStep {
         let assigned_worker_id = result
             .worker_id
             .clone()
-            .unwrap_or_else(|| worker_id.clone().unwrap_or_else(|| WorkerId::new()));
+            .unwrap_or_else(|| worker_id.clone().unwrap_or_default());
 
         context
             .set_metadata("execution_worker_id", &assigned_worker_id.to_string())
@@ -430,7 +430,7 @@ impl SagaStep for AssignWorkerStep {
                 .clone()
         };
 
-        let worker_id =
+        let _worker_id =
             WorkerId::from_string(&worker_id_str).ok_or_else(|| SagaError::CompensationFailed {
                 step: self.name().to_string(),
                 message: format!("Invalid worker_id in context: {}", worker_id_str),
@@ -534,7 +534,7 @@ impl SagaStep for ExecuteJobStep {
             .and_then(|r| r.ok())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let worker_id = WorkerId::from_string(&worker_id_str).unwrap_or_else(|| WorkerId::new());
+        let worker_id = WorkerId::from_string(&worker_id_str).unwrap_or_default();
 
         info!(
             job_id = %self.job_id,
@@ -586,7 +586,7 @@ impl SagaStep for ExecuteJobStep {
     #[instrument(skip(context), fields(step = "ExecuteJob"))]
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         // GAP-52-01: Get CommandBus from context
-        let command_bus = {
+        let _command_bus = {
             let services = context
                 .services()
                 .ok_or_else(|| SagaError::CompensationFailed {

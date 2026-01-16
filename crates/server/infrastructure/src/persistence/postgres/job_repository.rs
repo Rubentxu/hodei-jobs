@@ -7,7 +7,7 @@
 //! This repository expects a `PgPool` to be passed in via `new()`.
 //! The pool should be created using `DatabasePool` for consistent configuration.
 
-use hodei_server_domain::jobs::{Job, JobsFilter};
+use hodei_server_domain::jobs::Job;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use hodei_shared::states::JobState;
 use sqlx::Row;

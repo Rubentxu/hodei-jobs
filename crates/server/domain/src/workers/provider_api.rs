@@ -138,6 +138,7 @@ impl WorkerProviderConfig for DockerConfigExt {
 
 /// Extension object for Firecracker-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct FirecrackerConfigExt {
     /// Path to kernel image
     pub kernel_path: String,
@@ -158,19 +159,6 @@ pub struct FirecrackerConfigExt {
     pub snapshot_path: Option<String>,
 }
 
-impl Default for FirecrackerConfigExt {
-    fn default() -> Self {
-        Self {
-            kernel_path: String::new(),
-            rootfs_path: String::new(),
-            kernel_args: Vec::new(),
-            network: None,
-            vsock: false,
-            cpu_template: None,
-            snapshot_path: None,
-        }
-    }
-}
 
 impl WorkerProviderConfig for FirecrackerConfigExt {
     fn provider_type(&self) -> ProviderType {
@@ -812,18 +800,15 @@ impl WorkerProviderExt for dyn WorkerProvider {
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum HealthStatus {
     Healthy,
     Degraded { reason: String },
     Unhealthy { reason: String },
+    #[default]
     Unknown,
 }
 
-impl Default for HealthStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 /// GPU vendor enumeration for typed provider capabilities
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1023,6 +1008,7 @@ impl Default for ResourceLimits {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct JobRequirements {
     pub resources: ResourceRequirements,
     pub architecture: Option<Architecture>,
@@ -1037,21 +1023,6 @@ pub struct JobRequirements {
     pub required_annotations: HashMap<String, String>,
 }
 
-impl Default for JobRequirements {
-    fn default() -> Self {
-        Self {
-            resources: ResourceRequirements::default(),
-            architecture: None,
-            required_capabilities: vec![],
-            required_labels: HashMap::new(),
-            allowed_regions: vec![],
-            timeout: None,
-            preferred_category: None,
-            preferred_region: None,
-            required_annotations: HashMap::new(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostEstimate {

@@ -11,7 +11,6 @@
 //! This module provides sagas with standardized telemetry attributes
 //! and uses the `tracing` crate for span creation and recording.
 
-use std::fmt;
 
 /// Result type for telemetry operations
 pub type TelemetryResult<T> = std::result::Result<T, TelemetryError>;
@@ -184,7 +183,7 @@ impl SagaTelemetryContext {
             let trace_parts: Vec<&str> = trace_and_span.splitn(3, '-').collect();
 
             // trace_id is parts[0], span_id is parts[1]
-            let trace_id = trace_parts.get(0).map(|s| s.to_string());
+            let trace_id = trace_parts.first().map(|s| s.to_string());
             let span_id = trace_parts.get(1).map(|s| s.to_string());
 
             Self {
@@ -291,7 +290,7 @@ pub mod saga {
         step_name: &str,
         attributes: Option<&SagaSpanAttributes>,
     ) {
-        let mut log = tracing::info_span!(
+        let log = tracing::info_span!(
             "saga.step",
             saga.type = saga_type,
             saga.id = saga_id,

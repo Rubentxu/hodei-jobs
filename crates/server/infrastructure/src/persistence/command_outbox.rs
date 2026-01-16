@@ -209,7 +209,7 @@ impl CommandOutboxRepository for PostgresCommandOutboxRepository {
     async fn get_pending_commands(
         &self,
         limit: usize,
-        max_retries: i32,
+        _max_retries: i32,
     ) -> Result<Vec<CommandOutboxRecord>, CommandOutboxError> {
         let rows: Vec<CommandRecordRow> = sqlx::query_as::<_, CommandRecordRow>(
             r#"

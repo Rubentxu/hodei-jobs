@@ -10,7 +10,6 @@ use crate::jobs::template::commands::{
 };
 use crate::jobs::template::read_models::{ExecutionReadModelPort, TemplateReadModelPort};
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent::JobCreated as JobCreatedEvent;
 use hodei_server_domain::events::{DomainEvent, JobCreated};
 use hodei_server_domain::jobs::aggregate::JobSpec;
 use hodei_server_domain::jobs::templates::{

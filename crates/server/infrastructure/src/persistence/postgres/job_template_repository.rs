@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use hodei_server_domain::jobs::{JobSpec, JobTemplate, JobTemplateId, JobTemplateRepository};
 use hodei_server_domain::shared_kernel::{DomainError, Result};
 use sqlx::postgres::PgPool;
-use sqlx::{FromRow, Row};
+use sqlx::Row;
 use std::collections::HashMap;
 use uuid::Uuid;
 

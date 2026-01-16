@@ -14,7 +14,7 @@
 use async_nats::Client;
 use async_nats::jetstream::Context as JetStreamContext;
 use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
-use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy, PullConsumer};
+use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -22,7 +22,7 @@ use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::outbox::OutboxEventInsert;
 use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
-use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId, WorkerState};
 use hodei_server_domain::workers::WorkerRegistry;
 use serde::Deserialize;
 use std::sync::Arc;

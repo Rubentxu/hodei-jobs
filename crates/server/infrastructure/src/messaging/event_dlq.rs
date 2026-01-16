@@ -16,13 +16,12 @@ use async_nats::jetstream::Context as JetStreamContext;
 use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy, PullConsumer};
 use async_nats::jetstream::stream::Config as StreamConfig;
-use async_nats::jetstream::stream::Stream as StreamHandle;
 use chrono::{DateTime, Utc};
 use hodei_server_domain::events::DomainEvent;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Maximum number of retry attempts before moving to DLQ
 const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -287,7 +286,7 @@ impl EventDlq {
         let stream_name = format!("{}_DLQ", self.config.stream_prefix);
         let consumer_id = format!("{}-{}", stream_name, consumer_name);
 
-        let mut stream = self
+        let stream = self
             .jetstream
             .get_stream(&stream_name)
             .await

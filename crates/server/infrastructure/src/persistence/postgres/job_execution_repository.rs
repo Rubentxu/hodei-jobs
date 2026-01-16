@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use hodei_server_domain::jobs::{JobExecution, JobExecutionRepository, JobSpec, JobTemplateId};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use sqlx::postgres::PgPool;
-use sqlx::{FromRow, Row};
+use sqlx::Row;
 use uuid::Uuid;
 
 /// PostgreSQL JobExecution Repository

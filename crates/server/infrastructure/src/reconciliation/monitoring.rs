@@ -8,9 +8,8 @@
 //! EPIC-43: Sprint 4 - Reconciliación (Red de Seguridad)
 //! US-EDA-403: Configurar alertas de producción
 
-use prometheus::{Counter, IntCounter, IntGauge, Opts, Registry};
+use prometheus::{IntCounter, IntGauge, Registry};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Metrics for DatabaseReaper
 #[derive(Debug)]

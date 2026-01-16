@@ -3,13 +3,13 @@
 //! Persistent repository implementation for JobTemplateParameters based on PostgreSQL
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use hodei_server_domain::jobs::{
     JobTemplateId, JobTemplateParameter, JobTemplateParameterRepository,
 };
 use hodei_server_domain::shared_kernel::{DomainError, Result};
 use sqlx::postgres::PgPool;
-use sqlx::{FromRow, Row};
+use sqlx::Row;
 use uuid::Uuid;
 
 /// PostgreSQL JobTemplateParameter Repository

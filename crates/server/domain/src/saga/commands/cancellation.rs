@@ -8,16 +8,13 @@
 // enabling saga steps to dispatch commands that are handled by domain services.
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
-use crate::events::DomainEvent;
 use crate::jobs::JobRepository;
-use crate::saga::SagaServices;
 use crate::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use crate::workers::WorkerRegistry;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
-use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Command to notify a worker that it should stop execution.
@@ -423,11 +420,10 @@ where
                 job_id: job_id.clone(),
                 source: e,
             }
-        })? {
-            if *job.state() == target_state {
+        })?
+            && *job.state() == target_state {
                 return Ok(UpdateJobStateResult::already_in_state(target_state));
             }
-        }
 
         // Update the job state
         self.job_repository

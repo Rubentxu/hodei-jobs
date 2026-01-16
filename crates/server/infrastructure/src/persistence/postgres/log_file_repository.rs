@@ -5,7 +5,7 @@
 
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use sqlx::postgres::PgPool;
-use sqlx::{Row, Transaction};
+use sqlx::Row;
 use uuid::Uuid;
 
 /// Reference to a persistent log storage (agnostic to storage type)

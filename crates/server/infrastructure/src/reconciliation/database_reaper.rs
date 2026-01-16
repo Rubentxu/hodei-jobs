@@ -24,15 +24,12 @@
 //! - Batch processing limits database impact
 
 use crate::persistence::outbox::PostgresOutboxRepository;
-use chrono::{DateTime, Utc};
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepositoryTx};
-use hodei_server_domain::shared_kernel::WorkerId;
-use hodei_shared::states::JobState;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 /// Configuration for DatabaseReaper

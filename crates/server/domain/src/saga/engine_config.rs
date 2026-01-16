@@ -52,10 +52,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_false() -> bool {
-    false
-}
-
 fn default_stuck_timeout() -> u64 {
     300 // 5 minutes
 }

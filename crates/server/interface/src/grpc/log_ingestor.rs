@@ -14,7 +14,6 @@ use crate::log_persistence::LogStorageRef;
 use hodei_jobs::LogEntry;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 /// Resultado de la ingestión de log
 #[derive(Debug, Clone)]

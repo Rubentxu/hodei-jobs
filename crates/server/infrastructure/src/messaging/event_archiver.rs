@@ -13,7 +13,7 @@ use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// Configuration for the Event Archiver
 #[derive(Debug, Clone)]

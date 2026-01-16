@@ -130,10 +130,10 @@ where
     /// Get a value by key
     pub fn get(&self, key: &K) -> Option<V> {
         let entries = self.entries.read().unwrap();
-        if let Some(entry) = entries.get(key) {
-            if let Some(value) = entry.value() {
-                return Some(value.clone());
-            }
+        if let Some(entry) = entries.get(key)
+            && let Some(value) = entry.value()
+        {
+            return Some(value.clone());
         }
         None
     }
@@ -141,10 +141,10 @@ where
     /// Get a value along with its remaining TTL
     pub fn get_with_ttl(&self, key: &K) -> Option<(V, Option<Duration>)> {
         let entries = self.entries.read().unwrap();
-        if let Some(entry) = entries.get(key) {
-            if let Some(value) = entry.value() {
-                return Some((value.clone(), entry.remaining_ttl()));
-            }
+        if let Some(entry) = entries.get(key)
+            && let Some(value) = entry.value()
+        {
+            return Some((value.clone(), entry.remaining_ttl()));
         }
         None
     }
@@ -195,18 +195,15 @@ pub type SharedTtlCache<K, V> = Arc<TtlCache<K, V>>;
 struct LruEntry<V> {
     /// The cached value
     value: V,
-    /// Position in the access order (monotonic counter)
-    access_order: u64,
     /// When this entry expires
     expires_at: Instant,
 }
 
 impl<V> LruEntry<V> {
-    fn new(value: V, ttl: Duration, access_order: u64) -> Self {
+    fn new(value: V, ttl: Duration) -> Self {
         Self {
             value,
             expires_at: Instant::now() + ttl,
-            access_order,
         }
     }
 
@@ -266,8 +263,8 @@ where
     where
         K: Hash,
     {
-        let order = self.next_access_order();
-        let entry = LruEntry::new(value.clone(), ttl, order);
+        let _order = self.next_access_order();
+        let entry = LruEntry::new(value.clone(), ttl);
 
         let mut entries = self.entries.lock().unwrap();
 
@@ -293,13 +290,13 @@ where
         if let Some(entry) = entries.get(key) {
             if !entry.is_expired() {
                 // Update access order (LRU behavior)
-                let order = self.next_access_order();
+                let _order = self.next_access_order();
                 let value = entry.value.clone();
                 let remaining_ttl = entry.expires_at.duration_since(Instant::now());
 
                 // Remove old entry and insert updated one
                 entries.remove(key);
-                let new_entry = LruEntry::new(value.clone(), remaining_ttl, order);
+                let new_entry = LruEntry::new(value.clone(), remaining_ttl);
                 entries.insert(key.clone(), new_entry);
                 return Some(value);
             } else {

@@ -9,7 +9,7 @@ use async_nats::jetstream::Context as JetStreamContext;
 use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
-use hodei_server_domain::event_bus::{EventBus, EventBusError};
+use hodei_server_domain::event_bus::EventBusError;
 use hodei_server_domain::saga::SagaOrchestrator;
 use hodei_server_domain::saga::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitState,
@@ -18,7 +18,7 @@ use hodei_server_domain::shared_kernel::DomainError;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::info;
 
 use hodei_shared::event_topics::ALL_EVENTS;
 
@@ -211,7 +211,7 @@ where
         let consumer_id = format!("{}-{}", stream_name, self.config.durable_name);
 
         // Re-obtain stream for consumer operations
-        let mut stream = self.ensure_stream().await?;
+        let stream = self.ensure_stream().await?;
 
         // Create durable consumer with pull configuration
         let consumer_config = PullConsumerConfig {

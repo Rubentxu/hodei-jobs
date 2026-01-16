@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Configuration for log persistence
 #[derive(Debug, Clone)]

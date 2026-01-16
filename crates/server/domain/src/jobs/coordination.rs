@@ -311,7 +311,7 @@ impl LogAggregator {
         let estimated_cost = job
             .selected_provider()
             .as_ref()
-            .and_then(|_| job.spec.preferences.max_budget);
+            .and(job.spec.preferences.max_budget);
 
         ExecutionMetrics {
             queue_time_ms,

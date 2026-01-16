@@ -3,12 +3,11 @@
 //! Saga para el aprovisionamiento de workers on-demand.
 
 use crate::command::erased::dispatch_erased;
-use crate::event_bus::EventBus;
 use crate::events::DomainEvent;
 use crate::saga::commands::{CreateWorkerCommand, DestroyWorkerCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
-use crate::workers::{WorkerProvisioning, WorkerRegistry, WorkerSpec};
+use crate::workers::WorkerSpec;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -85,7 +84,7 @@ impl Saga for ProvisioningSaga {
             // The ephemeral worker will self-register when it starts up
             Box::new(
                 CreateInfrastructureStep::new(self.provider_id.clone(), self.spec.clone())
-                    .with_job(self.job_id.clone().unwrap_or_else(JobId::new)),
+                    .with_job(self.job_id.clone().unwrap_or_default()),
             ),
             // RegisterWorkerStep is NOT needed - workers self-register via OTP on startup
             Box::new(PublishProvisionedEventStep::new()),
@@ -236,7 +235,7 @@ impl SagaStep for CreateInfrastructureStep {
         }
 
         // Get or create job ID
-        let job_id = self.job_id.clone().unwrap_or_else(JobId::new);
+        let job_id = self.job_id.clone().unwrap_or_default();
 
         // Store job_id for potential compensation
         context
@@ -357,12 +356,12 @@ impl SagaStep for CreateInfrastructureStep {
         );
 
         // Dispatch command
-        dispatch_erased(&command_bus, command).await.map_err(|e| {
-            SagaError::CompensationFailed {
+        dispatch_erased(command_bus, command)
+            .await
+            .map_err(|e| SagaError::CompensationFailed {
                 step: self.name().to_string(),
                 message: format!("Failed to dispatch DestroyWorkerCommand: {}", e),
-            }
-        })?;
+            })?;
 
         info!(
             worker_id = %worker_id_str,
@@ -396,6 +395,12 @@ impl SagaStep for CreateInfrastructureStep {
 /// - `worker_job_id`: Job ID asociado al worker
 #[derive(Debug, Clone)]
 pub struct RegisterWorkerStep;
+
+impl Default for RegisterWorkerStep {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RegisterWorkerStep {
     pub fn new() -> Self {
@@ -607,6 +612,12 @@ impl SagaStep for RegisterWorkerStep {
 /// Es el paso final de la saga de aprovisionamiento.
 #[derive(Debug, Clone)]
 pub struct PublishProvisionedEventStep;
+
+impl Default for PublishProvisionedEventStep {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PublishProvisionedEventStep {
     pub fn new() -> Self {

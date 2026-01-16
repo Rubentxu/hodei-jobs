@@ -156,12 +156,6 @@ impl ProviderPreference {
         iter.next().is_none() // Ensure no more characters
     }
 
-    /// Normalize provider name to standard form (legacy compatibility)
-    #[deprecated(since = "0.4.0", note = "Use normalize_optimized instead")]
-    fn normalize(input: &str) -> String {
-        Self::normalize_optimized(input).0
-    }
-
     /// Check if this preference matches a given provider type
     ///
     /// Uses the optimized `ProviderType::name()` method to avoid allocations.
@@ -191,10 +185,10 @@ impl ProviderPreference {
     ///
     /// Optimized to avoid allocations: UUIDs are already in lowercase format.
     pub fn matches_provider_id(&self, provider_id: &ProviderId) -> bool {
-        if self.is_provider_id {
-            if let Some(matched_id) = &self.matched_provider_id {
-                return matched_id == provider_id;
-            }
+        if self.is_provider_id
+            && let Some(matched_id) = &self.matched_provider_id
+        {
+            return matched_id == provider_id;
         }
         // UUID Display output is already lowercase, no need for to_lowercase()
         provider_id.to_string() == self.normalized
@@ -403,21 +397,21 @@ impl ProviderTypeMapping {
         }
 
         // Check aliases
-        if let Some(canonical) = self.aliases.get(normalized.as_str()) {
-            if let Some(provider_type) = self.type_cache.get(canonical) {
-                self.lookup_cache
-                    .insert(normalized.clone(), provider_type.clone());
-                return Some(provider_type.clone());
-            }
+        if let Some(canonical) = self.aliases.get(normalized.as_str())
+            && let Some(provider_type) = self.type_cache.get(canonical)
+        {
+            self.lookup_cache
+                .insert(normalized.clone(), provider_type.clone());
+            return Some(provider_type.clone());
         }
 
         // Try lowercase variant (only if different from normalized)
         let lower = normalized.to_lowercase();
-        if lower != normalized {
-            if let Some(provider_type) = self.type_cache.get(lower.as_str()) {
-                self.lookup_cache.insert(lower, provider_type.clone());
-                return Some(provider_type.clone());
-            }
+        if lower != normalized
+            && let Some(provider_type) = self.type_cache.get(lower.as_str())
+        {
+            self.lookup_cache.insert(lower, provider_type.clone());
+            return Some(provider_type.clone());
         }
 
         None

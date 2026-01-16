@@ -23,7 +23,7 @@
 //! ```
 
 use sqlx::Executor;
-use sqlx::migrate::{Migrate, MigrateError};
+use sqlx::migrate::MigrateError;
 use sqlx::postgres::PgPool;
 use std::path::Path;
 use thiserror::Error;
@@ -97,7 +97,7 @@ impl MigrationConfig {
 
     /// Set the database URL for testing
     #[allow(dead_code)]
-    pub fn with_database_url(mut self, _url: &str) -> Self {
+    pub fn with_database_url(self, _url: &str) -> Self {
         // This is handled at the pool level, not config
         self
     }

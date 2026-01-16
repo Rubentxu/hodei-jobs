@@ -143,7 +143,7 @@ impl JobCoordinator {
     async fn start_reactive_event_processing(&mut self) -> anyhow::Result<()> {
         use hodei_server_domain::shared_kernel::JobState;
         let event_bus = self.event_bus.clone();
-        let job_dispatcher = self.job_dispatcher.clone();
+        let _job_dispatcher = self.job_dispatcher.clone();
 
         // Subscribe to JobQueued events - triggers ProvisioningSaga
         let mut job_queue_stream = event_bus

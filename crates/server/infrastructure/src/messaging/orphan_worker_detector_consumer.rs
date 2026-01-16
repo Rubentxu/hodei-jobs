@@ -13,7 +13,7 @@
 use async_nats::Client;
 use async_nats::jetstream::Context as JetStreamContext;
 use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
-use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy, PullConsumer};
+use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
 use futures::StreamExt;
 use hodei_server_domain::events::DomainEvent;

@@ -16,7 +16,7 @@ use hodei_server_domain::jobs::{
 use hodei_server_domain::shared_kernel::{DomainError, Result};
 use sqlx::postgres::PgPool;
 use sqlx::types::chrono::{DateTime as SqlxDateTime, Utc as SqlxUtc};
-use sqlx::{FromRow, Row};
+use sqlx::Row;
 use uuid::Uuid;
 
 /// PostgreSQL ScheduledJob Repository

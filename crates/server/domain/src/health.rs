@@ -76,18 +76,13 @@ pub enum HealthCheckError {
 }
 
 /// Overall health status
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HealthStatus {
     Healthy,
     Degraded,
     Unhealthy,
+    #[default]
     Unknown,
-}
-
-impl Default for HealthStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl HealthStatus {
@@ -170,7 +165,6 @@ pub trait SagaHealthChecker: Send + Sync {
 /// Main health check service (domain implementation)
 #[derive(Clone)]
 pub struct HealthCheckService {
-    config: HealthCheckConfig,
     checkers: Vec<Arc<dyn HealthChecker>>,
     process_start: DateTime<Utc>,
     version: String,
@@ -180,13 +174,12 @@ pub struct HealthCheckService {
 
 impl HealthCheckService {
     pub fn new(
-        config: HealthCheckConfig,
+        _config: HealthCheckConfig,
         checkers: Vec<Arc<dyn HealthChecker>>,
         version: String,
     ) -> Self {
         let (state_tx, _) = watch::channel(HealthStatus::Unknown);
         Self {
-            config,
             checkers,
             process_start: Utc::now(),
             version,

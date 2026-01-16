@@ -20,7 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Default deduplication window duration (5 minutes)
 const DEFAULT_DEDUPLICATION_WINDOW_MINUTES: i64 = 5;

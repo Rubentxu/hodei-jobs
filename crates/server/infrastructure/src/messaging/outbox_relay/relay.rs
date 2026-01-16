@@ -8,7 +8,6 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::{CleanupReason, DomainEvent, TerminationReason};
-use hodei_server_domain::jobs::JobSpec;
 use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventView};
 use hodei_server_domain::shared_kernel::DomainError;

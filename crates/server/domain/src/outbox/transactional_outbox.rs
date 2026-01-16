@@ -159,7 +159,7 @@ where
         self.outbox_repository
             .insert_events(&[outbox_event])
             .await
-            .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+            .map_err(TransactionalOutboxError::Outbox)?;
 
         debug!(
             event_type = event.event_type(),
@@ -257,7 +257,7 @@ where
             .outbox_repository
             .get_pending_events(self.batch_size, self.max_retries)
             .await
-            .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+            .map_err(TransactionalOutboxError::Outbox)?;
 
         if pending_events.is_empty() {
             debug!("No pending events to process");
@@ -301,7 +301,7 @@ where
             self.outbox_repository
                 .mark_published(&published_ids)
                 .await
-                .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                .map_err(TransactionalOutboxError::Outbox)?;
 
             info!(
                 count = published_ids.len(),
@@ -319,13 +319,13 @@ where
                 self.outbox_repository
                     .mark_failed(event_id, error_msg)
                     .await
-                    .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                    .map_err(TransactionalOutboxError::Outbox)?;
             } else {
                 // Mark as failed for retry
                 self.outbox_repository
                     .mark_failed(event_id, error_msg)
                     .await
-                    .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                    .map_err(TransactionalOutboxError::Outbox)?;
             }
         }
 
@@ -372,7 +372,7 @@ where
             .outbox_repository
             .get_pending_events(self.batch_size, self.max_retries)
             .await
-            .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+            .map_err(TransactionalOutboxError::Outbox)?;
 
         if pending_events.is_empty() {
             debug!("No pending events to process");
@@ -416,7 +416,7 @@ where
             self.outbox_repository
                 .mark_published(&published_ids)
                 .await
-                .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                .map_err(TransactionalOutboxError::Outbox)?;
 
             info!(
                 count = published_ids.len(),
@@ -450,14 +450,14 @@ where
                     self.outbox_repository
                         .mark_failed(event_id, error_msg)
                         .await
-                        .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                        .map_err(TransactionalOutboxError::Outbox)?;
                 }
             } else {
                 // Mark as failed for retry
                 self.outbox_repository
                     .mark_failed(event_id, error_msg)
                     .await
-                    .map_err(|e| TransactionalOutboxError::Outbox(e.into()))?;
+                    .map_err(TransactionalOutboxError::Outbox)?;
             }
         }
 

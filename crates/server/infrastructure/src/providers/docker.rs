@@ -4,7 +4,7 @@
 //! Uses bollard for Docker API communication.
 
 use async_trait::async_trait;
-use bollard::service::{EventActor, EventMessage, EventMessageTypeEnum};
+use bollard::service::{EventMessage, EventMessageTypeEnum};
 use bollard::{
     Docker,
     container::LogOutput,
@@ -24,7 +24,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::providers::metrics_collector::ProviderMetricsCollector;
@@ -822,7 +822,7 @@ impl WorkerEventSource for DockerProvider {
 /// Parse Docker events to WorkerInfrastructureEvent
 async fn parse_docker_event(
     event: &EventMessage,
-    provider_id: &ProviderId,
+    _provider_id: &ProviderId,
     active_workers: &Arc<RwLock<HashMap<String, WorkerHandle>>>,
 ) -> Option<WorkerInfrastructureEvent> {
     let event_type = event.typ.as_ref()?;

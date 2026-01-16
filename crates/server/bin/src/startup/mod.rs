@@ -13,17 +13,14 @@ mod shutdown;
 
 pub use grpc_server::{GrpcServerConfig, start_grpc_server};
 pub use providers_init::{
-    ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer, initialize_providers,
-    initialize_providers_with_config,
+    ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer,
 };
 pub use services_init::{
-    BackgroundTasksShutdownHandle, CoordinatorShutdownHandle, GrpcServices,
-    SagaConsumersShutdownHandle, initialize_grpc_services, start_background_tasks,
+    GrpcServices, initialize_grpc_services, start_background_tasks,
     start_job_coordinator, start_saga_consumers,
 };
 pub use shutdown::{
-    GracefulShutdown, ShutdownConfig, ShutdownHandle, ShutdownReason, ShutdownSignal,
-    ShutdownState, Shutdownable, execute_shutdown_sequence, start_signal_handler,
+    GracefulShutdown, ShutdownConfig, start_signal_handler,
 };
 
 use backoff::{ExponentialBackoff, future::retry};
@@ -33,7 +30,7 @@ use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
 };
 use hodei_server_domain::command::InMemoryErasedCommandBus;
-use hodei_server_domain::event_bus::{EventBus, EventBusError};
+use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::saga::{InMemorySagaOrchestrator, SagaOrchestrator};
 use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
@@ -244,7 +241,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     info!("✓ Database connected");
 
     // Step 2: Run migrations using existing infrastructure service
-    let config_migration = MigrationConfig::default();
+    let _config_migration = MigrationConfig::default();
     let validation = run_migrations(&pool).await?;
     info!("✓  Migrations: {}", validation.summary());
 

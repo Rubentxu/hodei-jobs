@@ -38,7 +38,15 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "hodei-jobs-platform.serviceAccountName" . }}
 
-      {{- if .Values.podSecurityStandard.enforce }}
+      {{- if .Values.development.enabled }}
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+        runAsNonRoot: false
+        seccompProfile:
+          type: Unconfined
+      {{- else if and (not .Values.development.enabled) .Values.podSecurityStandard.enforce }}
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -167,9 +175,16 @@ spec:
               name: {{ include "hodei-jobs-platform.fullname" . }}-postgresql
               key: connection-string
 
-        # Migrations paths (mounted from ConfigMaps)
+        # Migrations paths
+        {{- if .Values.development.enabled }}
+        # In development, migrations are synced via DevSpace
         - name: HODEI_MIGRATIONS_PATH
           value: "/app/migrations,/app/infrastructure-migrations"
+        {{- else }}
+        # In production, migrations are from mounted ConfigMaps
+        - name: HODEI_MIGRATIONS_PATH
+          value: "/app/migrations,/app/infrastructure-migrations"
+        {{- end }}
 
         # Job configuration
         - name: HODEI_JOB_CONTROLLER_ENABLED
@@ -212,12 +227,24 @@ spec:
         - name: logs
           mountPath: /tmp/hodei-logs
 
+        {{- if and .Values.development.devspace.enabled .Values.development.cargoCache.enabled }}
+        - name: cargo-cache
+          mountPath: /usr/local/cargo/registry
+        {{- end }}
+
+        {{- if .Values.development.enabled }}
+        # In development, migrations are NOT mounted from ConfigMaps
+        # DevSpace syncs the migrations code directly to /app/migrations
+        # No volume mounts needed - files are synced via DevSpace
+        {{- else }}
+        # In production, migrations are read-only from ConfigMaps
         - name: migrations
           mountPath: /app/migrations
           readOnly: true
         - name: infra-migrations
           mountPath: /app/infrastructure-migrations
           readOnly: true
+        {{- end }}
 
         {{- if .Values.volumes.work.enabled }}
         - name: work
@@ -284,6 +311,12 @@ spec:
       - name: work
         persistentVolumeClaim:
           claimName: {{ include "hodei-jobs-platform.fullname" . }}-work
+      {{- end }}
+
+      {{- if and .Values.development.devspace.enabled .Values.development.cargoCache.enabled }}
+      - name: cargo-cache
+        persistentVolumeClaim:
+          claimName: {{ .Values.development.cargoCache.pvcName | default "hodei-cargo-cache" }}
       {{- end }}
 
       {{- if .Values.volumes.extra }}

@@ -482,7 +482,7 @@ impl JobSpec {
 
         // Substitute in environment variables
         let mut new_env = self.env.clone();
-        for (key, value) in &mut new_env {
+        for value in new_env.values_mut() {
             *value = substitute_parameters(value, parameters);
         }
 

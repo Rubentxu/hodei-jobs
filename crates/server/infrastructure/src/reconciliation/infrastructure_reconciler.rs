@@ -25,15 +25,10 @@
 //! - Detailed logging for debugging and audit
 
 use crate::persistence::outbox::PostgresOutboxRepository;
-use crate::providers::{DockerProvider, KubernetesProvider};
-use chrono::{DateTime, Utc};
-use hodei_server_domain::events::{DomainEvent, TerminationReason};
-use hodei_server_domain::jobs::JobsFilter;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepositoryTx};
-use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId, WorkerState};
+use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::provider_api::{ProviderError, WorkerProvider};
-use hodei_server_domain::workers::{Worker, WorkerHandle};
-use hodei_shared::states::JobState;
+use hodei_server_domain::workers::Worker;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -263,7 +258,7 @@ impl InfrastructureReconciler {
 
             // Check if infrastructure still exists by getting worker status
             match provider.get_worker_status(handle).await {
-                Ok(status) => {
+                Ok(_status) => {
                     // Worker still exists - it's a zombie
                     info!(target: "hodei::reconciler", "Destroying zombie worker {}", worker.id());
 
@@ -361,7 +356,7 @@ impl InfrastructureReconciler {
 
     /// Finds TERMINATED workers
     async fn find_terminated_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
-        let rows = sqlx::query(
+        let _rows = sqlx::query(
             r#"
             SELECT w.id, w.state, w.provider_id, w.provider_resource_id, w.spec,
                    w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat
@@ -382,7 +377,7 @@ impl InfrastructureReconciler {
 
     /// Finds BUSY workers
     async fn find_busy_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
-        let rows = sqlx::query(
+        let _rows = sqlx::query(
             r#"
             SELECT w.id, w.state, w.provider_id, w.provider_resource_id, w.spec,
                    w.current_job_id, w.created_at, w.updated_at, w.last_heartbeat

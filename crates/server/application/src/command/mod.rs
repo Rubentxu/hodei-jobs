@@ -7,7 +7,7 @@ mod provisioning;
 pub use execution::register_execution_command_handlers;
 pub use provisioning::register_provisioning_command_handlers;
 
-use hodei_server_domain::command::{Command, CommandBus};
+use hodei_server_domain::command::CommandBus;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -36,7 +36,7 @@ pub struct CommandBusBootstrapConfig {
 /// register_all_command_handlers(&command_bus, CommandBusBootstrapConfig::default()).await;
 /// ```
 pub async fn register_all_command_handlers<B: CommandBus + Send + Sync>(
-    command_bus: &mut Arc<Mutex<B>>,
+    _command_bus: &mut Arc<Mutex<B>>,
     config: CommandBusBootstrapConfig,
 ) {
     tracing::info!("Registering command handlers...");

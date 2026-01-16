@@ -297,7 +297,7 @@ where
         let job_id = command.job_id.clone();
 
         // Get current job state
-        let job = self
+        let _job = self
             .job_repository
             .find_by_id(&job_id)
             .await
@@ -605,7 +605,7 @@ where
         let new_worker_id = command.new_worker_id.clone();
 
         // Get job and update it with new worker assignment
-        let mut job = self
+        let _job = self
             .job_repository
             .find_by_id(&job_id)
             .await

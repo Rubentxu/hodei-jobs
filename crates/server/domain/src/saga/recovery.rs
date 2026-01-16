@@ -12,7 +12,6 @@ use crate::saga::commands::{
     CreateWorkerCommand, DestroyOldWorkerCommand, DestroyWorkerCommand, TransferJobCommand,
 };
 use crate::shared_kernel::{JobId, JobState, WorkerId};
-use async_trait::async_trait;
 use std::time::Duration;
 use tracing::{info, instrument, warn};
 
@@ -281,7 +280,7 @@ impl SagaStep for ProvisionNewWorkerStep {
 
             // Parse worker ID
             let worker_id =
-                WorkerId::from_string(&worker_id_str).unwrap_or_else(|| WorkerId::new());
+                WorkerId::from_string(&worker_id_str).unwrap_or_default();
 
             let provider_id = crate::ProviderId::new(); // Placeholder, command will use what's needed
 
@@ -388,7 +387,7 @@ impl SagaStep for TransferJobStep {
             })?;
 
         let new_worker_id =
-            WorkerId::from_string(&new_worker_id_str).unwrap_or_else(|| WorkerId::new());
+            WorkerId::from_string(&new_worker_id_str).unwrap_or_default();
 
         // Create TransferJobCommand
         let command = TransferJobCommand::new(

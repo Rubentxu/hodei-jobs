@@ -3,7 +3,6 @@
 //! Responsible ONLY for heartbeat monitoring and liveness checks.
 
 use hodei_server_domain::shared_kernel::{Result, WorkerId, WorkerState};
-use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;

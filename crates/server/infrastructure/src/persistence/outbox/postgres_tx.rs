@@ -4,10 +4,7 @@
 //! for the Transactional Outbox Pattern.
 
 use super::PostgresOutboxRepository;
-use hodei_server_domain::outbox::{
-    AggregateType, OutboxError, OutboxEventInsert, OutboxRepositoryTx,
-};
-use sqlx::Row;
+use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepositoryTx};
 use sqlx::postgres::PgTransaction;
 use uuid::Uuid;
 

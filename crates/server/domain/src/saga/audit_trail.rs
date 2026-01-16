@@ -4,7 +4,7 @@
 //! tracking all lifecycle events for debugging, compliance, and observability.
 //! Thread-safe implementation (US-15).
 
-use crate::saga::{SagaContext, SagaExecutionResult, SagaId, SagaState, SagaType};
+use crate::saga::{SagaId, SagaType};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};

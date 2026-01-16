@@ -165,7 +165,7 @@ where
         self.job_repository
             .update_state(&job_id, JobState::Failed)
             .await
-            .map_err(|e| MarkJobFailedError::InvalidTransition {
+            .map_err(|_e| MarkJobFailedError::InvalidTransition {
                 job_id: job_id.clone(),
                 current: previous_state.clone(),
             })?;
@@ -330,7 +330,7 @@ where
         self.job_repository
             .update_state(&job_id, JobState::Pending)
             .await
-            .map_err(|e| ResumeFromManualInterventionError::NotInManualInterventionState {
+            .map_err(|_e| ResumeFromManualInterventionError::NotInManualInterventionState {
                 job_id: job_id.clone(),
                 current: previous_state.clone(),
             })?;

@@ -7,7 +7,7 @@ use hodei_server_domain::outbox::{
     OutboxStatus,
 };
 use sqlx::FromRow;
-use sqlx::postgres::{PgConnectOptions, PgPool};
+use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 /// Error type specific to PostgreSQL outbox repository

@@ -59,7 +59,7 @@ impl HandlerRegistry {
 /// In-memory implementation of handler storage.
 #[derive(Debug, Default)]
 pub struct InMemoryHandlerStorage {
-    registry: Arc<parking_lot::Mutex<HandlerRegistry>>,
+    pub(crate) registry: Arc<parking_lot::Mutex<HandlerRegistry>>,
 }
 
 impl InMemoryHandlerStorage {
@@ -67,6 +67,11 @@ impl InMemoryHandlerStorage {
         Self {
             registry: Arc::new(parking_lot::Mutex::new(HandlerRegistry::new())),
         }
+    }
+
+    /// Returns a reference to the underlying registry
+    pub fn registry(&self) -> &Arc<parking_lot::Mutex<HandlerRegistry>> {
+        &self.registry
     }
 }
 
@@ -84,7 +89,7 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_handler_storage() {
         let storage = InMemoryHandlerStorage::new();
-        let registry = storage.registry.lock();
+        let registry = storage.registry().lock();
         assert!(registry.is_empty());
     }
 }

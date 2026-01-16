@@ -9,33 +9,31 @@
 use dashmap::DashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
 
 use hodei_jobs::{
-    AckMessage, LogEntry, RegisterWorkerRequest, RegisterWorkerResponse, SelfTerminateMessage,
-    ServerMessage, UnregisterWorkerRequest, UnregisterWorkerResponse, UpdateWorkerStatusRequest,
+    AckMessage, LogEntry, RegisterWorkerRequest, RegisterWorkerResponse, ServerMessage,
+    UnregisterWorkerRequest, UnregisterWorkerResponse, UpdateWorkerStatusRequest,
     UpdateWorkerStatusResponse, WorkerInfo, WorkerMessage,
     server_message::Payload as ServerPayload, worker_agent_service_server::WorkerAgentService,
     worker_message::Payload as WorkerPayload,
 };
 
-use crate::grpc::interceptors::RequestContextExt;
-use crate::grpc::log_stream::LogStreamService;
 use crate::grpc::heartbeat_processor::HeartbeatProcessor;
+use crate::grpc::interceptors::RequestContextExt;
 use crate::grpc::log_ingestor::LogIngestor;
+use crate::grpc::log_stream::LogStreamService;
 use chrono::Utc;
 use hodei_server_application::workers::actor::WorkerSupervisorHandle;
-use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::iam::OtpToken;
-use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
+use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::shared_kernel::{
     DomainError, JobId, JobResult, JobState, ProviderId, WorkerId, WorkerState,
 };
-use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_domain::workers::{ProviderType, WorkerHandle, WorkerSpec};
 
 /// Estado interno de un worker registrado
@@ -127,12 +125,9 @@ impl WorkerAgentServiceImpl {
         supervisor_handle: WorkerSupervisorHandle,
     ) -> Self {
         // GAP-GO-01: Create HeartbeatProcessor with dependencies
-        let heartbeat_processor = HeartbeatProcessor::new(
-            Some(worker_registry.clone()),
-            Some(event_bus.clone()),
-            None,
-        )
-        .with_supervisor_handle(supervisor_handle.clone());
+        let heartbeat_processor =
+            HeartbeatProcessor::new(Some(worker_registry.clone()), Some(event_bus.clone()), None)
+                .with_supervisor_handle(supervisor_handle.clone());
 
         // GAP-GO-01: Create LogIngestor
         let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
@@ -294,11 +289,8 @@ impl WorkerAgentServiceImpl {
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     ) -> Self {
         // GAP-GO-01: Create HeartbeatProcessor and LogIngestor
-        let heartbeat_processor = HeartbeatProcessor::new(
-            Some(worker_registry.clone()),
-            Some(event_bus.clone()),
-            None,
-        );
+        let heartbeat_processor =
+            HeartbeatProcessor::new(Some(worker_registry.clone()), Some(event_bus.clone()), None);
         let log_ingestor = LogIngestor::new(Some(log_service.clone()), None);
 
         Self {
@@ -940,10 +932,17 @@ impl WorkerAgentServiceImpl {
         Ok(())
     }
 
-    async fn on_worker_heartbeat(&self, worker_id: &str, running_job_ids: Vec<String>) -> Result<(), Status> {
+    async fn on_worker_heartbeat(
+        &self,
+        worker_id: &str,
+        running_job_ids: Vec<String>,
+    ) -> Result<(), Status> {
         // GAP-GO-01: Delegate to HeartbeatProcessor if available
         if let Some(ref processor) = self.heartbeat_processor {
-            debug!("GAP-GO-01: Routing heartbeat through HeartbeatProcessor for {}", worker_id);
+            debug!(
+                "GAP-GO-01: Routing heartbeat through HeartbeatProcessor for {}",
+                worker_id
+            );
             processor
                 .process_heartbeat(worker_id, running_job_ids)
                 .await
@@ -1073,12 +1072,15 @@ impl WorkerAgentServiceImpl {
         }
 
         // EPIC-42: DashMap entry API para modificación atómica
-        let mut otp = self.otp_tokens.entry(token.to_string()).or_insert_with(|| InMemoryOtpState {
-            token: token.to_string(),
-            worker_id: String::new(),
-            created_at: std::time::Instant::now(),
-            used: true, // Mark as used initially if not found
-        });
+        let mut otp =
+            self.otp_tokens
+                .entry(token.to_string())
+                .or_insert_with(|| InMemoryOtpState {
+                    token: token.to_string(),
+                    worker_id: String::new(),
+                    created_at: std::time::Instant::now(),
+                    used: true, // Mark as used initially if not found
+                });
 
         // Token expira en 5 minutos
         if otp.created_at.elapsed() > std::time::Duration::from_secs(300) {
@@ -1105,7 +1107,8 @@ impl WorkerAgentServiceImpl {
         worker_id: &str,
         message: ServerMessage,
     ) -> Result<(), Status> {
-        let sender = self.worker_channels
+        let sender = self
+            .worker_channels
             .get(worker_id)
             .ok_or_else(|| Status::not_found(format!("Worker {} not connected", worker_id)))?;
 
@@ -1297,8 +1300,7 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                 status: 0,
             };
 
-            self.workers
-                .insert(worker_id.clone(), registered);
+            self.workers.insert(worker_id.clone(), registered);
 
             if let Some(event_bus) = &self.event_bus {
                 if recovery_failed {
@@ -1407,7 +1409,8 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         if holder.is_none() {
                                             *holder = Some(wid.value.clone());
                                             // EPIC-42: DashMap para inserción concurrente
-                                            worker_channels.insert(wid.value.clone(), tx_clone.clone());
+                                            worker_channels
+                                                .insert(wid.value.clone(), tx_clone.clone());
                                         }
 
                                         // Enviar ACK
@@ -1421,8 +1424,12 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         let _ = tx_clone.send(Ok(ack)).await;
 
                                         // GAP-GO-01: Pass running_job_ids to heartbeat processor
-                                        let _ =
-                                            registry_service.on_worker_heartbeat(&wid.value, hb.running_job_ids.clone()).await;
+                                        let _ = registry_service
+                                            .on_worker_heartbeat(
+                                                &wid.value,
+                                                hb.running_job_ids.clone(),
+                                            )
+                                            .await;
 
                                         // EPIC-29: Publish WorkerHeartbeat event
                                         if let Some(ref event_bus) = registry_service.event_bus {

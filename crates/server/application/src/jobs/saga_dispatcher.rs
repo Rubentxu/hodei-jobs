@@ -6,7 +6,7 @@ use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::jobs::{JobQueue, JobRepository};
-use hodei_server_domain::outbox::{OutboxError, OutboxRepository};
+use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::scheduling::SchedulerConfig;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;

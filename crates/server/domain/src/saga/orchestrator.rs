@@ -4,7 +4,7 @@
 //! Includes integrated audit trail for compliance and debugging.
 
 use super::audit_trail::{SagaAuditConsumer, SagaAuditEntry, SagaAuditTrail};
-use super::retry_policy::{RetryOutcome, RetryPolicy};
+use super::retry_policy::RetryPolicy;
 use super::timeout_config::SagaTimeoutConfig;
 use super::{
     CancellationSaga, CleanupSaga, ExecutionSaga, ProvisioningSaga, RecoverySaga, Saga,
@@ -174,7 +174,7 @@ impl SagaOrchestratorConfig {
     /// Gets the step-level timeout for a specific saga type
     /// Uses saga-specific step timeout if configured, otherwise default
     #[inline]
-    pub fn get_step_timeout(&self, saga_type: SagaType) -> Duration {
+    pub fn get_step_timeout(&self, _saga_type: SagaType) -> Duration {
         // For now, we use a consistent step timeout
         // In the future, this could be configurable per saga type
         self.step_timeout
@@ -457,14 +457,13 @@ where
         ));
 
         // Check rate limit first
-        if let Some(ref limiter) = self.rate_limiter {
-            if !limiter.try_acquire() {
+        if let Some(ref limiter) = self.rate_limiter
+            && !limiter.try_acquire() {
                 let remaining = limiter.remaining();
                 return Err(DomainError::OrchestratorError(
                     OrchestratorError::RateLimitExceeded { remaining },
                 ));
             }
-        }
 
         // Try to acquire semaphore permit for concurrency control
         let _permit = self.concurrency_semaphore.try_acquire().map_err(|_| {

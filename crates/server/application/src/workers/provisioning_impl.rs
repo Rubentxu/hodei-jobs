@@ -3,7 +3,6 @@
 //! Concrete implementation that uses WorkerLifecycleManager and OTP token store.
 
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -166,7 +165,7 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         info!("Generated OTP for worker {}, creating container", worker_id);
 
         // Create worker via provider (now with OTP token in environment)
-        let handle = provider.create_worker(&spec_with_env).await.map_err(|e| {
+        let _handle = provider.create_worker(&spec_with_env).await.map_err(|e| {
             DomainError::WorkerProvisioningFailed {
                 message: e.to_string(),
             }

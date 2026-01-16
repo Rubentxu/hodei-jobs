@@ -22,11 +22,10 @@ use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
-use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::{DomainEvent, EventMetadata};
-use hodei_server_domain::jobs::{ExecutionContext, Job, JobQueue, JobRepository};
-use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
+use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
+use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::scheduling::{
     ProviderInfo, SchedulerConfig, SchedulingContext, SchedulingDecision,
 };

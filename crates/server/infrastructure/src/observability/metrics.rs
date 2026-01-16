@@ -57,7 +57,7 @@ impl GrpcMetrics {
             &["method", "error_type"],
         )?;
 
-        let mut registry = Registry::new();
+        let registry = Registry::new();
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(request_latency.clone()))?;
         registry.register(Box::new(active_requests.clone()))?;
@@ -127,7 +127,7 @@ impl JobMetrics {
         )?;
         let queue_depth = IntGauge::new("hodei_job_queue_depth", "Current job queue depth")?;
 
-        let mut registry = Registry::new();
+        let registry = Registry::new();
         registry.register(Box::new(jobs_created.clone()))?;
         registry.register(Box::new(jobs_queued.clone()))?;
         registry.register(Box::new(jobs_running.clone()))?;
@@ -205,7 +205,7 @@ impl WorkerMetrics {
         let workers_idle = IntGauge::new("hodei_workers_idle", "Number of idle workers")?;
         let workers_errors = IntCounter::new("hodei_workers_errors_total", "Total worker errors")?;
 
-        let mut registry = Registry::new();
+        let registry = Registry::new();
         registry.register(Box::new(workers_by_state.clone()))?;
         registry.register(Box::new(workers_registered.clone()))?;
         registry.register(Box::new(workers_active.clone()))?;
@@ -404,7 +404,7 @@ impl PrometheusSagaMetrics {
             &["saga_type", "reason"],
         )?;
 
-        let mut registry = Registry::new();
+        let registry = Registry::new();
         registry.register(Box::new(saga_started.clone()))?;
         registry.register(Box::new(saga_completed.clone()))?;
         registry.register(Box::new(saga_compensated.clone()))?;

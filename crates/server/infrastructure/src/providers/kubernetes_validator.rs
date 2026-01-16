@@ -6,16 +6,13 @@
 use async_trait::async_trait;
 use hodei_server_domain::providers::{
     KubernetesConfig, ProviderConfig, ProviderConnectionError, ProviderConnectionValidator,
-    ValidationCheck, ValidationConfig, ValidationReport,
+    ValidationCheck, ValidationConfig,
 };
-use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::ProviderType;
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::{Api, Client, Config};
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 /// Kubernetes connection validator
 ///

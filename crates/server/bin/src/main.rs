@@ -9,7 +9,7 @@ mod startup;
 
 use clap::Parser;
 use startup::{
-    AppState, GracefulShutdown, GrpcServerConfig, ShutdownConfig, initialize_grpc_services, run,
+    GracefulShutdown, GrpcServerConfig, ShutdownConfig, initialize_grpc_services, run,
     start_background_tasks, start_job_coordinator, start_saga_consumers, start_signal_handler,
 };
 use std::sync::Arc;

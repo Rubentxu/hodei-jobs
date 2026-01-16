@@ -4,11 +4,11 @@
 //! eliminating the need for polling while maintaining a safety net polling mechanism.
 //! EPIC-45 Gap 6: Integrated claim_pending_sagas for stuck saga recovery.
 
-use hodei_server_domain::saga::{SagaContext, SagaId, SagaRepository, SagaState};
+use hodei_server_domain::saga::{SagaId, SagaRepository, SagaState};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Instance ID for claim semantics in multi-instance deployment
 const INSTANCE_ID: &str = "reactive-processor";

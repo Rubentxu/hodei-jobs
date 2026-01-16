@@ -17,7 +17,6 @@ use hodei_server_domain::{
     workers::health::WorkerHealthService,
     workers::Worker,
 };
-use hodei_shared::event_topics::worker_topics;
 use chrono::Utc;
 use std::sync::Arc;
 use std::time::Duration;

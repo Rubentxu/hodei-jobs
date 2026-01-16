@@ -9,12 +9,10 @@
 //! 4. Publicación de eventos deCleanup
 
 use crate::ProviderId;
-use crate::WorkerRegistry;
 use crate::WorkerState;
 use crate::command::erased::dispatch_erased;
 use crate::command::jobs::MarkJobFailedCommand;
 use crate::events::DomainEvent;
-use crate::jobs::JobRepository;
 use crate::saga::commands::UnregisterWorkerCommand;
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
@@ -262,13 +260,12 @@ impl SagaStep for IdentifyUnhealthyWorkersStep {
 
 #[derive(Debug, Clone)]
 pub struct IdentifyOrphanedJobsStep {
-    threshold: Duration,
     dry_run: bool,
 }
 
 impl IdentifyOrphanedJobsStep {
-    pub fn new(threshold: Duration, dry_run: bool) -> Self {
-        Self { threshold, dry_run }
+    pub fn new(_threshold: Duration, dry_run: bool) -> Self {
+        Self { dry_run }
     }
 }
 
@@ -648,7 +645,7 @@ impl SagaStep for ResetOrphanedJobsStep {
                 }
             })?);
 
-            job_repository
+            let _ = job_repository
                 .update_state(&job_id, JobState::Running)
                 .await
                 .map_err(|e| {
@@ -674,6 +671,12 @@ impl SagaStep for ResetOrphanedJobsStep {
 
 #[derive(Debug, Clone)]
 pub struct PublishCleanupMetricsStep;
+
+impl Default for PublishCleanupMetricsStep {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PublishCleanupMetricsStep {
     pub fn new() -> Self {

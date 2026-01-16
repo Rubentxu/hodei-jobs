@@ -18,7 +18,6 @@
 //! This module uses the `secrecy` crate to ensure secrets are zeroized on drop,
 //! preventing exposure in core dumps or memory forensics.
 
-use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -149,7 +148,7 @@ impl PreparedExecution {
     /// Note: For production use, prefer strategies that don't expose
     /// secrets via environment variables (stdin or tmpfs files instead).
     pub fn merged_env(&self) -> HashMap<String, String> {
-        let mut merged = self.env_vars.clone();
+        let merged = self.env_vars.clone();
         // Note: stdin_content contains JSON with all secrets, not individual key-value pairs
         merged
     }

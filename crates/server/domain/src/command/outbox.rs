@@ -527,7 +527,7 @@ where
         }
 
         let payload: MarkJobFailedPayload = serde_json::from_value(record.payload.clone())
-            .map_err(|e| CommandOutboxError::Serialization(e))?;
+            .map_err(CommandOutboxError::Serialization)?;
 
         // Get job_id as UUID
         let job_id_uuid = uuid::Uuid::parse_str(&payload.job_id)
@@ -567,7 +567,7 @@ where
         }
 
         let payload: ResumePayload = serde_json::from_value(record.payload.clone())
-            .map_err(|e| CommandOutboxError::Serialization(e))?;
+            .map_err(CommandOutboxError::Serialization)?;
 
         // Get job_id as UUID
         let job_id_uuid = uuid::Uuid::parse_str(&payload.job_id)

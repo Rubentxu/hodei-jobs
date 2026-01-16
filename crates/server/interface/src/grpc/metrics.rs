@@ -2,7 +2,6 @@
 //!
 //! Provides real-time and historical metrics from providers and workers.
 
-use chrono::Utc;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::time::{Duration, interval};

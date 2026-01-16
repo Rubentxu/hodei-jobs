@@ -3,7 +3,6 @@
 //! Abstraction for outbox event persistence operations.
 
 use crate::outbox::{OutboxError, OutboxEventInsert, OutboxEventView};
-use async_trait::async_trait;
 use sqlx::PgTransaction;
 use uuid::Uuid;
 

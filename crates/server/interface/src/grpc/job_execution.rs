@@ -14,24 +14,21 @@ use crate::mappers::{
 };
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
-use hodei_server_domain::shared_kernel::{JobId, JobState, WorkerId};
-use hodei_server_domain::workers::WorkerRegistry;
+use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 
 use hodei_jobs::{
     AssignJobRequest, AssignJobResponse, CancelJobRequest, CancelJobResponse, CompleteJobRequest,
     CompleteJobResponse, ExecutionId, FailJobRequest, FailJobResponse, GetJobRequest,
-    GetJobResponse, JobDefinition, JobExecution, JobId as GrpcJobId, JobStatus, JobSummary,
-    ListJobsRequest, ListJobsResponse, QueueJobRequest, QueueJobResponse, ResourceRequirements,
-    SchedulingInfo, StartJobRequest, StartJobResponse, TimeoutConfig, UpdateProgressRequest,
+    GetJobResponse, JobExecution, JobId as GrpcJobId, ListJobsRequest, ListJobsResponse,
+    QueueJobRequest, QueueJobResponse, StartJobRequest, StartJobResponse, UpdateProgressRequest,
     UpdateProgressResponse, job_execution_service_server::JobExecutionService,
 };
 
 use chrono::Utc;
 use hodei_server_domain::events::{DomainEvent, TerminationReason};
-use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
+use hodei_server_domain::outbox::OutboxEventInsert;
 use hodei_server_domain::workers::WorkerProvider;
 use hodei_server_domain::workers::provider_api::ProviderError;
-use prost_types;
 
 #[derive(Clone)]
 pub struct JobExecutionServiceImpl {
@@ -40,11 +37,10 @@ pub struct JobExecutionServiceImpl {
     job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
     worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
     /// Providers map for immediate worker cleanup (EPIC-26 US-26.5) - DashMap for lock-free concurrency
-    providers: Arc<DashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
+    providers:
+        Arc<DashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
     /// Outbox repository for emitting events (EPIC-26)
-    outbox_repository: Option<
-        Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>,
-    >,
+    outbox_repository: Option<Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>>,
     /// Event bus for publishing domain events
     event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
 }
@@ -73,13 +69,11 @@ impl JobExecutionServiceImpl {
         cancel_job_usecase: Arc<CancelJobUseCase>,
         job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository>,
         worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
-        providers: Arc<DashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>>,
+        providers: Arc<
+            DashMap<hodei_server_domain::shared_kernel::ProviderId, Arc<dyn WorkerProvider>>,
+        >,
         outbox_repository: Option<
-            Arc<
-                dyn hodei_server_domain::outbox::OutboxRepository
-                    + Send
-                    + Sync,
-            >,
+            Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>,
         >,
         event_bus: Option<Arc<dyn hodei_server_domain::event_bus::EventBus>>,
     ) -> Self {
@@ -97,9 +91,7 @@ impl JobExecutionServiceImpl {
     /// Set outbox repository after construction (EPIC-26)
     pub fn set_outbox_repository(
         &mut self,
-        outbox_repository: Arc<
-            dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync,
-        >,
+        outbox_repository: Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync>,
     ) {
         self.outbox_repository = Some(outbox_repository);
     }
@@ -235,13 +227,17 @@ impl JobExecutionServiceImpl {
 
         // Destroy worker via provider immediately (FIX: Only unregister on success)
         let destroy_result = if let Some(provider) = self.providers.get(&provider_id) {
-            provider.value().destroy_worker(worker.handle()).await.map_err(|e| {
-                warn!(
-                    "Failed to destroy worker {} via provider {}: {}",
-                    worker_id, provider_id, e
-                );
-                e
-            })
+            provider
+                .value()
+                .destroy_worker(worker.handle())
+                .await
+                .map_err(|e| {
+                    warn!(
+                        "Failed to destroy worker {} via provider {}: {}",
+                        worker_id, provider_id, e
+                    );
+                    e
+                })
         } else {
             warn!(
                 "Provider {} not found for worker {} cleanup",

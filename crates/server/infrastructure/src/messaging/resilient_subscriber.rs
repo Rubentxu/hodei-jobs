@@ -5,7 +5,6 @@
 //!
 //! This module implements US-30.3: Resilient EventBus Subscriber
 
-use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};

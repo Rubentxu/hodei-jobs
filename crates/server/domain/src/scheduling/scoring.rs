@@ -478,7 +478,7 @@ impl CompositeProviderSelector {
                     p.provider_type.clone(),
                     p.health_score,
                     p.cost_per_hour,
-                    p.estimated_startup_time.clone(),
+                    p.estimated_startup_time,
                     p.active_workers,
                     p.max_workers,
                 )
@@ -647,8 +647,6 @@ pub struct CachedProviderSelector {
     selector: CompositeProviderSelector,
     /// Cache for scoring results
     cache: SharedScoringCache,
-    /// TTL for cache entries
-    ttl: std::time::Duration,
 }
 
 impl CachedProviderSelector {
@@ -701,13 +699,9 @@ impl CachedProviderSelector {
     pub fn with_cache_and_ttl(
         selector: CompositeProviderSelector,
         cache: SharedScoringCache,
-        ttl: std::time::Duration,
+        _ttl: std::time::Duration,
     ) -> Self {
-        Self {
-            selector,
-            cache,
-            ttl,
-        }
+        Self { selector, cache }
     }
 
     /// Select the best provider from a list, using the cache
@@ -746,7 +740,7 @@ impl CachedProviderSelector {
                     p.provider_type.clone(),
                     p.health_score,
                     p.cost_per_hour,
-                    p.estimated_startup_time.clone(),
+                    p.estimated_startup_time,
                     p.active_workers,
                     p.max_workers,
                 )

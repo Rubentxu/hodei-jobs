@@ -362,7 +362,7 @@ impl GlobalLogBuffer {
 
         // Update metrics
         {
-            let mut metrics = self.metrics.lock().unwrap();
+            let metrics = self.metrics.lock().unwrap();
             metrics.total_bytes.fetch_add(entry_size, Ordering::Relaxed);
             metrics.total_entries.fetch_add(1, Ordering::Relaxed);
             if self.buffers.len() as u64 > metrics.buffer_count.load(Ordering::Relaxed) {
@@ -436,7 +436,7 @@ impl GlobalLogBuffer {
 
         // Update metrics
         {
-            let mut metrics = self.metrics.lock().unwrap();
+            let metrics = self.metrics.lock().unwrap();
             metrics
                 .evictions_total
                 .fetch_add(evicted_count, Ordering::Relaxed);
