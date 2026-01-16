@@ -263,7 +263,9 @@ impl ProvidersInitializer {
         if enabled_providers.is_empty() {
             warn!("No enabled providers found in database");
             if self.config.fail_if_no_providers {
-                return Err(ProviderInitializationError::NoActiveProviders.into());
+                return Err(ProviderInitializationError::NoActiveProviders {
+                    details: "No enabled providers found in database".to_string(),
+                });
             }
             return Ok(ProvidersInitResult::success(vec![], 0));
         }
@@ -363,8 +365,48 @@ impl ProvidersInitializer {
 
         // Step 6: Check if we have any usable providers
         if !result.has_any_provider() && self.config.fail_if_no_providers {
-            error!("All providers failed initialization, failing startup");
-            return Err(ProviderInitializationError::NoActiveProviders.into());
+            // Generate detailed error message with all failure reasons
+            let failure_details: Vec<String> = failed
+                .iter()
+                .map(|(id, err)| {
+                    format!(
+                        "  - Provider '{}' ({}): {}",
+                        id.as_uuid(),
+                        err.provider_type()
+                            .map(|t| format!("{}", t))
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        err.to_user_message()
+                    )
+                })
+                .chain(warnings.iter().map(|(id, err)| {
+                    format!(
+                        "  - Provider '{}' ({}): {} [WARNING]",
+                        id.as_uuid(),
+                        err.provider_type()
+                            .map(|t| format!("{}", t))
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        err.to_user_message()
+                    )
+                }))
+                .collect();
+
+            let detailed_error = if failure_details.is_empty() {
+                "All providers failed initialization. No failure details available.".to_string()
+            } else {
+                format!(
+                    "All providers failed initialization. {} provider(s) failed:\n{}",
+                    failure_details.len(),
+                    failure_details.join("\n")
+                )
+            };
+
+            error!("{}", detailed_error);
+            error!(
+                "To resolve provider issues, see: https://hodei-jobs.io/docs/providers/kubernetes-setup"
+            );
+            return Err(ProviderInitializationError::NoActiveProviders {
+                details: detailed_error,
+            });
         }
 
         // Step 7: Publish ProviderRegistered events for successful providers

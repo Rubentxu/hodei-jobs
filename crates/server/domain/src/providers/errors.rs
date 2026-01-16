@@ -195,7 +195,7 @@ pub enum ProviderInitializationError {
          At least one provider is required to execute jobs. \
          See: https://hodei-jobs.io/docs/providers/kubernetes-setup"
     )]
-    NoActiveProviders,
+    NoActiveProviders { details: String },
 
     /// Provider configuration not found in database
     #[error("Provider configuration not found: {provider_id}")]
@@ -284,13 +284,32 @@ impl From<&str> for ErrorMessage {
 }
 
 impl ProviderInitializationError {
+    /// Returns a user-friendly message for operators
+    pub fn to_user_message(&self) -> String {
+        self.to_string()
+    }
+
+    /// Returns the provider type associated with this error, if any
+    pub fn provider_type(&self) -> Option<ProviderType> {
+        match self {
+            Self::NoActiveProviders { .. } => None,
+            Self::ProviderNotFound { .. } => None,
+            Self::InvalidConfiguration { provider_type, .. } => Some(provider_type.clone()),
+            Self::ConnectionFailed { provider_type, .. } => Some(provider_type.clone()),
+            Self::RbacValidationFailed { .. } => Some(ProviderType::Kubernetes),
+            Self::ValidationWarnings { provider_type, .. } => Some(provider_type.clone()),
+            Self::InitializationTimeout { provider_type, .. } => Some(provider_type.clone()),
+            Self::UnexpectedError { provider_type, .. } => Some(provider_type.clone()),
+        }
+    }
+
     /// Returns true if this error should cause startup to fail
     ///
     /// Some errors are fatal (no providers available), while others
     /// allow the system to start with reduced capacity.
     pub fn is_fatal(&self) -> bool {
         match self {
-            Self::NoActiveProviders => true,
+            Self::NoActiveProviders { .. } => true,
             Self::ProviderNotFound { .. } => false,
             Self::InvalidConfiguration { .. } => true,
             Self::ConnectionFailed { .. } => false, // Try other providers
@@ -304,7 +323,7 @@ impl ProviderInitializationError {
     /// Returns a user-friendly remediation suggestion
     pub fn remediation_suggestion(&self) -> String {
         match self {
-            Self::NoActiveProviders => {
+            Self::NoActiveProviders { details: _ } => {
                 "To configure a Kubernetes provider, create a ConfigMap in PostgreSQL: \
                  INSERT INTO provider_configs (id, name, provider_type, type_config, status) \
                  VALUES ('k8s-default', 'kubernetes-default', 'kubernetes', \
@@ -392,7 +411,7 @@ impl ProviderInitializationError {
     /// Returns the provider ID associated with this error, if any
     pub fn provider_id(&self) -> Option<&ProviderId> {
         match self {
-            Self::NoActiveProviders => None,
+            Self::NoActiveProviders { .. } => None,
             Self::ProviderNotFound { provider_id, .. } => Some(provider_id),
             Self::InvalidConfiguration { provider_id, .. } => Some(provider_id),
             Self::ConnectionFailed { provider_id, .. } => Some(provider_id),
@@ -414,9 +433,11 @@ pub type ProviderInitializationResult = InitializationResult<()>;
 impl From<ProviderInitializationError> for DomainError {
     fn from(error: ProviderInitializationError) -> Self {
         match error {
-            ProviderInitializationError::NoActiveProviders => DomainError::InvalidProviderConfig {
-                message: error.to_string(),
-            },
+            ProviderInitializationError::NoActiveProviders { details } => {
+                DomainError::InvalidProviderConfig {
+                    message: format!("No active providers configured. {}", details),
+                }
+            }
             ProviderInitializationError::ProviderNotFound { provider_id, .. } => {
                 DomainError::ProviderNotFound { provider_id }
             }
@@ -610,7 +631,9 @@ mod tests {
     #[test]
     fn test_initialization_error_is_fatal() {
         let fatal_errors: Vec<ProviderInitializationError> = vec![
-            ProviderInitializationError::NoActiveProviders,
+            ProviderInitializationError::NoActiveProviders {
+                details: "test".to_string(),
+            },
             ProviderInitializationError::InvalidConfiguration {
                 provider_id: test_provider_id(),
                 provider_type: ProviderType::Kubernetes,
@@ -701,7 +724,10 @@ mod tests {
         }
 
         assert_eq!(
-            ProviderInitializationError::NoActiveProviders.provider_id(),
+            ProviderInitializationError::NoActiveProviders {
+                details: "test".to_string()
+            }
+            .provider_id(),
             None
         );
     }
