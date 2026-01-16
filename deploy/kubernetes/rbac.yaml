@@ -45,8 +45,8 @@ metadata:
     app.kubernetes.io/component: provider
 subjects:
   - kind: ServiceAccount
-    name: hodei-control-plane
-    namespace: hodei-system
+    name: hodei-hodei-jobs-platform
+    namespace: hodei-jobs
 roleRef:
   kind: Role
   name: hodei-provider

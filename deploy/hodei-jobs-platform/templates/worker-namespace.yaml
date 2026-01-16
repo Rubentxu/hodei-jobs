@@ -1,0 +1,16 @@
+{{- /*
+  Worker namespace for running job pods.
+  This namespace is where worker pods are scheduled.
+  Created automatically by Helm. If it already exists, Helm will skip it.
+*/ -}}
+
+{{- $workerNamespace := .Values.workers.namespace | default "hodei-jobs-workers" }}
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $workerNamespace }}
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker

@@ -1,13 +1,24 @@
 {{- /*
   ConfigMap generator for database migrations.
-  Usage: Helm montará estos ConfigMaps en:
+  Migrations are sourced from the code at:
+  crates/server/infrastructure/src/persistence/postgres/migrations/
+
+  ONLY used in production mode.
+  In development, DevSpace syncs migrations directly to the pod.
+
+  Helm mounts these ConfigMaps in:
     - /app/migrations (core migrations)
     - /app/infrastructure-migrations (infra migrations)
 */ -}}
 
+{{- if not .Values.development.enabled }}
+
+{{- $migrationsCorePath := "crates/server/infrastructure/src/persistence/postgres/migrations/core" }}
+{{- $migrationsInfraPath := "crates/server/infrastructure/src/persistence/postgres/migrations/infra" }}
+
 {{- $files := $.Files }}
 
-{{- if $files.Get "migrations/core/20241221000000_create_domain_events.sql" }}
+{{- if $files.Match $migrationsCorePath "*.sql" }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -18,29 +29,14 @@ metadata:
     app.kubernetes.io/component: migrations
     app.kubernetes.io/part-of: hodei-jobs-platform
 data:
-  00000000000000_create_migrations_table.sql: |
-    {{- $files.Get "migrations/core/00000000000000_create_migrations_table.sql" | nindent 4 }}
-  20241221000000_create_domain_events.sql: |
-    {{- $files.Get "migrations/core/20241221000000_create_domain_events.sql" | nindent 4 }}
-  20251230_add_saga_tables.sql: |
-    {{- $files.Get "migrations/core/20251230_add_saga_tables.sql" | nindent 4 }}
-  20260101_add_reactive_system_tables.sql: |
-    {{- $files.Get "migrations/core/20260101_add_reactive_system_tables.sql" | nindent 4 }}
-  20260106_add_worker_bootstrap_tokens.sql: |
-    {{- $files.Get "migrations/core/20260106_add_worker_bootstrap_tokens.sql" | nindent 4 }}
-  20260201_add_job_templates_tables.sql: |
-    {{- $files.Get "migrations/core/20260201_add_job_templates_tables.sql" | nindent 4 }}
-  20260201120000_add_job_spec_column.sql: |
-    {{- $files.Get "migrations/core/20260201120000_add_job_spec_column.sql" | nindent 4 }}
-  20260201130000_add_provider_configs.sql: |
-    {{- $files.Get "migrations/core/20260201130000_add_provider_configs.sql" | nindent 4 }}
-  20260201140000_add_provider_filtering_columns.sql: |
-    {{- $files.Get "migrations/core/20260201140000_add_provider_filtering_columns.sql" | nindent 4 }}
-  20260201150000_add_provider_filtering_columns.sql: |
-    {{- $files.Get "migrations/core/20260201150000_add_provider_filtering_columns.sql" | nindent 4 }}
+{{- range $path := $files.Match $migrationsCorePath "*.sql" }}
+{{ $name := $path | base }}
+  {{ $name }}: |
+    {{- $files.Get $path | nindent 4 }}
+{{- end }}
 {{- end }}
 
-{{- if $files.Get "migrations/infra/20241223_add_outbox_events.sql" }}
+{{- if $files.Match $migrationsInfraPath "*.sql" }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -51,10 +47,11 @@ metadata:
     app.kubernetes.io/component: migrations-infra
     app.kubernetes.io/part-of: hodei-jobs-platform
 data:
-  20241223_add_outbox_events.sql: |
-    {{- $files.Get "migrations/infra/20241223_add_outbox_events.sql" | nindent 4 }}
-  20251223_add_reconciliation_indexes.sql: |
-    {{- $files.Get "migrations/infra/20251223_add_reconciliation_indexes.sql" | nindent 4 }}
-  20260106_add_outbox_notify_trigger.sql: |
-    {{- $files.Get "migrations/infra/20260106_add_outbox_notify_trigger.sql" | nindent 4 }}
+{{- range $path := $files.Match $migrationsInfraPath "*.sql" }}
+{{ $name := $path | base }}
+  {{ $name }}: |
+    {{- $files.Get $path | nindent 4 }}
+{{- end }}
+{{- end }}
+
 {{- end }}

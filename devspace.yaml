@@ -58,7 +58,11 @@ dev:
           - "**/*_test.rs"
           - "**/tests/**"
       - path: ./proto:/app/proto
+        excludePaths:
+          - src/generated/*.bin
       - path: ./scripts:/app/scripts
+      - path: ./crates/server/infrastructure/src/persistence/postgres/migrations/core:/app/migrations
+      - path: ./crates/server/infrastructure/src/persistence/postgres/migrations/infra:/app/infrastructure-migrations
       - path: ./Cargo.toml:/app/Cargo.toml
       - path: ./Cargo.lock:/app/Cargo.lock
 
