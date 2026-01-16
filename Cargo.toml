@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.57.6"
+version = "0.57.7"
 edition = "2024"
 license = "MIT"
 authors = ["Hodei Team Platform"]
