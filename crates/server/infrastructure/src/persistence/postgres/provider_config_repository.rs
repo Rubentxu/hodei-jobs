@@ -311,7 +311,8 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
     let tags_json: serde_json::Value = row.get("tags");
     let metadata_json: serde_json::Value = row.get("metadata");
     // EPIC-86: New filtering fields
-    let preferred_region_json: Option<serde_json::Value> = row.try_get("preferred_region")?;
+    // preferred_region is VARCHAR in DB, not JSONB
+    let preferred_region: Option<String> = row.try_get("preferred_region")?;
     let allowed_regions_json: serde_json::Value = row.get("allowed_regions");
     let required_labels_json: serde_json::Value = row.get("required_labels");
     let annotations_json: serde_json::Value = row.get("annotations");
@@ -354,10 +355,7 @@ fn map_row_to_provider_config(row: sqlx::postgres::PgRow) -> Result<ProviderConf
     let metadata: std::collections::HashMap<String, String> =
         serde_json::from_value(metadata_json).unwrap_or_default();
 
-    // EPIC-86: Deserialize new filtering fields
-    let preferred_region: Option<String> = preferred_region_json
-        .and_then(|v| serde_json::from_value(v).ok())
-        .flatten();
+    // EPIC-86: Deserialize new filtering fields (preferred_region is already String from VARCHAR)
     let allowed_regions: Vec<String> =
         serde_json::from_value(allowed_regions_json).unwrap_or_default();
     let required_labels: std::collections::HashMap<String, String> =
