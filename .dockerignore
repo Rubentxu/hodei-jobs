@@ -2,71 +2,145 @@
 # Hodei Jobs Platform - Docker Ignore
 # =============================================================================
 # Optimizes Docker build context by excluding unnecessary files
+# KEEP: Only production code and essential config
 
-# Build artifacts
+# =============================================================================
+# BUILD ARTIFACTS (BIGGEST - ALWAYS EXCLUDE)
+# =============================================================================
 target/
 *.rs.bk
+build/
+*.o
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.pdb
 
-# IDE and editor files
+# =============================================================================
+# IDE AND EDITOR FILES
+# =============================================================================
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 .DS_Store
+*.sublime-*
 
-# Git
+# =============================================================================
+# GIT (metadata only - not code)
+# =============================================================================
 .git/
 .gitignore
 .gitattributes
+.gitmodules
 
-# Documentation (not needed in image)
+# =============================================================================
+# DOCUMENTATION (not needed in image)
+# =============================================================================
 docs/
 *.md
 !README.md
+CHANGELOG.md
+CONTRIBUTING.md
 
-# Test files
+# =============================================================================
+# TEST FILES (unit tests compiled separately)
+# =============================================================================
 **/tests/
 **/*_test.rs
 **/test_*.rs
+benches/
+examples/
 
-# Development files
+# =============================================================================
+# DEVELOPMENT FILES (secrets, local config)
+# =============================================================================
 .env
 .env.*
 !.env.example
+.envrc
+.overcommit.yaml
 
-# CI/CD
+# =============================================================================
+# CI/CD (not needed in image)
+# =============================================================================
 .github/
 .gitlab-ci.yml
 .travis.yml
+.circleci/
+Jenkinsfile
 
-# Docker files (avoid recursive inclusion)
+# =============================================================================
+# DOCKER FILES (avoid recursive inclusion)
+# =============================================================================
 Dockerfile*
 docker-compose*.yml
+docker-compose.override.yml
 .dockerignore
 
-# Scripts - keep entrypoint.sh for dev image
+# =============================================================================
+# SCRIPTS (entrypoint only needed)
+# =============================================================================
 scripts/
 !scripts/entrypoint.sh
-deploy/
 
-# Web frontend (built separately)
+# =============================================================================
+# WEB FRONTEND (built separately)
+# =============================================================================
 web/
+frontend/
+client/
 
-# Logs and temporary files
+# =============================================================================
+# LOGS AND TEMP FILES
+# =============================================================================
 *.log
+logs/
 tmp/
 temp/
 *.tmp
+*.bak
+*~
+.nfs.*
 
-# Coverage and profiling
+# =============================================================================
+# COVERAGE AND PROFILING
+# =============================================================================
 coverage/
 *.profraw
 *.profdata
 tarpaulin-report.html
+*.gcda
+*.gcno
 
-# Cargo lock is needed for reproducible builds
-# Cargo.lock - DO NOT IGNORE
+# =============================================================================
+# RUST SPECIFIC
+# =============================================================================
+Cargo.lock
+rustc-ice-*.txt
+.rustc_info.json
 
-# Config examples
-config/*.example.*
+# =============================================================================
+# CONFIG FILES (mounted via ConfigMaps)
+# =============================================================================
+config.yaml
+config/
+!config/*.example.*
+
+# =============================================================================
+# MONITORING (mounted separately)
+# =============================================================================
+monitoring/
+prometheus/
+grafana-dashboards/
+
+# =============================================================================
+# DATABASE MIGRATIONS (mounted via ConfigMaps)
+# =============================================================================
+migrations/
+infrastructure-migrations/
+*.sql
+!*.example.sql
