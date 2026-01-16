@@ -4,7 +4,7 @@
   Created automatically by Helm. If it already exists, Helm will skip it.
 */ -}}
 
-{{- $workerNamespace := .Values.workers.namespace | default "hodei-jobs-workers" }}
+{{- $workerNamespace := .Values.kubernetesProvider.namespace | default "hodei-jobs-workers" }}
 
 ---
 apiVersion: v1
