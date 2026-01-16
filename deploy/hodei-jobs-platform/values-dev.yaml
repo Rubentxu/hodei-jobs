@@ -159,11 +159,16 @@ gateway:
   type: "nginx"
   host: "hodei.local"
   tls:
-    enabled: false
+    enabled: true
+    secretName: "hodei-tls-secret"
   nginx:
     enabled: true
     className: "nginx"
-    annotations: {}
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 
 ingress:
   enabled: false

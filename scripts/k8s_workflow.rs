@@ -30,6 +30,11 @@
 //! **Para producción**, usar directamente Helm con values.yaml:
 //!   helm upgrade --install hodei ./deploy/hodei-jobs-platform -n hodei-jobs -f ./deploy/hodei-jobs-platform/values.yaml
 //!
+//! **Para gRPC con NGINX Ingress**:
+//!   - NGINX requiere TLS para habilitar HTTP/2 (gRPC usa HTTP/2)
+//!   - El script instala NGINX Ingress y crea certificado de desarrollo
+//!   - gRPC se expone en puerto 443 (HTTPS) con el annotation backend-protocol: "GRPC"
+//!
 //! El script es **idempotente**: puede ejecutarse múltiples veces de forma segura.
 
 use std::process::Command;
@@ -92,6 +97,171 @@ fn run_helm_output(args: &[&str]) -> String {
     }
 }
 
+fn install_nginx_ingress() -> bool {
+    println!("\n🔌 Installing NGINX Ingress Controller (required for gRPC)...");
+
+    // Check if NGINX Ingress is already installed
+    let check = Command::new("kubectl")
+        .args(&[
+            "get",
+            "namespace",
+            "ingress-nginx",
+            "-o",
+            "jsonpath={.metadata.name}",
+        ])
+        .output();
+
+    if check
+        .as_ref()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().len())
+        .unwrap_or(0)
+        > 0
+    {
+        println!("   ✅ NGINX Ingress already installed");
+        return true;
+    }
+
+    // Install NGINX Ingress using arkade (preferred) or raw YAML
+    let arkade_check = Command::new("which")
+        .arg("arkade")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if arkade_check {
+        println!("   📦 Installing via arkade...");
+        let status = Command::new("arkade")
+            .args(&[
+                "install",
+                "ingress-nginx",
+                "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+            ])
+            .status();
+        if status.map(|s| s.success()).unwrap_or(false) {
+            println!("   ✅ NGINX Ingress installed via arkade");
+            std::thread::sleep(std::time::Duration::from_secs(30)); // Wait for startup
+            return true;
+        }
+        println!("   ⚠️  arkade install failed, trying raw YAML...");
+    }
+
+    // Fallback: Install via raw YAML
+    let status = Command::new("kubectl")
+        .args(&[
+            "apply",
+            "-f",
+            "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml",
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+        ])
+        .status();
+
+    if status.map(|s| s.success()).unwrap_or(false) {
+        println!("   ✅ NGINX Ingress installed");
+        std::thread::sleep(std::time::Duration::from_secs(30)); // Wait for startup
+        true
+    } else {
+        println!("   ❌ NGINX Ingress installation failed");
+        false
+    }
+}
+
+fn create_grpc_tls_secret(host: &str, namespace: &str) -> bool {
+    println!("\n🔐 Creating TLS certificate for gRPC (host: {})...", host);
+
+    // Check if secret already exists
+    let check = Command::new("kubectl")
+        .args(&[
+            "get",
+            "secret",
+            "hodei-tls-secret",
+            "-n",
+            namespace,
+            "-o",
+            "jsonpath={.metadata.name}",
+        ])
+        .output();
+
+    if String::from_utf8_lossy(&check.unwrap_or_default().stdout)
+        .trim()
+        .len()
+        > 0
+    {
+        println!("   ✅ TLS secret already exists");
+        return true;
+    }
+
+    // Generate self-signed certificate
+    let temp_dir = std::env::temp_dir();
+    let cert_path = temp_dir.join("tls.crt");
+    let key_path = temp_dir.join("tls.key");
+
+    // Generate certificate using openssl
+    let openssl_status = Command::new("openssl")
+        .args(&[
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            &key_path.to_string_lossy(),
+            "-out",
+            &cert_path.to_string_lossy(),
+            "-days",
+            "365",
+            "-nodes",
+            "-subj",
+            &format!("/CN={}", host),
+            "-addext",
+            &format!("subjectAltName=DNS:{},DNS:*.{},IP:127.0.0.1", host, host),
+        ])
+        .status();
+
+    if !openssl_status.map(|s| s.success()).unwrap_or(false) {
+        println!("   ❌ Failed to generate certificate");
+        return false;
+    }
+
+    // Create Kubernetes secret
+    let secret_status = Command::new("kubectl")
+        .args(&[
+            "create",
+            "secret",
+            "tls",
+            "hodei-tls-secret",
+            "-n",
+            namespace,
+            "--cert",
+            &cert_path.to_string_lossy(),
+            "--key",
+            &key_path.to_string_lossy(),
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+        ])
+        .status();
+
+    if secret_status.map(|s| s.success()).unwrap_or(false) {
+        println!("   ✅ TLS secret created");
+        true
+    } else {
+        println!("   ❌ Failed to create TLS secret");
+        false
+    }
+}
+
+fn check_ingress_class() -> bool {
+    // Check if nginx ingress class exists
+    let check = Command::new("kubectl")
+        .args(&[
+            "get",
+            "ingressclasses",
+            "-o",
+            "jsonpath={.items[*].metadata.name}",
+        ])
+        .output();
+
+    let classes = String::from_utf8_lossy(&check.unwrap_or_default().stdout);
+    classes.contains("nginx")
+}
+
 fn main() {
     // Get the project root directory (where the script is located)
     let project_root = std::env::current_dir()
@@ -131,6 +301,21 @@ fn main() {
     }
     println!("   ✅ Cluster accessible: {}", cluster_check);
 
+    // Check NGINX Ingress class for gRPC support
+    if check_ingress_class() {
+        println!("   ✅ NGINX Ingress class ready");
+    } else {
+        println!("   ⚠️  NGINX Ingress not found (will install for gRPC)");
+    }
+
+    // Install NGINX Ingress if needed (required for gRPC)
+    if !check_ingress_class() {
+        if !install_nginx_ingress() {
+            println!("   ❌ Failed to install NGINX Ingress");
+            return;
+        }
+    }
+
     // Check helm (use k3s kubectl helm as fallback)
     let helm_available = Command::new("helm")
         .arg("version")
@@ -161,8 +346,14 @@ fn main() {
     }
     println!("   ✅ Namespace ready");
 
+    // Create TLS secret for gRPC (required for NGINX Ingress with HTTP/2)
+    let host = "hodei.local";
+    if !create_grpc_tls_secret(host, "hodei-jobs") {
+        println!("   ⚠️  TLS secret creation failed, continuing anyway...");
+    }
+
     // Build Rust binary
-    println!("\n🔨 Building Rust binary...");
+    println!("\n🔨 Building - Comprobamos que funciona en local antes de probar en devspace...");
     let status = Command::new("cargo")
         .args(&["build", "--release", "-p", "hodei-server-bin"])
         .status();
@@ -304,6 +495,13 @@ fn main() {
     ]);
 
     println!("\n✅ k3s development workflow complete!");
+    println!("\n💡 gRPC Access:");
+    println!("   - URL: https://{}:443", host);
+    println!(
+        "   - Test: grpcurl {}:443 hodei.JobExecutionService/QueueJob",
+        host
+    );
+    println!("   - Or use: just job-k8s-hello");
     println!("\n💡 Next steps:");
     println!("   - Start DevSpace: just devspace-dev");
     println!("   - Or sync binary: just dev-reload");

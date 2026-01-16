@@ -7,6 +7,12 @@
   - istio: Istio VirtualService and Gateway
   - traefik: Traefik IngressRoute
   - none: No ingress (use direct service access)
+
+  IMPORTANT - gRPC with NGINX Ingress:
+  - NGINX requires TLS to enable HTTP/2 (gRPC protocol requirement)
+  - Set gateway.tls.enabled: true and provide a valid TLS secret
+  - Use annotation nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  - Route all traffic to grpcPort (9090) for gRPC services
 */ -}}
 
 {{- $fullName := include "hodei-jobs-platform.fullname" . -}}
@@ -26,11 +32,11 @@ metadata:
     {{- if $gateway.nginx.annotations }}
     {{- toYaml $gateway.nginx.annotations | nindent 4 }}
     {{- end }}
-    {{- if $gateway.nginx.grpcAnnotations.enabled }}
-    # gRPC-Web support for browser clients
+    # gRPC requires HTTP/2 which only works with TLS in NGINX
+    # Remove these annotations if not using gRPC
     nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-    {{- end }}
 spec:
+  ingressClassName: {{ $gateway.nginx.className | default "nginx" }}
   {{- if $gateway.tls.enabled }}
   tls:
     - hosts:
@@ -41,15 +47,14 @@ spec:
     - host: {{ $gateway.host | quote }}
       http:
         paths:
-          {{- range $gateway.paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType | default "Prefix" }}
+          # gRPC uses a single path for all services - route to grpcPort
+          - path: /
+            pathType: Prefix
             backend:
               service:
                 name: {{ $fullName }}
                 port:
-                  number: {{ $svcPort }}
-          {{- end }}
+                  number: {{ $grpcPort }}
 {{- end }}
 
 {{- /* Kong Ingress */ -}}

@@ -242,6 +242,8 @@ devspace-cleanup-all:
 # HODEI-CLI COMMANDS - Job Testing
 # =============================================================================
 # Launch test jobs using hodei-cli (requires running server)
+# Configure server URL via environment: HODEI_SERVER_URL="http://localhost:50051" just job-k8s-hello
+HODEI_SERVER_URL := "http://hodei.local"
 
 # Job simple de prueba
 job-k8s-hello:
@@ -253,8 +255,9 @@ job-k8s-hello:
         --cpu "0.1" \
         --memory "67108864" \
         --timeout "60" \
-        --provider kubernetes || \
-    echo "⚠️  Verificar que el servidor esté ejecutándose"
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}" || \
+    echo "⚠️  Verificar que hodei.local resuelva a la IP del ingress (192.168.1.232)"
 
 # Test de CPU intensivo
 job-k8s-cpu:
@@ -265,7 +268,8 @@ job-k8s-cpu:
         --cpu "0.5" \
         --memory "134217728" \
         --timeout "120" \
-        --provider kubernetes
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}"
 
 # Test de memoria
 job-k8s-memory:
@@ -276,7 +280,8 @@ job-k8s-memory:
         --cpu "0.2" \
         --memory "268435456" \
         --timeout "60" \
-        --provider kubernetes
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}"
 
 # Test de datos
 job-k8s-data:
@@ -287,7 +292,8 @@ job-k8s-data:
         --cpu "0.2" \
         --memory "134217728" \
         --timeout "120" \
-        --provider kubernetes
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}"
 
 # Test de ML
 job-k8s-ml:
@@ -298,7 +304,8 @@ job-k8s-ml:
         --cpu "1.0" \
         --memory "536870912" \
         --timeout "180" \
-        --provider kubernetes
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}"
 
 # Test de CI/CD
 job-k8s-build:
@@ -309,7 +316,8 @@ job-k8s-build:
         --cpu "0.5" \
         --memory "268435456" \
         --timeout "300" \
-        --provider kubernetes
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}"
 
 # Test GPU (si disponible)
 job-k8s-gpu:
@@ -320,7 +328,8 @@ job-k8s-gpu:
         --cpu "0.2" \
         --memory "134217728" \
         --timeout "120" \
-        --provider kubernetes
+        --provider kubernetes \
+        --server "{{HODEI_SERVER_URL}}"
 
 # Ejecutar todos los jobs de K8s
 job-k8s-all:
@@ -409,3 +418,35 @@ devspace-cleanup:
     helm uninstall hodei -n hodei-jobs 2>/dev/null || true
     kubectl delete pvc -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform 2>/dev/null || true
     @echo "✅ Recursos limpiados"
+
+# =============================================================================
+# gRPC TESTING COMMANDS
+# =============================================================================
+
+# Test gRPC connection via port-forward (development)
+grpc-test-portforward:
+    @echo "🔌 Iniciando port-forward para gRPC..."
+    @echo "💡 En otra terminal ejecuta: grpcurl -plaintext localhost:9090 list"
+    kubectl port-forward -n hodei-jobs svc/hodei-hodei-jobs-platform 9090:9090
+
+# Test gRPC connection via ingress (requires TLS certificate)
+grpc-test-ingress:
+    @echo "🔌 Testing gRPC via NGINX Ingress..."
+    @echo "💡 gRPC endpoint: https://hodei.local:443"
+    @echo "💡 Con certificado autofirmado usa:"
+    @echo "   grpcurl -insecure hodei.local:443 hodei.JobExecutionService/QueueJob"
+    @grpcurl -insecure hodei.local:443 list 2>&1 || echo "⚠️  Verificar que hodei.local resuelva a la IP del ingress"
+
+# Install NGINX Ingress for gRPC (required for production gRPC)
+install-nginx-ingress:
+    @echo "🔌 Instalando NGINX Ingress Controller..."
+    arkade install ingress-nginx --kubeconfig=/etc/rancher/k3s/k3s.yaml
+
+# Create TLS certificate for gRPC development
+create-grpc-tls:
+    @echo "🔐 Creando certificado TLS para gRPC..."
+    openssl req -x509 -newkey rsa:2048 -keyout /tmp/tls.key -out /tmp/tls.crt -days 365 -nodes \
+        -subj "/CN=hodei.local" \
+        -addext "subjectAltName=DNS:hodei.local,DNS:*.hodei.local,IP:127.0.0.1"
+    kubectl create secret tls hodei-tls-secret --cert=/tmp/tls.crt --key=/tmp/tls.key -n hodei-jobs
+    @echo "✅ Certificado TLS creado"

@@ -87,6 +87,12 @@ service:
 # Gateway Configuration (Ingress / API Gateway)
 # =============================================================================
 # Select gateway type: "nginx", "kong", "istio", "traefik", or "none"
+#
+# IMPORTANT for gRPC:
+# - NGINX Ingress requires TLS to enable HTTP/2 for gRPC
+# - Set tls.enabled: true and provide a valid TLS secret
+# - Use nginx.ingress.kubernetes.io/backend-protocol: "GRPC" annotation
+#
 gateway:
   enabled: true
   type: "nginx" # nginx, kong, istio, traefik, none
@@ -134,11 +140,8 @@ gateway:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
       nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-      # gRPC specific
-      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-    # Alternative gRPC annotation for newer versions
-    grpcAnnotations:
-      enabled: true
+      # gRPC configuration - REQUIRED for gRPC traffic
+      # NGINX requires TLS to enable HTTP/2 for gRPC
       nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
 
   # Istio Gateway settings
@@ -162,13 +165,24 @@ gateway:
       - name: "hodei-stripprefix"
       - name: "hodei-compress"
 
-  # Path configuration
+  # Path configuration - gRPC uses single path for all services
   paths:
     - path: "/"
       pathType: "Prefix"
 
-  # HTTP only (no TLS) - for development
+  # HTTP only (no TLS) - NOT SUPPORTED for gRPC with NGINX
+  # NGINX requires TLS to enable HTTP/2 (gRPC requirement)
   httpOnly: false
+
+# =============================================================================
+# gRPC Service Configuration
+# =============================================================================
+service:
+  # HTTP port for REST API (if enabled)
+  port: 8080
+  # gRPC port - used by ingress for gRPC routing
+  grpcPort: 9090
+  type: ClusterIP
 
 # =============================================================================
 # Legacy Ingress Configuration (DEPRECATED - Use gateway instead)
