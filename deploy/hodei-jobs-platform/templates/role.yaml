@@ -59,6 +59,43 @@ rules:
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 ---
+# ClusterRole for provider validation (read-only cluster resources)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-provider-validation
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+# ClusterRoleBinding for provider validation
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-provider-validation
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hodei-jobs-platform.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "hodei-jobs-platform.fullname" . }}-provider-validation
+  apiGroup: rbac.authorization.k8s.io
+---
 # ClusterRole for worker namespace creation (if dynamic namespaces enabled)
 {{- if .Values.kubernetesProvider.enableDynamicNamespaces }}
 apiVersion: rbac.authorization.k8s.io/v1

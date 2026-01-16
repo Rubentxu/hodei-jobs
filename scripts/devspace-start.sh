@@ -34,7 +34,7 @@ export COMPILE_LOCK
 DEBOUNCE_MS="${DEBOUNCE_MS:-2000}"
 
 # Tiempo mínimo entre compilaciones exitosas (segundos)
-MIN_BUILD_INTERVAL="${MIN_BUILD_INTERVAL:-5}"
+MIN_BUILD_INTERVAL="${MIN_BUILD_INTERVAL:-10}"
 
 # Timestamp de última compilación exitosa
 LAST_BUILD_TIME=0
@@ -264,14 +264,17 @@ get_pending_count() {
 }
 
 # ============================================================
-# PROCESAR CAMBIOS CON DEBOUNCING
+# PROCESAR CAMBIOS CON DEBOUNCING (se ejecuta como script independiente)
 # ============================================================
+
+# Este bloque se genera en /tmp/reload.sh y se ejecuta directamente
+# No usamos 'local' porque no está dentro de una función
 
 cd "$SOURCE_DIR"
 
 # Incrementar contador de cambios
 add_pending_change
-local pending=$(get_pending_count)
+pending=$(get_pending_count)
 
 echo ""
 echo -e "${BLUE}[ℹ]${NC} Cambios detectados (cola: $pending)"
@@ -283,7 +286,7 @@ sleep $sleep_ms
 
 # Verificar si hay más cambios acumulados durante la espera
 sleep 0.5  # Espera adicional para nuevos cambios
-local final_count=$(get_pending_count)
+final_count=$(get_pending_count)
 
 if [ "$final_count" -gt 1 ]; then
     echo -e "${YELLOW}[!]${NC} $final_count cambios acumulados, continuando espera..."
@@ -300,7 +303,7 @@ if ! try_acquire_lock; then
 fi
 
 # Verificar intervalo mínimo entre compilaciones
-local elapsed=$(time_since_last_build)
+elapsed=$(time_since_last_build)
 if [ "$elapsed" -lt "$MIN_BUILD_INTERVAL" ]; then
     echo -e "${YELLOW}[!]${NC} Compilación reciente hace ${elapsed}s, esperando..."
     release_lock

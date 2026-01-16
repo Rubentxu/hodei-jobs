@@ -25,15 +25,15 @@ metadata:
     app.kubernetes.io/name: hodei
     app.kubernetes.io/component: provider
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["create", "get", "list", "watch", "delete"]
-- apiGroups: [""]
-  resources: ["pods/log"]
-  verbs: ["get"]
-- apiGroups: [""]
-  resources: ["pods/status"]
-  verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -44,10 +44,52 @@ metadata:
     app.kubernetes.io/name: hodei
     app.kubernetes.io/component: provider
 subjects:
-- kind: ServiceAccount
-  name: hodei-control-plane
-  namespace: hodei-system
+  - kind: ServiceAccount
+    name: hodei-control-plane
+    namespace: hodei-system
 roleRef:
   kind: Role
   name: hodei-provider
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole for provider validation (list namespaces, nodes, etc.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hodei-provider-validation
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: provider
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+# Bind service account to ClusterRole for provider validation
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hodei-provider-validation
+  labels:
+    app.kubernetes.io/name: hodei
+    app.kubernetes.io/component: provider
+subjects:
+  - kind: ServiceAccount
+    name: hodei-control-plane
+    namespace: hodei-system
+  - kind: ServiceAccount
+    name: hodei-hodei-jobs-platform
+    namespace: hodei-jobs
+roleRef:
+  kind: ClusterRole
+  name: hodei-provider-validation
   apiGroup: rbac.authorization.k8s.io

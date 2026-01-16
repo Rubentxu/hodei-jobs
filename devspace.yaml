@@ -2,9 +2,6 @@ version: v2beta1
 
 name: hodei-jobs
 
-# Note: No 'images' section - we use binary sync instead of docker builds
-# Image is managed by Helm via values-dev.yaml (tag: "dev")
-
 pipelines:
   dev:
     run: |-
@@ -29,7 +26,6 @@ deployments:
           requests:
             cpu: "6"
             memory: "8Gi"
-        # Enable DevSpace mode for cargo cache PVC
         development:
           enabled: true
           devspace:
@@ -50,89 +46,21 @@ dev:
   app:
     devImage: 10.43.54.80:5000/hodei-jobs-server:dev
 
-    # Select the pod via labelSelector
     labelSelector:
       app.kubernetes.io/name: hodei-jobs-platform
       app.kubernetes.io/component: server
 
-    # Sync configuration - optimized for speed
+    # Sync ONLY source code - exclude everything else
     sync:
-      - path: ./:/app
-        # Prefer local files over container files
-        initialSync: preferLocal
-        # Exclude large non-productive paths from sync
-        uploadExcludePaths:
-          # Rust build artifacts (12GB+ - huge!)
-          - target/
-          - build/
-          - Cargo.lock
-
-          # Git metadata
-          - .git/
-          - .git/**/*
-
-          # IDE cache
-          - .idea/
-          - .vscode/
-          - "*.swp"
-          - "*.swo"
-
-          # Documentation (not needed in pod)
-          - docs/
-          - "*.md"
-          - "!README.md"
-
-          # Tests and benchmarks
-          - "**/tests/"
+      - path: ./crates:/app/crates
+        excludePaths:
+          - target/**
           - "**/*_test.rs"
-          - benches/
-          - examples/
-
-          # Generated/procduced files
-          - proto/target/
-          - "proto/*.rs"
-          - .cargo/
-          - "**/*.o"
-          - "**/*.a"
-
-          # Config files (mounted via ConfigMaps)
-          - config.yaml
-          - config/
-          - "!config/*.example.*"
-
-          # Database migrations (mounted)
-          - migrations/
-          - infrastructure-migrations/
-          - "*.sql"
-
-          # Logs and temp
-          - logs/
-          - "*.log"
-          - tmp/
-          - temp/
-
-          # Monitoring (mounted separately)
-          - monitoring/
-          - prometheus/
-
-          # Web/frontend (built separately)
-          - web/
-          - frontend/
-          - client/
-
-          # CI/CD
-          - .github/
-          - .gitlab-ci.yml
-
-          # Coverage and profiling
-          - coverage/
-          - "*.profraw"
-          - "*.profdata"
-
-          # Special paths that break sync
-          - "**/..data*"
-          - "**/.ansible*"
-          - "**/.*.swp"
+          - "**/tests/**"
+      - path: ./proto:/app/proto
+      - path: ./scripts:/app/scripts
+      - path: ./Cargo.toml:/app/Cargo.toml
+      - path: ./Cargo.lock:/app/Cargo.lock
 
     # Port forwarding
     ports:
@@ -142,6 +70,6 @@ dev:
     logs:
       enabled: true
 
-    # Terminal
+    # Terminal - starts server with hot reload
     terminal:
       command: /app/scripts/devspace-start.sh
