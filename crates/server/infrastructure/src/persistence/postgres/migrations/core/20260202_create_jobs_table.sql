@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     spec JSONB NOT NULL DEFAULT '{}'::jsonb,
     state VARCHAR(50) NOT NULL DEFAULT 'PENDING',
     provider_id UUID,
+    selected_provider_id UUID,
     worker_id UUID,
     execution_context JSONB,
     result JSONB,
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TIMESTAMP WITH TIME ZONE,
     finished_at TIMESTAMP WITH TIME ZONE,
     scheduled_at TIMESTAMP WITH TIME ZONE,
+    enqueued_at TIMESTAMP WITH TIME ZONE,
     correlation_id VARCHAR(255),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- Create indexes for jobs table
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
 CREATE INDEX IF NOT EXISTS idx_jobs_provider_id ON jobs(provider_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_selected_provider_id ON jobs(selected_provider_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_worker_id ON jobs(worker_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority DESC);
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS job_queue (
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     next_retry_at TIMESTAMP WITH TIME ZONE,
+    enqueued_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
