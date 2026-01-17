@@ -4,8 +4,9 @@
 // These commands encapsulate the intent to execute, track, and complete jobs.
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
+use crate::event_bus::EventBus;
 use crate::jobs::JobRepository;
-use crate::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
+use crate::shared_kernel::{DomainError, JobId, JobState, WorkerId, WorkerState};
 use crate::workers::{WorkerFilter, WorkerRegistry};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -419,9 +420,28 @@ pub enum ExecuteJobError {
 }
 
 /// Handler for ExecuteJobCommand.
+///
+/// ## SRP: Responsabilidad Única
+/// Este handler delega el envío de RUN_JOB a un servicio especializado.
+/// El patrón es: Saga → Comando → Handler → Servicio (acción gRPC)
 pub struct ExecuteJobHandler {
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    /// Servicio especializado para enviar RUN_JOB al worker via gRPC
+    /// El handler delega la acción a este servicio
+    job_executor: Option<Arc<dyn JobExecutor + Send + Sync>>,
+}
+
+/// Trait para servicio especializado de ejecución de jobs
+/// Sigue el patrón: comando → servicio (acción)
+#[async_trait::async_trait]
+pub trait JobExecutor {
+    /// Envía el comando RUN_JOB al worker y actualiza estado a RUNNING
+    async fn execute_job(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+    ) -> Result<(), ExecuteJobError>;
 }
 
 impl ExecuteJobHandler {
@@ -430,10 +450,12 @@ impl ExecuteJobHandler {
     pub fn new(
         job_repository: Arc<dyn JobRepository + Send + Sync>,
         worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        job_executor: Option<Arc<dyn JobExecutor + Send + Sync>>,
     ) -> Self {
         Self {
             job_repository,
             worker_registry,
+            job_executor,
         }
     }
 }
@@ -471,14 +493,30 @@ impl CommandHandler<ExecuteJobCommand> for ExecuteJobHandler {
                 worker_id: worker_id.clone(),
             })?;
 
-        // Mark job as running
-        self.job_repository
-            .update_state(&job_id, JobState::Running)
-            .await
-            .map_err(|e| ExecuteJobError::ExecutionFailed {
-                job_id: job_id.clone(),
-                source: e,
-            })?;
+        // Delegate to specialized service for RUN_JOB action
+        // This follows the pattern: Saga → Command → Handler → Service (action)
+        if let Some(ref executor) = self.job_executor {
+            executor.execute_job(&job_id, &worker_id).await?;
+            tracing::info!(
+                "ExecuteJobHandler: Job {} dispatched to worker {} via JobExecutor",
+                job_id,
+                worker_id
+            );
+        } else {
+            // Fallback: just mark as running (no RUN_JOB sent)
+            // This is for testing or when no executor is configured
+            self.job_repository
+                .update_state(&job_id, JobState::Running)
+                .await
+                .map_err(|e| ExecuteJobError::ExecutionFailed {
+                    job_id: job_id.clone(),
+                    source: e,
+                })?;
+            tracing::warn!(
+                "ExecuteJobHandler: No JobExecutor configured, only marked job {} as RUNNING",
+                job_id
+            );
+        }
 
         Ok(JobExecutionResult::initiated(JobState::Running))
     }
@@ -661,15 +699,16 @@ impl CommandHandler<CompleteJobCommand> for CompleteJobHandler {
 
         // If job is completed, release the worker
         if final_state.is_terminal()
-            && let Ok(Some(worker)) = self.worker_registry.get_by_job_id(&job_id).await {
-                self.worker_registry
-                    .update_state(worker.id(), WorkerState::Terminated)
-                    .await
-                    .map_err(|e| CompleteJobError::CompletionFailed {
-                        job_id: job_id.clone(),
-                        source: e,
-                    })?;
-            }
+            && let Ok(Some(worker)) = self.worker_registry.get_by_job_id(&job_id).await
+        {
+            self.worker_registry
+                .update_state(worker.id(), WorkerState::Terminated)
+                .await
+                .map_err(|e| CompleteJobError::CompletionFailed {
+                    job_id: job_id.clone(),
+                    source: e,
+                })?;
+        }
 
         Ok(JobCompletionResult::new(command.final_state))
     }

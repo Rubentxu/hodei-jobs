@@ -1773,7 +1773,13 @@ mod tests {
             .build();
 
         match event {
-            DomainEvent::JobCreated(JobCreated { job_id: actual_job_id, spec: actual_spec, occurred_at: _, correlation_id, actor }) => {
+            DomainEvent::JobCreated(JobCreated {
+                job_id: actual_job_id,
+                spec: actual_spec,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            }) => {
                 assert_eq!(actual_job_id, job_id);
                 assert_eq!(actual_spec, spec);
                 assert_eq!(correlation_id, Some("workflow-456".to_string()));
@@ -1824,7 +1830,13 @@ mod tests {
         let event = JobCreatedBuilder::new(job_id.clone(), spec.clone()).build();
 
         match event {
-            DomainEvent::JobCreated(JobCreated { job_id: actual_job_id, spec: actual_spec, occurred_at: _, correlation_id, actor }) => {
+            DomainEvent::JobCreated(JobCreated {
+                job_id: actual_job_id,
+                spec: actual_spec,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            }) => {
                 assert_eq!(actual_job_id, job_id);
                 assert_eq!(actual_spec, spec);
                 assert_eq!(correlation_id, None);
@@ -1847,7 +1859,11 @@ mod tests {
             .build();
 
         match event {
-            DomainEvent::JobCreated(JobCreated { correlation_id, actor, .. }) => {
+            DomainEvent::JobCreated(JobCreated {
+                correlation_id,
+                actor,
+                ..
+            }) => {
                 assert_eq!(correlation_id, Some("override".to_string()));
                 assert_eq!(actor, Some("test-user".to_string()));
             }
