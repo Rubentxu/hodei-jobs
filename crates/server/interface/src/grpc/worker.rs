@@ -780,6 +780,26 @@ impl WorkerAgentServiceImpl {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("Job not found"))?;
 
+        // Capture old_state before any transitions for the event
+        let old_state = job.state().clone();
+
+        // Handle state transition from PENDING if needed
+        // In case worker didn't send acknowledgment (race condition or fast job),
+        // we need to transition through RUNNING state
+        if matches!(job.state(), JobState::Pending) {
+            info!(
+                "🔄 Job {} is in PENDING state, transitioning to RUNNING first before completing",
+                result.job_id
+            );
+            job.mark_running()
+                .map_err(|e| Status::failed_precondition(e.to_string()))?;
+            job_repository
+                .update(&job)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+
+        // Now complete the job
         if result.success {
             job.complete(JobResult::Success {
                 exit_code: result.exit_code,
@@ -817,7 +837,7 @@ impl WorkerAgentServiceImpl {
 
             let event = DomainEvent::JobStatusChanged {
                 job_id: job.id.clone(),
-                old_state: JobState::Running, // Asumimos que estaba running
+                old_state, // Use actual old state (PENDING or RUNNING)
                 new_state,
                 occurred_at: Utc::now(),
                 correlation_id,
@@ -827,6 +847,11 @@ impl WorkerAgentServiceImpl {
                 warn!(
                     "Failed to publish JobStatusChanged event in on_job_result: {}",
                     e
+                );
+            } else {
+                info!(
+                    "📢 Published JobStatusChanged event: {} → {:?}",
+                    job.id, new_state
                 );
             }
         }
