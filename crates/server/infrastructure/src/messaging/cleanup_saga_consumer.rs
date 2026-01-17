@@ -13,7 +13,6 @@ use async_nats::Client;
 use async_nats::jetstream::Context as JetStreamContext;
 use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
-use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
 use futures::StreamExt;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobRepository;
@@ -513,39 +512,28 @@ where
     }
 
     /// Ensure the cleanup events stream exists
+    /// Uses the shared HODEI_EVENTS stream (EPIC-32 design) instead of creating separate streams
+    /// to avoid NATS stream subject overlap errors
     async fn ensure_stream(&self) -> Result<async_nats::jetstream::stream::Stream, DomainError> {
-        let stream_name = format!("{}_CLEANUP_EVENTS", self.config.stream_prefix);
+        // Use the shared events stream - all domain events use HODEI_EVENTS
+        let stream_name = format!("{}_EVENTS", self.config.stream_prefix);
 
         match self.jetstream.get_stream(&stream_name).await {
             Ok(stream) => {
                 debug!(
-                    "🧹 CleanupSagaConsumer: Stream '{}' already exists",
+                    "🧹 CleanupSagaConsumer: Using shared stream '{}'",
                     stream_name
                 );
                 Ok(stream)
             }
             Err(_) => {
-                let stream = self
-                    .jetstream
-                    .create_stream(StreamConfig {
-                        name: stream_name.clone(),
-                        subjects: vec![
-                            self.config.job_completed_topic.clone(),
-                            self.config.job_failed_topic.clone(),
-                            self.config.worker_terminated_topic.clone(),
-                        ],
-                        retention: RetentionPolicy::WorkQueue,
-                        max_messages: 50000,
-                        max_bytes: 50 * 1024 * 1024, // 50MB
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| DomainError::InfrastructureError {
-                        message: format!("Failed to create stream {}: {}", stream_name, e),
-                    })?;
-
-                info!("🧹 CleanupSagaConsumer: Created stream '{}'", stream_name);
-                Ok(stream)
+                // This should not happen - the main server creates HODEI_EVENTS
+                Err(DomainError::InfrastructureError {
+                    message: format!(
+                        "Stream '{}' does not exist. Ensure the server has created the events stream.",
+                        stream_name
+                    ),
+                })
             }
         }
     }
@@ -577,6 +565,8 @@ where
                 Ok(consumer)
             }
             Err(_) => {
+                // Use filter_subject with wildcard to capture all events from shared stream
+                // Specific event filtering is done in process_message based on event type
                 let consumer_config = PullConsumerConfig {
                     durable_name: Some(consumer_id.clone()),
                     deliver_policy: DeliverPolicy::All,
@@ -584,7 +574,8 @@ where
                     ack_wait: self.config.ack_wait,
                     max_deliver: self.config.max_deliver,
                     max_ack_pending: self.config.concurrency as i64,
-                    filter_subject: "".to_string(), // Subscribe to all subjects
+                    // Subscribe to all events from shared stream, filter in process_message
+                    filter_subject: "hodei.events.>".to_string(),
                     ..Default::default()
                 };
 
