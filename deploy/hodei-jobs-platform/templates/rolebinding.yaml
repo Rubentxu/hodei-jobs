@@ -29,4 +29,22 @@ roleRef:
   kind: Role
   name: {{ include "hodei-jobs-platform.fullname" . }}-worker-manager
   apiGroup: rbac.authorization.k8s.io
+---
+# Role binding for worker manager in WORKER NAMESPACE (hodei-jobs-workers)
+# This allows the server to create pods in the worker namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "hodei-jobs-platform.fullname" . }}-worker-manager
+  namespace: {{ .Values.kubernetesProvider.namespace | default "hodei-jobs-workers" }}
+  labels:
+    {{- include "hodei-jobs-platform.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hodei-jobs-platform.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "hodei-jobs-platform.fullname" . }}-worker-manager
+  apiGroup: rbac.authorization.k8s.io
 {{- end }}

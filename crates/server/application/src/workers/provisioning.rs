@@ -57,7 +57,7 @@ pub trait WorkerProvisioningService: Send + Sync {
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool>;
 
     /// Get the default worker spec for a provider
-    fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec>;
+    async fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec>;
 
     /// List all available providers
     async fn list_providers(&self) -> Result<Vec<ProviderId>>;
@@ -114,7 +114,7 @@ mod tests {
             Ok(self.available_providers.contains(provider_id))
         }
 
-        fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
+        async fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
             Some(WorkerSpec::new(
                 "hodei-jobs-worker:latest".to_string(),
                 "http://localhost:50051".to_string(),
@@ -176,7 +176,7 @@ mod tests {
         let provider_id = ProviderId::new();
         let service = MockProvisioningService::new(vec![provider_id.clone()]);
 
-        let spec = service.default_worker_spec(&provider_id);
+        let spec = service.default_worker_spec(&provider_id).await;
         assert!(spec.is_some());
         assert_eq!(spec.unwrap().image, "hodei-jobs-worker:latest");
     }

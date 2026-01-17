@@ -175,16 +175,6 @@ gateway:
   httpOnly: false
 
 # =============================================================================
-# gRPC Service Configuration
-# =============================================================================
-service:
-  # HTTP port for REST API (if enabled)
-  port: 8080
-  # gRPC port - used by ingress for gRPC routing
-  grpcPort: 9090
-  type: ClusterIP
-
-# =============================================================================
 # Legacy Ingress Configuration (DEPRECATED - Use gateway instead)
 # =============================================================================
 ingress:
@@ -593,7 +583,7 @@ jobExecution:
 # Backup Configuration
 # =============================================================================
 backup:
-  enabled: true
+  enabled: false # Disabled for local development
   schedule: "0 2 * * *" # Daily at 2 AM
   retention: "720h" # 30 days
   # Backup targets
@@ -910,6 +900,8 @@ web:
 # Development configuration
 development:
   enabled: false
+  devspace:
+    enabled: false
   cargoCache:
     enabled: false
     pvcName: ""

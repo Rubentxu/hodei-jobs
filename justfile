@@ -153,6 +153,115 @@ logs-worker-hint:
 # KUBERNETES COMMANDS
 # =============================================================================
 
+# Deploy base services (PostgreSQL + NATS) for local development
+deploy-services:
+    @echo "╔═══════════════════════════════════════════════════════════════╗"
+    @echo "║    DESPLIEGANDO SERVICIOS BASE (PostgreSQL + NATS)          ║"
+    @echo "╚═══════════════════════════════════════════════════════════════╝"
+    @echo ""
+    @echo "💡 Flujo de desarrollo completo:"
+    @echo "   1. just deploy-services              # Este comando"
+    @echo "   2. just telepresence-connect         # Conectar (primera vez: login en navegador)"
+    @echo "   3. cargo build --release -p hodei-server-bin"
+    @echo "   4. ./target/release/hodei-server-bin"
+    @echo ""
+    @echo "🛑 Para terminar:"
+    @echo "   just telepresence-quit"
+    @echo ""
+    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml && \
+    helm upgrade --install hodei ./deploy/hodei-jobs-platform \
+        -n hodei-jobs \
+        --create-namespace \
+        -f ./deploy/hodei-jobs-platform/values.yaml \
+        -f ./deploy/hodei-jobs-platform/values-dev.yaml \
+        --set postgresql.enabled=true \
+        --set nats.enabled=true \
+        --set server.enabled=false \
+        --set kubernetesProvider.enabled=false \
+        --set operator.enabled=false \
+        --set web.enabled=false \
+        --set development.enabled=false \
+        --wait --timeout 300s
+
+# Cleanup all K8s resources (for clean restart)
+deploy-cleanup:
+    @echo "🧹 Limpiando todos los recursos de hodei-jobs..."
+    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    kubectl delete deployment -n hodei-jobs --all 2>/dev/null || true
+    kubectl delete pods -n hodei-jobs --all 2>/dev/null || true
+    kubectl delete svc -n hodei-jobs --all 2>/dev/null || true
+    kubectl delete pvc -n hodei-jobs --all 2>/dev/null || true
+    @echo "✅ Namespace limpio"
+
+# =============================================================================
+# TELEPRESENCE COMMANDS (Local Development with k8s Services)
+# =============================================================================
+# FLUJO: Compila y ejecuta localmente, conecta a servicios k8s via Telepresence OSS
+# Instala Telepresence desde GitHub (versión OSS - SIN autenticación cloud)
+# Docs: docs/DEVELOPMENT_TELEPRESENCE.md
+#
+# 📌 NOTA IMPORTANTE - DNS de Kubernetes:
+#    Telepresence permite que tu máquina acceda a servicios k8s por nombre:
+#    • postgresql → resuelve a IP del pod
+#    • nats → resuelve a IP del pod
+#
+# Flujo de desarrollo:
+#   1. just deploy-services              # Desplegar PostgreSQL + NATS
+#   2. just telepresence-connect         # Conectar (VPN mode)
+#   3. ./scripts/dev-hotreload.sh        # Compilar + hot reload
+#   4. just job-k8s-hello                # Probar jobs
+#   5. just telepresence-quit            # Desconectar
+
+# Conectar al cluster (VPN mode - versión OSS, sin cloud login)
+telepresence-connect:
+    @./scripts/dev-telepresence.sh connect
+
+# Desconectar del cluster
+telepresence-quit:
+    @./scripts/dev-telepresence.sh quit
+
+# Mostrar estado de conexión
+telepresence-status:
+    @./scripts/dev-telepresence.sh status
+
+# Alternativa: Port-forward (más simple, sin login)
+telepresence-port-forward:
+    @./scripts/dev-telepresence.sh port-forward
+
+# Detener port-forwards
+telepresence-stop:
+    @./scripts/dev-telepresence.sh stop
+
+# Flujo completo: desplegar servicios + conectar
+telepresence-start: deploy-services telepresence-connect
+    @echo ""
+    @echo "╔═══════════════════════════════════════════════════════════════╗"
+    @echo "║          ✅ ¡ENTORNO DE DESARROLLO LISTO!                     ║"
+    @echo "╚═══════════════════════════════════════════════════════════════╝"
+    @echo ""
+    @echo "📦 Servicios desplegados:"
+    @echo "   • PostgreSQL (puerto 5432)"
+    @echo "   • NATS (puerto 4222)"
+    @echo ""
+    @echo "🌐 Tu máquina está conectada al cluster"
+    @echo ""
+    @echo "💡 Próximos pasos:"
+    @echo "   1. cargo build --release -p hodei-server-bin"
+    @echo "   2. ./target/release/hodei-server-bin"
+    @echo "   3. just job-k8s-hello"
+    @echo ""
+    @echo "🛑 Para terminar:"
+    @echo "   just telepresence-quit"
+    @echo ""
+
+# Hot reload para desarrollo local (requiere telepresence-connect)
+dev-hotreload:
+    @./scripts/dev-hotreload.sh
+
+# Configuración completa con Telepresence: instalar + desplegar + conectar + compilar + hot reload
+dev-telepresence:
+    @./scripts/dev-start.sh
+
 # K8s workflow (build, load, deploy)
 k8s-workflow:
     @rust-script scripts/k8s_workflow.rs
@@ -242,13 +351,16 @@ devspace-cleanup-all:
 # HODEI-CLI COMMANDS - Job Testing
 # =============================================================================
 # Launch test jobs using hodei-cli (requires running server)
-# Configure server URL via environment: HODEI_SERVER_URL="http://localhost:50051" just job-k8s-hello
-HODEI_SERVER_URL := "http://hodei.local"
+# Configure server URL via environment:
+#   - Local: HODEI_SERVER_URL="http://localhost:9090" (DEFAULT - desarrollo local)
+#   - k8s:   HODEI_SERVER_URL="http://hodei-hodei-jobs-platform.hodei-jobs.svc.cluster.local:9090"
+HODEI_SERVER_URL := "http://localhost:9090"
 
 # Job simple de prueba
 job-k8s-hello:
     @echo "🚀 Lanzando job hello-world..."
     @echo "---"
+    @echo "💡 Servidor: localhost:9090 (desarrollo local)"
     cargo run -p hodei-jobs-cli -- job run \
         --name "hello-$$(date +%s)" \
         --command "/bin/sh -c 'echo Hello from Hodei Jobs!; sleep 2; echo Done!'" \

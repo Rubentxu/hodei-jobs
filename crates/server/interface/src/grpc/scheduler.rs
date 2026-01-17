@@ -273,6 +273,7 @@ impl SchedulerService for SchedulerServiceImpl {
         command.extend(definition.arguments);
 
         let create_request = CreateJobRequest {
+            name: definition.name.clone(),
             spec: JobSpecRequest {
                 command,
                 image: None,

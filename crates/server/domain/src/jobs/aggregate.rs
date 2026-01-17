@@ -695,6 +695,8 @@ impl fmt::Display for JobPriority {
 pub struct Job {
     /// Identificador único del job
     pub id: JobId,
+    /// Nombre del job (requerido, NOT NULL en DB)
+    pub name: String,
     /// Especificación del job
     pub spec: JobSpec,
     /// Estado actual del job
@@ -731,9 +733,10 @@ pub struct Job {
 
 impl Job {
     /// Crea un nuevo job
-    pub fn new(id: JobId, spec: JobSpec) -> Self {
+    pub fn new(id: JobId, name: String, spec: JobSpec) -> Self {
         Self {
             id,
+            name,
             spec,
             state: JobState::Pending,
             selected_provider: None,
@@ -756,6 +759,7 @@ impl Job {
     /// Reconstructs a Job from persistence (Hydration)
     pub fn hydrate(
         id: JobId,
+        name: String,
         spec: JobSpec,
         state: JobState,
         selected_provider: Option<ProviderId>,
@@ -775,6 +779,7 @@ impl Job {
     ) -> Self {
         Self {
             id,
+            name,
             spec,
             state,
             selected_provider,
@@ -797,13 +802,14 @@ impl Job {
     /// Create a job from a template
     pub fn from_template(
         id: JobId,
+        name: String,
         spec: JobSpec,
         template_id: super::templates::JobTemplateId,
         template_version: u32,
         execution_number: u32,
         triggered_by: super::templates::TriggerType,
     ) -> Self {
-        let mut job = Self::new(id, spec);
+        let mut job = Self::new(id, name, spec);
         job.template_id = Some(template_id);
         job.template_version = Some(template_version);
         job.execution_number = Some(execution_number);
@@ -1544,7 +1550,11 @@ mod tests {
         let provider_id = ProviderId::new();
 
         // Test terminal states - need valid transitions
-        let mut job_succeeded = Job::new(job_id.clone(), spec.clone());
+        let mut job_succeeded = Job::new(
+            job_id.clone(),
+            "test-terminal-succeeded".to_string(),
+            spec.clone(),
+        );
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-1".to_string());
         job_succeeded
@@ -1560,7 +1570,11 @@ mod tests {
             .unwrap();
         assert!(job_succeeded.is_terminal_state());
 
-        let mut job_failed = Job::new(job_id.clone(), spec.clone());
+        let mut job_failed = Job::new(
+            job_id.clone(),
+            "test-terminal-failed".to_string(),
+            spec.clone(),
+        );
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-2".to_string());
         job_failed
@@ -1576,7 +1590,11 @@ mod tests {
             .unwrap();
         assert!(job_failed.is_terminal_state());
 
-        let mut job_cancelled = Job::new(job_id.clone(), spec.clone());
+        let mut job_cancelled = Job::new(
+            job_id.clone(),
+            "test-terminal-cancelled".to_string(),
+            spec.clone(),
+        );
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-3".to_string());
         job_cancelled
@@ -1585,15 +1603,19 @@ mod tests {
         job_cancelled.cancel().unwrap();
         assert!(job_cancelled.is_terminal_state());
 
-        let mut job_timeout = Job::new(job_id.clone(), spec.clone());
+        let mut job_timeout = Job::new(
+            job_id.clone(),
+            "test-terminal-timeout".to_string(),
+            spec.clone(),
+        );
         job_timeout.set_state(JobState::Timeout).unwrap();
         assert!(job_timeout.is_terminal_state());
 
         // Test non-terminal states
-        let job_pending = Job::new(job_id.clone(), spec.clone());
+        let job_pending = Job::new(job_id.clone(), "test-pending".to_string(), spec.clone());
         assert!(!job_pending.is_terminal_state());
 
-        let mut job_running = Job::new(job_id.clone(), spec.clone());
+        let mut job_running = Job::new(job_id.clone(), "test-running".to_string(), spec.clone());
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-4".to_string());
         job_running
@@ -1611,11 +1633,12 @@ mod tests {
         let provider_id = ProviderId::new();
 
         // Test cancellable states
-        let job_pending = Job::new(job_id.clone(), spec.clone());
+        let job_pending = Job::new(job_id.clone(), "test-cancellable".to_string(), spec.clone());
         // Initial state is Pending, which is cancellable
         assert!(job_pending.can_be_cancelled());
 
-        let mut job_scheduled = Job::new(job_id.clone(), spec.clone());
+        let mut job_scheduled =
+            Job::new(job_id.clone(), "test-scheduled".to_string(), spec.clone());
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-1".to_string());
         job_scheduled
@@ -1623,7 +1646,11 @@ mod tests {
             .unwrap();
         assert!(job_scheduled.can_be_cancelled());
 
-        let mut job_running = Job::new(job_id.clone(), spec.clone());
+        let mut job_running = Job::new(
+            job_id.clone(),
+            "test-running-cancellable".to_string(),
+            spec.clone(),
+        );
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-2".to_string());
         job_running
@@ -1633,7 +1660,11 @@ mod tests {
         assert!(job_running.can_be_cancelled());
 
         // Test non-cancellable states (terminal states)
-        let mut job_succeeded = Job::new(job_id.clone(), spec.clone());
+        let mut job_succeeded = Job::new(
+            job_id.clone(),
+            "test-succeeded-non-cancellable".to_string(),
+            spec.clone(),
+        );
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-3".to_string());
         job_succeeded
@@ -1649,7 +1680,11 @@ mod tests {
             .unwrap();
         assert!(!job_succeeded.can_be_cancelled());
 
-        let mut job_failed = Job::new(job_id.clone(), spec.clone());
+        let mut job_failed = Job::new(
+            job_id.clone(),
+            "test-failed-non-cancellable".to_string(),
+            spec.clone(),
+        );
         let context =
             ExecutionContext::new(job_id.clone(), provider_id.clone(), "exec-4".to_string());
         job_failed.submit_to_provider(provider_id, context).unwrap();
@@ -1669,7 +1704,7 @@ mod tests {
     fn test_job_requires_scaling() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string()]).with_timeout(300_000);
-        let job = Job::new(job_id, spec);
+        let job = Job::new(job_id, "test-scaling".to_string(), spec);
 
         // Should delegate to spec.should_escalate
         assert_eq!(
@@ -1683,7 +1718,7 @@ mod tests {
     fn test_job_calculated_priority() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string()]).with_timeout(300_000);
-        let job = Job::new(job_id, spec);
+        let job = Job::new(job_id, "test-priority".to_string(), spec);
 
         // Should delegate to spec.calculate_priority
         assert_eq!(job.calculated_priority(), job.spec.calculate_priority());
@@ -1894,6 +1929,7 @@ mod tests {
         let template_id = JobTemplateId::new();
         let job = Job::from_template(
             job_id.clone(),
+            "test-template-job".to_string(),
             spec,
             template_id.clone(),
             2,
@@ -1915,7 +1951,7 @@ mod tests {
 
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string()]);
-        let job = Job::new(job_id, spec);
+        let job = Job::new(job_id, "test-regular-job".to_string(), spec);
 
         assert!(!job.is_from_template());
         assert_eq!(job.template_id(), None);

@@ -11,8 +11,10 @@ use tokio::time;
 use tracing::info;
 
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
+use hodei_server_application::jobs::coordinator::JobCoordinator;
 use hodei_server_application::jobs::create::CreateJobUseCase;
 use hodei_server_application::jobs::dispatcher::JobDispatcher;
+use hodei_server_application::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_application::providers::ProviderRegistry;
 use hodei_server_application::saga::timeout_checker::DynTimeoutChecker;
 use hodei_server_application::scheduling::SchedulerConfig;
@@ -65,7 +67,7 @@ pub fn initialize_grpc_services(
     pool: sqlx::PgPool,
     worker_registry: Arc<dyn WorkerRegistry>,
     job_repository: Arc<dyn JobRepository>,
-    _token_store: Arc<dyn WorkerBootstrapTokenStore>,
+    token_store: Arc<dyn WorkerBootstrapTokenStore>,
     event_bus: Arc<dyn EventBus>,
     _outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
 ) -> GrpcServices {
@@ -104,10 +106,17 @@ pub fn initialize_grpc_services(
     let log_stream_service = Arc::new(LogStreamService::new());
     info!("✓ LogStreamService initialized");
 
-    // Initialize WorkerAgentService
+    // Initialize WorkerAgentService with all dependencies for proper worker registration
     info!("Initializing WorkerAgentService...");
-    let worker_agent_service = WorkerAgentServiceImpl::new();
-    info!("✓ WorkerAgentService initialized");
+    let worker_agent_service =
+        WorkerAgentServiceImpl::with_registry_job_repository_token_store_and_log_service(
+            worker_registry.clone(),
+            job_repository.clone(),
+            token_store,
+            log_stream_service.clone(),
+            event_bus.clone(),
+        );
+    info!("✓ WorkerAgentService initialized (with worker_registry, job_repository, token_store)");
 
     // Initialize JobExecutionService
     info!("Initializing JobExecutionService...");
@@ -250,6 +259,7 @@ pub async fn start_job_coordinator(
             worker_registry.clone(),
             token_store.clone(),
             providers_map,
+            provider_registry.clone(), // Pass provider registry to get default_image
             provisioning_config,
         ));
     info!("✓ WorkerProvisioningService initialized");
@@ -280,13 +290,35 @@ pub async fn start_job_coordinator(
     ));
     info!("✓ JobDispatcher initialized with provisioning service");
 
-    // Start the job dispatcher in background
+    // EPIC-32: Initialize WorkerMonitor for reactive worker tracking
+    let worker_monitor = WorkerMonitor::new(worker_registry.clone(), event_bus.clone());
+    info!("✓ WorkerMonitor initialized");
+
+    // EPIC-32: Create the reactive JobCoordinator (not the polling loop)
+    let mut job_coordinator = JobCoordinator::new(
+        event_bus.clone(),
+        job_dispatcher.clone(),
+        Arc::new(worker_monitor),
+        worker_registry.clone(),
+    );
+    info!("✓ JobCoordinator created (reactive mode)");
+
+    // Keep dispatcher reference for fallback (move into async block)
     let dispatcher = job_dispatcher.clone();
+    let shutdown_rx = shutdown_rx;
+
+    // Start the reactive JobCoordinator in background
+    // This will subscribe to WorkerReady and JobQueued events reactively
+    // instead of polling the job queue
     tokio::spawn(async move {
-        start_dispatch_loop(dispatcher, shutdown_rx).await;
+        if let Err(e) = job_coordinator.start().await {
+            tracing::error!("JobCoordinator failed, falling back to polling: {:?}", e);
+            // Fallback to polling dispatch loop
+            start_dispatch_loop(dispatcher, shutdown_rx).await;
+        }
     });
 
-    info!("✓ Job coordinator started in background");
+    info!("✓ Job coordinator started in REACTIVE mode (EPIC-32)");
 
     CoordinatorShutdownHandle { shutdown_tx }
 }
@@ -301,8 +333,9 @@ async fn start_dispatch_loop(dispatcher: Arc<JobDispatcher>, mut shutdown_rx: wa
                 info!("Dispatch loop shutting down");
                 break;
             }
-            _ = time::sleep(Duration::from_secs(1)) => {
-                // Dispatch pending jobs
+            _ = time::sleep(Duration::from_secs(20)) => {
+                // Dispatch fallback: solo activa si el sistema reactivo falla
+                // Intervalo largo para no sobrecargar cuando no hay jobs
                 if let Err(e) = dispatcher.dispatch_once().await {
                     tracing::error!("Error dispatching jobs: {:?}", e);
                 }

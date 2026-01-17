@@ -31,10 +31,10 @@ COMPILE_LOCK="/tmp/compile.lock"
 export COMPILE_LOCK
 
 # Tiempo de espera después del último cambio antes de compilar (milisegundos)
-DEBOUNCE_MS="${DEBOUNCE_MS:-2000}"
+DEBOUNCE_MS="${DEBOUNCE_MS:-20000}"
 
 # Tiempo mínimo entre compilaciones exitosas (segundos)
-MIN_BUILD_INTERVAL="${MIN_BUILD_INTERVAL:-10}"
+MIN_BUILD_INTERVAL="${MIN_BUILD_INTERVAL:-20}"
 
 # Timestamp de última compilación exitosa
 LAST_BUILD_TIME=0
@@ -93,6 +93,56 @@ has_pending_changes() {
 # Configuración paralela - use incremental compilation
 export CARGO_BUILD_JOBS=4
 export CARGO_INCREMENTAL=1
+
+# ============================================================
+# Sccache para cachear compilaciones
+# ============================================================
+
+# Buscar sccache en PATH y rutas comunes
+find_sccache() {
+    local sccache_path=""
+
+    # Primero probar con which
+    if command -v sccache &> /dev/null; then
+        sccache_path=$(which sccache)
+    fi
+
+    # Si no found, probar rutas absolutas comunes
+    if [ -z "$sccache_path" ]; then
+        for path in /usr/local/bin/sccache /usr/bin/sccache ~/.cargo/bin/sccache; do
+            if [ -f "$path" ] && [ -x "$path" ]; then
+                sccache_path="$path"
+                break
+            fi
+        done
+    fi
+
+    echo "$sccache_path"
+}
+
+SCCACHE_BIN=$(find_sccache)
+
+if [ -n "$SCCACHE_BIN" ]; then
+    export RUSTC_WRAPPER="$SCCACHE_BIN"
+    export SCCACHE_DIR="${CARGO_HOME:-$HOME/.cargo}/cache/sccache"
+    export SCCACHE_IDLE_TIMEOUT=0  # Keep cache server alive
+    export SCCACHE_CACHE_SIZE="10G"
+
+    # Iniciar sccache server si no está corriendo
+    if ! pgrep -x sccache > /dev/null 2>&1; then
+        print_status "Iniciando sccache server ($SCCACHE_BIN)..."
+        mkdir -p "$SCCACHE_DIR"
+        $SCCACHE_BIN --start-server
+        print_success "sccache server iniciado"
+    fi
+
+    # Mostrar estadísticas de sccache
+    print_status "Estadísticas sccache:"
+    $SCCACHE_BIN --show-stats 2>/dev/null | head -10 || true
+else
+    print_warning "sccache no encontrado - compilaciones sin cache"
+    print_warning "Verifica que sccache esté instalado en /usr/local/bin"
+fi
 
 # Paths
 SOURCE_DIR="${SOURCE_DIR:-/app}"
@@ -202,7 +252,7 @@ COMPILE_LOCK="/tmp/compile.lock"
 PENDING_CHANGES_LOCK="/tmp/pending_changes.lock"
 
 # Configuración
-DEBOUNCE_MS="${DEBOUNCE_MS:-2000}"
+DEBOUNCE_MS="${DEBOUNCE_MS:-20000}"
 MIN_BUILD_INTERVAL="${MIN_BUILD_INTERVAL:-5}"
 
 # Colores
@@ -281,7 +331,7 @@ echo -e "${BLUE}[ℹ]${NC} Cambios detectados (cola: $pending)"
 log_info "Esperando ${DEBOUNCE_MS}ms para coalescing..."
 
 # Debouncing: esperar antes de compilar
-sleep_ms=$((DEBOUNCE_MS / 1000))
+sleep_ms=$((DEBOUNCE_MS / 20000))
 sleep $sleep_ms
 
 # Verificar si hay más cambios acumulados durante la espera

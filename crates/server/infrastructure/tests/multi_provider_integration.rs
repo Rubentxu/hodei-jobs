@@ -322,6 +322,7 @@ async fn test_provider_selection_by_labels() {
     // Test different selection strategies
     let job = Job::new(
         JobId::new(),
+        "multi-provider-test-job".to_string(),
         JobSpec::new(vec!["echo".to_string(), "test".to_string()]),
     );
 
@@ -441,10 +442,7 @@ async fn test_concurrent_workers_on_both_providers() {
             .await
             .expect("Failed to get Docker worker status");
 
-        assert!(matches!(
-            status,
-            WorkerState::Ready | WorkerState::Ready
-        ));
+        assert!(matches!(status, WorkerState::Ready | WorkerState::Ready));
         println!("✓ Docker worker {} is running: {:?}", i, status);
     }
 

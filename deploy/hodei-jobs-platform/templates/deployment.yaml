@@ -1,3 +1,4 @@
+{{- if or (eq .Values.server.enabled true) (not (hasKey .Values "server")) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -165,7 +166,7 @@ spec:
         - name: HODEI_SERVER_HOST
           value: "0.0.0.0"
         # K8s internal DNS for worker connections
-        - name: HODEI_SERVER_ADDRESS
+        - name: HODEI_GRPC_ADDRESS
           value: "http://{{ include "hodei-jobs-platform.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.grpcPort }}"
 
         # PostgreSQL configuration
@@ -337,3 +338,4 @@ spec:
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName }}
       {{- end }}
+{{- end }}

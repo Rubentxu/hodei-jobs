@@ -56,9 +56,7 @@ pub struct JobDispatcher {
     scheduler: SchedulingService,
     worker_command_sender: Arc<dyn WorkerCommandSender>,
     event_bus: Arc<dyn EventBus>,
-    outbox_repository: Arc<
-        dyn OutboxRepository + Send + Sync,
-    >,
+    outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
     worker_health_service: Arc<WorkerHealthService>,
     /// EPIC-28: Track recently provisioned jobs to prevent duplicate provisioning
@@ -86,11 +84,7 @@ impl JobDispatcher {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
-        outbox_repository: Arc<
-                dyn OutboxRepository
-                    + Send
-                    + Sync,
-            >,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
@@ -137,9 +131,7 @@ impl JobDispatcher {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
-        outbox_repository: Arc<
-            dyn OutboxRepository + Send + Sync,
-        >,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
@@ -188,7 +180,7 @@ impl JobDispatcher {
 
         // Step 1: Dequeue a job from the queue first (needed for provider selection)
         let Some(mut job) = self.job_queue.dequeue().await? else {
-            info!("ℹ️ JobDispatcher: No jobs in queue");
+            debug!("ℹ️ JobDispatcher: No jobs in queue");
             return Ok(0);
         };
 
@@ -520,14 +512,18 @@ impl JobDispatcher {
                     } else {
                         Err(anyhow::anyhow!(
                             "JobAssignmentService failed: {}",
-                            result.error_message.unwrap_or_else(|| "Unknown error".to_string())
+                            result
+                                .error_message
+                                .unwrap_or_else(|| "Unknown error".to_string())
                         ))
                     }
                 }
                 Err(e) => Err(anyhow::anyhow!("JobAssignmentService error: {}", e)),
             }
         } else {
-            Err(anyhow::anyhow!("No execution saga dispatcher and no JobAssignmentService available"))
+            Err(anyhow::anyhow!(
+                "No execution saga dispatcher and no JobAssignmentService available"
+            ))
         }
     }
 
@@ -561,6 +557,7 @@ impl JobDispatcher {
             })?;
             let spec = provisioning
                 .default_worker_spec(&provider_id)
+                .await
                 .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
 
             // Execute saga provisioning
@@ -598,6 +595,7 @@ impl JobDispatcher {
             // Get default spec and provision
             let spec = provisioning
                 .default_worker_spec(&provider_id)
+                .await
                 .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
 
             match provisioning
@@ -626,9 +624,9 @@ impl JobDispatcher {
         providers: &[hodei_server_domain::providers::ProviderConfig],
     ) -> anyhow::Result<ProviderId> {
         // Delegar cálculos de métricas a ResourceAllocator
-        let providers_info: Vec<ProviderInfo> = self
-            .resource_allocator
-            .configs_to_provider_infos(&providers.iter().cloned().map(Arc::new).collect::<Vec<_>>());
+        let providers_info: Vec<ProviderInfo> = self.resource_allocator.configs_to_provider_infos(
+            &providers.iter().cloned().map(Arc::new).collect::<Vec<_>>(),
+        );
 
         // Use the actual job with its preferences (not a dummy job)
         self.scheduler
@@ -987,8 +985,12 @@ impl JobDispatcher {
         let selection_start = Instant::now();
         let selection_strategy = "smart_scheduler".to_string();
         // GAP-GO-04: Delegar cálculos a ResourceAllocator
-        let effective_cost = self.resource_allocator.calculate_provider_cost(&provider_config);
-        let startup_duration = self.resource_allocator.calculate_startup_time(&provider_config);
+        let effective_cost = self
+            .resource_allocator
+            .calculate_provider_cost(&provider_config);
+        let startup_duration = self
+            .resource_allocator
+            .calculate_startup_time(&provider_config);
         let effective_startup_ms = startup_duration.as_millis() as u64;
 
         // BUG FIX: Persist selected_provider_id in job BEFORE publishing event

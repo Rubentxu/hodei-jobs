@@ -510,13 +510,88 @@ impl ProvidersInitializer {
         };
 
         // Create KubernetesProvider with the infrastructure config
-        let provider = KubernetesProvider::with_provider_id(provider_id, infra_k8s_config)
+        let provider = KubernetesProvider::with_provider_id(provider_id.clone(), infra_k8s_config)
             .await
-            .map_err(|e| DomainError::InfrastructureError {
-                message: format!(
-                    "Failed to create KubernetesProvider for '{}': {}",
-                    config.name, e
-                ),
+            .map_err(|e| {
+                // Enhance error message with provider configuration details
+                let namespace = &k8s_config.namespace;
+                let service_account = &k8s_config.service_account;
+                let kubeconfig_path = &k8s_config.kubeconfig_path;
+
+                let mut enhanced_message = format!(
+                    "Failed to create KubernetesProvider '{}' (ID: {}): {}",
+                    config.name, provider_id, e
+                );
+
+                // Add configuration context
+                enhanced_message.push_str(&format!(
+                    "\n  📋 Configuration Details:\n     - Namespace: '{}'\n     - ServiceAccount: '{}'\n     - Kubeconfig: {}",
+                    namespace,
+                    service_account,
+                    kubeconfig_path.as_deref().unwrap_or("in-cluster (default)")
+                ));
+
+                // Analyze error and provide troubleshooting hints
+                let error_lower = e.to_string().to_lowercase();
+
+                if error_lower.contains("permission") || error_lower.contains("denied") || error_lower.contains("forbidden") {
+                    enhanced_message.push_str(
+                        "\n  🔐 PERMISSION ERROR DETECTED!\n\
+                         Possible causes:\n\
+                           - RBAC Role/ClusterRole is missing required permissions\n\
+                           - ServiceAccount doesn't have the proper RoleBinding\n\
+                           - Namespace mismatch between Role and target namespace\n\
+                         \n  💡 Suggested actions:\n\
+                           1. Verify RBAC: kubectl auth can-i --list --as=system:serviceaccount:{}:{} create pods\n\
+                           2. Check RoleBinding exists in target namespace\n\
+                           3. Ensure Role includes: create/delete/get/list/watch pods, create/delete jobs",
+                    );
+                    enhanced_message.push_str(&format!("{}:{}", namespace, service_account));
+                } else if error_lower.contains("not found") || error_lower.contains("no such file") {
+                    enhanced_message.push_str(
+                        "\n  📁 CONFIGURATION ERROR DETECTED!\n\
+                         Possible causes:\n\
+                           - Kubeconfig file doesn't exist\n\
+                           - Wrong path specified\n\
+                           - In-cluster config unavailable\n\
+                         \n  💡 Suggested actions:\n\
+                           1. Verify kubeconfig path: {} exists\n\
+                           2. Check if running inside a cluster\n\
+                           3. Validate kubeconfig syntax: kubectl config view",
+                    );
+                    if let Some(path) = kubeconfig_path {
+                        enhanced_message.push_str(path);
+                    }
+                } else if error_lower.contains("connection") || error_lower.contains("timeout") || error_lower.contains("network") {
+                    enhanced_message.push_str(
+                        "\n  🌐 CONNECTION ERROR DETECTED!\n\
+                         Possible causes:\n\
+                           - Kubernetes API server unreachable\n\
+                           - Wrong API server endpoint\n\
+                           - Firewall/network issues\n\
+                         \n  💡 Suggested actions:\n\
+                         1. Test connectivity: curl -k https://{}/api\n\
+                         2. Verify API server endpoint in kubeconfig\n\
+                         3. Check if k3s/kubernetes is running",
+                    );
+                } else if error_lower.contains("certificate") || error_lower.contains("ssl") || error_lower.contains("tls") {
+                    enhanced_message.push_str(
+                        "\n  🔒 TLS/CERTIFICATE ERROR DETECTED!\n\
+                         Possible causes:\n\
+                           - Invalid or expired certificates\n\
+                           - Missing CA bundle\n\
+                           \n  💡 Suggested actions:\n\
+                           1. Check certificate validity: kubectl config view\n\
+                           2. For k3s: sudo k3s server --write-kubeconfig-mode 644\n\
+                           3. Verify CA file: ls -la /etc/kubernetes/pki/",
+                    );
+                }
+
+                enhanced_message.push_str("\n  📖 Docs: https://hodei-jobs.io/docs/providers/kubernetes-setup");
+
+                DomainError::InfrastructureError {
+                    message: enhanced_message,
+                }
             })?;
 
         info!(

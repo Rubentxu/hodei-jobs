@@ -16,7 +16,7 @@ use crate::jobs::dispatcher::JobDispatcher;
 use crate::jobs::worker_monitor::WorkerMonitor;
 use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::events::DomainEvent;
+use hodei_server_domain::events::{DomainEvent, JobCreated};
 use hodei_server_domain::workers::WorkerRegistry;
 use hodei_shared::event_topics::job_topics;
 use hodei_shared::event_topics::worker_topics;
@@ -145,11 +145,14 @@ impl JobCoordinator {
         let event_bus = self.event_bus.clone();
         let _job_dispatcher = self.job_dispatcher.clone();
 
-        // Subscribe to JobQueued events - triggers ProvisioningSaga
-        let mut job_queue_stream = event_bus
-            .subscribe(job_topics::QUEUED)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to {}: {}", job_topics::QUEUED, e))?;
+        // EPIC-32: Subscribe to JobCreated events - triggers job dispatch/provisioning
+        let mut job_created_stream =
+            event_bus
+                .subscribe(job_topics::CREATED)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to subscribe to {}: {}", job_topics::CREATED, e)
+                })?;
 
         // Subscribe to WorkerReady events - dispatch pending jobs
         let mut worker_ready_stream =
@@ -182,20 +185,20 @@ impl JobCoordinator {
 
             loop {
                 tokio::select! {
-                    // EPIC-43: Process JobQueued events for automatic provisioning
-                    event_result = job_queue_stream.next() => {
+                    // EPIC-32: Process JobCreated events for automatic dispatch/provisioning
+                    event_result = job_created_stream.next() => {
                         match event_result {
                             Some(Ok(event)) => {
-                                if let DomainEvent::JobQueued { job_id, .. } = event {
-                                    info!("📦 JobCoordinator: Received JobQueued event for job {}", job_id);
+                                if let DomainEvent::JobCreated(JobCreated { job_id, .. }) = event {
+                                    info!("📦 JobCoordinator: Received JobCreated event for job {}", job_id);
                                     dispatcher.handle_job_queued(&job_id).await;
                                 }
                             }
                             Some(Err(e)) => {
-                                error!("❌ JobCoordinator: Error receiving JobQueued event: {}", e);
+                                error!("❌ JobCoordinator: Error receiving JobCreated event: {}", e);
                             }
                             None => {
-                                warn!("⚠️ JobCoordinator: JobQueued stream ended, reconnecting...");
+                                warn!("⚠️ JobCoordinator: JobCreated stream ended, reconnecting...");
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                             }
                         }

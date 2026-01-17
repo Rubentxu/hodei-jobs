@@ -258,7 +258,7 @@ mod tests {
 
         let job_id = JobId(Uuid::new_v4());
         let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
-        let job = Job::new(job_id.clone(), spec);
+        let job = Job::new(job_id.clone(), "tx-commit-job".to_string(), spec);
 
         // Begin transaction
         let mut tx = pool.begin().await.expect("Failed to begin transaction");
@@ -304,7 +304,7 @@ mod tests {
 
         let job_id = JobId(Uuid::new_v4());
         let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
-        let job = Job::new(job_id.clone(), spec);
+        let job = Job::new(job_id.clone(), "tx-rollback-job".to_string(), spec);
 
         // Begin transaction
         let mut tx = pool.begin().await.expect("Failed to begin transaction");
@@ -339,7 +339,7 @@ mod tests {
 
         let job_id = JobId(Uuid::new_v4());
         let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
-        let job = Job::new(job_id.clone(), spec);
+        let job = Job::new(job_id.clone(), "tx-update-job".to_string(), spec);
 
         // First save the job
         repo.save(&job).await.expect("Failed to save job");

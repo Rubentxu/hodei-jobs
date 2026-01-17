@@ -5,8 +5,7 @@
 
 use hodei_jobs::job::JobSpec as GrpcJobSpec;
 use hodei_jobs::{
-    ExecutionId, JobDefinition, JobExecution, JobStatus, JobSummary, SchedulingInfo,
-    TimeoutConfig,
+    ExecutionId, JobDefinition, JobExecution, JobStatus, JobSummary, SchedulingInfo, TimeoutConfig,
 };
 // Temporarily commented out until template module is fixed
 // use hodei_server_application::jobs::template::queries::{ExecutionSummary, TemplateSummary};
@@ -430,7 +429,7 @@ mod tests {
     fn test_map_job_to_summary() {
         let job_id = JobId::new();
         let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
-        let job = Job::new(job_id.clone(), spec);
+        let job = Job::new(job_id.clone(), "mapper-test-job".to_string(), spec);
 
         let summary = map_job_to_summary(&job);
 

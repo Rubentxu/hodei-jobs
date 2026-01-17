@@ -49,7 +49,9 @@ impl PostgresJobRepository {
             hodei_server_domain::shared_kernel::JobState::Failed => "FAILED".to_string(),
             hodei_server_domain::shared_kernel::JobState::Cancelled => "CANCELLED".to_string(),
             hodei_server_domain::shared_kernel::JobState::Timeout => "TIMEOUT".to_string(),
-            hodei_server_domain::shared_kernel::JobState::ManualInterventionRequired => "MANUAL_INTERVENTION_REQUIRED".to_string(),
+            hodei_server_domain::shared_kernel::JobState::ManualInterventionRequired => {
+                "MANUAL_INTERVENTION_REQUIRED".to_string()
+            }
         }
     }
 
@@ -63,7 +65,9 @@ impl PostgresJobRepository {
             "FAILED" => hodei_server_domain::shared_kernel::JobState::Failed,
             "CANCELLED" => hodei_server_domain::shared_kernel::JobState::Cancelled,
             "TIMEOUT" => hodei_server_domain::shared_kernel::JobState::Timeout,
-            "MANUAL_INTERVENTION_REQUIRED" => hodei_server_domain::shared_kernel::JobState::ManualInterventionRequired,
+            "MANUAL_INTERVENTION_REQUIRED" => {
+                hodei_server_domain::shared_kernel::JobState::ManualInterventionRequired
+            }
             _ => hodei_server_domain::shared_kernel::JobState::Failed,
         }
     }
@@ -116,10 +120,11 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
         sqlx::query(
             r#"
             INSERT INTO jobs
-                (id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+                (id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                  created_at, started_at, completed_at, result, error_message, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
                 spec = EXCLUDED.spec,
                 state = EXCLUDED.state,
                 selected_provider_id = EXCLUDED.selected_provider_id,
@@ -135,6 +140,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
             "#,
         )
         .bind(job.id.0)
+        .bind(job.name.clone())
         .bind(spec_json)
         .bind(Self::state_to_string(job.state()))
         .bind(provider_id)
@@ -186,7 +192,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     async fn find_by_id(&self, job_id: &JobId) -> Result<Option<Job>> {
         let row = sqlx::query(
             r#"
-            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+            SELECT id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             WHERE id = $1
@@ -212,7 +218,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     ) -> Result<Vec<Job>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+            SELECT id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             WHERE state = $1
@@ -431,6 +437,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
 
 pub(crate) fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
     let id: uuid::Uuid = row.get("id");
+    let name: String = row.get("name");
     let spec_json: serde_json::Value = row.get("spec");
     let state_str: String = row.get("state");
     let selected_provider_id: Option<uuid::Uuid> = row.get("selected_provider_id");
@@ -474,6 +481,7 @@ pub(crate) fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
 
     Ok(Job::hydrate(
         JobId(id),
+        name,
         spec,
         PostgresJobRepository::string_to_state(&state_str),
         selected_provider_id.map(hodei_server_domain::shared_kernel::ProviderId),

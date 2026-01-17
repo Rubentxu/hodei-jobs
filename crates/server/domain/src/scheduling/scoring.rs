@@ -796,6 +796,7 @@ mod scoring_cache_tests {
     fn create_test_job() -> Job {
         Job::new(
             JobId::new(),
+            "scoring-test-job".to_string(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
         )
     }

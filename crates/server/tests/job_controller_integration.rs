@@ -179,6 +179,7 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
     let job_id = hodei_jobs_domain::shared_kernel::JobId::new();
     let job = Job::new(
         job_id.clone(),
+        "integration-test-job".to_string(),
         JobSpec::new(vec!["echo".to_string(), "hi".to_string()]),
     );
     job_repository.save(&job).await.unwrap();

@@ -1,0 +1,56 @@
+# Deployment dummy para Telepresence intercept
+# Este deployment crea un pod que simplemente duerme, pero expone los puertos
+# necesarios para que Telepresence pueda inyectar el traffic-agent.
+#
+# Uso:
+#   kubectl apply -f deploy/telepresence-dummy.yaml
+#   telepresence intercept hodei-hodei-jobs-platform --port 9090:grpc
+#
+# El tráfico fluirá así:
+#   Worker Pod en k8s → Service:9090 → traffic-agent → localhost:9090 → Tu servidor local
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hodei-hodei-jobs-platform
+  namespace: hodei-jobs
+  labels:
+    app: hodei-hodei-jobs-platform
+    app.kubernetes.io/instance: hodei
+    app.kubernetes.io/name: hodei-jobs-platform
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: hodei
+      app.kubernetes.io/name: hodei-jobs-platform
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app: hodei-hodei-jobs-platform
+        app.kubernetes.io/instance: hodei
+        app.kubernetes.io/name: hodei-jobs-platform
+        app.kubernetes.io/component: server
+    spec:
+      containers:
+        - name: dummy
+          image: alpine:latest
+          command:
+            - sleep
+            - infinity
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

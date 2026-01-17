@@ -12,16 +12,12 @@ mod services_init;
 mod shutdown;
 
 pub use grpc_server::{GrpcServerConfig, start_grpc_server};
-pub use providers_init::{
-    ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer,
-};
+pub use providers_init::{ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer};
 pub use services_init::{
-    GrpcServices, initialize_grpc_services, start_background_tasks,
-    start_job_coordinator, start_saga_consumers,
+    GrpcServices, initialize_grpc_services, start_background_tasks, start_job_coordinator,
+    start_saga_consumers,
 };
-pub use shutdown::{
-    GracefulShutdown, ShutdownConfig, start_signal_handler,
-};
+pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
 use backoff::{ExponentialBackoff, future::retry};
 use dashmap::DashMap;
@@ -365,6 +361,14 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         "✓ Providers initialized: {}",
         provider_init_result.summary_message()
     );
+
+    // EPIC-32: Start event monitoring for reactive worker cleanup
+    // This enables the lifecycle manager to:
+    // 1. Listen to WorkerEphemeralTerminating events (published by JobCoordinator)
+    // 2. Reactively destroy workers when jobs complete
+    // 3. Monitor provider infrastructure events
+    lifecycle_manager.start_event_monitoring().await;
+    info!("✓ WorkerLifecycleManager event monitoring started (reactive cleanup enabled)");
 
     info!("✓ All connections established, ready for gRPC");
 

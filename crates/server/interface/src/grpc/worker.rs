@@ -574,6 +574,144 @@ impl WorkerAgentServiceImpl {
                     }
                 }
             }
+        } else {
+            // No supervisor/Actor mode - register directly in PostgreSQL
+            info!(
+                "🔄 No supervisor available. Registering worker {} directly in database...",
+                worker_id
+            );
+
+            if let Some(ref registry) = self.worker_registry {
+                // Check if worker already exists in DB
+                match registry.get(&worker_id).await {
+                    Ok(Some(existing_worker)) => {
+                        info!(
+                            "✅ Worker {} already exists in database with state: {:?}",
+                            worker_id,
+                            existing_worker.state()
+                        );
+                        // Update state to Ready if not already
+                        if !matches!(existing_worker.state(), &WorkerState::Ready) {
+                            if let Err(e) =
+                                registry.update_state(&worker_id, WorkerState::Ready).await
+                            {
+                                warn!(
+                                    "Failed to update worker {} state to Ready: {:?}",
+                                    worker_id, e
+                                );
+                            } else {
+                                info!("✅ Worker {} state updated to Ready", worker_id);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // Worker not in DB - need to register it
+                        info!(
+                            "🔄 Worker {} not in database, registering now...",
+                            worker_id
+                        );
+
+                        // Recover provider_id from job context
+                        let provider_id = if let Some(ref job_id) = job_id_from_token {
+                            if let Some(ref job_repo) = self.job_repository {
+                                match job_repo.find_by_id(job_id).await {
+                                    Ok(Some(job)) => job
+                                        .selected_provider()
+                                        .cloned()
+                                        .unwrap_or_else(ProviderId::new),
+                                    _ => ProviderId::new(),
+                                }
+                            } else {
+                                ProviderId::new()
+                            }
+                        } else {
+                            ProviderId::new()
+                        };
+
+                        // Build WorkerHandle from worker info
+                        let resource_id = worker_info.name.clone();
+                        let handle = WorkerHandle::new(
+                            worker_id.clone(),
+                            resource_id.clone(),
+                            ProviderType::Kubernetes, // Default to Kubernetes for k8s workers
+                            provider_id.clone(),
+                        );
+
+                        // Build WorkerSpec from worker info
+                        let mut spec = WorkerSpec::new(
+                            "hodei-worker:latest".to_string(),
+                            "http://localhost:50051".to_string(),
+                        );
+                        if let Some(cap) = &worker_info.capacity {
+                            spec.resources.cpu_cores = cap.cpu_cores;
+                            spec.resources.memory_bytes = cap.memory_bytes;
+                        }
+
+                        // Register in PostgreSQL
+                        let job_id = job_id_from_token.clone().unwrap_or_else(JobId::new);
+                        match registry
+                            .register(handle.clone(), spec.clone(), job_id.clone())
+                            .await
+                        {
+                            Ok(worker) => {
+                                info!(
+                                    "✅ Worker {} registered in database with ID: {}",
+                                    worker_id,
+                                    worker.id()
+                                );
+                                // Mark as Ready immediately
+                                if let Err(e) =
+                                    registry.update_state(&worker_id, WorkerState::Ready).await
+                                {
+                                    warn!("Failed to mark worker {} as Ready: {:?}", worker_id, e);
+                                } else {
+                                    info!("✅ Worker {} marked as Ready in database", worker_id);
+                                }
+                            }
+                            Err(e) => {
+                                // Check if it's a duplicate key error (worker already exists)
+                                let err_msg = e.to_string();
+                                if err_msg.contains("duplicate")
+                                    || err_msg.contains("already exists")
+                                {
+                                    info!(
+                                        "Worker {} already registered (race condition), updating state...",
+                                        worker_id
+                                    );
+                                    if let Err(e) =
+                                        registry.update_state(&worker_id, WorkerState::Ready).await
+                                    {
+                                        warn!(
+                                            "Failed to update worker {} state: {:?}",
+                                            worker_id, e
+                                        );
+                                    }
+                                } else {
+                                    error!(
+                                        "❌ Failed to register worker {} in database: {:?}",
+                                        worker_id, e
+                                    );
+                                    return Err(Status::internal(format!(
+                                        "Failed to register worker in database: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to query worker {} from database: {:?}",
+                            worker_id, e
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    "WorkerRegistry not available, worker {} cannot be persisted to database",
+                    worker_id
+                );
+            }
         }
 
         // 2. Emit WorkerRegistered and WorkerReady events (triggers JobDispatcher)

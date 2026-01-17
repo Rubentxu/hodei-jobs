@@ -10,9 +10,7 @@
 use sqlx::{Pool, Postgres, Row};
 
 use async_trait::async_trait;
-use hodei_server_domain::shared_kernel::{
-    JobId, ProviderId, Result, WorkerId, WorkerState,
-};
+use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId, WorkerState};
 use hodei_server_domain::workers::{
     Worker, WorkerHandle, WorkerSpec,
     registry::{WorkerFilter, WorkerRegistry, WorkerRegistryStats},
@@ -56,12 +54,15 @@ impl WorkerRegistry for PostgresWorkerRegistry {
         let worker_id = handle.worker_id.0;
         let provider_id = handle.provider_id.0;
         let current_job_id = job_id.0;
+        // Generate worker name from worker_id and provider_type (e.g., "hodei-worker-abc12345")
+        let worker_name = format!("hodei-worker-{}", &worker_id.to_string()[0..8]);
 
         sqlx::query(
             r#"
-            INSERT INTO workers (id, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO workers (id, name, provider_id, provider_type, provider_resource_id, state, spec, handle, current_job_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
                 provider_id = EXCLUDED.provider_id,
                 provider_type = EXCLUDED.provider_type,
                 provider_resource_id = EXCLUDED.provider_resource_id,
@@ -73,6 +74,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
             "#,
         )
         .bind(worker_id)
+        .bind(&worker_name)
         .bind(provider_id)
         .bind(handle.provider_type.to_string())
         .bind(handle.provider_resource_id.clone())

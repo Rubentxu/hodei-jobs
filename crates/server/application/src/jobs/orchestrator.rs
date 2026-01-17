@@ -802,7 +802,11 @@ mod tests {
             recovery_coordinator,
         );
 
-        let job = Job::new(JobId::new(), JobSpec::new(vec!["echo".to_string()]));
+        let job = Job::new(
+            JobId::new(),
+            "test-job".to_string(),
+            JobSpec::new(vec!["echo".to_string()]),
+        );
         let job_id = orchestrator.submit_job(job).await.unwrap();
 
         // Job should be saved

@@ -181,11 +181,8 @@ fn create_grpc_tls_secret(host: &str, namespace: &str) -> bool {
         ])
         .output();
 
-    if String::from_utf8_lossy(&check.unwrap_or_default().stdout)
-        .trim()
-        .len()
-        > 0
-    {
+    let stdout = check.as_ref().map(|o| o.stdout.clone()).unwrap_or_default();
+    if String::from_utf8_lossy(&stdout).trim().len() > 0 {
         println!("   ✅ TLS secret already exists");
         return true;
     }
@@ -258,7 +255,8 @@ fn check_ingress_class() -> bool {
         ])
         .output();
 
-    let classes = String::from_utf8_lossy(&check.unwrap_or_default().stdout);
+    let stdout = check.as_ref().map(|o| o.stdout.clone()).unwrap_or_default();
+    let classes = String::from_utf8_lossy(&stdout);
     classes.contains("nginx")
 }
 

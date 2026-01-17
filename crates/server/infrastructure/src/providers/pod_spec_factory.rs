@@ -16,9 +16,9 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use std::collections::{BTreeMap, HashMap};
 
-use hodei_server_domain::workers::{WorkerSpec, VolumeSpec};
-use hodei_server_domain::shared_kernel::WorkerId;
 use super::PodSecurityStandard;
+use hodei_server_domain::shared_kernel::WorkerId;
+use hodei_server_domain::workers::{VolumeSpec, WorkerSpec};
 
 /// Security Context configuration
 #[derive(Debug, Clone, Default)]
@@ -171,26 +171,36 @@ impl PodSpecFactory {
                 service_account: config.service_account.clone(),
                 image_pull_secrets: config.image_pull_secrets.clone(),
                 node_selector: config.node_selector.clone(),
-                tolerations: config.tolerations.iter().map(|t| KubernetesToleration {
-                    key: t.key.clone(),
-                    operator: t.operator.clone(),
-                    value: t.value.clone(),
-                    effect: t.effect.clone(),
-                    toleration_seconds: t.toleration_seconds,
-                }).collect(),
+                tolerations: config
+                    .tolerations
+                    .iter()
+                    .map(|t| KubernetesToleration {
+                        key: t.key.clone(),
+                        operator: t.operator.clone(),
+                        value: t.value.clone(),
+                        effect: t.effect.clone(),
+                        toleration_seconds: t.toleration_seconds,
+                    })
+                    .collect(),
                 pod_affinity: config.pod_affinity.as_ref().map(|affinities| {
-                    affinities.iter().map(|a| PodAffinityRule {
-                        label_selector: a.label_selector.clone(),
-                        topology_key: a.topology_key.clone(),
-                        weight: a.weight,
-                    }).collect()
+                    affinities
+                        .iter()
+                        .map(|a| PodAffinityRule {
+                            label_selector: a.label_selector.clone(),
+                            topology_key: a.topology_key.clone(),
+                            weight: a.weight,
+                        })
+                        .collect()
                 }),
                 pod_anti_affinity: config.pod_anti_affinity.as_ref().map(|anti_affinities| {
-                    anti_affinities.iter().map(|a| PodAntiAffinityRule {
-                        label_selector: a.label_selector.clone(),
-                        topology_key: a.topology_key.clone(),
-                        weight: a.weight,
-                    }).collect()
+                    anti_affinities
+                        .iter()
+                        .map(|a| PodAntiAffinityRule {
+                            label_selector: a.label_selector.clone(),
+                            topology_key: a.topology_key.clone(),
+                            weight: a.weight,
+                        })
+                        .collect()
                 }),
                 pod_security_standard: match config.pod_security_standard {
                     PodSecurityStandard::Restricted => PodSecurityStandard::Restricted,
@@ -252,7 +262,8 @@ impl PodSpecFactory {
         let security_context = self.build_security_context();
 
         // Build container
-        let container = self.build_main_container(spec, env_vars, resources, volume_mounts, security_context);
+        let container =
+            self.build_main_container(spec, env_vars, resources, volume_mounts, security_context);
 
         // Build init containers
         let init_containers = self.build_init_containers(spec);
@@ -285,7 +296,10 @@ impl PodSpecFactory {
 
         let gpu_resource_name = self.get_gpu_resource_name(&spec.resources.gpu_type);
 
-        PodSpecBuildResult { pod, gpu_resource_name }
+        PodSpecBuildResult {
+            pod,
+            gpu_resource_name,
+        }
     }
 
     fn pod_name(&self, worker_id: &WorkerId) -> String {
@@ -355,10 +369,18 @@ impl PodSpecFactory {
     }
 
     fn build_env_vars(&self, spec: &WorkerSpec, otp_token: Option<&str>) -> Vec<EnvVar> {
+        // Generate worker name from worker_id for consistency
+        let worker_name = format!("hodei-worker-{}", spec.worker_id);
+
         let mut env_vars = vec![
             EnvVar {
                 name: "HODEI_WORKER_ID".to_string(),
                 value: Some(spec.worker_id.to_string()),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "HODEI_WORKER_NAME".to_string(),
+                value: Some(worker_name),
                 ..Default::default()
             },
             EnvVar {
@@ -492,7 +514,10 @@ impl PodSpecFactory {
         }
     }
 
-    fn build_tolerations(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::Toleration>> {
+    fn build_tolerations(
+        &self,
+        spec: &WorkerSpec,
+    ) -> Option<Vec<k8s_openapi::api::core::v1::Toleration>> {
         let mut tolerations: Vec<k8s_openapi::api::core::v1::Toleration> = Vec::new();
 
         // Add base tolerations from config
@@ -533,17 +558,22 @@ impl PodSpecFactory {
             .volumes
             .iter()
             .map(|v| match v {
-                VolumeSpec::Ephemeral { name, size_limit: _ } => {
-                    k8s_openapi::api::core::v1::Volume {
-                        name: name.clone(),
-                        empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
-                            medium: None,
-                            size_limit: None,
-                        }),
-                        ..Default::default()
-                    }
-                }
-                VolumeSpec::HostPath { name, path, read_only: _ } => k8s_openapi::api::core::v1::Volume {
+                VolumeSpec::Ephemeral {
+                    name,
+                    size_limit: _,
+                } => k8s_openapi::api::core::v1::Volume {
+                    name: name.clone(),
+                    empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
+                        medium: None,
+                        size_limit: None,
+                    }),
+                    ..Default::default()
+                },
+                VolumeSpec::HostPath {
+                    name,
+                    path,
+                    read_only: _,
+                } => k8s_openapi::api::core::v1::Volume {
                     name: name.clone(),
                     host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
                         path: path.clone(),
@@ -551,25 +581,30 @@ impl PodSpecFactory {
                     }),
                     ..Default::default()
                 },
-                VolumeSpec::Persistent { name, claim_name, read_only: _ } => {
-                    k8s_openapi::api::core::v1::Volume {
-                        name: name.clone(),
-                        persistent_volume_claim: Some(
-                            k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
-                                claim_name: claim_name.clone(),
-                                ..Default::default()
-                            },
-                        ),
-                        ..Default::default()
-                    }
-                }
+                VolumeSpec::Persistent {
+                    name,
+                    claim_name,
+                    read_only: _,
+                } => k8s_openapi::api::core::v1::Volume {
+                    name: name.clone(),
+                    persistent_volume_claim: Some(
+                        k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
+                            claim_name: claim_name.clone(),
+                            ..Default::default()
+                        },
+                    ),
+                    ..Default::default()
+                },
             })
             .collect();
 
         Some(volumes)
     }
 
-    fn build_volume_mounts(&self, spec: &WorkerSpec) -> Option<Vec<k8s_openapi::api::core::v1::VolumeMount>> {
+    fn build_volume_mounts(
+        &self,
+        spec: &WorkerSpec,
+    ) -> Option<Vec<k8s_openapi::api::core::v1::VolumeMount>> {
         if spec.volumes.is_empty() {
             return None;
         }
@@ -580,8 +615,12 @@ impl PodSpecFactory {
             .map(|v| {
                 let (name, read_only) = match v {
                     VolumeSpec::Ephemeral { name, .. } => (name, false),
-                    VolumeSpec::HostPath { name, read_only, .. } => (name, *read_only),
-                    VolumeSpec::Persistent { name, read_only, .. } => (name, *read_only),
+                    VolumeSpec::HostPath {
+                        name, read_only, ..
+                    } => (name, *read_only),
+                    VolumeSpec::Persistent {
+                        name, read_only, ..
+                    } => (name, *read_only),
                 };
                 k8s_openapi::api::core::v1::VolumeMount {
                     name: name.clone(),
@@ -669,7 +708,9 @@ impl PodSpecFactory {
             pod_anti_affinity: if !pod_anti_affinity_terms.is_empty() {
                 Some(k8s_openapi::api::core::v1::PodAntiAffinity {
                     required_during_scheduling_ignored_during_execution: None,
-                    preferred_during_scheduling_ignored_during_execution: Some(pod_anti_affinity_terms),
+                    preferred_during_scheduling_ignored_during_execution: Some(
+                        pod_anti_affinity_terms,
+                    ),
                 })
             } else {
                 None
@@ -681,7 +722,10 @@ impl PodSpecFactory {
         let sc = &self.config.security_context;
 
         // Skip security context if using privileged mode
-        if matches!(self.config.pod_security_standard, PodSecurityStandard::Privileged) {
+        if matches!(
+            self.config.pod_security_standard,
+            PodSecurityStandard::Privileged
+        ) {
             return None;
         }
 
@@ -749,7 +793,7 @@ impl PodSpecFactory {
             resources: Some(resources),
             volume_mounts: volume_mounts,
             security_context,
-            image_pull_policy: Some("IfNotPresent".to_string()),
+            image_pull_policy: Some("Always".to_string()),
             ..Default::default()
         }
     }
@@ -770,7 +814,10 @@ impl PodSpecFactory {
             .collect()
     }
 
-    fn convert_k8s_container(&self, k8s_container: &hodei_server_domain::workers::KubernetesContainer) -> Container {
+    fn convert_k8s_container(
+        &self,
+        k8s_container: &hodei_server_domain::workers::KubernetesContainer,
+    ) -> Container {
         let env_vars: Vec<EnvVar> = k8s_container
             .env
             .iter()
@@ -831,18 +878,28 @@ impl PodSpecFactory {
             } else {
                 Some(k8s_container.args.clone())
             },
-            env: if env_vars.is_empty() { None } else { Some(env_vars) },
+            env: if env_vars.is_empty() {
+                None
+            } else {
+                Some(env_vars)
+            },
             env_from: None,
             ports: None,
             resources,
-            volume_mounts: if volume_mounts.is_empty() { None } else { Some(volume_mounts) },
+            volume_mounts: if volume_mounts.is_empty() {
+                None
+            } else {
+                Some(volume_mounts)
+            },
             security_context: None,
             image_pull_policy: k8s_container.image_pull_policy.clone(),
             ..Default::default()
         }
     }
 
-    fn build_image_pull_secrets(&self) -> Option<Vec<k8s_openapi::api::core::v1::LocalObjectReference>> {
+    fn build_image_pull_secrets(
+        &self,
+    ) -> Option<Vec<k8s_openapi::api::core::v1::LocalObjectReference>> {
         if self.config.image_pull_secrets.is_empty() {
             None
         } else {
@@ -850,15 +907,16 @@ impl PodSpecFactory {
                 self.config
                     .image_pull_secrets
                     .iter()
-                    .map(|s| k8s_openapi::api::core::v1::LocalObjectReference {
-                        name: s.clone(),
-                    })
+                    .map(|s| k8s_openapi::api::core::v1::LocalObjectReference { name: s.clone() })
                     .collect(),
             )
         }
     }
 
-    fn apply_ttl_annotation(&self, mut annotations: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    fn apply_ttl_annotation(
+        &self,
+        mut annotations: BTreeMap<String, String>,
+    ) -> BTreeMap<String, String> {
         if let Some(ttl) = self.config.ttl_seconds_after_finished {
             annotations.insert("hodei.io/ttl-after-finished".to_string(), ttl.to_string());
         }
@@ -984,7 +1042,13 @@ mod tests {
         let result = factory.build_pod(&spec, Some("test-otp"), "default", "test-provider");
 
         let pod = &result.pod;
-        assert!(pod.metadata.name.as_ref().unwrap().starts_with("hodei-worker-"));
+        assert!(
+            pod.metadata
+                .name
+                .as_ref()
+                .unwrap()
+                .starts_with("hodei-worker-")
+        );
         assert_eq!(pod.metadata.namespace, Some("default".to_string()));
 
         let containers = pod.spec.as_ref().unwrap().containers.len();
@@ -994,7 +1058,9 @@ mod tests {
     #[tokio::test]
     async fn test_build_pod_with_labels() {
         let mut config = PodSpecFactoryConfig::default();
-        config.base_labels.insert("app".to_string(), "hodei".to_string());
+        config
+            .base_labels
+            .insert("app".to_string(), "hodei".to_string());
 
         let factory = PodSpecFactory::new(Some(config));
         let spec = make_test_spec();

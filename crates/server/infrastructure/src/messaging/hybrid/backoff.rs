@@ -166,7 +166,12 @@ impl BackoffConfig {
     /// * `max_delay_secs` - Maximum delay in seconds
     /// * `jitter_factor` - Jitter as a fraction (0.1 = 10%)
     /// * `max_retries` - Maximum retry attempts
-    pub fn new(base_delay_secs: i64, max_delay_secs: i64, jitter_factor: f64, max_retries: i32) -> Self {
+    pub fn new(
+        base_delay_secs: i64,
+        max_delay_secs: i64,
+        jitter_factor: f64,
+        max_retries: i32,
+    ) -> Self {
         Self {
             base_delay_secs,
             max_delay_secs,
@@ -208,7 +213,7 @@ impl BackoffConfig {
         let jitter_range = (delay as f64 * self.jitter_factor) as i64;
         let jitter = if jitter_range > 0 {
             let mut rng = rand::thread_rng();
-            rng.gen_range(-jitter_range..=jitter_range)
+            rng.random_range(-jitter_range..=jitter_range)
         } else {
             0
         };
@@ -348,22 +353,38 @@ mod tests {
         // Retry 0: ~5 segundos (±10%)
         let delay0 = config.calculate_delay(0);
         let secs0 = delay0.num_seconds();
-        assert!(secs0 >= 4 && secs0 <= 6, "Retry 0: expected ~5s, got {}s", secs0);
+        assert!(
+            secs0 >= 4 && secs0 <= 6,
+            "Retry 0: expected ~5s, got {}s",
+            secs0
+        );
 
         // Retry 1: ~10 segundos
         let delay1 = config.calculate_delay(1);
         let secs1 = delay1.num_seconds();
-        assert!(secs1 >= 8 && secs1 <= 12, "Retry 1: expected ~10s, got {}s", secs1);
+        assert!(
+            secs1 >= 8 && secs1 <= 12,
+            "Retry 1: expected ~10s, got {}s",
+            secs1
+        );
 
         // Retry 2: ~20 segundos
         let delay2 = config.calculate_delay(2);
         let secs2 = delay2.num_seconds();
-        assert!(secs2 >= 16 && secs2 <= 24, "Retry 2: expected ~20s, got {}s", secs2);
+        assert!(
+            secs2 >= 16 && secs2 <= 24,
+            "Retry 2: expected ~20s, got {}s",
+            secs2
+        );
 
         // Retry 3: ~40 segundos
         let delay3 = config.calculate_delay(3);
         let secs3 = delay3.num_seconds();
-        assert!(secs3 >= 32 && secs3 <= 48, "Retry 3: expected ~40s, got {}s", secs3);
+        assert!(
+            secs3 >= 32 && secs3 <= 48,
+            "Retry 3: expected ~40s, got {}s",
+            secs3
+        );
     }
 
     #[test]
@@ -374,7 +395,11 @@ mod tests {
         let delay = config.calculate_delay(20);
         let secs = delay.num_seconds();
         // Should be around 1800s (±10% jitter = 180-1800+180 = 1620-1980)
-        assert!(secs >= 1620 && secs <= 1980, "Retry 20: expected ~1800s (±10%), got {}s", secs);
+        assert!(
+            secs >= 1620 && secs <= 1980,
+            "Retry 20: expected ~1800s (±10%), got {}s",
+            secs
+        );
     }
 
     #[test]
@@ -503,7 +528,8 @@ mod tests {
         let json = serde_json::to_string(&config).expect("Failed to serialize");
 
         // Deserialize
-        let deserialized: BackoffConfig = serde_json::from_str(&json).expect("Failed to deserialize");
+        let deserialized: BackoffConfig =
+            serde_json::from_str(&json).expect("Failed to deserialize");
 
         assert_eq!(config.base_delay_secs, deserialized.base_delay_secs);
         assert_eq!(config.max_delay_secs, deserialized.max_delay_secs);

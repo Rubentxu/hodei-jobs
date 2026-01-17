@@ -141,16 +141,16 @@ impl SmartScheduler {
 
         // Step 2: Filter workers by required labels (EPIC-21 US-07)
         if let Some(ref req) = worker_requirements
-            && req.has_requirements() {
-                eligible_workers.retain(|w| req.matches(w));
-            }
+            && req.has_requirements()
+        {
+            eligible_workers.retain(|w| req.matches(w));
+        }
 
         if eligible_workers.is_empty() {
             return None;
         }
 
         // Step 3: Apply selection strategy
-        
 
         match self.config.worker_strategy {
             WorkerSelectionStrategy::FirstAvailable => {
@@ -174,8 +174,6 @@ impl SmartScheduler {
             WorkerSelectionStrategy::Affinity => {
                 // Check for job type affinity in worker labels
                 let job_image = job.spec.image.as_deref();
-
-                
 
                 eligible_workers
                     .iter()
@@ -456,15 +454,16 @@ impl SmartScheduler {
                     .iter()
                     .find(|p| p.provider_id == provider_id);
                 if let Some(p) = selected
-                    && !p.supports_region(preferred_region) {
-                        // Selected provider doesn't match region - log warning
-                        tracing::warn!(
-                            job_id = %job.id,
-                            preferred_region = preferred_region,
-                            selected_provider = %provider_id,
-                            "Job has region preference but selected provider doesn't support it"
-                        );
-                    }
+                    && !p.supports_region(preferred_region)
+                {
+                    // Selected provider doesn't match region - log warning
+                    tracing::warn!(
+                        job_id = %job.id,
+                        preferred_region = preferred_region,
+                        selected_provider = %provider_id,
+                        "Job has region preference but selected provider doesn't support it"
+                    );
+                }
             }
             return Some(provider_id);
         }
@@ -524,7 +523,7 @@ mod tests {
 
         let spec = JobSpec::new(vec!["echo".to_string()]).with_preferences(preferences);
 
-        Job::new(JobId::new(), spec)
+        Job::new(JobId::new(), "test-job-with-prefs".to_string(), spec)
     }
 
     fn create_test_job_with_labels_and_annotations(
@@ -544,7 +543,7 @@ mod tests {
 
         let spec = JobSpec::new(vec!["echo".to_string()]).with_preferences(preferences);
 
-        Job::new(JobId::new(), spec)
+        Job::new(JobId::new(), "test-job-labels".to_string(), spec)
     }
 
     #[test]

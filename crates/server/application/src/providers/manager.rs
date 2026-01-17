@@ -143,6 +143,7 @@ where
                         // This is provider-agnostic - each provider defines its own defaults
                         let worker_spec = match provisioning_service
                             .default_worker_spec(provider_id)
+                            .await
                         {
                             Some(spec) => spec,
                             None => {

@@ -16,9 +16,9 @@ deployments:
         name: ./deploy/hodei-jobs-platform
       values:
         image:
-          repository: registry.local:31500/hodei-jobs-server
-          tag: "dev"
-          pullPolicy: Never
+          repository: 10.43.54.80:5000/hodei-jobs-server
+          tag: "fresh"
+          pullPolicy: Always
         resources:
           limits:
             cpu: "8"
@@ -30,14 +30,10 @@ deployments:
           enabled: true
           devspace:
             enabled: true
-        volumes:
-          extra:
-            - name: cargo-cache
-              persistentVolumeClaim:
-                claimName: hodei-cargo-cache
-        volumeMounts:
-          - name: cargo-cache
-            mountPath: /root/.cargo/registry
+          cargoCache:
+            enabled: true
+            pvcName: hodei-cargo-cache
+            storageClass: local-path
       valuesFiles:
         - ./deploy/hodei-jobs-platform/values.yaml
         - ./deploy/hodei-jobs-platform/values-dev.yaml

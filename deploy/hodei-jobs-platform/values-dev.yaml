@@ -15,7 +15,7 @@ podSecurityStandard:
 
 image:
   repository: 10.43.54.80:5000/hodei-jobs-server
-  tag: "dev"
+  tag: "fresh"
   pullPolicy: Always
 
 workerImage:
@@ -72,14 +72,11 @@ volumes:
   cache:
     enabled: true
     sizeLimit: "1Gi"
-  extra:
-    - name: cargo-cache
-      persistentVolumeClaim:
-        claimName: hodei-cargo-cache
+  # Note: cargo-cache is mounted conditionally via development.cargoCache config
+  # See deployment.yaml template for conditional mounting based on devspace.enabled
 
 volumeMounts:
-  - name: cargo-cache
-    mountPath: /root/.cargo/registry
+  # Note: cargo-cache mountPath is configured in deployment.yaml template
 
 # Environment
 env:
@@ -176,12 +173,10 @@ ingress:
 development:
   enabled: true
   devspace:
-    enabled: false # Set to true when using DevSpace for hot-reload development
+    enabled: false # Disabled - use just devspace-dev for development
   cargoCache:
-    enabled: true
-    pvcName: hodei-cargo-cache
-    storageClass: local-path
+    enabled: false # Only enabled with DevSpace
   binarySync:
-    enabled: true
+    enabled: false
     sourcePath: target/release/hodei-server-bin
     targetPath: /tmp/server-bin

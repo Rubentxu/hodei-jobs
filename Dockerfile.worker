@@ -7,14 +7,18 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Builder - Compile worker binary
 # -----------------------------------------------------------------------------
-FROM rust:1.92-slim AS builder
+FROM rust:1.92 AS builder
 
 RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     pkg-config \
     libssl-dev \
     git \
+    musl-tools \
     && rm -rf /var/lib/apt/lists/*
+
+# Install musl target for portable binaries
+RUN rustup target add x86_64-unknown-linux-musl
 
 WORKDIR /app
 
@@ -25,9 +29,9 @@ COPY crates/ crates/
 
 ENV SQLX_OFFLINE=true
 
-# Build worker binary
-RUN cargo build --release -p hodei-worker-bin && \
-    cp /app/target/release/hodei-worker-bin /app/hodei-worker-bin
+# Build worker binary with musl for portability
+RUN cargo build --release --target x86_64-unknown-linux-musl -p hodei-worker-bin && \
+    cp /app/target/x86_64-unknown-linux-musl/release/hodei-worker-bin /app/hodei-worker-bin
 
 # -----------------------------------------------------------------------------
 # Stage 2: Build asdf (separate stage)
@@ -61,15 +65,10 @@ RUN apt-get update && apt-get install -y \
 # Copy asdf from builder
 COPY --from=asdf-builder /asdf /usr/local/lib/asdf
 
-# Create asdf wrapper script
-RUN cat > /usr/local/bin/asdf <<'EOF'
-#!/usr/bin/env bash
-export ASDF_DIR="/usr/local/lib/asdf"
-export PATH="/usr/local/lib/asdf/bin:$PATH"
-exec /usr/local/lib/asdf/asdf "$@"
-EOF
-RUN chmod +x /usr/local/bin/asdf \
-    && echo '. /usr/local/lib/asdf/asdf.sh' >> /etc/bash.bashrc
+# Create asdf wrapper script - avoid heredoc parsing issues
+RUN printf '#!/usr/bin/env bash\nASDF_DIR="/usr/local/lib/asdf"\nexec /usr/local/lib/asdf/asdf "$@"\n' > /usr/local/bin/asdf && \
+    chmod +x /usr/local/bin/asdf && \
+    echo '. /usr/local/lib/asdf/asdf.sh' >> /etc/bash.bashrc
 
 ENV ASDF_DIR=/usr/local/lib/asdf
 

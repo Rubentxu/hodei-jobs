@@ -50,8 +50,7 @@ impl std::str::FromStr for JobTemplateId {
 }
 
 /// Status of a JobTemplate
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum JobTemplateStatus {
     /// Template is active and can be used to create runs
     #[default]
@@ -61,7 +60,6 @@ pub enum JobTemplateStatus {
     /// Template is archived (soft delete)
     Archived,
 }
-
 
 impl std::fmt::Display for JobTemplateStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,7 +165,7 @@ impl JobTemplate {
         }
 
         let job_id = JobId::new();
-        let mut job = Job::new(job_id, self.spec.clone());
+        let mut job = Job::new(job_id, self.name.clone(), self.spec.clone());
 
         // Link job to template
         job.metadata_mut()
@@ -833,26 +831,28 @@ impl JobTemplateParameter {
                     Ok(parsed) => {
                         // Range validation
                         if let Some(min) = self.min_value
-                            && parsed < min {
-                                return Err(ValidationError::OutOfRange {
-                                    parameter_name: self.name.clone(),
-                                    value: value.to_string(),
-                                    min: Some(min),
-                                    max: self.max_value,
-                                }
-                                .into());
+                            && parsed < min
+                        {
+                            return Err(ValidationError::OutOfRange {
+                                parameter_name: self.name.clone(),
+                                value: value.to_string(),
+                                min: Some(min),
+                                max: self.max_value,
                             }
+                            .into());
+                        }
 
                         if let Some(max) = self.max_value
-                            && parsed > max {
-                                return Err(ValidationError::OutOfRange {
-                                    parameter_name: self.name.clone(),
-                                    value: value.to_string(),
-                                    min: self.min_value,
-                                    max: Some(max),
-                                }
-                                .into());
+                            && parsed > max
+                        {
+                            return Err(ValidationError::OutOfRange {
+                                parameter_name: self.name.clone(),
+                                value: value.to_string(),
+                                min: self.min_value,
+                                max: Some(max),
                             }
+                            .into());
+                        }
                     }
                     Err(_) => {
                         return Err(ValidationError::InvalidType {

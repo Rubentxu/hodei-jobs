@@ -2617,7 +2617,7 @@ mod tests {
             Ok(*self.available.lock().unwrap())
         }
 
-        fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
+        async fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
             Some(WorkerSpec::new(
                 "default-image".to_string(),
                 "default-endpoint".to_string(),

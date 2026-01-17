@@ -145,7 +145,7 @@ impl QueueJobUseCase {
         };
 
         // 4. Crear Job aggregate
-        let mut job = Job::new(job_id.clone(), job_spec.clone());
+        let mut job = Job::new(job_id.clone(), "queued-job".to_string(), job_spec.clone());
 
         // Store correlation details in metadata
         if let Some(correlation_id) = &request.correlation_id {

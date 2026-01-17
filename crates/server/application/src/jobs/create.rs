@@ -10,6 +10,7 @@ use std::sync::Arc;
 /// DTOs para Create Job
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateJobRequest {
+    pub name: String,
     pub spec: JobSpecRequest,
     pub correlation_id: Option<String>,
     pub actor: Option<String>,
@@ -51,9 +52,9 @@ pub struct ExecuteNextJobResponse {
 }
 
 use chrono::Utc;
+use hodei_server_domain::JobCreated;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, EventMetadata};
-use hodei_server_domain::JobCreated;
 
 /// DTO para Retry Job Response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,7 +192,7 @@ impl CreateJobUseCase {
         };
 
         // 4. Crear Job (DDD: el aggregate encapsula la lógica)
-        let mut job = Job::new(job_id.clone(), job_spec.clone());
+        let mut job = Job::new(job_id.clone(), request.name.clone(), job_spec.clone());
 
         // Store correlation details in metadata
         if let Some(correlation_id) = &request.correlation_id {
@@ -202,6 +203,9 @@ impl CreateJobUseCase {
             job.metadata_mut()
                 .insert("actor".to_string(), actor.clone());
         }
+        // Store job name in metadata for convenience
+        job.metadata_mut()
+            .insert("job_name".to_string(), request.name.clone());
 
         // 5. GUARDAR EN REPOSITORIO (que incluye enqueue atómico)
         // PostgresJobRepository::save() automáticamente encola si el estado es PENDING
@@ -580,7 +584,13 @@ mod tests {
 
         // El evento debe ser JobCreated
         match &events[0] {
-            DomainEvent::JobCreated(JobCreated { job_id: _, spec, occurred_at: _, correlation_id, actor }) => {
+            DomainEvent::JobCreated(JobCreated {
+                job_id: _,
+                spec,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            }) => {
                 // EPIC-21 Jenkins sh behavior: commands are wrapped as bash -c "command"
                 let cmd_vec = spec.command_vec();
                 assert_eq!(cmd_vec[0], "bash"); // Interpreter
@@ -603,7 +613,7 @@ mod tests {
         fn new_with_failed_job() -> Self {
             let job_id = JobId::new();
             let spec = JobSpec::new(vec!["test".to_string()]);
-            let mut job = Job::new(job_id, spec);
+            let mut job = Job::new(job_id, "test-failed-job".to_string(), spec);
             job.fail("Test failure".to_string()).unwrap();
             Self {
                 job: Mutex::new(Some(job)),

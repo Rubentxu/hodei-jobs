@@ -41,6 +41,7 @@ impl PostgresJobQueue {
 #[allow(dead_code)]
 pub(super) fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
     let id: uuid::Uuid = row.get("id");
+    let name: String = row.get("name");
     let spec_json: serde_json::Value = row.get("spec");
     let state_str: String = row.get("state");
     let selected_provider_id: Option<uuid::Uuid> = row.get("selected_provider_id");
@@ -95,6 +96,7 @@ pub(super) fn map_row_to_job(row: sqlx::postgres::PgRow) -> Result<Job> {
 
     Ok(Job::hydrate(
         JobId(id),
+        name,
         spec,
         state,
         selected_provider_id.map(ProviderId),
@@ -170,6 +172,7 @@ impl JobQueue for PostgresJobQueue {
         // Atomically claim the job by updating its state and removing from queue
         let claim_result: Option<(
             uuid::Uuid,
+            String, // name column
             serde_json::Value,
             String,
             Option<uuid::Uuid>,
@@ -197,7 +200,7 @@ impl JobQueue for PostgresJobQueue {
             UPDATE jobs j
             SET state = 'ASSIGNED'
             WHERE j.id = (SELECT job_id FROM claimed_job)
-            RETURNING j.id, j.spec, j.state, j.selected_provider_id, j.execution_context,
+            RETURNING j.id, j.name, j.spec, j.state, j.selected_provider_id, j.execution_context,
                       j.attempts, j.max_attempts, j.created_at, j.started_at,
                       j.completed_at, j.result, j.error_message, j.metadata
             "#,
@@ -228,6 +231,7 @@ impl JobQueue for PostgresJobQueue {
             // Reconstruct job from data
             let (
                 id,
+                name,
                 spec_json,
                 state_str,
                 selected_provider_id,
@@ -284,6 +288,7 @@ impl JobQueue for PostgresJobQueue {
 
             let job = Job::hydrate(
                 JobId(id),
+                name,
                 spec,
                 state,
                 selected_provider_id.map(ProviderId),

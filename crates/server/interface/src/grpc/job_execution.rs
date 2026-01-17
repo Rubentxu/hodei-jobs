@@ -397,6 +397,11 @@ impl JobExecutionService for JobExecutionServiceImpl {
         );
 
         let create_request = CreateJobRequest {
+            name: if definition.name.is_empty() {
+                "unnamed-job".to_string()
+            } else {
+                definition.name.clone()
+            },
             spec: JobSpecRequest {
                 command,
                 image: None,

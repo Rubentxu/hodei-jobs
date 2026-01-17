@@ -13,12 +13,12 @@
 
 {{- if not .Values.development.enabled }}
 
-{{- $migrationsCorePath := "crates/server/infrastructure/src/persistence/postgres/migrations/core" }}
-{{- $migrationsInfraPath := "crates/server/infrastructure/src/persistence/postgres/migrations/infra" }}
+{{- $migrationsCorePath := "crates/server/infrastructure/src/persistence/postgres/migrations/core/*.sql" }}
+{{- $migrationsInfraPath := "crates/server/infrastructure/src/persistence/postgres/migrations/infra/*.sql" }}
 
 {{- $files := $.Files }}
 
-{{- if $files.Match $migrationsCorePath "*.sql" }}
+{{- if $files.Glob $migrationsCorePath }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -29,14 +29,14 @@ metadata:
     app.kubernetes.io/component: migrations
     app.kubernetes.io/part-of: hodei-jobs-platform
 data:
-{{- range $path := $files.Match $migrationsCorePath "*.sql" }}
+{{- range $path := $files.Glob $migrationsCorePath }}
 {{ $name := $path | base }}
   {{ $name }}: |
     {{- $files.Get $path | nindent 4 }}
 {{- end }}
 {{- end }}
 
-{{- if $files.Match $migrationsInfraPath "*.sql" }}
+{{- if $files.Glob $migrationsInfraPath }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -47,7 +47,7 @@ metadata:
     app.kubernetes.io/component: migrations-infra
     app.kubernetes.io/part-of: hodei-jobs-platform
 data:
-{{- range $path := $files.Match $migrationsInfraPath "*.sql" }}
+{{- range $path := $files.Glob $migrationsInfraPath }}
 {{ $name := $path | base }}
   {{ $name }}: |
     {{- $files.Get $path | nindent 4 }}

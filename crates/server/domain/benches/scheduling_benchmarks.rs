@@ -75,6 +75,7 @@ fn create_test_providers() -> Vec<scheduling::ProviderInfo> {
 fn create_test_job() -> Job {
     Job::new(
         JobId::new(),
+        "benchmark-test-job".to_string(),
         JobSpec::new(vec!["echo".to_string(), "hello".to_string()]),
     )
 }

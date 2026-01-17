@@ -122,7 +122,7 @@ mod job_execution_tests {
 
     fn create_test_job() -> Job {
         let spec = JobSpec::new(vec!["echo".to_string(), "test".to_string()]);
-        Job::new(JobId::new(), spec)
+        Job::new(JobId::new(), "domain-test-job".to_string(), spec)
     }
 
     #[test]

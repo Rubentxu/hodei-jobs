@@ -15,6 +15,7 @@ use hodei_server_domain::workers::{
     WorkerProvider, WorkerProvisioning, WorkerProvisioningResult, WorkerRegistry, WorkerSpec,
 };
 
+use crate::providers::ProviderRegistry;
 use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
 
 /// Default OTP TTL for provisioned workers (5 minutes)
@@ -72,6 +73,8 @@ pub struct DefaultWorkerProvisioningService {
     token_store: Arc<dyn WorkerBootstrapTokenStore>,
     /// Available providers
     providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+    /// Provider registry for getting provider configs
+    provider_registry: Arc<ProviderRegistry>,
     /// Configuration
     config: ProvisioningConfig,
 }
@@ -89,12 +92,14 @@ impl DefaultWorkerProvisioningService {
         registry: Arc<dyn WorkerRegistry>,
         token_store: Arc<dyn WorkerBootstrapTokenStore>,
         providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
+        provider_registry: Arc<ProviderRegistry>,
         config: ProvisioningConfig,
     ) -> Self {
         Self {
             registry,
             token_store,
             providers,
+            provider_registry,
             config,
         }
     }
@@ -210,11 +215,22 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         }
     }
 
-    fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
-        Some(WorkerSpec::new(
-            self.config.default_image.clone(),
-            self.config.server_address.clone(),
-        ))
+    async fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec> {
+        // Get image from provider config, fallback to config default_image
+        let image = match self.provider_registry.get_provider(provider_id).await {
+            Ok(Some(config)) => match config.type_config {
+                hodei_server_domain::providers::ProviderTypeConfig::Docker(docker) => {
+                    docker.default_image
+                }
+                hodei_server_domain::providers::ProviderTypeConfig::Kubernetes(k8s) => {
+                    k8s.default_image
+                }
+                _ => self.config.default_image.clone(),
+            },
+            _ => self.config.default_image.clone(),
+        };
+
+        Some(WorkerSpec::new(image, self.config.server_address.clone()))
     }
 
     async fn list_providers(&self) -> Result<Vec<ProviderId>> {

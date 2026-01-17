@@ -584,6 +584,7 @@ mod tests {
         let selector = LowestCostProviderSelector::new();
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
+            "bench-job-lowest-cost".to_string(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
         );
 
@@ -597,6 +598,7 @@ mod tests {
         let selector = FastestStartupProviderSelector::new();
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
+            "bench-job-fastest".to_string(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
         );
 
@@ -612,6 +614,7 @@ mod tests {
         let selector = MostCapacityProviderSelector::new();
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
+            "bench-job-capacity".to_string(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
         );
 
@@ -625,6 +628,7 @@ mod tests {
     fn test_scheduling_context_includes_job_preferences() {
         let job = Job::new(
             crate::shared_kernel::JobId::new(),
+            "bench-job-preferences".to_string(),
             crate::jobs::JobSpec::new(vec!["echo".to_string()]),
         );
 
