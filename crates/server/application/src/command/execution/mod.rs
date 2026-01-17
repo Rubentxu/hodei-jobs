@@ -6,12 +6,16 @@
 
 use hodei_server_domain::command::InMemoryErasedCommandBus;
 use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::outbox::OutboxRepository;
 use hodei_server_domain::saga::commands::execution::{
     AssignWorkerCommand, AssignWorkerHandler, CompleteJobCommand, CompleteJobHandler,
     ExecuteJobCommand, ExecuteJobHandler, ValidateJobCommand, ValidateJobHandler,
 };
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
+
+mod job_executor;
+pub use job_executor::JobExecutorImpl;
 
 /// Register all execution command handlers with the provided CommandBus.
 ///
@@ -29,6 +33,33 @@ pub async fn register_execution_command_handlers(
     command_bus: &InMemoryErasedCommandBus,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+) {
+    register_execution_command_handlers_with_executor(
+        command_bus,
+        job_repository,
+        worker_registry,
+        None,
+        None,
+    )
+    .await;
+}
+
+/// Register execution command handlers with optional JobExecutor
+///
+/// # Arguments
+/// * `command_bus` - The InMemoryErasedCommandBus to register handlers with
+/// * `job_repository` - Job repository trait object
+/// * `worker_registry` - Worker registry trait object
+/// * `job_executor` - Optional JobExecutor for RUN_JOB dispatch
+/// * `outbox_repository` - Optional OutboxRepository for transactional events
+pub async fn register_execution_command_handlers_with_executor(
+    command_bus: &InMemoryErasedCommandBus,
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    job_executor: Option<
+        Arc<dyn hodei_server_domain::saga::commands::execution::JobExecutor + Send + Sync>,
+    >,
+    _outbox_repository: Option<Arc<dyn OutboxRepository + Send + Sync>>,
 ) {
     tracing::info!("Registering execution command handlers...");
 
@@ -53,9 +84,12 @@ pub async fn register_execution_command_handlers(
 
     tracing::info!("  ✓ AssignWorkerHandler registered");
 
-    // Create handler for ExecuteJobCommand
-    let execute_job_handler =
-        ExecuteJobHandler::new(job_repository.clone(), worker_registry.clone());
+    // Create handler for ExecuteJobCommand with optional JobExecutor
+    let execute_job_handler = ExecuteJobHandler::new(
+        job_repository.clone(),
+        worker_registry.clone(),
+        job_executor,
+    );
 
     // Register ExecuteJobHandler
     command_bus

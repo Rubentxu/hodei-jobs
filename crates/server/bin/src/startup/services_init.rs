@@ -4,11 +4,12 @@
 //! Follows Single Responsibility Principle - only handles service initialization.
 //! Also handles saga consumers and background tasks wiring.
 
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::info;
+use tracing::{debug, error, info, warn};
 
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::coordinator::JobCoordinator;
@@ -23,18 +24,33 @@ use hodei_server_application::workers::provisioning::WorkerProvisioningService;
 use hodei_server_application::workers::provisioning_impl::{
     DefaultWorkerProvisioningService, ProvisioningConfig,
 };
+use hodei_server_domain::command::{
+    InMemoryErasedCommandBus, OutboxCommandBus, OutboxCommandBusExt,
+};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::iam::WorkerBootstrapTokenStore;
 use hodei_server_domain::jobs::JobQueue;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::outbox::OutboxRepository;
+use hodei_server_domain::saga::{Saga, SagaOrchestrator, SagaType};
+use hodei_server_domain::shared_kernel::WorkerId;
 use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_infrastructure::messaging::cancellation_saga_consumer::CancellationSagaConsumer;
 use hodei_server_infrastructure::messaging::cleanup_saga_consumer::CleanupSagaConsumer;
+use hodei_server_infrastructure::messaging::execution_saga_consumer::ExecutionSagaConsumer;
 use hodei_server_infrastructure::messaging::nats::NatsEventBus;
+use hodei_server_infrastructure::messaging::nats_outbox_relay::NatsOutboxRelay;
+use hodei_server_infrastructure::messaging::worker_ephemeral_terminating_consumer::WorkerEphemeralTerminatingConsumer;
+use hodei_server_infrastructure::persistence::command_outbox::PostgresCommandOutboxRepository;
+use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
+use hodei_server_infrastructure::persistence::postgres::SagaPoller;
 use hodei_server_infrastructure::persistence::postgres::{
     PostgresJobQueue, PostgresJobRepository, PostgresProviderConfigRepository,
     PostgresSagaOrchestrator, PostgresSagaRepository, PostgresWorkerRegistry,
+};
+use hodei_server_infrastructure::persistence::saga::{
+    NotifyingRepositoryMetrics, NotifyingSagaRepository, ReactiveSagaProcessor,
+    ReactiveSagaProcessorConfig, ReactiveSagaProcessorMetrics,
 };
 use hodei_server_interface::grpc::{
     JobExecutionServiceImpl, LogStreamService, MetricsServiceImpl, ProviderManagementServiceImpl,
@@ -419,6 +435,172 @@ pub struct BackgroundTasksShutdownHandle {
     pub timeout_checker_stop: tokio::sync::broadcast::Sender<()>,
 }
 
+/// Start SagaPoller for processing pending sagas
+///
+/// SagaPoller polls the database for pending sagas and executes them.
+/// This is a fallback mechanism for sagas that weren't triggered by events.
+pub async fn start_saga_poller(
+    pool: sqlx::PgPool,
+    saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+) -> tokio::sync::mpsc::Sender<()> {
+    info!("🔄 Starting SagaPoller for pending saga processing...");
+
+    let repository = Arc::new(PostgresSagaRepository::new(pool));
+
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
+
+    let poller = SagaPoller::new(repository, saga_orchestrator, None);
+
+    // Factory function to create sagas from type and metadata
+    let saga_factory = |saga_type: SagaType, _metadata: Value| -> Option<Box<dyn Saga>> {
+        match saga_type {
+            SagaType::Execution => Some(Box::new(hodei_server_domain::saga::ExecutionSaga::new(
+                hodei_server_domain::shared_kernel::JobId::new(),
+            ))),
+            SagaType::Cancellation => {
+                Some(Box::new(hodei_server_domain::saga::CancellationSaga::new(
+                    hodei_server_domain::shared_kernel::JobId::new(),
+                    "pending_timeout".to_string(),
+                )))
+            }
+            SagaType::Cleanup => Some(Box::new(hodei_server_domain::saga::CleanupSaga::new())),
+            SagaType::Timeout => Some(Box::new(hodei_server_domain::saga::TimeoutSaga::new(
+                hodei_server_domain::shared_kernel::JobId::new(),
+                std::time::Duration::from_secs(3600),
+                "timeout".to_string(),
+            ))),
+            SagaType::Provisioning => {
+                // ProvisioningSaga requires WorkerSpec and ProviderId
+                // For the poller, we use the orchestrator's factory instead
+                None
+            }
+            SagaType::Recovery => Some(Box::new(hodei_server_domain::saga::RecoverySaga::new(
+                hodei_server_domain::shared_kernel::JobId::new(),
+                WorkerId::new(),
+                None,
+            ))),
+        }
+    };
+
+    tokio::spawn(async move {
+        let handle = poller.start(saga_factory);
+
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("🔄 SagaPoller shutting down...");
+                let _ = handle.stop().await;
+            }
+        }
+    });
+
+    info!("✅ SagaPoller started");
+    shutdown_tx
+}
+
+/// Start NATS Outbox Relay for publishing events to NATS
+///
+/// The Outbox Relay reads pending events from the outbox table
+/// and publishes them to NATS JetStream with retry logic.
+pub async fn start_nats_outbox_relay(
+    pool: sqlx::PgPool,
+    nats_event_bus: NatsEventBus,
+) -> Result<tokio::sync::broadcast::Sender<()>, anyhow::Error> {
+    info!("📦 Starting NATS Outbox Relay for event publishing...");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
+    // Use std::thread::spawn since run() is a blocking loop
+    let _handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime for NatsOutboxRelay");
+
+        rt.block_on(async {
+            let relay = NatsOutboxRelay::new(pool, nats_event_bus, None);
+            let result = relay.run().await;
+            match result {
+                Ok(_) => info!("📦 NATS Outbox Relay completed"),
+                Err(e) => error!("📦 NATS Outbox Relay error: {}", e),
+            }
+        });
+    });
+
+    // Handle shutdown signal in background
+    let mut shutdown_rx_clone = shutdown_rx;
+    tokio::spawn(async move {
+        let _ = shutdown_rx_clone.recv().await;
+        info!("📦 NATS Outbox Relay shutdown signal received");
+    });
+
+    info!("✅ NATS Outbox Relay started");
+    Ok(shutdown_tx)
+}
+
+/// Shutdown handle for ExecutionSagaConsumer
+pub struct ExecutionSagaConsumerShutdownHandle {
+    pub stop_tx: tokio::sync::broadcast::Sender<()>,
+}
+
+/// Start ExecutionSagaConsumer for reactive saga triggering
+///
+/// This consumer listens to JobQueued and WorkerReady events from NATS
+/// and triggers execution sagas reactively.
+pub async fn start_execution_saga_consumer(
+    nats_event_bus: &NatsEventBus,
+    saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+    pool: sqlx::PgPool,
+) -> Result<ExecutionSagaConsumerShutdownHandle, anyhow::Error> {
+    info!("📦 Starting ExecutionSagaConsumer for reactive saga triggering...");
+
+    let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
+    let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool));
+
+    let (stop_tx, stop_rx) = tokio::sync::broadcast::channel(1);
+
+    let consumer = ExecutionSagaConsumer::new(
+        nats_event_bus.client().clone(),
+        nats_event_bus.jetstream().clone(),
+        saga_orchestrator,
+        job_repository,
+        worker_registry,
+        None,
+    );
+
+    tokio::spawn(async move {
+        if let Err(e) = consumer.start().await {
+            error!("❌ ExecutionSagaConsumer error: {}", e);
+        }
+    });
+
+    info!("✅ ExecutionSagaConsumer started");
+    Ok(ExecutionSagaConsumerShutdownHandle { stop_tx })
+}
+
+/// Create a command bus with transactional outbox support
+///
+/// This function creates a command bus that persists commands to the outbox
+/// before dispatching them, implementing the Transactional Outbox pattern.
+/// Commands are stored in the hodei_commands table and processed by a background relay.
+pub fn create_command_bus(
+    pool: sqlx::PgPool,
+) -> (
+    Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync>,
+    Arc<PostgresCommandOutboxRepository>,
+) {
+    // Create the command outbox repository
+    let outbox_repository = Arc::new(PostgresCommandOutboxRepository::new(pool));
+
+    // Create the in-memory command bus first (as concrete type)
+    let inner_bus = InMemoryErasedCommandBus::new();
+
+    // Wrap the command bus with outbox support (takes ownership)
+    let outboxed_bus: OutboxCommandBus<PostgresCommandOutboxRepository, InMemoryErasedCommandBus> =
+        OutboxCommandBus::new(outbox_repository.clone(), Arc::new(inner_bus));
+
+    (Arc::new(outboxed_bus), outbox_repository)
+}
+
 /// Start background tasks (TimeoutChecker)
 ///
 /// This function starts periodic background tasks that perform system maintenance:
@@ -447,4 +629,135 @@ pub async fn start_background_tasks(
     BackgroundTasksShutdownHandle {
         timeout_checker_stop: timeout_stop_tx,
     }
+}
+
+/// Shutdown handle for ReactiveSagaProcessor
+pub struct ReactiveSagaProcessorShutdownHandle {
+    pub stop_tx: tokio::sync::watch::Sender<()>,
+}
+
+/// Start ReactiveSagaProcessor for reactive saga processing
+///
+/// The ReactiveSagaProcessor listens to saga notifications from NotifyingSagaRepository
+/// and processes sagas immediately without polling. It includes a safety net polling
+/// mechanism for stuck sagas (EPIC-45 Gap 6).
+pub async fn start_reactive_saga_processor(
+    pool: sqlx::PgPool,
+    saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+) -> ReactiveSagaProcessorShutdownHandle {
+    info!("⚡ Starting ReactiveSagaProcessor for reactive saga processing...");
+
+    // Create the inner repository
+    let inner_repository = PostgresSagaRepository::new(pool.clone());
+
+    // Create signal channel for saga notifications
+    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Create metrics for NotifyingSagaRepository
+    let notifying_metrics = Arc::new(NotifyingRepositoryMetrics::default());
+
+    // Wrap with NotifyingSagaRepository
+    let notifying_repository =
+        NotifyingSagaRepository::new(inner_repository, signal_tx, notifying_metrics);
+
+    // Create metrics for ReactiveSagaProcessor
+    let metrics = Arc::new(ReactiveSagaProcessorMetrics::default());
+
+    // Create the reactive processor with safety net polling
+    let config = ReactiveSagaProcessorConfig {
+        reactive_enabled: true,
+        safety_polling_enabled: true,
+        safety_polling_interval: std::time::Duration::from_secs(300),
+        max_concurrent_sagas: 10,
+        saga_timeout: std::time::Duration::from_secs(300),
+        polling_batch_size: 100,
+    };
+
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
+
+    let processor = ReactiveSagaProcessor::new(
+        Arc::new(notifying_repository),
+        signal_rx,
+        stop_rx.clone(),
+        Some(config),
+        Some(metrics),
+    );
+
+    // Start the processor
+    tokio::spawn(async move {
+        processor.run().await;
+        info!("⚡ ReactiveSagaProcessor stopped");
+    });
+
+    info!("✅ ReactiveSagaProcessor started (reactive + safety net polling)");
+    ReactiveSagaProcessorShutdownHandle { stop_tx }
+}
+
+/// Create a notifying saga repository with signal channel
+///
+/// This function creates a NotifyingSagaRepository that emits signals
+/// when sagas are saved, enabling reactive saga processing.
+pub fn create_notifying_saga_repository(
+    pool: sqlx::PgPool,
+) -> (
+    Arc<NotifyingSagaRepository<PostgresSagaRepository>>,
+    tokio::sync::mpsc::UnboundedReceiver<hodei_server_domain::saga::SagaId>,
+) {
+    let inner_repository = PostgresSagaRepository::new(pool);
+    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    let metrics = Arc::new(
+        hodei_server_infrastructure::persistence::saga::NotifyingRepositoryMetrics::default(),
+    );
+
+    let notifying_repository = NotifyingSagaRepository::new(inner_repository, signal_tx, metrics);
+
+    (Arc::new(notifying_repository), signal_rx)
+}
+
+/// Shutdown handle for WorkerEphemeralTerminatingConsumer
+pub struct WorkerEphemeralTerminatingConsumerShutdownHandle {
+    pub stop_tx: tokio::sync::broadcast::Sender<()>,
+}
+
+/// Start WorkerEphemeralTerminatingConsumer for reactive worker cleanup
+///
+/// This consumer listens to WorkerEphemeralTerminating events from NATS
+/// and triggers cleanup sagas for worker resource cleanup.
+pub async fn start_worker_ephemeral_terminating_consumer(
+    nats_event_bus: &NatsEventBus,
+    saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+    pool: sqlx::PgPool,
+) -> Result<WorkerEphemeralTerminatingConsumerShutdownHandle, anyhow::Error> {
+    info!("🧹 Starting WorkerEphemeralTerminatingConsumer for reactive cleanup...");
+
+    let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
+    let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool.clone()));
+    let outbox_repository: Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync> =
+        Arc::new(
+            hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository::new(
+                pool.clone(),
+            ),
+        );
+
+    let (stop_tx, stop_rx) = tokio::sync::broadcast::channel(1);
+
+    let consumer = WorkerEphemeralTerminatingConsumer::new(
+        nats_event_bus.client().clone(),
+        nats_event_bus.jetstream().clone(),
+        saga_orchestrator,
+        job_repository,
+        worker_registry,
+        outbox_repository,
+        None,
+    );
+
+    tokio::spawn(async move {
+        // Note: start() uses internal shutdown channel, not external receiver
+        if let Err(e) = consumer.start().await {
+            error!("🧹 WorkerEphemeralTerminatingConsumer error: {}", e);
+        }
+    });
+
+    info!("✅ WorkerEphemeralTerminatingConsumer started");
+    Ok(WorkerEphemeralTerminatingConsumerShutdownHandle { stop_tx })
 }
