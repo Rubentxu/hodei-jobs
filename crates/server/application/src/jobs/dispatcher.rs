@@ -899,18 +899,20 @@ impl JobDispatcher {
         // Fetch the specific job associated with this worker
         match self.job_repository.find_by_id(&associated_job_id).await {
             Ok(Some(job)) => {
-                // Verify job is still in PENDING state
-                if *job.state() == JobState::Pending {
+                // Worker with current_job_id should only receive ASSIGNED jobs
+                // ASSIGNED means the job was provisioned for this specific worker
+                if *job.state() == JobState::Assigned {
                     debug!(
                         job_id = %job.id,
-                        "JobDispatcher: Found associated pending job"
+                        state = ?job.state(),
+                        "JobDispatcher: Found associated job in ASSIGNED state, dispatching"
                     );
                     Ok(Some(job))
                 } else {
                     debug!(
                         job_id = %job.id,
                         state = ?job.state(),
-                        "JobDispatcher: Associated job is not pending, rejecting"
+                        "JobDispatcher: Associated job is not in ASSIGNED state, rejecting (expected ASSIGNED for provisioned worker)"
                     );
                     Ok(None)
                 }

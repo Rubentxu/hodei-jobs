@@ -9,6 +9,7 @@
 //! - Publicar eventos de asignación
 //! - Manejar rollback en caso de fallo
 
+use crate::workers::commands::WorkerCommandSender;
 use chrono::Utc;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::EventMetadata;
@@ -16,7 +17,6 @@ use hodei_server_domain::jobs::{ExecutionContext, Job, JobRepository};
 use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::shared_kernel::{DomainError, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
-use crate::workers::commands::WorkerCommandSender;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -93,15 +93,19 @@ impl JobAssignmentService {
         }
     }
 
-    /// Asignar un job a un worker y ejecutar dispatch
+    /// Asignar un job a un worker (sin enviar RUN_JOB)
+    ///
+    /// ## SRP: Solo asignación, no dispatch
+    /// Este método solo asigna el worker al job y persiste el estado ASSIGNED.
+    /// El envío de RUN_JOB es responsabilidad exclusiva del ExecutionSaga.
     ///
     /// ## Pasos:
     /// 1. Validar worker existe y está disponible
     /// 2. Crear ExecutionContext
     /// 3. Asignar provider al job
-    /// 4. Persistir estado en BD
-    /// 5. Enviar comando RUN_JOB
-    /// 6. Publicar evento JobAssigned
+    /// 4. Persistir estado ASSIGNED en BD
+    /// 5. Publicar evento JobAssigned
+    /// 6. NO envía RUN_JOB (delegado al saga)
     pub async fn assign_job(
         &self,
         job: &mut Job,
@@ -112,7 +116,7 @@ impl JobAssignmentService {
         info!(
             job_id = %job.id,
             worker_id = %worker_id,
-            "JobAssignmentService: Starting job assignment"
+            "JobAssignmentService: Starting job assignment (NO dispatch)"
         );
 
         // Step 1: Get worker details
@@ -121,10 +125,8 @@ impl JobAssignmentService {
             .get(worker_id)
             .await
             .map_err(|e| format!("Failed to get worker {}: {}", worker_id, e))?
-            .ok_or_else(|| {
-                DomainError::WorkerNotFound {
-                    worker_id: worker_id.clone(),
-                }
+            .ok_or_else(|| DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
             })
             .map_err(|e| format!("Worker not found: {}", e))?;
 
@@ -138,7 +140,7 @@ impl JobAssignmentService {
             format!("exec-{}", Uuid::new_v4()),
         );
 
-        // Assign provider to job
+        // Assign provider to job (transitions to ASSIGNED state)
         if job.selected_provider().is_none() {
             job.assign_to_provider(provider_id.clone(), context)
                 .map_err(|e| format!("Failed to assign provider: {}", e))?;
@@ -149,110 +151,35 @@ impl JobAssignmentService {
             );
         }
 
-        // Step 3: Update job in repository (BEFORE gRPC to avoid race condition)
+        // Step 3: Update job in repository (state = ASSIGNED)
+        // NOTE: No RUNNING transition here - that's the saga's responsibility
         info!(
             job_id = %job.id,
-            "JobAssignmentService: Updating job in repository"
+            state = "ASSIGNED",
+            "JobAssignmentService: Persisting job state to ASSIGNED"
         );
-        self.job_repository.update(job).await.map_err(|e| {
-            format!("Failed to persist job before dispatch: {}", e)
-        })?;
+        self.job_repository
+            .update(job)
+            .await
+            .map_err(|e| format!("Failed to persist job assignment: {}", e))?;
 
-        // Step 4: Send RUN_JOB command to worker via gRPC
         info!(
+            job_id = %job.id,
             worker_id = %worker_id,
-            job_id = %job.id,
-            "JobAssignmentService: Sending RUN_JOB command to worker"
+            "JobAssignmentService: Job assigned (ASSIGNED state persisted)"
         );
 
-        let dispatch_result = tokio::time::timeout(
-            self.config.dispatch_timeout,
-            self.worker_command_sender.send_run_job(worker_id, job),
-        )
-        .await;
-
-        let result = match dispatch_result {
-            Ok(Ok(())) => {
-                info!(
-                    worker_id = %worker_id,
-                    job_id = %job.id,
-                    "JobAssignmentService: RUN_JOB command sent successfully"
-                );
-                Ok(JobAssignmentResult {
-                    success: true,
-                    worker_id: Some(worker_id.clone()),
-                    error_message: None,
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                })
-            }
-            Ok(Err(e)) => {
-                let error_msg = format!("Failed to send RUN_JOB: {}", e);
-                error!(
-                    error = %e,
-                    worker_id = %worker_id,
-                    job_id = %job.id,
-                    "JobAssignmentService: Failed to send RUN_JOB"
-                );
-
-                // Rollback job state
-                self.rollback_job_state(job, &error_msg).await;
-
-                Ok(JobAssignmentResult {
-                    success: false,
-                    worker_id: None,
-                    error_message: Some(error_msg),
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                })
-            }
-            Err(_) => {
-                let error_msg = "Timeout waiting for RUN_JOB response".to_string();
-                error!(
-                    worker_id = %worker_id,
-                    job_id = %job.id,
-                    "JobAssignmentService: Timeout sending RUN_JOB"
-                );
-
-                self.rollback_job_state(job, &error_msg).await;
-
-                Ok(JobAssignmentResult {
-                    success: false,
-                    worker_id: None,
-                    error_message: Some(error_msg),
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                })
-            }
-        };
-
-        // Step 5: Publish JobAssigned event
+        // Step 4: Publish JobAssigned event (triggers saga for RUN_JOB)
         if self.config.publish_events {
             self.publish_job_assigned_event(job, worker_id).await;
         }
 
-        result
-    }
-
-    /// Rollback job state on dispatch failure
-    async fn rollback_job_state(&self, job: &mut Job, error_msg: &str) {
-        if let Err(state_err) = job.fail(format!("Dispatch failed: {}", error_msg)) {
-            error!(
-                error = %state_err,
-                job_id = %job.id,
-                "JobAssignmentService: Failed to transition job to Failed state"
-            );
-        } else {
-            if let Err(db_err) = self.job_repository.update(job).await {
-                error!(
-                    error = %db_err,
-                    job_id = %job.id,
-                    "JobAssignmentService: Failed to persist Failed state to DB"
-                );
-            } else {
-                info!(
-                    job_id = %job.id,
-                    "JobAssignmentService: Job state rolled back to FAILED"
-                );
-            }
-        }
+        Ok(JobAssignmentResult {
+            success: true,
+            worker_id: Some(worker_id.clone()),
+            error_message: None,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+        })
     }
 
     /// Publish JobAssigned event
