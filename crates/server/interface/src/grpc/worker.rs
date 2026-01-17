@@ -1240,20 +1240,83 @@ impl WorkerAgentServiceImpl {
     }
 
     /// Envía un mensaje a un worker específico
+    ///
+    /// BUG-001 FIX: Handles race condition where worker is registered but hasn't sent
+    /// first heartbeat yet. Uses a waiting mechanism with timeout.
     pub async fn send_to_worker(
         &self,
         worker_id: &str,
         message: ServerMessage,
     ) -> Result<(), Status> {
-        let sender = self
-            .worker_channels
-            .get(worker_id)
-            .ok_or_else(|| Status::not_found(format!("Worker {} not connected", worker_id)))?;
+        // Try DashMap first (fast path for connected workers)
+        if let Some(sender) = self.worker_channels.get(worker_id) {
+            return sender
+                .send(Ok(message))
+                .await
+                .map_err(|e| Status::internal(format!("Failed to send message to worker: {}", e)));
+        }
 
-        sender
-            .send(Ok(message))
-            .await
-            .map_err(|e| Status::internal(format!("Failed to send message to worker: {}", e)))
+        // BUG-001 FIX: Worker not in DashMap, check Actor for registered workers
+        // If worker is registered but not yet connected, wait for connection with timeout
+        if let Some(ref supervisor) = self.supervisor_handle {
+            // Parse worker_id string to WorkerId type
+            let worker_id_obj = WorkerId::from_string(worker_id)
+                .ok_or_else(|| Status::invalid_argument("Invalid worker ID format"))?;
+
+            match supervisor.get_worker(&worker_id_obj).await {
+                Ok(_actor_state) => {
+                    // Worker is registered in Actor but stream not yet connected
+                    // Wait for the worker to connect (send first heartbeat)
+                    info!(
+                        "BUG-001 FIX: Worker {} is registered but not yet connected. Waiting for connection...",
+                        worker_id
+                    );
+
+                    // Wait up to 5 seconds for worker to connect
+                    let max_wait = std::time::Duration::from_secs(5);
+                    let start = std::time::Instant::now();
+
+                    while start.elapsed() < max_wait {
+                        // Check if worker connected (now in DashMap)
+                        if let Some(sender) = self.worker_channels.get(worker_id) {
+                            info!(
+                                "BUG-001 FIX: Worker {} connected, sending message",
+                                worker_id
+                            );
+                            return sender.send(Ok(message)).await.map_err(|e| {
+                                Status::internal(format!("Failed to send message: {}", e))
+                            });
+                        }
+                        // Wait a bit before checking again
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+
+                    // Timeout - worker didn't connect in time
+                    return Err(Status::deadline_exceeded(format!(
+                        "Worker {} registered but failed to connect within timeout",
+                        worker_id
+                    )));
+                }
+                Err(e) => {
+                    // Worker not found in Actor either - return not found
+                    let error_msg = e.to_string();
+                    if error_msg.contains("not found") || error_msg.contains("NotFound") {
+                        return Err(Status::not_found(format!(
+                            "Worker {} not registered",
+                            worker_id
+                        )));
+                    }
+                    // Other error from Actor
+                    return Err(Status::internal(format!("Actor error: {}", error_msg)));
+                }
+            }
+        }
+
+        // No supervisor and not in DashMap - worker not found
+        Err(Status::not_found(format!(
+            "Worker {} not connected",
+            worker_id
+        )))
     }
 }
 
