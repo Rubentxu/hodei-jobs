@@ -8,4 +8,5 @@
 #![warn(missing_docs)]
 
 pub mod grpc;
+pub mod server;
 pub mod types;
