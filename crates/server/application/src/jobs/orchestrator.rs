@@ -338,16 +338,18 @@ pub struct OrchestratorStats {
 mod tests {
     use super::*;
     use futures::stream::BoxStream;
+    use hodei_server_domain::SagaOrchestrator;
     use hodei_server_domain::event_bus::EventBusError;
     use hodei_server_domain::events::DomainEvent;
     use hodei_server_domain::jobs::{JobSpec, JobsFilter};
+    use hodei_server_domain::outbox::OutboxError;
     use hodei_server_domain::shared_kernel::{JobState, Result};
     use std::collections::HashMap as StdHashMap;
     use std::collections::VecDeque;
     use std::sync::Mutex;
     use tokio::sync::RwLock as TokioRwLock;
 
-    use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert};
+    use hodei_server_domain::outbox::OutboxEventInsert;
 
     struct MockEventBus;
 
@@ -662,7 +664,8 @@ mod tests {
         registry: Arc<dyn WorkerRegistry + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
     ) -> Arc<DynRecoverySagaCoordinator> {
-        use hodei_server_domain::command::InMemoryErasedCommandBus;
+        use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
+        use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
 
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
             Arc::new(MockSagaOrchestrator);

@@ -838,7 +838,7 @@ impl WorkerAgentServiceImpl {
             let event = DomainEvent::JobStatusChanged {
                 job_id: job.id.clone(),
                 old_state, // Use actual old state (PENDING or RUNNING)
-                new_state,
+                new_state: new_state.clone(),
                 occurred_at: Utc::now(),
                 correlation_id,
                 actor,

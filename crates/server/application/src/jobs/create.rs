@@ -569,6 +569,7 @@ mod tests {
         };
 
         let request = CreateJobRequest {
+            name: "test-job".to_string(),
             spec: spec_request,
             correlation_id: Some("test-correlation".to_string()),
             actor: Some("test-user".to_string()),

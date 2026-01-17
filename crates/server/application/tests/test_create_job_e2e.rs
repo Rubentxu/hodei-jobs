@@ -3,13 +3,13 @@
 
 use futures::stream::BoxStream;
 use hodei_server_application::jobs::create::{CreateJobRequest, CreateJobUseCase, JobSpecRequest};
+use hodei_server_domain::JobCreated;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use hodei_server_domain::JobCreated;
 
 /// Mock EventBus para tests
 #[derive(Default)]
@@ -161,6 +161,7 @@ async fn test_create_job_saves_and_enqueues_atomically() {
     let event_bus = Arc::new(MockEventBus::new());
 
     let request = CreateJobRequest {
+        name: "test-job".to_string(),
         spec: JobSpecRequest {
             command: vec!["echo".to_string(), "test".to_string()],
             image: None,
@@ -207,6 +208,7 @@ async fn test_create_job_with_explicit_id() {
     let event_bus = Arc::new(MockEventBus::new());
 
     let request = CreateJobRequest {
+        name: "test-job".to_string(),
         spec: JobSpecRequest {
             command: vec!["echo".to_string(), "test".to_string()],
             image: None,
@@ -245,6 +247,7 @@ async fn test_create_job_fails_with_invalid_command() {
     let event_bus = Arc::new(MockEventBus::new());
 
     let request = CreateJobRequest {
+        name: "test-job".to_string(),
         spec: JobSpecRequest {
             command: vec!["echo".to_string(), "test".to_string()],
             image: None,
@@ -280,6 +283,7 @@ async fn test_create_job_publishes_correct_event_data() {
     let event_bus = Arc::new(MockEventBus::new());
 
     let request = CreateJobRequest {
+        name: "test-job".to_string(),
         spec: JobSpecRequest {
             command: vec!["echo".to_string(), "hello".to_string(), "world".to_string()],
             image: Some("ubuntu:latest".to_string()),
@@ -311,7 +315,13 @@ async fn test_create_job_publishes_correct_event_data() {
     assert!(events.len() >= 1, "Should publish at least one event");
 
     match &events[0] {
-        DomainEvent::JobCreated(JobCreated { job_id, spec, correlation_id, actor, .. }) => {
+        DomainEvent::JobCreated(JobCreated {
+            job_id,
+            spec,
+            correlation_id,
+            actor,
+            ..
+        }) => {
             assert_eq!(
                 correlation_id.as_deref(),
                 Some("correlation-123"),

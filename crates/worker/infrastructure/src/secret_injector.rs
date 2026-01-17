@@ -26,6 +26,8 @@ use tracing::info;
 
 // Re-export SecretString for use in other modules
 pub use secrecy::SecretString;
+// Import ExposeSecret trait for accessing secret values
+use secrecy::ExposeSecret;
 
 /// Errors that can occur during secret injection
 #[derive(Debug, Error)]

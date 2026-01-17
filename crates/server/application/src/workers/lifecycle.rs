@@ -1532,12 +1532,13 @@ mod tests {
     use hodei_server_domain::command::DynCommandBus;
     use hodei_server_domain::command::InMemoryErasedCommandBus;
     use hodei_server_domain::event_bus::EventBusError;
+    use hodei_server_domain::outbox::OutboxError;
     use hodei_server_domain::saga::{
         Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaState, SagaType,
     };
     use hodei_server_domain::workers::{
-        ProviderType, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLogs,
-        WorkerMetrics, WorkerProvisioning,
+        ProviderType, WorkerCost, WorkerEligibility, WorkerHandle, WorkerHealth, WorkerLifecycle,
+        WorkerLogs, WorkerMetrics, WorkerProviderIdentity, WorkerProvisioning,
     };
     use std::collections::HashMap as StdHashMap;
     use std::sync::{Mutex, RwLock};

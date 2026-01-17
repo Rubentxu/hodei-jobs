@@ -6,11 +6,13 @@
 //!
 //! GAP-60-01: Saga Command Dispatch Infrastructure
 
+use hodei_server_domain::DomainError;
 use hodei_server_domain::command::InMemoryErasedCommandBus;
 use hodei_server_domain::saga::commands::provisioning::{
     CreateWorkerCommand, CreateWorkerHandler, DestroyWorkerCommand, DestroyWorkerHandler,
 };
 use hodei_server_domain::workers::WorkerProvisioning;
+use std::result::Result;
 use std::sync::Arc;
 
 /// Register all provisioning command handlers with the provided CommandBus.
@@ -69,7 +71,7 @@ mod tests {
             provider_id: &ProviderId,
             _spec: hodei_server_domain::workers::WorkerSpec,
             _job_id: JobId,
-        ) -> Result<WorkerProvisioningResult> {
+        ) -> Result<WorkerProvisioningResult, DomainError> {
             Ok(WorkerProvisioningResult::new(
                 WorkerId::new(),
                 provider_id.clone(),
@@ -77,11 +79,14 @@ mod tests {
             ))
         }
 
-        async fn destroy_worker(&self, _worker_id: &WorkerId) -> Result<()> {
+        async fn destroy_worker(&self, _worker_id: &WorkerId) -> Result<(), DomainError> {
             Ok(())
         }
 
-        async fn is_provider_available(&self, _provider_id: &ProviderId) -> Result<bool> {
+        async fn is_provider_available(
+            &self,
+            _provider_id: &ProviderId,
+        ) -> Result<bool, DomainError> {
             Ok(true)
         }
     }

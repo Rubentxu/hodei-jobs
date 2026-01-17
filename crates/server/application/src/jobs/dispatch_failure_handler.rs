@@ -12,7 +12,7 @@
 
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
+use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::shared_kernel::JobId;
 use hodei_shared::states::{DispatchFailureReason, JobState};
 use std::result::Result;
@@ -193,11 +193,11 @@ impl DispatchFailureHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hodei_server_domain::JobCreated;
     use hodei_server_domain::jobs::{Job, JobsFilter};
     use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
     use hodei_shared::states::{DispatchFailureReason, JobState};
     use uuid::Uuid;
-    use hodei_server_domain::JobCreated;
 
     // Mock job repository for testing
     struct MockJobRepository {

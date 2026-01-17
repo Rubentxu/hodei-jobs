@@ -946,7 +946,7 @@ mod tests {
     // Test helper struct implementing SagaStep
     struct TestSagaStep;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl SagaStep for TestSagaStep {
         type Output = ();
 

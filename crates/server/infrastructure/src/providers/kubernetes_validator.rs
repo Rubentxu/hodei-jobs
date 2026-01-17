@@ -11,6 +11,7 @@ use hodei_server_domain::providers::{
 use hodei_server_domain::workers::ProviderType;
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::{Api, Client, Config};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 

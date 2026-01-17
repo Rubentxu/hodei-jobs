@@ -297,6 +297,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use tonic::metadata::{MetadataKey, MetadataMap};
+    use uuid::Uuid;
 
     #[test]
     fn test_extract_correlation_id_from_header() {

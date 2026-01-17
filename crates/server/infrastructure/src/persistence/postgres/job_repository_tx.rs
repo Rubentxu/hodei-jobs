@@ -171,7 +171,7 @@ impl JobRepositoryTx for PostgresJobRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::jobs::JobSpec;
+    use hodei_server_domain::jobs::{Job, JobRepository, JobSpec};
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
