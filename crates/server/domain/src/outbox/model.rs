@@ -165,6 +165,17 @@ impl OutboxEventView {
     }
 }
 
+// Import DomainError for From implementation
+use crate::shared_kernel::DomainError;
+
+impl From<OutboxError> for DomainError {
+    fn from(err: OutboxError) -> Self {
+        DomainError::InfrastructureError {
+            message: err.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -77,8 +77,8 @@ setup_env() {
     export HODEI_MIGRATIONS_PATH="${HODEI_MIGRATIONS_PATH:-crates/server/infrastructure/src/persistence/postgres/migrations/core,crates/server/infrastructure/src/persistence/postgres/migrations/infra}"
 
     # ⚠️ IMPORTANTE: Usar nombre completo del servicio para que los workers puedan conectarse
-    # Esto es crítico para Telepresence: los workers en k8s deben usar el Service, no localhost
-    export HODEI_GRPC_ADDRESS="${HODEI_GRPC_ADDRESS:-http://hodei-hodei-jobs-platform.hodei-jobs.svc.cluster.local:9090}"
+    # Telepresence intercepta hodei-server, que reenvía a localhost:9090
+    export HODEI_GRPC_ADDRESS="${HODEI_GRPC_ADDRESS:-http://hodei-server.hodei-jobs.svc.cluster.local:9090}"
 
     echo ""
     echo -e "${CYAN}Variables de entorno:${NC}"

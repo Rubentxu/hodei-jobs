@@ -1886,6 +1886,7 @@ dependencies = [
  "hodei-server-interface",
  "hodei-shared",
  "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "tokio",

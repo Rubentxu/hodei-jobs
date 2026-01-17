@@ -1757,7 +1757,15 @@ impl WorkerAgentService for WorkerAgentServiceImpl {
                                         if let Err(e) =
                                             registry_service.on_job_result(&wid, &result).await
                                         {
-                                            error!("Failed to persist job result: {}", e);
+                                            error!(
+                                                "❌ Failed to persist job result for {}: {}",
+                                                result.job_id, e
+                                            );
+                                            // Debug: log state transition details
+                                            error!(
+                                                "🔍 DEBUG: Job {} result - exit_code={}, success={}",
+                                                result.job_id, result.exit_code, result.success
+                                            );
                                         }
                                     }
 

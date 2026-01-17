@@ -914,7 +914,7 @@ impl Job {
         Ok(())
     }
 
-    /// Asigna el job a un provider pero mantiene estado PENDING
+    /// Asigna el job a un provider y cambia el estado a ASSIGNED
     /// El worker debe confirmar con acknowledgment para cambiar a RUNNING
     pub fn assign_to_provider(
         &mut self,
@@ -922,19 +922,30 @@ impl Job {
         context: ExecutionContext,
     ) -> Result<()> {
         match self.state {
-            JobState::Pending | JobState::Assigned => {
-                // Asignar provider y contexto
+            JobState::Pending => {
+                // Nuevo: cambiar estado a ASSIGNED
+                let provider_id_clone = provider_id.clone();
+                self.state = JobState::Assigned;
+                self.selected_provider = Some(provider_id);
+                self.execution_context = Some(context);
+                tracing::info!(job_id = %self.id, provider_id = %provider_id_clone, "Job transitioned PENDING -> ASSIGNED");
+                Ok(())
+            }
+            JobState::Assigned => {
                 // Para ASSIGNED (desde atomic dequeue), esto completa la asignación
                 self.selected_provider = Some(provider_id);
                 self.execution_context = Some(context);
-                // No cambiar started_at hasta que worker confirme
+                tracing::info!(job_id = %self.id, "Job already in ASSIGNED state, updated provider");
                 Ok(())
             }
-            _ => Err(DomainError::InvalidStateTransition {
-                job_id: self.id.clone(),
-                from_state: self.state.clone(),
-                to_state: JobState::Assigned,
-            }),
+            _ => {
+                tracing::error!(job_id = %self.id, from_state = %self.state, "Invalid state transition to ASSIGNED");
+                Err(DomainError::InvalidStateTransition {
+                    job_id: self.id.clone(),
+                    from_state: self.state.clone(),
+                    to_state: JobState::Assigned,
+                })
+            }
         }
     }
 
@@ -943,6 +954,8 @@ impl Job {
         // Validar transición usando el State Machine
         let new_state = JobState::Running;
         if !self.state.can_transition_to(&new_state) {
+            tracing::error!(job_id = %self.id, from_state = %self.state, to_state = %new_state,
+                "Invalid state transition to RUNNING - must be ASSIGNED or SCHEDULED first");
             return Err(DomainError::InvalidStateTransition {
                 job_id: self.id.clone(),
                 from_state: self.state.clone(),
@@ -952,6 +965,7 @@ impl Job {
 
         self.state = new_state;
         self.started_at = Some(Utc::now());
+        tracing::info!(job_id = %self.id, "Job transitioned to RUNNING");
         Ok(())
     }
 
@@ -966,6 +980,8 @@ impl Job {
 
         // Validar transición usando el State Machine
         if !self.state.can_transition_to(&new_state) {
+            tracing::error!(job_id = %self.id, from_state = %self.state, to_state = %new_state,
+                "Invalid state transition to {:?} - job must be RUNNING first", new_state);
             return Err(DomainError::InvalidStateTransition {
                 job_id: self.id.clone(),
                 from_state: self.state.clone(),
@@ -976,6 +992,8 @@ impl Job {
         self.state = new_state;
         self.completed_at = Some(Utc::now());
         self.result = Some(result);
+        let final_state = self.state.clone();
+        tracing::info!(job_id = %self.id, "Job transitioned to {:?}", final_state);
         Ok(())
     }
 
@@ -985,6 +1003,8 @@ impl Job {
 
         // Validar transición usando el State Machine
         if !self.state.can_transition_to(&new_state) {
+            tracing::error!(job_id = %self.id, from_state = %self.state, to_state = %new_state,
+                "Invalid state transition to FAILED");
             return Err(DomainError::InvalidStateTransition {
                 job_id: self.id.clone(),
                 from_state: self.state.clone(),
@@ -996,6 +1016,7 @@ impl Job {
         self.completed_at = Some(Utc::now());
         self.error_message = Some(error_message);
         self.attempts += 1;
+        tracing::info!(job_id = %self.id, "Job transitioned to FAILED");
         Ok(())
     }
 
@@ -1005,6 +1026,8 @@ impl Job {
 
         // Validar transición usando el State Machine
         if !self.state.can_transition_to(&new_state) {
+            tracing::error!(job_id = %self.id, from_state = %self.state, to_state = %new_state,
+                "Invalid state transition to CANCELLED");
             return Err(DomainError::InvalidStateTransition {
                 job_id: self.id.clone(),
                 from_state: self.state.clone(),
@@ -1014,6 +1037,7 @@ impl Job {
 
         self.state = new_state;
         self.completed_at = Some(Utc::now());
+        tracing::info!(job_id = %self.id, "Job transitioned to CANCELLED");
         Ok(())
     }
 
@@ -1023,6 +1047,8 @@ impl Job {
 
         // Validar transición usando el State Machine
         if !self.state.can_transition_to(&new_state) {
+            tracing::error!(job_id = %self.id, from_state = %self.state, to_state = %new_state,
+                "Invalid state transition to TIMEOUT");
             return Err(DomainError::InvalidStateTransition {
                 job_id: self.id.clone(),
                 from_state: self.state.clone(),
@@ -1034,6 +1060,7 @@ impl Job {
         self.completed_at = Some(Utc::now());
         self.result = Some(JobResult::Timeout);
         self.attempts += 1;
+        tracing::info!(job_id = %self.id, "Job transitioned to TIMEOUT");
         Ok(())
     }
 
