@@ -54,6 +54,16 @@ impl Default for CommandRelayConfig {
     }
 }
 
+/// Health metrics for CommandRelay health checker
+#[derive(Debug, Clone, Copy)]
+pub struct CommandRelayHealthMetrics {
+    pub circuit_state: CircuitState,
+    pub pending_commands: u64,
+    pub in_flight: u64,
+    pub dispatch_latency_ms: u64,
+    pub last_dispatch: u64,
+}
+
 /// Metrics collected by the command relay.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommandRelayMetrics {
@@ -65,12 +75,21 @@ pub struct CommandRelayMetrics {
     pub notifications_received: u64,
     pub polling_wakeups: u64,
     pub batch_count: u64,
+    // Health check metrics
+    pub pending_commands: u64,
+    pub in_flight_commands: u64,
+    pub dispatch_latency_ms: u64,
+    pub last_dispatch_timestamp: u64,
 }
 
 impl CommandRelayMetrics {
     pub fn record_completed(&mut self) {
         self.commands_completed_total += 1;
         self.commands_processed_total += 1;
+        self.last_dispatch_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
     }
 
     pub fn record_failed(&mut self) {
@@ -93,6 +112,13 @@ impl CommandRelayMetrics {
     pub fn record_polling_wakeup(&mut self) {
         self.polling_wakeups += 1;
         self.batch_count += 1;
+    }
+
+    /// Update health check metrics
+    pub fn update_health_metrics(&mut self, pending: u64, in_flight: u64, latency_ms: u64) {
+        self.pending_commands = pending;
+        self.in_flight_commands = in_flight;
+        self.dispatch_latency_ms = latency_ms;
     }
 }
 
@@ -197,6 +223,19 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
             .as_ref()
             .map(|cb| cb.allow_request())
             .unwrap_or(true)
+    }
+
+    /// Get health metrics for monitoring
+    pub fn health_metrics(&self) -> CommandRelayHealthMetrics {
+        let circuit_state = self.circuit_breaker_state();
+        let metrics = self.metrics.blocking_lock();
+        CommandRelayHealthMetrics {
+            circuit_state,
+            pending_commands: metrics.pending_commands,
+            in_flight: metrics.in_flight_commands,
+            dispatch_latency_ms: metrics.dispatch_latency_ms,
+            last_dispatch: metrics.last_dispatch_timestamp,
+        }
     }
 
     /// Run the command relay.
