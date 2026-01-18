@@ -239,7 +239,6 @@ impl From<SagaError> for OrchestratorError {
 ///
 /// This implementation stores saga state in memory and should not be
 /// used in production environments where persistence is required.
-#[derive(Debug, Clone)]
 #[deprecated(
     since = "0.60.0",
     note = "Use PostgresSagaOrchestrator for production. InMemorySagaOrchestrator is only for testing."
@@ -259,6 +258,19 @@ pub struct InMemorySagaOrchestrator<R: SagaRepository + Clone> {
     audit_trail: Arc<SagaAuditTrail>,
     /// Audit consumers for dispatching audit events
     audit_consumers: Vec<Arc<dyn SagaAuditConsumer>>,
+}
+
+// Manually implement Debug since Vec<dyn SagaAuditConsumer> doesn't implement Debug
+impl<R> std::fmt::Debug for InMemorySagaOrchestrator<R>
+where
+    R: SagaRepository + Clone,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemorySagaOrchestrator")
+            .field("config", &self.config)
+            .field("active_sagas", &self.active_sagas)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R: SagaRepository + TransactionProvider + Clone> InMemorySagaOrchestrator<R> {

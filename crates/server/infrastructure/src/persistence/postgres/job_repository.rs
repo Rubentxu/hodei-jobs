@@ -14,7 +14,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 
 /// PostgreSQL Job Repository
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PostgresJobRepository {
     pool: PgPool,
 }
