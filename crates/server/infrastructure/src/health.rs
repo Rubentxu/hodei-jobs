@@ -414,3 +414,290 @@ mod tests {
         assert_eq!(service.check_liveness().await.status, "ok");
     }
 }
+
+// ============================================================================
+// Outbox and Command Relay Health Checkers
+// ============================================================================
+
+use hodei_server_domain::saga::circuit_breaker::CircuitState;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+/// Outbox Relay Health Checker
+#[derive(Clone)]
+pub struct OutboxRelayHealthChecker {
+    /// Circuit breaker state
+    circuit_state: Arc<AtomicU8>,
+    /// Pending commands count
+    pending_count: Arc<AtomicU64>,
+    /// Processing lag in seconds
+    processing_lag_seconds: Arc<AtomicU64>,
+    /// Last successful processing timestamp
+    last_success: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl OutboxRelayHealthChecker {
+    pub fn new() -> Self {
+        Self {
+            circuit_state: Arc::new(AtomicU8::new(CircuitState::Closed as u8)),
+            pending_count: Arc::new(AtomicU64::new(0)),
+            processing_lag_seconds: Arc::new(AtomicU64::new(0)),
+            last_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    pub fn record_circuit_state(&self, state: CircuitState) {
+        self.circuit_state.store(state as u8, Ordering::Relaxed);
+    }
+
+    pub fn record_pending_count(&self, count: u64) {
+        self.pending_count.store(count, Ordering::Relaxed);
+    }
+
+    pub fn record_processing_lag(&self, lag_seconds: u64) {
+        self.processing_lag_seconds
+            .store(lag_seconds, Ordering::Relaxed);
+    }
+
+    pub fn record_success(&self) {
+        self.last_success.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            Ordering::Relaxed,
+        );
+    }
+
+    fn last_success_seconds_ago(&self) -> u64 {
+        let last = self.last_success.load(Ordering::Relaxed);
+        if last == 0 {
+            return u64::MAX;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(last)
+    }
+}
+
+#[async_trait]
+impl HealthChecker for OutboxRelayHealthChecker {
+    fn name(&self) -> &str {
+        "outbox_relay"
+    }
+
+    async fn check(&self) -> Result<ComponentHealth, HealthCheckError> {
+        let start = Utc::now();
+        let circuit_state = CircuitState::from(self.circuit_state.load(Ordering::Relaxed));
+        let pending = self.pending_count.load(Ordering::Relaxed);
+        let lag = self.processing_lag_seconds.load(Ordering::Relaxed);
+        let last_success_ago = self.last_success_seconds_ago();
+
+        let status = match circuit_state {
+            CircuitState::Open if last_success_ago > 120 => HealthStatus::Unhealthy,
+            CircuitState::Open => HealthStatus::Degraded,
+            CircuitState::HalfOpen => HealthStatus::Degraded,
+            CircuitState::Closed if pending > 1000 || lag > 60 => HealthStatus::Degraded,
+            CircuitState::Closed => HealthStatus::Healthy,
+        };
+
+        let mut details = HashMap::new();
+        details.insert("circuit_state".to_string(), format!("{:?}", circuit_state));
+        details.insert("pending_commands".to_string(), pending.to_string());
+        details.insert("processing_lag_seconds".to_string(), lag.to_string());
+        details.insert(
+            "last_success_seconds_ago".to_string(),
+            last_success_ago.to_string(),
+        );
+
+        let error = match circuit_state {
+            CircuitState::Open => Some("Circuit breaker open".to_string()),
+            _ => None,
+        };
+
+        Ok(ComponentHealth {
+            name: "outbox_relay".to_string(),
+            status,
+            last_check: Some(start),
+            details: Some(details),
+            error,
+        })
+    }
+}
+
+/// Command Relay Health Checker
+#[derive(Clone)]
+pub struct CommandRelayHealthChecker {
+    /// Circuit breaker state
+    circuit_state: Arc<AtomicU8>,
+    /// In-flight commands count
+    in_flight_commands: Arc<AtomicU64>,
+    /// Dispatch latency in milliseconds
+    dispatch_latency_ms: Arc<AtomicU64>,
+    /// Last successful dispatch timestamp
+    last_dispatch: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl CommandRelayHealthChecker {
+    pub fn new() -> Self {
+        Self {
+            circuit_state: Arc::new(AtomicU8::new(CircuitState::Closed as u8)),
+            in_flight_commands: Arc::new(AtomicU64::new(0)),
+            dispatch_latency_ms: Arc::new(AtomicU64::new(0)),
+            last_dispatch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    pub fn record_circuit_state(&self, state: CircuitState) {
+        self.circuit_state.store(state as u8, Ordering::Relaxed);
+    }
+
+    pub fn record_in_flight(&self, count: u64) {
+        self.in_flight_commands.store(count, Ordering::Relaxed);
+    }
+
+    pub fn record_dispatch_latency(&self, latency_ms: u64) {
+        self.dispatch_latency_ms
+            .store(latency_ms, Ordering::Relaxed);
+    }
+
+    pub fn record_dispatch(&self) {
+        self.last_dispatch.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            Ordering::Relaxed,
+        );
+    }
+
+    fn last_dispatch_seconds_ago(&self) -> u64 {
+        let last = self.last_dispatch.load(Ordering::Relaxed);
+        if last == 0 {
+            return u64::MAX;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(last)
+    }
+}
+
+#[async_trait]
+impl HealthChecker for CommandRelayHealthChecker {
+    fn name(&self) -> &str {
+        "command_relay"
+    }
+
+    async fn check(&self) -> Result<ComponentHealth, HealthCheckError> {
+        let start = Utc::now();
+        let circuit_state = CircuitState::from(self.circuit_state.load(Ordering::Relaxed));
+        let in_flight = self.in_flight_commands.load(Ordering::Relaxed);
+        let latency = self.dispatch_latency_ms.load(Ordering::Relaxed);
+        let last_dispatch_ago = self.last_dispatch_seconds_ago();
+
+        let status = match circuit_state {
+            CircuitState::Open if last_dispatch_ago > 120 => HealthStatus::Unhealthy,
+            CircuitState::Open => HealthStatus::Degraded,
+            CircuitState::HalfOpen => HealthStatus::Degraded,
+            CircuitState::Closed if in_flight > 100 || latency > 5000 => HealthStatus::Degraded,
+            CircuitState::Closed => HealthStatus::Healthy,
+        };
+
+        let mut details = HashMap::new();
+        details.insert("circuit_state".to_string(), format!("{:?}", circuit_state));
+        details.insert("in_flight_commands".to_string(), in_flight.to_string());
+        details.insert("dispatch_latency_ms".to_string(), latency.to_string());
+        details.insert(
+            "last_dispatch_seconds_ago".to_string(),
+            last_dispatch_ago.to_string(),
+        );
+
+        let error = match circuit_state {
+            CircuitState::Open => Some("Circuit breaker open".to_string()),
+            _ => None,
+        };
+
+        Ok(ComponentHealth {
+            name: "command_relay".to_string(),
+            status,
+            last_check: Some(start),
+            details: Some(details),
+            error,
+        })
+    }
+}
+
+/// Saga Orchestrator Health Checker
+#[derive(Clone)]
+pub struct SagaOrchestratorHealthChecker {
+    /// Circuit breaker state
+    circuit_state: Arc<AtomicU8>,
+    /// Active sagas count
+    active_sagas: Arc<AtomicU64>,
+    /// Failed sagas count
+    failed_sagas: Arc<AtomicU64>,
+}
+
+impl SagaOrchestratorHealthChecker {
+    pub fn new() -> Self {
+        Self {
+            circuit_state: Arc::new(AtomicU8::new(CircuitState::Closed as u8)),
+            active_sagas: Arc::new(AtomicU64::new(0)),
+            failed_sagas: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn record_circuit_state(&self, state: CircuitState) {
+        self.circuit_state.store(state as u8, Ordering::Relaxed);
+    }
+
+    pub fn record_active_sagas(&self, count: u64) {
+        self.active_sagas.store(count, Ordering::Relaxed);
+    }
+
+    pub fn record_failed_sagas(&self, count: u64) {
+        self.failed_sagas.store(count, Ordering::Relaxed);
+    }
+}
+
+#[async_trait]
+impl HealthChecker for SagaOrchestratorHealthChecker {
+    fn name(&self) -> &str {
+        "saga_orchestrator"
+    }
+
+    async fn check(&self) -> Result<ComponentHealth, HealthCheckError> {
+        let start = Utc::now();
+        let circuit_state = CircuitState::from(self.circuit_state.load(Ordering::Relaxed));
+        let active = self.active_sagas.load(Ordering::Relaxed);
+        let failed = self.failed_sagas.load(Ordering::Relaxed);
+
+        let status = match circuit_state {
+            CircuitState::Open => HealthStatus::Unhealthy,
+            CircuitState::HalfOpen => HealthStatus::Degraded,
+            CircuitState::Closed if failed > 10 => HealthStatus::Degraded,
+            CircuitState::Closed => HealthStatus::Healthy,
+        };
+
+        let mut details = HashMap::new();
+        details.insert("circuit_state".to_string(), format!("{:?}", circuit_state));
+        details.insert("active_sagas".to_string(), active.to_string());
+        details.insert("failed_sagas".to_string(), failed.to_string());
+
+        let error = match circuit_state {
+            CircuitState::Open => Some("Circuit breaker open".to_string()),
+            _ => None,
+        };
+
+        Ok(ComponentHealth {
+            name: "saga_orchestrator".to_string(),
+            status,
+            last_check: Some(start),
+            details: Some(details),
+            error,
+        })
+    }
+}
