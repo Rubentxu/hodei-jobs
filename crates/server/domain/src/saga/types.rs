@@ -82,7 +82,7 @@ pub fn saga_id_for_recovery(job_id: &str) -> Uuid {
 ///
 /// Uses the Newtype Pattern to provide type safety and semantic meaning
 /// over a raw UUID.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SagaId(pub Uuid);
 
 impl SagaId {

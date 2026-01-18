@@ -14,6 +14,7 @@
 //! - **CleanupSaga**: Orphaned resource cleanup
 
 pub mod audit_trail;
+pub mod cached_repository;
 pub mod cancellation;
 pub mod circuit_breaker;
 pub mod cleanup;
@@ -32,7 +33,7 @@ pub mod retry_policy; // EPIC-46 GAP-25: RetryPolicy with exponential backoff
 pub mod stuck_detector;
 pub mod timeout;
 pub mod timeout_config; // EPIC-85: Configurable saga timeouts
-pub mod types; // EPIC-85 US-05: Circuit Breaker for Saga Consumers
+pub mod types; // EPIC-85 US-05: Circuit Breaker for Saga Consumers // LRU cache with TTL for saga state
 
 // Re-exports from types module
 pub use types::{
