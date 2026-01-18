@@ -1,10 +1,13 @@
 //!
 //! EPIC-50: Command Bus Core Infrastructure - Historia de Usuario 56.2
 
-mod execution;
+pub mod execution;
 mod provisioning;
 
-pub use execution::register_execution_command_handlers;
+pub use execution::{
+    JobExecutorImpl, register_execution_command_handlers,
+    register_execution_command_handlers_with_executor,
+};
 pub use provisioning::register_provisioning_command_handlers;
 
 use hodei_server_domain::command::CommandBus;

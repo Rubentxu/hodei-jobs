@@ -3,18 +3,16 @@
 //! Responsible for dispatching jobs to workers and managing the job lifecycle.
 //! Follows Single Responsibility Principle: only handles job dispatching logic.
 //!
-//! ## Responsabilidades Core (3)
+//! ## Responsabilidades Core (2)
 //! 1. **Orquestación del dispatch** - `dispatch_once`:Coordina el ciclo completo
-//! 2. **Asignación de jobs** - `assign_and_dispatch`:Asigna y envía jobs a workers
-//! 3. **Publicación de eventos** - `publish_job_assigned_event`:Publica eventos de asignación
+//! 2. **Asignación de jobs via Saga** - `assign_and_dispatch`:Ejecuta ExecutionSaga
 //!
 //! ## Responsabilidades Delegadas
 //! - Filtrado de workers → SchedulingService
 //! - Selección de providers → ProviderRegistry / SchedulingService
 //! - Provisioning → WorkerProvisioningService
-//! - Orquestación de saga → ExecutionSagaDispatcher
+//! - Ejecución de saga → ExecutionSagaDispatcher
 
-use crate::jobs::job_assignment_service::JobAssignmentService;
 use crate::jobs::resource_allocator::ResourceAllocator;
 use crate::providers::ProviderRegistry;
 use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
@@ -65,17 +63,20 @@ pub struct JobDispatcher {
     /// EPIC-28: Time window to skip re-provisioning for same job
     provisioning_cooldown: Duration,
     /// EPIC-29: Saga orchestrator for execution saga coordination
+    /// Required for saga-based job dispatch (the legacy path has been removed)
     execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
     /// EPIC-30: Saga coordinator for provisioning saga (US-30.2)
     provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
-    /// GAP-GO-03: Job assignment service for non-saga dispatch
-    job_assignment_service: Option<Arc<JobAssignmentService>>,
     /// GAP-GO-04: Resource allocator for provider metrics calculations
     resource_allocator: ResourceAllocator,
 }
 
 impl JobDispatcher {
     /// Create a new JobDispatcher
+    ///
+    /// # Note
+    /// The `execution_saga_dispatcher` parameter is now required for job dispatch.
+    /// Without it, jobs cannot be dispatched to workers (the legacy path has been removed).
     pub fn new(
         job_queue: Arc<dyn JobQueue>,
         job_repository: Arc<dyn JobRepository>,
@@ -89,16 +90,6 @@ impl JobDispatcher {
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     ) -> Self {
-        // Create JobAssignmentService for non-saga dispatch
-        let job_assignment_service = Arc::new(JobAssignmentService::new(
-            job_repository.clone(),
-            worker_registry.clone(),
-            worker_command_sender.clone(),
-            event_bus.clone(),
-            outbox_repository.clone(),
-            None,
-        ));
-
         // Create ResourceAllocator for provider metrics
         let resource_allocator = ResourceAllocator::new(None);
 
@@ -117,12 +108,15 @@ impl JobDispatcher {
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
             provisioning_saga_coordinator,
-            job_assignment_service: Some(job_assignment_service),
             resource_allocator,
         }
     }
 
     /// Create a JobDispatcher with outbox repository
+    ///
+    /// # Note
+    /// The `execution_saga_dispatcher` parameter is now required for job dispatch.
+    /// Without it, jobs cannot be dispatched to workers (the legacy path has been removed).
     pub fn with_outbox_repository(
         job_queue: Arc<dyn JobQueue>,
         job_repository: Arc<dyn JobRepository>,
@@ -136,16 +130,6 @@ impl JobDispatcher {
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
     ) -> Self {
-        // Create JobAssignmentService for non-saga dispatch
-        let job_assignment_service = Arc::new(JobAssignmentService::new(
-            job_repository.clone(),
-            worker_registry.clone(),
-            worker_command_sender.clone(),
-            event_bus.clone(),
-            outbox_repository.clone(),
-            None,
-        ));
-
         // Create ResourceAllocator for provider metrics
         let resource_allocator = ResourceAllocator::new(None);
 
@@ -164,7 +148,6 @@ impl JobDispatcher {
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
             provisioning_saga_coordinator,
-            job_assignment_service: Some(job_assignment_service),
             resource_allocator,
         }
     }
@@ -467,66 +450,56 @@ impl JobDispatcher {
     /// El saga proporciona compensación automática en caso de fallos.
     ///
     /// ## Pasos:
-    /// 1. Obtener detalles del worker
-    /// 2. (Opcional) Ejecutar ExecutionSaga para asignación y ejecución
-    /// 3. Asignar provider al job (fallback/manual)
-    /// 4. Persistir estado en BD
-    /// 5. Enviar comando RUN_JOB via gRPC (si no usa saga)
-    /// 6. Publicar evento JobAssigned
+    /// Assign job to worker and dispatch using ExecutionSaga pattern
+    ///
+    /// This method now ONLY uses the saga-based execution.
+    /// The legacy JobAssignmentService path has been removed.
+    ///
+    /// ## Flujo Saga (Pattern: JobQueued → ExecutionSaga → ExecuteJobCommand → JobExecutorImpl)
+    /// 1. Dispatch ExecutionSaga with job_id and worker_id
+    /// 2. Saga validates job, assigns worker, and dispatches ExecuteJobCommand
+    /// 3. ExecuteJobHandler receives command and delegates to JobExecutorImpl
+    /// 4. JobExecutorImpl sends RUN_JOB via gRPC to worker
+    /// 5. Job state transitions: QUEUED → ASSIGNED → RUNNING → SUCCEEDED/FAILED
+    ///
+    /// ## Error Handling
+    /// If execution_saga_dispatcher is not available, this returns an error
+    /// since the legacy path (JobAssignmentService) no longer sends RUN_JOB.
     async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> anyhow::Result<()> {
         info!(
             job_id = %job.id,
             worker_id = %worker_id,
-            "🔄 JobDispatcher: Starting assign_and_dispatch"
+            "🔄 JobDispatcher: Starting assign_and_dispatch (Saga Pattern)"
         );
 
-        // EPIC-30 - Use saga-based execution if available
+        // EPIC-30 - Use saga-based execution
+        // The legacy JobAssignmentService path has been removed because it only
+        // assigns jobs without sending RUN_JOB, leaving jobs stuck in ASSIGNED state.
         if let Some(ref dispatcher) = self.execution_saga_dispatcher {
             info!(job_id = %job.id, worker_id = %worker_id, "🚀 JobDispatcher: Starting ExecutionSaga");
             match dispatcher.execute_execution_saga(&job.id, worker_id).await {
                 Ok(result) => {
                     info!(job_id = %job.id, saga_status = ?result, "✅ JobDispatcher: ExecutionSaga completed");
-                    return Ok(());
+                    Ok(())
                 }
                 Err(e) => {
                     warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed");
-                    return Err(anyhow::anyhow!("ExecutionSaga failed: {}", e));
+                    Err(anyhow::anyhow!("ExecutionSaga failed: {}", e))
                 }
-            }
-        }
-
-        // GAP-GO-03: Delegate to JobAssignmentService for non-saga dispatch
-        info!(
-            job_id = %job.id,
-            worker_id = %worker_id,
-            "🎯 JobDispatcher: Delegating to JobAssignmentService"
-        );
-
-        if let Some(ref assignment_service) = self.job_assignment_service {
-            match assignment_service.assign_job(job, worker_id).await {
-                Ok(result) => {
-                    if result.success {
-                        info!(
-                            job_id = %job.id,
-                            worker_id = %worker_id,
-                            duration_ms = result.duration_ms,
-                            "✅ JobDispatcher: Job assigned via JobAssignmentService"
-                        );
-                        Ok(())
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "JobAssignmentService failed: {}",
-                            result
-                                .error_message
-                                .unwrap_or_else(|| "Unknown error".to_string())
-                        ))
-                    }
-                }
-                Err(e) => Err(anyhow::anyhow!("JobAssignmentService error: {}", e)),
             }
         } else {
+            // CRITICAL ERROR: No saga dispatcher available
+            // The legacy JobAssignmentService path has been removed because
+            // it doesn't send RUN_JOB, leaving jobs stuck in ASSIGNED state.
+            error!(
+                "❌ JobDispatcher: No execution_saga_dispatcher available! \
+                Cannot dispatch job {} to worker {}. \
+                Ensure ExecutionSagaConsumer is started with JobExecutorImpl.",
+                job.id, worker_id
+            );
             Err(anyhow::anyhow!(
-                "No execution saga dispatcher and no JobAssignmentService available"
+                "Execution saga dispatcher not configured. \
+                Cannot dispatch job to worker. Check server startup configuration."
             ))
         }
     }

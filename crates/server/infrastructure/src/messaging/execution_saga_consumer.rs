@@ -368,6 +368,15 @@ impl ExecutionSagaConsumer {
                 );
                 self.handle_worker_ready(worker_id).await?;
             }
+            DomainEvent::JobAssigned {
+                job_id, worker_id, ..
+            } => {
+                info!(
+                    "📦 ExecutionSagaConsumer: Received JobAssigned event for job {} on worker {}",
+                    job_id, worker_id
+                );
+                self.handle_job_assigned(job_id, worker_id).await?;
+            }
             _ => {
                 debug!(
                     "📦 ExecutionSagaConsumer: Ignoring event type '{}'",
@@ -476,7 +485,68 @@ impl ExecutionSagaConsumer {
         self.trigger_execution_saga(job_id, worker_id).await
     }
 
+    /// Handle JobAssigned event - trigger execution saga with pre-assigned worker
+    ///
+    /// This is the main entry point for the saga when using the path:
+    /// JobQueued → Provisioning → WorkerReady → JobAssignmentService.assign_job() → JobAssigned
+    ///
+    /// The saga will:
+    /// 1. Validate the job is in ASSIGNED state
+    /// 2. Execute the job (send RUN_JOB via CommandBus → ExecuteJobHandler → JobExecutorImpl)
+    /// 3. Complete the job when worker reports result
+    #[instrument(skip(self), fields(job_id = %job_id, worker_id = %worker_id))]
+    async fn handle_job_assigned(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+    ) -> Result<(), DomainError> {
+        // Fetch job to verify it's in ASSIGNED state
+        let job = self
+            .job_repository
+            .find_by_id(job_id)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to fetch job {}: {}", job_id, e),
+            })?
+            .ok_or_else(|| DomainError::InfrastructureError {
+                message: format!("Job {} not found", job_id),
+            })?;
+
+        // Check if job is in correct state for execution
+        if *job.state() != JobState::Assigned {
+            debug!(
+                "📦 ExecutionSagaConsumer: Job {} is not in ASSIGNED state (state: {:?}), skipping",
+                job_id,
+                job.state()
+            );
+            return Ok(());
+        }
+
+        // Verify worker exists
+        let _worker = self
+            .worker_registry
+            .get(worker_id)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to fetch worker {}: {}", worker_id, e),
+            })?
+            .ok_or_else(|| DomainError::InfrastructureError {
+                message: format!("Worker {} not found", worker_id),
+            })?;
+
+        info!(
+            "📦 ExecutionSagaConsumer: Triggering execution saga for job {} on worker {}",
+            job_id, worker_id
+        );
+
+        // Trigger execution saga with pre-assigned worker
+        self.trigger_execution_saga(job_id, worker_id).await
+    }
+
     /// Trigger execution saga for a job-worker pair
+    ///
+    /// Uses ExecutionSaga::with_worker when worker_id is provided,
+    /// which is the case for JobAssigned events where the worker was pre-assigned.
     async fn trigger_execution_saga(
         &self,
         job_id: &JobId,
@@ -517,8 +587,12 @@ impl ExecutionSagaConsumer {
             "🚀 ExecutionSagaConsumer: Triggering saga with SagaServices (CommandBus injected)"
         );
 
-        // Create execution saga
-        let saga = hodei_server_domain::saga::ExecutionSaga::new(job_id.clone());
+        // Create execution saga with pre-assigned worker
+        // This ensures the saga uses the correct worker for execution
+        let saga = hodei_server_domain::saga::ExecutionSaga::with_worker(
+            job_id.clone(),
+            worker_id.clone(),
+        );
 
         // Execute saga
         match self.orchestrator.execute_saga(&saga, context).await {
