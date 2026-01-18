@@ -6,6 +6,7 @@
 //! - Reactive outbox relay using PostgreSQL LISTEN/NOTIFY
 //! - Saga consumers for event-driven saga execution
 //! - Hybrid outbox components (LISTEN/NOTIFY + polling) for EPIC-64
+//! - Command consumers for saga commands (EPIC-89)
 
 pub mod cancellation_saga_consumer;
 pub mod cleanup_saga_consumer;
@@ -23,6 +24,7 @@ pub mod outbox_relay;
 pub mod postgres;
 pub mod reactive_outbox_relay;
 pub mod resilient_subscriber;
+pub mod saga_command_consumers;
 pub mod saga_consumer;
 pub mod worker_disconnection_handler_consumer;
 pub mod worker_ephemeral_terminating_consumer;
@@ -57,4 +59,8 @@ pub use reactive_outbox_relay::{
     OutboxRelayExt, ReactiveOutboxConfig, ReactiveOutboxError, ReactiveOutboxRelay,
 };
 pub use resilient_subscriber::{ResilientSubscriber, ResilientSubscriberConfig};
+pub use saga_command_consumers::{
+    start_cancellation_command_consumers, start_saga_command_consumers,
+    start_timeout_command_consumers,
+};
 pub use saga_consumer::{NatsSagaConsumer, NatsSagaConsumerBuilder, SagaConsumerConfig};

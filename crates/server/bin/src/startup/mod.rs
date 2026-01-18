@@ -17,7 +17,8 @@ pub use services_init::{
     GrpcServices, initialize_grpc_services, start_background_tasks, start_command_relay,
     start_execution_command_consumers_service, start_execution_saga_consumer,
     start_job_coordinator, start_nats_outbox_relay, start_reactive_saga_processor,
-    start_saga_consumers, start_saga_poller, start_worker_ephemeral_terminating_consumer,
+    start_saga_command_consumers_service, start_saga_consumers, start_saga_poller,
+    start_worker_ephemeral_terminating_consumer,
 };
 pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
@@ -392,6 +393,15 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     )
     .await?;
     info!("✓ Execution Command Consumers started");
+
+    // EPIC-89: Start Saga Command Consumers (Sprint 1 - low-complexity commands only)
+    // Commands requiring WorkerProvisioning are deferred to Sprint 3
+    services_init::start_saga_command_consumers_service(
+        Arc::new(nats_event_bus.client().clone()),
+        pool.clone(),
+    )
+    .await?;
+    info!("✓ Saga Command Consumers started (EPIC-89 Sprint 1)");
 
     info!("✓ All connections established, ready for gRPC");
 

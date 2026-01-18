@@ -43,6 +43,7 @@ use hodei_server_infrastructure::messaging::execution_saga_consumer::ExecutionSa
 use hodei_server_infrastructure::messaging::hybrid::create_command_relay;
 use hodei_server_infrastructure::messaging::nats::NatsEventBus;
 use hodei_server_infrastructure::messaging::nats_outbox_relay::NatsOutboxRelay;
+use hodei_server_infrastructure::messaging::saga_command_consumers;
 use hodei_server_infrastructure::messaging::worker_ephemeral_terminating_consumer::WorkerEphemeralTerminatingConsumer;
 use hodei_server_infrastructure::persistence::command_outbox::PostgresCommandOutboxRepository;
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
@@ -853,5 +854,26 @@ pub async fn start_execution_command_consumers_service(
     .await?;
 
     info!("✅ Execution Command Consumers started");
+    Ok(())
+}
+
+/// Start saga command consumers (NATS Consumers for saga commands - EPIC-89)
+///
+/// This function starts NATS consumers for all saga command handlers (Sprint 1):
+/// - Cancellation Saga: UpdateJobStateCommand, ReleaseWorkerCommand
+/// - Timeout Saga: MarkJobTimedOutCommand
+///
+/// Commands requiring WorkerProvisioning (CreateWorker, DestroyWorker, etc.)
+/// are deferred to Sprint 3.
+pub async fn start_saga_command_consumers_service(
+    nats_client: Arc<async_nats::Client>,
+    pool: sqlx::PgPool,
+) -> anyhow::Result<()> {
+    info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 1)...");
+
+    saga_command_consumers::start_saga_command_consumers(nats_client.as_ref().clone(), pool)
+        .await?;
+
+    info!("✅ Saga Command Consumers started (Sprint 1)");
     Ok(())
 }
