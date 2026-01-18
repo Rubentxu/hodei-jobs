@@ -205,6 +205,70 @@ impl CommandOutboxRepository for PostgresCommandOutboxRepository {
         }
     }
 
+    /// Insert a command into the outbox within a transaction
+    async fn insert_command_with_tx(
+        &self,
+        tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+        command: &CommandOutboxInsert,
+    ) -> Result<Uuid, CommandOutboxError> {
+        let id = Uuid::new_v4();
+
+        // Convert CommandTargetType to String for database
+        let target_type_str = command.target_type.to_string();
+
+        let query = sqlx::query(
+            r#"
+            INSERT INTO hodei_commands
+            (id, command_type, target_id, target_type, payload, idempotency_key, status)
+            VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+            ON CONFLICT (idempotency_key) DO NOTHING
+            "#,
+        )
+        .bind(id)
+        .bind(&command.command_type)
+        .bind(command.target_id.to_string())
+        .bind(target_type_str)
+        .bind(&command.payload)
+        .bind(command.idempotency_key.as_ref());
+
+        // Use transaction to execute
+        let result = query.execute(&mut **tx).await;
+
+        match result {
+            Ok(exec_result) => {
+                // Check if a row was inserted (not a conflict)
+                if exec_result.rows_affected() > 0 {
+                    Ok(id)
+                } else {
+                    // Idempotency conflict - try to get existing ID
+                    // Note: We need to use the transaction for the select as well ensuring visibility
+                    if let Some(ref key) = command.idempotency_key {
+                        let existing: Option<CommandRecordRow> = sqlx::query_as(
+                            r#"
+                            SELECT id, command_type, target_id, target_type, payload, metadata,
+                                   idempotency_key, status, created_at, processed_at,
+                                   retry_count, last_error, saga_id, saga_type, step_order
+                            FROM hodei_commands
+                            WHERE idempotency_key = $1
+                            "#,
+                        )
+                        .bind(key)
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .map_err(CommandOutboxError::Database)?;
+
+                        if let Some(row) = existing {
+                            return Ok(row.id);
+                        }
+                    }
+                    Ok(id)
+                }
+            }
+            // Map sqlx error to CommandOutboxError
+            Err(e) => Err(CommandOutboxError::Database(e)),
+        }
+    }
+
     /// Get pending commands for processing
     async fn get_pending_commands(
         &self,

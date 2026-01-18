@@ -63,40 +63,6 @@ pub enum CommandOutboxError {
     HandlerError(String),
 }
 
-/// Type of target for a command (analogous to AggregateType in events)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CommandTargetType {
-    Job,
-    Worker,
-    Provider,
-    Saga,
-}
-
-impl std::fmt::Display for CommandTargetType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CommandTargetType::Job => write!(f, "JOB"),
-            CommandTargetType::Worker => write!(f, "WORKER"),
-            CommandTargetType::Provider => write!(f, "PROVIDER"),
-            CommandTargetType::Saga => write!(f, "SAGA"),
-        }
-    }
-}
-
-impl std::str::FromStr for CommandTargetType {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "JOB" => Ok(CommandTargetType::Job),
-            "WORKER" => Ok(CommandTargetType::Worker),
-            "PROVIDER" => Ok(CommandTargetType::Provider),
-            "SAGA" => Ok(CommandTargetType::Saga),
-            _ => Err(()),
-        }
-    }
-}
-
 /// A command record ready to be inserted into the outbox
 #[derive(Debug, Clone)]
 pub struct CommandOutboxInsert {
@@ -311,14 +277,12 @@ where
         &self,
         command: Box<dyn Any + Send>,
         command_type_id: TypeId,
+        command_name: String,
+        target_type: CommandTargetType,
     ) -> Result<Box<dyn Any + Send>, CommandError> {
-        // Get command type name from TypeId for storage
-        let command_type = format!("{:?}", command_type_id);
-
         // Create a placeholder target_id
         // In production, this would be extracted from the command using a trait
         let target_id = Uuid::new_v4();
-        let target_type = CommandTargetType::Saga;
 
         // Create outbox insert record with placeholder payload
         // The actual serialization happens at the repository level with type knowledge
@@ -326,7 +290,7 @@ where
         let insert = CommandOutboxInsert::new(
             target_id,
             target_type,
-            command_type.clone(),
+            command_name.clone(),
             serde_json::json!({"type_id": format!("{:?}", command_type_id)}),
             None,
             None,
@@ -337,12 +301,14 @@ where
             .insert_command(&insert)
             .await
             .map_err(|e| CommandError::OutboxError {
-                command_type: command_type.clone(),
+                command_type: command_name.clone(),
                 error: e.to_string(),
             })?;
 
         // Dispatch the command to the inner bus
-        self.inner.dispatch_erased(command, command_type_id).await
+        self.inner
+            .dispatch_erased(command, command_type_id, command_name, target_type)
+            .await
     }
 }
 
@@ -655,6 +621,8 @@ mod tests {
             &self,
             command: Box<dyn Any + Send>,
             _command_type_id: TypeId,
+            _command_name: String,
+            _target_type: CommandTargetType,
         ) -> Result<Box<dyn Any + Send>, CommandError> {
             let command =
                 *command
@@ -776,7 +744,12 @@ mod tests {
         };
 
         let result = outbox_bus
-            .dispatch_erased(Box::new(command), TypeId::of::<TestCommand>())
+            .dispatch_erased(
+                Box::new(command),
+                TypeId::of::<TestCommand>(),
+                "TestCommand".to_string(),
+                CommandTargetType::Saga,
+            )
             .await;
 
         assert!(result.is_ok());

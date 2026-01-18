@@ -606,7 +606,7 @@ impl WorkerRegistry for PostgresWorkerRegistry {
     }
 }
 
-fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
+pub(crate) fn map_row_to_worker(row: sqlx::postgres::PgRow) -> Result<Worker> {
     let handle: WorkerHandle = serde_json::from_value(row.get("handle")).map_err(|e| {
         hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
             message: format!("Failed to deserialize worker handle: {}", e),

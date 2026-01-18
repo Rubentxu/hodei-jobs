@@ -7,6 +7,7 @@
 //! EPIC-63: Command Relay completo
 
 use crate::persistence::command_outbox::PostgresCommandOutboxRepository;
+use async_nats::jetstream::stream::{Config as StreamConfig, StorageType};
 use hodei_server_domain::command::{CommandOutboxRecord, CommandOutboxRepository};
 use hodei_server_domain::saga::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
@@ -259,6 +260,13 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
                 channel = self.config.channel,
                 "No notification listener available. Starting in DEGRADED mode with 30s watchdog polling"
             );
+        }
+
+        // EPIC-85 US-05: Ensure NATS JetStream stream exists for command persistence
+        if let Err(e) = self.ensure_command_stream().await {
+            error!(error = %e, "Failed to ensure NATS command stream - commands may not be not persisted!");
+        } else {
+            info!("Verified NATS command stream 'HODEI_COMMANDS' exists");
         }
 
         loop {
@@ -519,6 +527,30 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
     /// Signal shutdown.
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(());
+    }
+
+    /// Ensure the NATS JetStream stream for commands exists
+    async fn ensure_command_stream(&self) -> Result<(), DomainError> {
+        let js = async_nats::jetstream::new(self.nats_client.as_ref().clone());
+        let stream_name = "HODEI_COMMANDS";
+        let subjects = vec!["hodei.commands.>".to_string()];
+
+        let config = StreamConfig {
+            name: stream_name.to_string(),
+            subjects,
+            storage: StorageType::File,
+            description: Some("Persistent stream for Hodei commands".to_string()),
+            // Allow duplicate checking based on message ID (if we used it) or content
+            ..Default::default()
+        };
+
+        // Create or update stream
+        js.get_or_create_stream(config)
+            .await
+            .map(|_| ())
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to ensure NATS stream {}: {}", stream_name, e),
+            })
     }
 }
 

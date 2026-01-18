@@ -18,13 +18,13 @@ use futures::StreamExt;
 use hodei_server_domain::command::DynCommandBus;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::jobs::{JobRepository, JobRepositoryTx};
 use hodei_server_domain::saga::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
 };
 use hodei_server_domain::saga::{SagaOrchestrator, SagaServices, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState, WorkerId};
-use hodei_server_domain::workers::WorkerRegistry;
+use hodei_server_domain::workers::{WorkerRegistry, WorkerRegistryTx};
 use serde::Deserialize;
 use std::fmt;
 use std::sync::Arc;
@@ -137,10 +137,10 @@ pub struct ExecutionSagaConsumer {
     orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
 
     /// Job repository for fetching job details
-    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
 
     /// Worker registry for checking worker availability
-    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
 
     /// Event bus for saga services (GAP-006 FIX)
     event_bus: Arc<dyn EventBus + Send + Sync>,
@@ -165,8 +165,8 @@ impl ExecutionSagaConsumer {
         client: Client,
         jetstream: JetStreamContext,
         orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
         command_bus: DynCommandBus,
         config: Option<ExecutionSagaConsumerConfig>,
@@ -777,8 +777,8 @@ pub struct ExecutionSagaConsumerBuilder {
     client: Option<Client>,
     jetstream: Option<JetStreamContext>,
     orchestrator: Option<Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>>,
-    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
-    worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepositoryTx + Send + Sync>>,
+    worker_registry: Option<Arc<dyn WorkerRegistryTx + Send + Sync>>,
     event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
     command_bus: Option<DynCommandBus>,
     config: Option<ExecutionSagaConsumerConfig>,
@@ -839,7 +839,7 @@ impl ExecutionSagaConsumerBuilder {
 
     pub fn with_job_repository(
         mut self,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
     ) -> Self {
         self.job_repository = Some(job_repository);
         self
@@ -847,7 +847,7 @@ impl ExecutionSagaConsumerBuilder {
 
     pub fn with_worker_registry(
         mut self,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     ) -> Self {
         self.worker_registry = Some(worker_registry);
         self

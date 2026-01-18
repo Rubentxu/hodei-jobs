@@ -9,6 +9,40 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use uuid::Uuid;
 
+/// Type of target for a command (analogous to AggregateType in events)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandTargetType {
+    Job,
+    Worker,
+    Provider,
+    Saga,
+}
+
+impl std::fmt::Display for CommandTargetType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandTargetType::Job => write!(f, "JOB"),
+            CommandTargetType::Worker => write!(f, "WORKER"),
+            CommandTargetType::Provider => write!(f, "PROVIDER"),
+            CommandTargetType::Saga => write!(f, "SAGA"),
+        }
+    }
+}
+
+impl std::str::FromStr for CommandTargetType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "JOB" => Ok(CommandTargetType::Job),
+            "WORKER" => Ok(CommandTargetType::Worker),
+            "PROVIDER" => Ok(CommandTargetType::Provider),
+            "SAGA" => Ok(CommandTargetType::Saga),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Trait for command metadata containing tracing and context information
 pub trait CommandMetadata: Send + Sync + Debug {
     fn trace_id(&self) -> Option<&str>;
@@ -85,6 +119,21 @@ pub trait Command: Debug + Clone + Send + Sync + 'static {
     /// Returns an idempotency key for this command.
     /// Uses `Cow<'_, str>` for zero-copy operations.
     fn idempotency_key(&self) -> Cow<'_, str>;
+
+    /// Returns the target type for this command (e.g. Job, Worker).
+    /// Used for routing and NATS subject construction.
+    fn target_type(&self) -> CommandTargetType {
+        CommandTargetType::Saga
+    }
+
+    /// Returns the command name (e.g. "AssignWorker").
+    /// Used for routing and NATS subject construction.
+    fn command_name(&self) -> Cow<'_, str> {
+        let type_name = std::any::type_name::<Self>();
+        // Extract just the struct name (last part after ::)
+        let name = type_name.split("::").last().unwrap_or(type_name);
+        Cow::Owned(name.to_string())
+    }
 }
 
 /// Trait for command handlers.
@@ -134,7 +183,7 @@ pub use jobs::{
 pub use middleware::{LoggingLayer, RetryLayer, TelemetryLayer};
 pub use outbox::{
     CommandOutboxError, CommandOutboxInsert, CommandOutboxRecord, CommandOutboxRelay,
-    CommandOutboxRepository, CommandOutboxStats, CommandOutboxStatus, CommandTargetType,
-    OutboxCommandBus, OutboxCommandBusExt,
+    CommandOutboxRepository, CommandOutboxStats, CommandOutboxStatus, OutboxCommandBus,
+    OutboxCommandBusExt,
 };
 pub use registry::{HandlerRegistry, InMemoryHandlerStorage};

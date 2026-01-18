@@ -3,7 +3,7 @@
 // Commands used by the ExecutionSaga for job execution lifecycle management.
 // These commands encapsulate the intent to execute, track, and complete jobs.
 
-use crate::command::{Command, CommandHandler, CommandMetadataDefault};
+use crate::command::{Command, CommandHandler, CommandMetadataDefault, CommandTargetType};
 use crate::event_bus::EventBus;
 use crate::jobs::JobRepository;
 use crate::shared_kernel::{DomainError, JobId, JobState, WorkerId, WorkerState};
@@ -47,6 +47,10 @@ impl Command for ValidateJobCommand {
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
         Cow::Owned(format!("{}-validate-job-{}", self.saga_id, self.job_id))
+    }
+
+    fn target_type(&self) -> CommandTargetType {
+        CommandTargetType::Job
     }
 }
 
@@ -205,6 +209,10 @@ impl Command for AssignWorkerCommand {
         } else {
             Cow::Owned(format!("{}-assign-worker-{}", self.saga_id, self.job_id))
         }
+    }
+
+    fn target_type(&self) -> CommandTargetType {
+        CommandTargetType::Worker
     }
 }
 
@@ -434,6 +442,10 @@ impl Command for ExecuteJobCommand {
     fn idempotency_key(&self) -> Cow<'_, str> {
         Cow::Owned(format!("{}-execute-job-{}", self.saga_id, self.job_id))
     }
+
+    fn target_type(&self) -> CommandTargetType {
+        CommandTargetType::Worker
+    }
 }
 
 /// Result of job execution.
@@ -658,6 +670,10 @@ impl Command for CompleteJobCommand {
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
         Cow::Owned(format!("{}-complete-job-{}", self.saga_id, self.job_id))
+    }
+
+    fn target_type(&self) -> CommandTargetType {
+        CommandTargetType::Job
     }
 }
 

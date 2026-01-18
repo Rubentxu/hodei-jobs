@@ -248,6 +248,70 @@ impl<R: SagaRepositoryTrait<Error = DomainError> + Send + Sync> SagaRepositoryTr
             .await
             .map_err(|e| e.into())
     }
+
+    async fn save_with_tx(
+        &self,
+        tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+        context: &SagaContext,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .save_with_tx(tx, context)
+            .await
+            .map_err(|e| e.into())
+    }
+
+    async fn update_state_with_tx(
+        &self,
+        tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+        saga_id: &SagaId,
+        state: SagaState,
+        error_message: Option<String>,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .update_state_with_tx(tx, saga_id, state, error_message)
+            .await
+            .map_err(NotifyingSagaRepositoryError::Inner)?;
+
+        // Notify best-effort (note: transaction might not be committed yet)
+        self.notify(saga_id);
+        Ok(())
+    }
+
+    async fn save_step_with_tx(
+        &self,
+        tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+        step: &SagaStepData,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .save_step_with_tx(tx, step)
+            .await
+            .map_err(|e| e.into())
+    }
+
+    async fn update_step_state_with_tx(
+        &self,
+        tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+        step_id: &SagaStepId,
+        state: SagaStepState,
+        output: Option<serde_json::Value>,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .update_step_state_with_tx(tx, step_id, state, output)
+            .await
+            .map_err(|e| e.into())
+    }
+
+    async fn update_step_compensation_with_tx(
+        &self,
+        tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+        step_id: &SagaStepId,
+        compensation_data: serde_json::Value,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .update_step_compensation_with_tx(tx, step_id, compensation_data)
+            .await
+            .map_err(|e| e.into())
+    }
 }
 
 /// Metrics for NotifyingSagaRepository
@@ -470,6 +534,51 @@ mod tests {
             _: &str,
         ) -> Result<Vec<SagaContext>, Self::Error> {
             Ok(vec![])
+        }
+
+        async fn save_with_tx(
+            &self,
+            _tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+            _context: &SagaContext,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+            _saga_id: &SagaId,
+            _state: SagaState,
+            _error: Option<String>,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn save_step_with_tx(
+            &self,
+            _tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+            _step: &SagaStepData,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn update_step_state_with_tx(
+            &self,
+            _tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+            _step_id: &SagaStepId,
+            _state: SagaStepState,
+            _output: Option<serde_json::Value>,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn update_step_compensation_with_tx(
+            &self,
+            _tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+            _step_id: &SagaStepId,
+            _compensation: serde_json::Value,
+        ) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 

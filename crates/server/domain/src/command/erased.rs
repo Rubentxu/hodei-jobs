@@ -24,6 +24,8 @@ pub trait ErasedCommandBus: Send + Sync {
         &self,
         command: Box<dyn Any + Send>,
         command_type_id: TypeId,
+        command_name: String,
+        target_type: CommandTargetType,
     ) -> Result<Box<dyn Any + Send>, CommandError>;
 }
 
@@ -129,7 +131,11 @@ impl InMemoryErasedCommandBus {
     /// Despacha un comando con tipo concreto (versión ergonómica).
     pub async fn dispatch<Cmd: Command>(&self, command: Cmd) -> Result<Cmd::Output, CommandError> {
         let type_id = TypeId::of::<Cmd>();
-        let result = self.dispatch_erased(Box::new(command), type_id).await?;
+        let name = command.command_name().to_string();
+        let target = command.target_type();
+        let result = self
+            .dispatch_erased(Box::new(command), type_id, name, target)
+            .await?;
 
         result
             .downcast::<Cmd::Output>()
@@ -153,6 +159,8 @@ impl ErasedCommandBus for InMemoryErasedCommandBus {
         &self,
         command: Box<dyn Any + Send>,
         command_type_id: TypeId,
+        _command_name: String,
+        _target_type: CommandTargetType,
     ) -> Result<Box<dyn Any + Send>, CommandError> {
         let dispatchers = self.dispatchers.lock().await;
 
@@ -214,7 +222,11 @@ pub async fn dispatch_erased<Cmd: Command>(
     command: Cmd,
 ) -> Result<Cmd::Output, CommandError> {
     let type_id = TypeId::of::<Cmd>();
-    let result = bus.dispatch_erased(Box::new(command), type_id).await?;
+    let name = command.command_name().to_string();
+    let target = command.target_type();
+    let result = bus
+        .dispatch_erased(Box::new(command), type_id, name, target)
+        .await?;
 
     result
         .downcast::<Cmd::Output>()

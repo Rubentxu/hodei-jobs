@@ -12,6 +12,7 @@ pub mod cleanup_saga_consumer;
 pub mod event_archiver;
 pub mod event_deduplication;
 pub mod event_dlq;
+pub mod execution_command_consumers;
 pub mod execution_saga_consumer;
 pub mod hybrid;
 pub mod nats;

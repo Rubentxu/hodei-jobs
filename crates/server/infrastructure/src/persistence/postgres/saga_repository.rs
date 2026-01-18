@@ -626,7 +626,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(&context.actor)
         .bind(context.started_at)
         .bind(metadata)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -665,7 +665,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(state_str)
         .bind(completed_at)
         .bind(error_message)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -710,7 +710,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(step.completed_at)
         .bind(step.error_message.as_ref())
         .bind(step.retry_count)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
             message: format!("Database error: {}", e),
@@ -749,7 +749,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(output)
         .bind(started_at)
         .bind(completed_at)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -776,7 +776,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(step_id.0)
         .bind(compensation_data)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -1547,7 +1547,11 @@ where
 
         // All steps completed successfully
         {
-            let mut tx = self.repository.begin_transaction().await?;
+            let mut tx = self.repository.begin_transaction().await.map_err(|e| {
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Transaction error: {}", e),
+                }
+            })?;
             self.repository
                 .update_state_with_tx(&mut tx, &saga_id, SagaState::Completed, None)
                 .await?;

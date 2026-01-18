@@ -292,11 +292,11 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     info!("✓ NATS connected");
 
     // Step 4: Initialize repositories and stores
-    let worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry> =
+    let worker_registry: Arc<PostgresWorkerRegistry> =
         Arc::new(PostgresWorkerRegistry::new(pool.clone()));
     info!("✓ WorkerRegistry initialized");
 
-    let job_repository: Arc<dyn hodei_server_domain::jobs::JobRepository> =
+    let job_repository: Arc<PostgresJobRepository> =
         Arc::new(PostgresJobRepository::new(pool.clone()));
     info!("✓ JobRepository initialized");
 
