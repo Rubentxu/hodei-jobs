@@ -15,7 +15,7 @@ use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::EventMetadata;
 use hodei_server_domain::jobs::{ExecutionContext, Job, JobRepository};
 use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
-use hodei_server_domain::shared_kernel::{DomainError, WorkerId};
+use hodei_server_domain::shared_kernel::{DomainError, JobState, WorkerId, WorkerState};
 use hodei_server_domain::workers::WorkerRegistry;
 use std::sync::Arc;
 use std::time::Duration;
@@ -140,7 +140,7 @@ impl JobAssignmentService {
             format!("exec-{}", Uuid::new_v4()),
         );
 
-        // Assign provider to job (transitions to ASSIGNED state)
+        // Assign provider and create context (transitions to ASSIGNED state)
         if job.selected_provider().is_none() {
             job.assign_to_provider(provider_id.clone(), context)
                 .map_err(|e| format!("Failed to assign provider: {}", e))?;
@@ -152,24 +152,24 @@ impl JobAssignmentService {
         }
 
         // Step 3: Update job in repository (state = ASSIGNED)
-        // NOTE: No RUNNING transition here - that's the saga's responsibility
-        info!(
-            job_id = %job.id,
-            state = "ASSIGNED",
-            "JobAssignmentService: Persisting job state to ASSIGNED"
-        );
         self.job_repository
             .update(job)
             .await
             .map_err(|e| format!("Failed to persist job assignment: {}", e))?;
 
+        // Step 4: Update worker state to Busy (CRITICAL: Immediate reservation)
+        self.worker_registry
+            .update_state(worker_id, WorkerState::Busy)
+            .await
+            .map_err(|e| format!("Failed to reserve worker {}: {}", worker_id, e))?;
+
         info!(
             job_id = %job.id,
             worker_id = %worker_id,
-            "JobAssignmentService: Job assigned (ASSIGNED state persisted)"
+            "JobAssignmentService: Job assigned and worker reserved"
         );
 
-        // Step 4: Publish JobAssigned event (triggers saga for RUN_JOB)
+        // Step 5: Publish JobAssigned event (triggers saga for RUN_JOB)
         if self.config.publish_events {
             self.publish_job_assigned_event(job, worker_id).await;
         }

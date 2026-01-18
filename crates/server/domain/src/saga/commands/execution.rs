@@ -151,11 +151,14 @@ impl CommandHandler<ValidateJobCommand> for ValidateJobHandler {
 
 /// Command to assign a worker to a job.
 ///
-/// This command finds an available worker and assigns it to the job.
+/// This command finds an available worker or uses a pre-assigned one,
+/// and assigns it to the job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignWorkerCommand {
     /// The job ID to assign a worker to
     pub job_id: JobId,
+    /// Optional pre-assigned worker ID
+    pub worker_id: Option<WorkerId>,
     /// The saga that initiated this command
     pub saga_id: String,
     /// Optional metadata for tracing
@@ -164,12 +167,25 @@ pub struct AssignWorkerCommand {
 }
 
 impl AssignWorkerCommand {
-    /// Creates a new AssignWorkerCommand.
+    /// Creates a new AssignWorkerCommand with automatic worker selection.
     #[inline]
     pub fn new(job_id: JobId, saga_id: String) -> Self {
         let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
         Self {
             job_id,
+            worker_id: None,
+            saga_id,
+            metadata,
+        }
+    }
+
+    /// Creates a new AssignWorkerCommand with a pre-assigned worker.
+    #[inline]
+    pub fn with_worker(job_id: JobId, worker_id: WorkerId, saga_id: String) -> Self {
+        let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
+        Self {
+            job_id,
+            worker_id: Some(worker_id),
             saga_id,
             metadata,
         }
@@ -181,7 +197,14 @@ impl Command for AssignWorkerCommand {
 
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("{}-assign-worker-{}", self.saga_id, self.job_id))
+        if let Some(ref worker_id) = self.worker_id {
+            Cow::Owned(format!(
+                "{}-assign-worker-{}-{}",
+                self.saga_id, self.job_id, worker_id
+            ))
+        } else {
+            Cow::Owned(format!("{}-assign-worker-{}", self.saga_id, self.job_id))
+        }
     }
 }
 
@@ -236,6 +259,12 @@ pub enum AssignWorkerError {
 
     #[error("Worker {worker_id} not found")]
     WorkerNotFound { worker_id: WorkerId },
+
+    #[error("Worker {worker_id} is not available (state: {state:?})")]
+    WorkerNotAvailable {
+        worker_id: WorkerId,
+        state: WorkerState,
+    },
 }
 
 /// Handler for AssignWorkerCommand.
@@ -269,26 +298,50 @@ impl CommandHandler<AssignWorkerCommand> for AssignWorkerHandler {
         // Clone job_id since we need it in closures
         let job_id = command.job_id.clone();
 
-        // Find an available worker using find with WorkerFilter
-        let filter = WorkerFilter::new()
-            .with_state(WorkerState::Ready)
-            .accepting_jobs();
-        let available_workers = self.worker_registry.find(&filter).await.map_err(|e| {
-            AssignWorkerError::AssignmentFailed {
-                job_id: job_id.clone(),
-                source: e,
+        // Step 1: Find or Validate Worker
+        let worker_id = if let Some(pre_assigned_id) = command.worker_id {
+            // Validate pre-assigned worker
+            let worker = self
+                .worker_registry
+                .find_by_id(&pre_assigned_id)
+                .await
+                .map_err(|e| AssignWorkerError::AssignmentFailed {
+                    job_id: job_id.clone(),
+                    source: e,
+                })?
+                .ok_or_else(|| AssignWorkerError::WorkerNotFound {
+                    worker_id: pre_assigned_id.clone(),
+                })?;
+
+            // Ensure worker is available (Ready or Busy if it was already assigned to this job)
+            if *worker.state() != WorkerState::Ready && *worker.state() != WorkerState::Busy {
+                return Err(AssignWorkerError::WorkerNotAvailable {
+                    worker_id: pre_assigned_id,
+                    state: worker.state().clone(),
+                });
             }
-        })?;
+            pre_assigned_id
+        } else {
+            // Find an available worker using find with WorkerFilter
+            let filter = WorkerFilter::new()
+                .with_state(WorkerState::Ready)
+                .accepting_jobs();
+            let available_workers = self.worker_registry.find(&filter).await.map_err(|e| {
+                AssignWorkerError::AssignmentFailed {
+                    job_id: job_id.clone(),
+                    source: e,
+                }
+            })?;
 
-        if available_workers.is_empty() {
-            return Ok(WorkerAssignmentResult::failure("No available workers"));
-        }
+            if available_workers.is_empty() {
+                return Ok(WorkerAssignmentResult::failure("No available workers"));
+            }
 
-        // Assign the first available worker
-        let worker = &available_workers[0];
+            // Assign the first available worker
+            available_workers[0].id().clone()
+        };
 
-        // Update job with worker assignment - use update_state with execution context
-        // First, get the job to access its execution context
+        // Step 2: Update job with worker assignment
         let mut job = self
             .job_repository
             .find_by_id(&job_id)
@@ -315,18 +368,31 @@ impl CommandHandler<AssignWorkerCommand> for AssignWorkerHandler {
             }
         })?;
 
-        // Update worker state to Busy
+        // Step 3: Update worker state to Busy
         self.worker_registry
-            .update_state(worker.id(), WorkerState::Busy)
+            .update_state(&worker_id, WorkerState::Busy)
             .await
             .map_err(|e| AssignWorkerError::AssignmentFailed {
                 job_id: job_id.clone(),
                 source: e,
             })?;
 
+        // Fetch final worker state for result
+        let final_worker = self
+            .worker_registry
+            .find_by_id(&worker_id)
+            .await
+            .map_err(|e| AssignWorkerError::AssignmentFailed {
+                job_id: job_id.clone(),
+                source: e,
+            })?
+            .ok_or_else(|| AssignWorkerError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            })?;
+
         Ok(WorkerAssignmentResult::success(
-            worker.id().clone(),
-            worker.state().clone(),
+            worker_id,
+            final_worker.state().clone(),
         ))
     }
 }

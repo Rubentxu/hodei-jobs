@@ -325,8 +325,7 @@ impl SagaStep for AssignWorkerStep {
             debug!(
                 job_id = %self.job_id,
                 worker_id = %worker_id_str,
-                "Worker already assigned (idempotency check), skipping"
-            );
+                "Worker already assigned (idempotency check), skipping");
             return Ok(());
         }
 
@@ -334,41 +333,39 @@ impl SagaStep for AssignWorkerStep {
         let worker_id = self.worker_id.clone();
 
         // GAP-52-01: Dispatch AssignWorkerCommand via CommandBus
-        let command = AssignWorkerCommand::new(self.job_id.clone(), context.saga_id.to_string());
+        let command = if let Some(id) = worker_id {
+            AssignWorkerCommand::with_worker(self.job_id.clone(), id, context.saga_id.to_string())
+        } else {
+            AssignWorkerCommand::new(self.job_id.clone(), context.saga_id.to_string())
+        };
 
         info!(
             job_id = %self.job_id,
             command_type = "AssignWorkerCommand",
             saga_id = %context.saga_id,
-            "�� Dispatching command via CommandBus..."
+            has_preassigned = ?self.worker_id,
+            "🚀 Dispatching command via CommandBus..."
         );
 
-        // Dispatch command and handle pre-assigned worker if needed
-        let result = if let Some(_preassigned_id) = &worker_id {
-            // For pre-assigned workers, we still use the command for consistency
-            // but skip the lookup
+        // Dispatch command
+        let result =
             dispatch_erased(&command_bus, command)
                 .await
                 .map_err(|e| SagaError::StepFailed {
                     step: self.name().to_string(),
                     message: format!("Failed to dispatch AssignWorkerCommand: {}", e),
                     will_compensate: true,
-                })?
-        } else {
-            dispatch_erased(&command_bus, command)
-                .await
-                .map_err(|e| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to dispatch AssignWorkerCommand: {}", e),
-                    will_compensate: true,
-                })?
-        };
+                })?;
 
         // Store worker_id from result for subsequent steps
         let assigned_worker_id = result
             .worker_id
             .clone()
-            .unwrap_or_else(|| worker_id.clone().unwrap_or_default());
+            .ok_or_else(|| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: "No worker assigned by command".to_string(),
+                will_compensate: true,
+            })?;
 
         context
             .set_metadata("execution_worker_id", &assigned_worker_id.to_string())
@@ -396,7 +393,7 @@ impl SagaStep for AssignWorkerStep {
         Ok(())
     }
 
-    /// EPIC-50 GAP-52-01: Compensate worker assignment via CommandBus
+    /// EPIC-50 GAP-52-01: Compensate worker assignment via registry release
     #[instrument(skip(context), fields(step = "AssignWorker"))]
     async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
         let worker_id_str = match context.get_metadata::<String>("execution_worker_id") {
@@ -411,43 +408,54 @@ impl SagaStep for AssignWorkerStep {
             }
         };
 
-        // GAP-52-01: Get CommandBus from context
-        let _command_bus = {
-            let services = context
-                .services()
-                .ok_or_else(|| SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: "SagaServices not available".to_string(),
-                })?;
+        // Get WorkerRegistry from context services
+        let services = context
+            .services()
+            .ok_or_else(|| SagaError::CompensationFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available".to_string(),
+            })?;
 
-            services
-                .command_bus
-                .as_ref()
-                .ok_or_else(|| SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: "CommandBus not available".to_string(),
-                })?
-                .clone()
-        };
+        let worker_registry = &services.provider_registry;
 
-        let _worker_id =
+        let worker_id =
             WorkerId::from_string(&worker_id_str).ok_or_else(|| SagaError::CompensationFailed {
                 step: self.name().to_string(),
                 message: format!("Invalid worker_id in context: {}", worker_id_str),
             })?;
 
         info!(
+            job_id = %self.job_id,
             worker_id = %worker_id_str,
-            "🔄 Compensating: releasing worker via CommandBus"
+            "🔄 Compensating: releasing worker in registry"
         );
 
-        // Release worker by dispatching UnregisterWorkerCommand (simplified compensation)
-        // For full compensation, we'd dispatch a ReleaseWorkerCommand
-        // This is a simplified version - the worker state will be updated by the command handler
-        info!(
-            worker_id = %worker_id_str,
-            "✅ Worker release compensation complete"
-        );
+        // Revert worker state to READY if it was BUSY
+        // We use the registry directly for compensation as it's more reliable for internal state cleanup
+        if let Ok(Some(worker)) = worker_registry.get(&worker_id).await {
+            if *worker.state() == crate::shared_kernel::WorkerState::Busy {
+                worker_registry
+                    .update_state(&worker_id, crate::shared_kernel::WorkerState::Ready)
+                    .await
+                    .map_err(|e| SagaError::CompensationFailed {
+                        step: self.name().to_string(),
+                        message: format!("Failed to release worker {}: {}", worker_id_str, e),
+                    })?;
+
+                info!(worker_id = %worker_id_str, "✅ Worker state reverted to READY");
+            }
+        }
+
+        // Also ensure the job is unassigned if possible
+        if let Some(ref job_repo) = services.job_repository {
+            if let Ok(Some(mut job)) = job_repo.find_by_id(&self.job_id).await {
+                if *job.state() == JobState::Assigned || *job.state() == JobState::Running {
+                    job.set_state(JobState::Pending).ok();
+                    job_repo.update(&job).await.ok();
+                    info!(job_id = %self.job_id, "✅ Job state reverted to PENDING");
+                }
+            }
+        }
 
         Ok(())
     }

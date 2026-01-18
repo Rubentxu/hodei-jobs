@@ -446,8 +446,8 @@ impl ExecutionSagaConsumer {
     /// Handle WorkerReady event - dispatch pending job
     #[instrument(skip(self), fields(worker_id = %worker_id))]
     async fn handle_worker_ready(&self, worker_id: &WorkerId) -> Result<(), DomainError> {
-        // Check if worker exists and is in correct state
-        let _worker = self
+        // Step 1: Check if worker exists and if it has a pre-assigned job
+        let worker = self
             .worker_registry
             .get(worker_id)
             .await
@@ -458,31 +458,40 @@ impl ExecutionSagaConsumer {
                 message: format!("Worker {} not found", worker_id),
             })?;
 
-        // Find pending jobs that can be dispatched to this worker
-        let pending_jobs = self.job_repository.find_pending().await.map_err(|e| {
-            DomainError::InfrastructureError {
-                message: format!("Failed to find pending jobs: {}", e),
-            }
-        })?;
-
-        if pending_jobs.is_empty() {
-            debug!(
-                "📦 ExecutionSagaConsumer: No pending jobs for worker {}",
-                worker_id
+        // Step 2: Determine which job to dispatch
+        let job_id = if let Some(intended_job_id) = worker.current_job_id() {
+            info!(
+                worker_id = %worker_id,
+                job_id = %intended_job_id,
+                "📦 ExecutionSagaConsumer: Worker has pre-assigned job, prioritizing it"
             );
-            return Ok(());
-        }
+            intended_job_id.clone()
+        } else {
+            // Find pending jobs that can be dispatched to this worker
+            let pending_jobs = self.job_repository.find_pending().await.map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: format!("Failed to find pending jobs: {}", e),
+                }
+            })?;
 
-        // Dispatch first pending job
-        let job = &pending_jobs[0];
-        let job_id = &job.id;
+            if pending_jobs.is_empty() {
+                debug!(
+                    "📦 ExecutionSagaConsumer: No pending jobs for worker {}",
+                    worker_id
+                );
+                return Ok(());
+            }
+
+            // Dispatch first pending job
+            pending_jobs[0].id.clone()
+        };
 
         info!(
             "📦 ExecutionSagaConsumer: Dispatching job {} to worker {}",
             job_id, worker_id
         );
 
-        self.trigger_execution_saga(job_id, worker_id).await
+        self.trigger_execution_saga(&job_id, worker_id).await
     }
 
     /// Handle JobAssigned event - trigger execution saga with pre-assigned worker
