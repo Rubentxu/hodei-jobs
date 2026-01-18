@@ -35,7 +35,6 @@ use hodei_shared::event_topics::worker_topics;
 
 // Constants for saga metadata to avoid lifetime issues
 const METADATA_TIMEOUT_TYPE: &str = "worker_disconnection";
-const ACTOR_NAME_DISCONNECT: &str = "worker_disconnection_handler_consumer";
 
 /// Message envelope for NATS transport
 #[derive(Debug, Clone, Deserialize)]

@@ -67,15 +67,6 @@ impl MetricsServiceImpl {
             },
         }
     }
-
-    fn not_configured_status(&self) -> Status {
-        match &self.state {
-            MetricsBackendState::Disabled { reason } => Status::failed_precondition(reason.clone()),
-            MetricsBackendState::Enabled { .. } => {
-                Status::internal("Provider registry not available")
-            }
-        }
-    }
 }
 
 #[tonic::async_trait]

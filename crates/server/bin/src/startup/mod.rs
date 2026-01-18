@@ -27,7 +27,6 @@ use hodei_server_application::saga::recovery_saga::DynRecoverySagaCoordinator;
 use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
 };
-use hodei_server_domain::command::InMemoryErasedCommandBus;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::saga::{InMemorySagaOrchestrator, SagaOrchestrator};
 use hodei_server_domain::shared_kernel::ProviderId;
@@ -315,18 +314,18 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
     info!("✓ ProviderConfigRepository initialized");
 
-    // Step 8: Initialize recovery saga coordinator
-    let command_bus: Arc<InMemoryErasedCommandBus> = Arc::new(InMemoryErasedCommandBus::new());
+    // Step 8: Initialize recovery saga coordinator with OutboxCommandBus (CRITICAL FIX)
+    let (recovery_command_bus, _) = services_init::create_command_bus(pool.clone());
     let recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator> = Arc::new(
         DynRecoverySagaCoordinator::builder()
             .with_orchestrator(saga_orchestrator.clone())
-            .with_command_bus(command_bus)
+            .with_command_bus(recovery_command_bus) // ✅ OutboxCommandBus for persistence
             .with_worker_registry(worker_registry.clone())
             .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
             .build()
             .expect("Failed to build recovery saga coordinator"),
     );
-    info!("✓ RecoverySagaCoordinator initialized");
+    info!("✓ RecoverySagaCoordinator initialized with OutboxCommandBus");
 
     // Step 9: Initialize WorkerLifecycleManager with empty providers map
     // The providers will be registered during provider initialization

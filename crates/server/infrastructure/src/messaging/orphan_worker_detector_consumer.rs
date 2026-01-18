@@ -33,7 +33,6 @@ use hodei_shared::event_topics::worker_topics;
 // Constants for saga metadata to avoid lifetime issues
 const METADATA_RECOVERY_TYPE: &str = "orphan_worker";
 const METADATA_CLEANUP_TYPE: &str = "orphan_worker";
-const ACTOR_NAME: &str = "orphan_worker_detector_consumer";
 
 /// Message envelope for NATS transport
 #[derive(Debug, Clone, Deserialize)]

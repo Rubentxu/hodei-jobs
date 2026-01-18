@@ -6,12 +6,10 @@
 //! - Configurable shutdown timeout
 //! - Coordination between all background tasks
 
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, oneshot, watch};
-use tokio::time::timeout;
+use tokio::sync::{broadcast, watch};
 use tracing::{error, info, warn};
 
 /// Shutdown configuration
@@ -19,8 +17,6 @@ use tracing::{error, info, warn};
 pub struct ShutdownConfig {
     /// Maximum time to wait for graceful shutdown
     pub timeout: Duration,
-    /// Time to wait before force shutdown
-    pub force_delay: Duration,
     /// Enable signal handlers
     pub enable_signals: bool,
 }
@@ -29,7 +25,6 @@ impl Default for ShutdownConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
-            force_delay: Duration::from_secs(5),
             enable_signals: true,
         }
     }
@@ -38,11 +33,6 @@ impl Default for ShutdownConfig {
 impl ShutdownConfig {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
-        self
-    }
-
-    pub fn with_force_delay(mut self, delay: Duration) -> Self {
-        self.force_delay = delay;
         self
     }
 }
@@ -106,32 +96,6 @@ impl GracefulShutdown {
         rx.recv().await
     }
 
-    /// Run with graceful shutdown support
-    pub async fn run_with_shutdown<F, R, E>(&self, task: F, task_name: &str) -> Result<R, E>
-    where
-        F: Future<Output = Result<R, E>> + Send + 'static,
-        R: Send + 'static,
-        E: std::fmt::Display + From<String> + Send + 'static,
-    {
-        // Spawn the main task
-        let task_handle = tokio::spawn(task);
-
-        // Wait for either task completion or shutdown signal
-        tokio::select! {
-            result = task_handle => {
-                result.unwrap_or_else(|e| {
-                    error!("Task {} panicked: {}", task_name, e);
-                    panic!("Task {} panic: {}", task_name, e)
-                })
-            }
-            signal = self.wait_for_signal() => {
-                info!("Shutdown signal received during {}: {:?}", task_name, signal);
-                // Signal the task to stop (it should respect the shutdown receiver)
-                Err(format!("Shutdown during {}: {:?}", task_name, signal).into())
-            }
-        }
-    }
-
     /// Get current state
     pub fn state(&self) -> ShutdownState {
         (*self.state_rx.borrow()).clone()
@@ -163,10 +127,6 @@ impl ShutdownReceiver {
                 },
                 ShutdownState::ShuttingDown(reason) => ShutdownSignal {
                     reason: reason.clone(),
-                    timestamp: chrono::Utc::now(),
-                },
-                ShutdownState::Completed => ShutdownSignal {
-                    reason: ShutdownReason::Unknown,
                     timestamp: chrono::Utc::now(),
                 },
             }
@@ -204,10 +164,6 @@ pub enum ShutdownReason {
     SigTerm,
     /// SIGINT signal received (Ctrl+C)
     SigInt,
-    /// programmatic shutdown
-    Programmatic(String),
-    /// Health check failed
-    HealthCheckFailed(String),
     /// Unknown reason
     Unknown,
 }
@@ -217,10 +173,6 @@ impl std::fmt::Display for ShutdownReason {
         match self {
             ShutdownReason::SigTerm => write!(f, "SIGTERM"),
             ShutdownReason::SigInt => write!(f, "SIGINT (Ctrl+C)"),
-            ShutdownReason::Programmatic(reason) => write!(f, "Programmatic: {}", reason),
-            ShutdownReason::HealthCheckFailed(reason) => {
-                write!(f, "Health check failed: {}", reason)
-            }
             ShutdownReason::Unknown => write!(f, "Unknown"),
         }
     }
@@ -233,117 +185,6 @@ pub enum ShutdownState {
     Running,
     /// Shutdown initiated
     ShuttingDown(ShutdownReason),
-    /// Shutdown completed
-    Completed,
-}
-
-/// Component handle for graceful shutdown
-pub struct ShutdownHandle {
-    /// Sender signal component to stop
-    stop_tx: Option<oneshot::Sender<()>>,
-    /// Join handle for the component task
-    _join_handle: tokio::task::JoinHandle<()>,
-}
-
-impl ShutdownHandle {
-    /// Create a new shutdown handle
-    pub fn new<F>(_stop_rx: oneshot::Receiver<()>, f: F) -> Self
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let (stop_tx, stop_rx_inner) = oneshot::channel();
-        let join_handle = tokio::spawn(async move {
-            tokio::select! {
-                _ = stop_rx_inner => {
-                    info!("Component received stop signal");
-                }
-                _ = f => {
-                    info!("Component task completed");
-                }
-            }
-        });
-
-        Self {
-            stop_tx: Some(stop_tx),
-            _join_handle: join_handle,
-        }
-    }
-
-    /// Signal the component to stop
-    pub fn stop(&mut self) {
-        if let Some(tx) = self.stop_tx.take() {
-            let _ = tx.send(());
-        }
-    }
-}
-
-/// Trait for components that support graceful shutdown
-#[async_trait::async_trait]
-pub trait Shutdownable: Send {
-    /// Signal the component to stop accepting new work
-    fn prepare_shutdown(&mut self);
-    /// Wait for the component to finish in-progress work
-    async fn wait_for_shutdown(&mut self, timeout: Duration) -> bool;
-}
-
-/// Execute shutdown sequence for multiple components
-pub async fn execute_shutdown_sequence(
-    _coordinator: &GracefulShutdown,
-    mut components: Vec<&mut dyn Shutdownable>,
-    config: &ShutdownConfig,
-) -> bool {
-    info!(
-        "Starting graceful shutdown sequence with {} components",
-        components.len()
-    );
-
-    // Phase 1: Signal all components to stop accepting new work
-    for (i, component) in components.iter_mut().enumerate() {
-        info!("Preparing component {} for shutdown", i);
-        component.prepare_shutdown();
-    }
-
-    // Phase 2: Wait for in-progress work to complete
-    let shutdown_futures: Vec<_> = components
-        .iter_mut()
-        .enumerate()
-        .map(|(i, component)| async move {
-            let result = component.wait_for_shutdown(config.timeout).await;
-            info!(
-                "Component {} shutdown: {}",
-                i,
-                if result { "OK" } else { "TIMEOUT" }
-            );
-            result
-        })
-        .collect();
-
-    // Wait for all components with overall timeout
-    let results = timeout(config.timeout, async {
-        let mut success = true;
-        for future in shutdown_futures {
-            if !future.await {
-                success = false;
-            }
-        }
-        success
-    })
-    .await;
-
-    match results {
-        Ok(true) => {
-            info!("All components shut down gracefully");
-            true
-        }
-        Ok(false) => {
-            warn!("Some components did not shut down in time");
-            false
-        }
-        Err(_) => {
-            warn!("Shutdown sequence timed out after {:?}", config.timeout);
-            false
-        }
-    }
 }
 
 /// Start signal handler that triggers graceful shutdown
@@ -409,11 +250,11 @@ mod tests {
         // Give it a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Trigger shutdown
-        shutdown.shutdown(ShutdownReason::Programmatic("Test".to_string()));
+        // Trigger shutdown with SIGINT
+        shutdown.shutdown(ShutdownReason::SigInt);
 
         let signal = handle.await.unwrap();
-        assert!(matches!(signal.reason, ShutdownReason::Programmatic(_)));
+        assert!(matches!(signal.reason, ShutdownReason::SigInt));
     }
 
     #[tokio::test]

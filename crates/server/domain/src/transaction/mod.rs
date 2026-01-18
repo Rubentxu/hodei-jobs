@@ -102,11 +102,6 @@ impl<'a> TransactionContext<'a> {
         self.tx.as_mut().ok_or(TransactionError::AlreadyCompleted)
     }
 
-    /// Get pool reference (internal use)
-    fn pool(&self) -> &sqlx::PgPool {
-        self.pool
-    }
-
     /// Update saga step state to IN_PROGRESS
     pub async fn mark_step_in_progress(&mut self) -> TransactionResult<()> {
         // Clone values BEFORE mutable borrow

@@ -239,6 +239,10 @@ impl From<SagaError> for OrchestratorError {
 /// This implementation stores saga state in memory and should not be
 /// used in production environments where persistence is required.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "0.60.0",
+    note = "Use PostgresSagaOrchestrator for production. InMemorySagaOrchestrator is only for testing."
+)]
 pub struct InMemorySagaOrchestrator<R: SagaRepository + Clone> {
     /// Repository for saga persistence
     repository: Arc<R>,

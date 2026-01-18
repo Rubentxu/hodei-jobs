@@ -48,33 +48,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-/// Metrics for provider initialization
-#[derive(Debug, Clone, Default)]
-pub struct ProviderInitMetrics {
-    pub duration_ms: u64,
-    pub providers_total: usize,
-    pub providers_successful: usize,
-    pub providers_failed: usize,
-    pub providers_with_warnings: usize,
-}
-
-impl ProviderInitMetrics {
-    pub fn record(
-        &mut self,
-        duration_ms: u64,
-        total: usize,
-        successful: usize,
-        failed: usize,
-        warnings: usize,
-    ) {
-        self.duration_ms = duration_ms;
-        self.providers_total = total;
-        self.providers_successful = successful;
-        self.providers_failed = failed;
-        self.providers_with_warnings = warnings;
-    }
-}
-
 /// Configuration for provider initialization
 #[derive(Debug, Clone)]
 pub struct ProvidersInitConfig {
@@ -714,46 +687,6 @@ impl ProvidersInitializer {
 
         Ok(())
     }
-}
-
-/// Initialize providers with default configuration
-pub async fn initialize_providers(
-    repository: Arc<dyn ProviderConfigRepository>,
-    event_bus: Option<Arc<dyn EventBus>>,
-) -> Result<ProvidersInitResult, ProviderInitializationError> {
-    let config = ProvidersInitConfig::default();
-    let registry = Arc::new(ProviderRegistry::new(repository.clone()));
-
-    let event_bus = event_bus.ok_or_else(|| ProviderInitializationError::UnexpectedError {
-        provider_id: ProviderId::new(),
-        provider_type: ProviderType::Test,
-        source: ErrorMessage::from("EventBus is required for provider initialization".to_string()),
-    })?;
-
-    let initializer =
-        ProvidersInitializer::new(repository, registry, config).with_event_bus(event_bus);
-
-    initializer.initialize().await
-}
-
-/// Initialize providers with custom configuration
-pub async fn initialize_providers_with_config(
-    repository: Arc<dyn ProviderConfigRepository>,
-    event_bus: Option<Arc<dyn EventBus>>,
-    config: ProvidersInitConfig,
-) -> Result<ProvidersInitResult, ProviderInitializationError> {
-    let registry = Arc::new(ProviderRegistry::new(repository.clone()));
-
-    let event_bus = event_bus.ok_or_else(|| ProviderInitializationError::UnexpectedError {
-        provider_id: ProviderId::new(),
-        provider_type: ProviderType::Test,
-        source: ErrorMessage::from("EventBus is required for provider initialization".to_string()),
-    })?;
-
-    let initializer =
-        ProvidersInitializer::new(repository, registry, config).with_event_bus(event_bus);
-
-    initializer.initialize().await
 }
 
 #[cfg(test)]

@@ -35,7 +35,6 @@ use hodei_shared::event_topics::worker_topics;
 
 // Constants for saga metadata to avoid lifetime issues
 const METADATA_CLEANUP_TYPE_EPHEMERAL: &str = "ephemeral_worker";
-const ACTOR_NAME_EPHEMERAL: &str = "worker_ephemeral_terminating_consumer";
 
 /// Message envelope for NATS transport
 #[derive(Debug, Clone, Deserialize)]

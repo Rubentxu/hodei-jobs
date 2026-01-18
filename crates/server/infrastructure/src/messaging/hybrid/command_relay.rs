@@ -152,15 +152,27 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
     }
 
     /// Run the command relay.
+    ///
+    /// Uses LISTEN/NOTIFY for reactive processing when available.
+    /// Falls back to watchdog polling at 30s intervals when no listener is present.
+    /// This prevents unnecessary DB load when the system is operating reactively.
     pub async fn run(mut self) {
-        let mut interval = interval(Duration::from_millis(self.config.poll_interval_ms));
+        let mut watchdog_interval = interval(Duration::from_secs(30));
         let mut shutdown_rx = self.shutdown.subscribe();
         let has_listener = self.listener.is_some();
 
-        info!(
-            channel = self.config.channel,
-            has_listener, "Starting command relay"
-        );
+        // Log the operating mode
+        if has_listener {
+            info!(
+                channel = self.config.channel,
+                "Starting command relay in REACTIVE mode (LISTEN/NOTIFY)"
+            );
+        } else {
+            warn!(
+                channel = self.config.channel,
+                "No notification listener available. Starting in DEGRADED mode with 30s watchdog polling"
+            );
+        }
 
         loop {
             tokio::select! {
@@ -171,7 +183,7 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
                             self.process_pending_batch().await;
                         }
                         Ok(None) => {
-                            // No listener available
+                            // No listener available, this is expected in degraded mode
                         }
                         Err(e) => {
                             warn!(error = %e, "Notification error");
@@ -179,9 +191,14 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
                         }
                     }
                 }
-                _ = interval.tick() => {
-                    self.metrics.lock().await.record_polling_wakeup();
-                    self.process_pending_batch().await;
+                _ = watchdog_interval.tick() => {
+                    // Only poll in degraded mode (no listener)
+                    if !has_listener {
+                        self.metrics.lock().await.record_polling_wakeup();
+                        info!("Watchdog tick: checking for pending commands in degraded mode");
+                        self.process_pending_batch().await;
+                    }
+                    // In reactive mode, watchdog does nothing (notifications drive processing)
                 }
                 _ = shutdown_rx.recv() => {
                     info!("Command relay shutting down");

@@ -179,48 +179,6 @@ pub fn initialize_grpc_services(
     }
 }
 
-/// Simple job processor that polls the job queue and assigns jobs to workers.
-/// This is a fallback mechanism when the full JobCoordinator is not available.
-///
-/// @deprecated Use JobCoordinator with reactive event processing instead.
-/// This function is kept for emergency recovery scenarios only.
-#[deprecated(since = "0.59.1", note = "Use JobCoordinator reactive mode instead")]
-async fn start_simple_job_processor(
-    job_queue: Arc<dyn JobQueue>,
-    mut shutdown_rx: watch::Receiver<()>,
-) {
-    info!("Starting simple job processor (polling mode)");
-
-    loop {
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                info!("Job processor shutting down");
-                break;
-            }
-            _ = time::sleep(Duration::from_secs(2)) => {
-                // Process pending jobs
-                if let Err(e) = process_pending_job(&job_queue).await {
-                    tracing::error!("Error processing pending jobs: {:?}", e);
-                }
-            }
-        }
-    }
-}
-
-/// Process the next pending job from the queue
-async fn process_pending_job(job_queue: &Arc<dyn JobQueue>) -> anyhow::Result<()> {
-    // Peek next job from queue
-    let _next_job = job_queue
-        .peek()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to peek job from queue: {:?}", e))?;
-
-    // For now, just log that we're processing
-    tracing::debug!("Job queue check completed");
-
-    Ok(())
-}
-
 /// Initialize and start the job processor in background.
 ///
 /// This processor polls the job queue and dispatches jobs to workers.
@@ -712,27 +670,6 @@ pub async fn start_reactive_saga_processor(
 
     info!("✅ ReactiveSagaProcessor started (reactive + safety net polling)");
     ReactiveSagaProcessorShutdownHandle { stop_tx }
-}
-
-/// Create a notifying saga repository with signal channel
-///
-/// This function creates a NotifyingSagaRepository that emits signals
-/// when sagas are saved, enabling reactive saga processing.
-pub fn create_notifying_saga_repository(
-    pool: sqlx::PgPool,
-) -> (
-    Arc<NotifyingSagaRepository<PostgresSagaRepository>>,
-    tokio::sync::mpsc::UnboundedReceiver<hodei_server_domain::saga::SagaId>,
-) {
-    let inner_repository = PostgresSagaRepository::new(pool);
-    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
-    let metrics = Arc::new(
-        hodei_server_infrastructure::persistence::saga::NotifyingRepositoryMetrics::default(),
-    );
-
-    let notifying_repository = NotifyingSagaRepository::new(inner_repository, signal_tx, metrics);
-
-    (Arc::new(notifying_repository), signal_rx)
 }
 
 /// Shutdown handle for WorkerEphemeralTerminatingConsumer
