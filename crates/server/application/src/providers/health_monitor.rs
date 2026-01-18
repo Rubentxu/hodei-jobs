@@ -577,7 +577,16 @@ pub mod tests {
         async fn subscribe(
             &self,
         ) -> std::result::Result<
-            std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<hodei_server_domain::workers::WorkerInfrastructureEvent, ProviderError>> + Send>>,
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<
+                            Item = std::result::Result<
+                                hodei_server_domain::workers::WorkerInfrastructureEvent,
+                                ProviderError,
+                            >,
+                        > + Send,
+                >,
+            >,
             ProviderError,
         > {
             Ok(Box::pin(futures::stream::empty()))

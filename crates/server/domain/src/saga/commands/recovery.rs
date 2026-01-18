@@ -6,7 +6,7 @@
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault};
 use crate::jobs::JobRepository;
-use crate::shared_kernel::{JobId, ProviderId, WorkerId, JobState, WorkerState};
+use crate::shared_kernel::{JobId, JobState, ProviderId, WorkerId, WorkerState};
 use crate::workers::{WorkerProvisioning, WorkerRegistry};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,10 @@ impl Command for CheckConnectivityCommand {
 
     #[inline]
     fn idempotency_key(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("{}-check-connectivity-{}", self.saga_id, self.worker_id))
+        Cow::Owned(format!(
+            "{}-check-connectivity-{}",
+            self.saga_id, self.worker_id
+        ))
     }
 }
 
@@ -148,7 +151,10 @@ where
 
         // For now, we just report the current state
         // In a real implementation, this would ping the worker
-        Ok(CheckConnectivityResult::reachable(worker.state().clone(), 0))
+        Ok(CheckConnectivityResult::reachable(
+            worker.state().clone(),
+            0,
+        ))
     }
 }
 
@@ -344,7 +350,12 @@ pub struct ProvisionNewWorkerCommand {
 impl ProvisionNewWorkerCommand {
     /// Creates a new ProvisionNewWorkerCommand.
     #[inline]
-    pub fn new(job_id: JobId, provider_id: ProviderId, old_worker_id: WorkerId, saga_id: String) -> Self {
+    pub fn new(
+        job_id: JobId,
+        provider_id: ProviderId,
+        old_worker_id: WorkerId,
+        saga_id: String,
+    ) -> Self {
         let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
         Self {
             job_id,
@@ -455,8 +466,9 @@ where
         let spec = crate::workers::WorkerSpec::new(
             "hodei-worker:latest".to_string(),
             "localhost:50051".to_string(),
-        ).with_label("recovery", "true")
-         .with_label("original_worker_id", command.old_worker_id.to_string());
+        )
+        .with_label("recovery", "true")
+        .with_label("original_worker_id", command.old_worker_id.to_string());
 
         let result = self
             .provisioning
@@ -467,7 +479,10 @@ where
                 source: e,
             })?;
 
-        Ok(WorkerProvisioningResult::success(result.worker_id, result.provider_id))
+        Ok(WorkerProvisioningResult::success(
+            result.worker_id,
+            result.provider_id,
+        ))
     }
 }
 
@@ -492,7 +507,12 @@ pub struct TransferJobCommand {
 impl TransferJobCommand {
     /// Creates a new TransferJobCommand.
     #[inline]
-    pub fn new(job_id: JobId, new_worker_id: WorkerId, old_worker_id: WorkerId, saga_id: String) -> Self {
+    pub fn new(
+        job_id: JobId,
+        new_worker_id: WorkerId,
+        old_worker_id: WorkerId,
+        saga_id: String,
+    ) -> Self {
         let metadata = CommandMetadataDefault::new().with_saga_id(&saga_id);
         Self {
             job_id,
@@ -596,10 +616,7 @@ where
 {
     type Error = TransferJobError;
 
-    async fn handle(
-        &self,
-        command: TransferJobCommand,
-    ) -> Result<JobTransferResult, Self::Error> {
+    async fn handle(&self, command: TransferJobCommand) -> Result<JobTransferResult, Self::Error> {
         // Clone job_id since we need it in closures
         let job_id = command.job_id.clone();
         let new_worker_id = command.new_worker_id.clone();
@@ -747,16 +764,10 @@ where
 {
     type Error = DestroyOldWorkerError;
 
-    async fn handle(
-        &self,
-        command: DestroyOldWorkerCommand,
-    ) -> Result<(), Self::Error> {
+    async fn handle(&self, command: DestroyOldWorkerCommand) -> Result<(), Self::Error> {
         // Attempt to destroy the worker
         // This is best-effort - the worker might already be gone
-        let result = self
-            .provisioning
-            .destroy_worker(&command.worker_id)
-            .await;
+        let result = self.provisioning.destroy_worker(&command.worker_id).await;
 
         match result {
             Ok(_) => Ok(()),
@@ -771,7 +782,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared_kernel::{JobId, ProviderId, WorkerId, JobState, WorkerState};
+    use crate::shared_kernel::{JobId, JobState, ProviderId, WorkerId, WorkerState};
 
     #[tokio::test]
     async fn check_connectivity_command_idempotency() {
@@ -789,7 +800,8 @@ mod tests {
         let job_id = JobId::new();
         let worker_id = WorkerId::new();
         let saga_id = "saga-456".to_string();
-        let cmd = MarkJobForRecoveryCommand::new(job_id.clone(), worker_id.clone(), saga_id.clone());
+        let cmd =
+            MarkJobForRecoveryCommand::new(job_id.clone(), worker_id.clone(), saga_id.clone());
 
         let key = cmd.idempotency_key();
         assert!(key.contains(&saga_id));
@@ -802,7 +814,12 @@ mod tests {
         let provider_id = ProviderId::new();
         let worker_id = WorkerId::new();
         let saga_id = "saga-789".to_string();
-        let cmd = ProvisionNewWorkerCommand::new(job_id.clone(), provider_id.clone(), worker_id.clone(), saga_id.clone());
+        let cmd = ProvisionNewWorkerCommand::new(
+            job_id.clone(),
+            provider_id.clone(),
+            worker_id.clone(),
+            saga_id.clone(),
+        );
 
         let key = cmd.idempotency_key();
         assert!(key.contains(&saga_id));
@@ -815,7 +832,12 @@ mod tests {
         let new_worker_id = WorkerId::new();
         let old_worker_id = WorkerId::new();
         let saga_id = "saga-transfer".to_string();
-        let cmd = TransferJobCommand::new(job_id.clone(), new_worker_id.clone(), old_worker_id.clone(), saga_id.clone());
+        let cmd = TransferJobCommand::new(
+            job_id.clone(),
+            new_worker_id.clone(),
+            old_worker_id.clone(),
+            saga_id.clone(),
+        );
 
         let key = cmd.idempotency_key();
         assert!(key.contains(&saga_id));
@@ -827,7 +849,8 @@ mod tests {
         let worker_id = WorkerId::new();
         let provider_id = ProviderId::new();
         let saga_id = "saga-destroy".to_string();
-        let cmd = DestroyOldWorkerCommand::new(worker_id.clone(), provider_id.clone(), saga_id.clone());
+        let cmd =
+            DestroyOldWorkerCommand::new(worker_id.clone(), provider_id.clone(), saga_id.clone());
 
         let key = cmd.idempotency_key();
         assert!(key.contains(&saga_id));

@@ -194,9 +194,10 @@ pub async fn execute_with_retry<Op: RetryableOperation>(
     loop {
         // Check overall timeout
         if let Some(timeout_duration) = timeout
-            && start_time.elapsed() >= timeout_duration {
-                return Err(RetryOutcome::TimedOut);
-            }
+            && start_time.elapsed() >= timeout_duration
+        {
+            return Err(RetryOutcome::TimedOut);
+        }
 
         match operation.execute().await {
             Ok(_result) => {

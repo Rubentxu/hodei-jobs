@@ -204,10 +204,11 @@ where
 
         // Idempotency: if already terminated, return success
         if let Some(ref worker) = worker_opt
-            && *worker.state() == WorkerState::Terminated {
-                debug!(worker_id = %worker_id, "Worker already terminated");
-                return Ok(TerminateWorkerResult::already_terminated());
-            }
+            && *worker.state() == WorkerState::Terminated
+        {
+            debug!(worker_id = %worker_id, "Worker already terminated");
+            return Ok(TerminateWorkerResult::already_terminated());
+        }
 
         // If worker not found, treat as already terminated (idempotent)
         if worker_opt.is_none() {
@@ -443,10 +444,11 @@ where
 
         // Idempotency: if already failed, return success
         if let Some(job) = job_opt
-            && *job.state() == JobState::Failed {
-                debug!(job_id = %job_id, "Job already failed");
-                return Ok(MarkJobTimedOutResult::already_timed_out());
-            }
+            && *job.state() == JobState::Failed
+        {
+            debug!(job_id = %job_id, "Job already failed");
+            return Ok(MarkJobTimedOutResult::already_timed_out());
+        }
 
         // Mark job as timed out
         self.job_repository

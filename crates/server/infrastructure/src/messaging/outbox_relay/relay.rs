@@ -6,6 +6,7 @@
 use crate::persistence::outbox::PostgresOutboxRepository;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use hodei_server_domain::JobCreated;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::{CleanupReason, DomainEvent, TerminationReason};
 use hodei_server_domain::outbox::OutboxRepository;
@@ -17,7 +18,6 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use hodei_server_domain::JobCreated;
 
 /// Configuration for the Outbox Relay
 #[derive(Debug, Clone)]

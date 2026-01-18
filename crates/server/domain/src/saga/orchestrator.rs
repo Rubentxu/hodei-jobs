@@ -458,12 +458,13 @@ where
 
         // Check rate limit first
         if let Some(ref limiter) = self.rate_limiter
-            && !limiter.try_acquire() {
-                let remaining = limiter.remaining();
-                return Err(DomainError::OrchestratorError(
-                    OrchestratorError::RateLimitExceeded { remaining },
-                ));
-            }
+            && !limiter.try_acquire()
+        {
+            let remaining = limiter.remaining();
+            return Err(DomainError::OrchestratorError(
+                OrchestratorError::RateLimitExceeded { remaining },
+            ));
+        }
 
         // Try to acquire semaphore permit for concurrency control
         let _permit = self.concurrency_semaphore.try_acquire().map_err(|_| {

@@ -84,7 +84,10 @@ impl LogIngestor {
         if let Some(ref svc) = self.log_service {
             svc.append_log(entry).await;
         } else {
-            debug!("No log_service configured, discarding log for job {}", job_id);
+            debug!(
+                "No log_service configured, discarding log for job {}",
+                job_id
+            );
         }
 
         // Actualizar métricas
@@ -114,8 +117,7 @@ impl LogIngestor {
         if entry_count > self.config.max_batch_size {
             warn!(
                 "Log batch size {} exceeds maximum {}, truncating",
-                entry_count,
-                self.config.max_batch_size
+                entry_count, self.config.max_batch_size
             );
         }
 
@@ -145,10 +147,7 @@ impl LogIngestor {
     ///
     /// Este método se llama cuando un job termina para persistir
     /// los logs acumulados y liberar recursos.
-    pub async fn finalize_job_logs(
-        &self,
-        job_id: &str,
-    ) -> Result<LogFinalizationResult, String> {
+    pub async fn finalize_job_logs(&self, job_id: &str) -> Result<LogFinalizationResult, String> {
         if let Some(ref svc) = self.log_service {
             match svc.finalize_job_log(job_id).await {
                 Ok(Some(log_ref)) => {
@@ -249,10 +248,7 @@ impl LogIngestorMetrics {
     pub fn summary(&self) -> String {
         format!(
             "LogIngestor: {} lines, {} batches, {} bytes, {} jobs finalized",
-            self.total_lines,
-            self.total_batches,
-            self.total_bytes,
-            self.jobs_finalized
+            self.total_lines, self.total_batches, self.total_bytes, self.jobs_finalized
         )
     }
 }

@@ -34,6 +34,11 @@ pub mod pg_notify_listener;
 pub mod relay;
 
 pub use backoff::{BackoffConfig, BackoffStats};
-pub use command_relay::{CommandProcessor, CommandProcessorError, CommandRelay, CommandRelayConfig, CommandRelayMetrics, create_command_relay};
+pub use command_relay::{
+    CommandProcessor, CommandProcessorError, CommandRelay, CommandRelayConfig, CommandRelayMetrics,
+    create_command_relay,
+};
 pub use pg_notify_listener::{PgNotifyListener, PgNotifyListenerBuilder};
-pub use relay::{HybridOutboxConfig, HybridOutboxMetrics, HybridOutboxRelay, create_hybrid_outbox_relay};
+pub use relay::{
+    HybridOutboxConfig, HybridOutboxMetrics, HybridOutboxRelay, create_hybrid_outbox_relay,
+};

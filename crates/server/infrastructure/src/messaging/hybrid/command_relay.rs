@@ -11,8 +11,8 @@ use hodei_server_domain::command::{CommandOutboxRecord, CommandOutboxRepository}
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
-use tokio::time::{interval, Duration};
+use tokio::sync::{Mutex, broadcast};
+use tokio::time::{Duration, interval};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the command relay.
@@ -84,7 +84,10 @@ impl CommandRelayMetrics {
 /// Command processor trait.
 #[async_trait::async_trait]
 pub trait CommandProcessor: Send + Sync {
-    async fn process_command(&self, command: &CommandOutboxRecord) -> Result<(), CommandProcessorError>;
+    async fn process_command(
+        &self,
+        command: &CommandOutboxRecord,
+    ) -> Result<(), CommandProcessorError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -105,6 +108,7 @@ pub enum CommandProcessorError {
 pub struct CommandRelay<R: CommandOutboxRepository> {
     pool: PgPool,
     repository: Arc<R>,
+    nats_client: Arc<async_nats::Client>,
     config: CommandRelayConfig,
     metrics: Arc<Mutex<CommandRelayMetrics>>,
     shutdown: broadcast::Sender<()>,
@@ -116,13 +120,16 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
     pub async fn new(
         pool: &PgPool,
         repository: Arc<R>,
+        nats_client: Arc<async_nats::Client>,
         config: Option<CommandRelayConfig>,
-    ) -> Result<(Self, broadcast::Receiver<()>), sqlx::Error> {
+    ) -> Result<(Self, broadcast::Sender<()>), sqlx::Error> {
         let config = config.unwrap_or_default();
-        let (shutdown, rx) = broadcast::channel(1);
+        let (shutdown, _rx) = broadcast::channel(1);
 
         // Try to create listener, store in struct
-        let listener = match crate::messaging::hybrid::PgNotifyListener::new(pool, &config.channel).await {
+        let listener = match crate::messaging::hybrid::PgNotifyListener::new(pool, &config.channel)
+            .await
+        {
             Ok(l) => Some(l),
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to create LISTEN/NOTIFY listener, polling-only mode");
@@ -134,12 +141,13 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
             Self {
                 pool: pool.clone(),
                 repository,
+                nats_client,
                 config,
                 metrics: Arc::new(Mutex::new(CommandRelayMetrics::default())),
-                shutdown,
+                shutdown: shutdown.clone(),
                 listener,
             },
-            rx,
+            shutdown,
         ))
     }
 
@@ -149,7 +157,10 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         let mut shutdown_rx = self.shutdown.subscribe();
         let has_listener = self.listener.is_some();
 
-        info!(channel = self.config.channel, has_listener, "Starting command relay");
+        info!(
+            channel = self.config.channel,
+            has_listener, "Starting command relay"
+        );
 
         loop {
             tokio::select! {
@@ -181,7 +192,9 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
     }
 
     /// Try to receive a notification from the listener.
-    async fn recv_notification(&mut self) -> Result<Option<sqlx::postgres::PgNotification>, sqlx::Error> {
+    async fn recv_notification(
+        &mut self,
+    ) -> Result<Option<sqlx::postgres::PgNotification>, sqlx::Error> {
         if let Some(ref mut listener) = self.listener {
             listener.recv().await.map(Some)
         } else {
@@ -241,15 +254,47 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
             "Processing command"
         );
 
-        // In a real implementation, this would dispatch to the appropriate handler
-        // For now, mark as completed to avoid blocking tests
-        self.repository.mark_completed(&command.id).await.map_err(|e| {
-            CommandProcessorError::HandlerError {
-                message: e.to_string(),
+        // 1. Determine NATS subject based on command type (and potentially target)
+        // Convention: hodei.command.{command_type_lowercase}
+        // e.g. AssignWorkerCommand -> hodei.command.assignworker
+        // This allows consumers to subscribe specifically to commands they handle
+        let subject = format!("hodei.command.{}", command.command_type.to_lowercase());
+
+        // 2. Serialize payload (it's already JSON Value, so we just stringify it)
+        // We wrap it in a standard envelope if needed, but for now raw payload is fine
+        // as the consumers expect serialized command structs. Only commands are needed.
+        let payload = serde_json::to_vec(&command.payload).map_err(|e| {
+            CommandProcessorError::PermanentError {
+                message: format!("Serialization error: {}", e),
             }
         })?;
 
-        debug!(command_id = %command.id, "Command processed successfully");
+        // 3. Publish to NATS
+        // We use publish (fire and forget at NATS level, but with TCP reliability)
+        // or request if we wanted immediate reply (but this is outbox, so async)
+        if let Err(e) = self
+            .nats_client
+            .publish(subject.clone(), payload.into())
+            .await
+        {
+            return Err(CommandProcessorError::RetryableError {
+                message: format!("NATS publish failed: {}", e),
+            });
+        }
+
+        // 4. Mark as completed in DB
+        self.repository
+            .mark_completed(&command.id)
+            .await
+            .map_err(|e| CommandProcessorError::HandlerError {
+                message: e.to_string(),
+            })?;
+
+        debug!(
+            command_id = %command.id,
+            subject = %subject,
+            "Command processed successfully (Published to NATS)"
+        );
         Ok(())
     }
 
@@ -267,16 +312,25 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
 /// Create a CommandRelay with the default PostgresCommandOutboxRepository.
 pub async fn create_command_relay(
     pool: &PgPool,
+    nats_client: Arc<async_nats::Client>,
     config: Option<CommandRelayConfig>,
-) -> Result<(CommandRelay<PostgresCommandOutboxRepository>, broadcast::Receiver<()>), sqlx::Error> {
+) -> Result<
+    (
+        CommandRelay<PostgresCommandOutboxRepository>,
+        broadcast::Sender<()>,
+    ),
+    sqlx::Error,
+> {
     let repository = Arc::new(PostgresCommandOutboxRepository::new(pool.clone()));
-    CommandRelay::new(pool, repository, config).await
+    CommandRelay::new(pool, repository, nats_client, config).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::command::{CommandOutboxInsert, CommandOutboxStatus, CommandTargetType};
+    use hodei_server_domain::command::{
+        CommandOutboxInsert, CommandOutboxStatus, CommandTargetType,
+    };
     use uuid::Uuid;
 
     // Mock repository for testing
@@ -306,7 +360,8 @@ mod tests {
             &self,
             limit: usize,
             _max_retries: i32,
-        ) -> Result<Vec<CommandOutboxRecord>, hodei_server_domain::command::CommandOutboxError> {
+        ) -> Result<Vec<CommandOutboxRecord>, hodei_server_domain::command::CommandOutboxError>
+        {
             let commands = self.commands.lock().await;
             Ok(commands
                 .iter()
@@ -346,13 +401,24 @@ mod tests {
 
         async fn get_stats(
             &self,
-        ) -> Result<hodei_server_domain::command::CommandOutboxStats, hodei_server_domain::command::CommandOutboxError>
-        {
+        ) -> Result<
+            hodei_server_domain::command::CommandOutboxStats,
+            hodei_server_domain::command::CommandOutboxError,
+        > {
             let commands = self.commands.lock().await;
             Ok(hodei_server_domain::command::CommandOutboxStats {
-                pending_count: commands.iter().filter(|c| matches!(c.status, CommandOutboxStatus::Pending)).count() as u64,
-                completed_count: commands.iter().filter(|c| matches!(c.status, CommandOutboxStatus::Completed)).count() as u64,
-                failed_count: commands.iter().filter(|c| matches!(c.status, CommandOutboxStatus::Failed)).count() as u64,
+                pending_count: commands
+                    .iter()
+                    .filter(|c| matches!(c.status, CommandOutboxStatus::Pending))
+                    .count() as u64,
+                completed_count: commands
+                    .iter()
+                    .filter(|c| matches!(c.status, CommandOutboxStatus::Completed))
+                    .count() as u64,
+                failed_count: commands
+                    .iter()
+                    .filter(|c| matches!(c.status, CommandOutboxStatus::Failed))
+                    .count() as u64,
                 oldest_pending_age_seconds: None,
             })
         }
@@ -404,6 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_relay_with_mock_repository() {
         let pool = sqlx::postgres::PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let repo = Arc::new(MockCommandRepository::new());
@@ -414,17 +481,27 @@ mod tests {
             max_retries: 3,
         });
 
-        let (relay, _rx) = CommandRelay::new(&pool, repo, config).await.unwrap();
+        // Use demo NATS for tests if needed, or ignore
+        let client = async_nats::connect("demo.nats.io").await.unwrap();
+        let (relay, _rx) = CommandRelay::new(&pool, repo, Arc::new(client), config)
+            .await
+            .unwrap();
 
         let metrics = relay.metrics().await;
         assert_eq!(metrics.commands_processed_total, 0);
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_shutdown_signal() {
         let pool = sqlx::postgres::PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let repo = Arc::new(MockCommandRepository::new());
-        let (relay, mut rx) = CommandRelay::new(&pool, repo, None).await.unwrap();
+        let client = async_nats::connect("demo.nats.io").await.unwrap();
+        let (relay, shutdown_tx) = CommandRelay::new(&pool, repo, Arc::new(client), None)
+            .await
+            .unwrap();
+
+        let mut rx = shutdown_tx.subscribe();
 
         relay.shutdown();
 

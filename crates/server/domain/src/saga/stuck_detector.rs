@@ -31,7 +31,7 @@ impl Default for StuckSagaDetectorConfig {
         Self {
             stuck_threshold: Duration::from_secs(600), // 10 minutes
             compensating_threshold: Duration::from_secs(300), // 5 minutes
-            check_interval: Duration::from_secs(60), // 1 minute
+            check_interval: Duration::from_secs(60),   // 1 minute
             auto_recover: false,
         }
     }
@@ -115,23 +115,37 @@ impl<R: SagaRepository + Send + Sync> StuckSagaDetector for InMemoryStuckSagaDet
         // Query pending sagas that are stuck
         // Combine sagas in Pending, InProgress, and Compensating states
         let mut pending_sagas = Vec::new();
-        
-        let in_progress = self.repository.find_by_state(SagaState::InProgress).await
-            .map_err(|e| StuckSagaDetectorError::RepositoryError { message: format!("{:?}", e) })?;
+
+        let in_progress = self
+            .repository
+            .find_by_state(SagaState::InProgress)
+            .await
+            .map_err(|e| StuckSagaDetectorError::RepositoryError {
+                message: format!("{:?}", e),
+            })?;
         pending_sagas.extend(in_progress);
 
-        let compensating = self.repository.find_by_state(SagaState::Compensating).await
-             .map_err(|e| StuckSagaDetectorError::RepositoryError { message: format!("{:?}", e) })?;
+        let compensating = self
+            .repository
+            .find_by_state(SagaState::Compensating)
+            .await
+            .map_err(|e| StuckSagaDetectorError::RepositoryError {
+                message: format!("{:?}", e),
+            })?;
         pending_sagas.extend(compensating);
 
-        let pending = self.repository.find_by_state(SagaState::Pending).await
-             .map_err(|e| StuckSagaDetectorError::RepositoryError { message: format!("{:?}", e) })?;
+        let pending = self
+            .repository
+            .find_by_state(SagaState::Pending)
+            .await
+            .map_err(|e| StuckSagaDetectorError::RepositoryError {
+                message: format!("{:?}", e),
+            })?;
         pending_sagas.extend(pending);
 
         for saga_ctx in pending_sagas {
             let elapsed = now - saga_ctx.started_at;
-            let elapsed_duration =
-                Duration::from_secs(elapsed.num_seconds().max(0) as u64);
+            let elapsed_duration = Duration::from_secs(elapsed.num_seconds().max(0) as u64);
 
             let threshold = match saga_ctx.state {
                 SagaState::InProgress | SagaState::Pending => self.config.stuck_threshold,
@@ -224,8 +238,9 @@ impl<R: SagaRepository + Send + Sync> StuckSagaDetector for InMemoryStuckSagaDet
             // For compensating sagas, mark as failed (compensation timeout)
             let mut updated_ctx = saga_ctx.clone();
             updated_ctx.state = SagaState::Failed;
-            updated_ctx.error_message =
-                Some("Compensation timed out - marked as failed by stuck saga detector".to_string());
+            updated_ctx.error_message = Some(
+                "Compensation timed out - marked as failed by stuck saga detector".to_string(),
+            );
 
             self.repository
                 .update_state(saga_id, SagaState::Failed, updated_ctx.error_message)
@@ -274,4 +289,3 @@ mod tests {
         assert!(info.stuck_duration > Duration::from_secs(600));
     }
 }
-

@@ -23,8 +23,8 @@
 
 use async_trait::async_trait;
 use hodei_server_domain::saga::{
-    SagaContext, SagaId, SagaRepository as SagaRepositoryTrait, SagaState,
-    SagaStepData, SagaStepId, SagaStepState, SagaType,
+    SagaContext, SagaId, SagaRepository as SagaRepositoryTrait, SagaState, SagaStepData,
+    SagaStepId, SagaStepState, SagaType,
 };
 use hodei_server_domain::shared_kernel::DomainError;
 use std::sync::Arc;

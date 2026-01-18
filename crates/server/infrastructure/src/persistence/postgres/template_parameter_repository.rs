@@ -8,8 +8,8 @@ use hodei_server_domain::jobs::{
     JobTemplateId, JobTemplateParameter, JobTemplateParameterRepository,
 };
 use hodei_server_domain::shared_kernel::{DomainError, Result};
-use sqlx::postgres::PgPool;
 use sqlx::Row;
+use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 /// PostgreSQL JobTemplateParameter Repository

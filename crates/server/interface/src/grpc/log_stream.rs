@@ -12,7 +12,7 @@
 use dashmap::DashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc};
+use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, warn};
@@ -370,7 +370,10 @@ impl LogStreamServiceTrait for LogStreamServiceGrpc {
             while let Some(entry) = log_stream.next().await {
                 // Get sequence
                 let seq = {
-                    sequences.get(&entry.job_id).map(|s| *s.value()).unwrap_or(0)
+                    sequences
+                        .get(&entry.job_id)
+                        .map(|s| *s.value())
+                        .unwrap_or(0)
                 };
 
                 let log_entry = JobLogEntry {

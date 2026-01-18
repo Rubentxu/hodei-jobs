@@ -417,10 +417,9 @@ impl WorkerSupervisor {
 
         // Mark timed out workers as disconnected
         for worker_id in &timed_out_workers {
-            let _ = self.handle_disconnect(
-                worker_id,
-                DisconnectionReason::HeartbeatTimeout,
-            ).await;
+            let _ = self
+                .handle_disconnect(worker_id, DisconnectionReason::HeartbeatTimeout)
+                .await;
         }
 
         if !timed_out_workers.is_empty() {
@@ -1262,9 +1261,8 @@ mod tests {
             ..Default::default()
         };
 
-        let (handle, supervisor, shutdown_tx) = WorkerSupervisorBuilder::new()
-            .with_config(config)
-            .build();
+        let (handle, supervisor, shutdown_tx) =
+            WorkerSupervisorBuilder::new().with_config(config).build();
 
         let supervisor_handle = tokio::spawn(supervisor.run());
 
@@ -1323,9 +1321,8 @@ mod tests {
             ..Default::default()
         };
 
-        let (handle, supervisor, shutdown_tx) = WorkerSupervisorBuilder::new()
-            .with_config(config)
-            .build();
+        let (handle, supervisor, shutdown_tx) =
+            WorkerSupervisorBuilder::new().with_config(config).build();
 
         let supervisor_handle = tokio::spawn(supervisor.run());
 
@@ -1362,9 +1359,8 @@ mod tests {
             actor_enabled: true,
         };
 
-        let (handle, supervisor, shutdown_tx) = WorkerSupervisorBuilder::new()
-            .with_config(config)
-            .build();
+        let (handle, supervisor, shutdown_tx) =
+            WorkerSupervisorBuilder::new().with_config(config).build();
 
         let supervisor_handle = tokio::spawn(supervisor.run());
 

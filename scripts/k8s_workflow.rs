@@ -447,50 +447,50 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
-    // Deploy with Helm (using k3s kubeconfig)
-    let deploy_status = run_helm(&[
-        "upgrade",
-        "--install",
-        "hodei",
-        &format!("{}/deploy/hodei-jobs-platform", project_root),
-        "-n",
-        "hodei-jobs",
-        "-f",
-        &format!(
-            "{}/deploy/hodei-jobs-platform/values-dev.yaml",
-            project_root
-        ),
-        "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
-        "--wait",
-        "--timeout",
-        "5m",
-    ]);
+    // // Deploy with Helm (using k3s kubeconfig)
+    // let deploy_status = run_helm(&[
+    //     "upgrade",
+    //     "--install",
+    //     "hodei",
+    //     &format!("{}/deploy/hodei-jobs-platform", project_root),
+    //     "-n",
+    //     "hodei-jobs",
+    //     "-f",
+    //     &format!(
+    //         "{}/deploy/hodei-jobs-platform/values-dev.yaml",
+    //         project_root
+    //     ),
+    //     "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+    //     "--wait",
+    //     "--timeout",
+    //     "5m",
+    // ]);
 
-    if deploy_status {
-        println!("   ✅ Deployed!");
-    } else {
-        println!("   ⚠️  Deploy had issues, checking status...");
-        let _ = run_kubectl(&[
-            "get",
-            "pods",
-            "-n",
-            "hodei-jobs",
-            "-l",
-            "app.kubernetes.io/name=hodei-jobs-platform",
-        ]);
-        return;
-    }
+    // if deploy_status {
+    //     println!("   ✅ Deployed!");
+    // } else {
+    //     println!("   ⚠️  Deploy had issues, checking status...");
+    //     let _ = run_kubectl(&[
+    //         "get",
+    //         "pods",
+    //         "-n",
+    //         "hodei-jobs",
+    //         "-l",
+    //         "app.kubernetes.io/name=hodei-jobs-platform",
+    //     ]);
+    //     return;
+    // }
 
-    // Show status
-    println!("\n📊 Deployment status:");
-    let _ = run_kubectl(&[
-        "get",
-        "pods",
-        "-n",
-        "hodei-jobs",
-        "-l",
-        "app.kubernetes.io/name=hodei-jobs-platform",
-    ]);
+    // // Show status
+    // println!("\n📊 Deployment status:");
+    // let _ = run_kubectl(&[
+    //     "get",
+    //     "pods",
+    //     "-n",
+    //     "hodei-jobs",
+    //     "-l",
+    //     "app.kubernetes.io/name=hodei-jobs-platform",
+    // ]);
 
     println!("\n✅ k3s development workflow complete!");
     println!("\n💡 gRPC Access:");

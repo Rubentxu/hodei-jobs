@@ -475,12 +475,13 @@ impl SagaEventStore for InMemorySagaEventStore {
         let saga_events = events.entry(event.saga_id.clone()).or_default();
 
         if let Some(last) = saga_events.last()
-            && event.sequence_number <= last.sequence_number {
-                return Err(SagaEventStoreError::InvalidSequence {
-                    expected: last.sequence_number + 1,
-                    actual: event.sequence_number,
-                });
-            }
+            && event.sequence_number <= last.sequence_number
+        {
+            return Err(SagaEventStoreError::InvalidSequence {
+                expected: last.sequence_number + 1,
+                actual: event.sequence_number,
+            });
+        }
 
         saga_events.push(event.clone());
         Ok(())
@@ -541,7 +542,6 @@ impl SagaEventStore for InMemorySagaEventStore {
 pub struct EventSourcingBuilder {
     event_store: Option<Arc<dyn SagaEventStore>>,
 }
-
 
 impl EventSourcingBuilder {
     pub fn with_event_store(mut self, event_store: Arc<dyn SagaEventStore>) -> Self {

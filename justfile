@@ -286,10 +286,7 @@ test-provider-selection:
 test-timeout:
     @rust-script scripts/test_timeout.rs
 
-# =============================================================================
-# DEVSPACE COMMANDS (Fast Development with Minikube)
-# =============================================================================
-# Workflow: Compile locally → sync to pod → reload with USR1
+
 # Time per change: ~6-11 seconds (no Docker rebuild)
 
 # Initialize development environment
@@ -297,26 +294,8 @@ dev-init:
     @echo "🚀 Initializing development environment..."
     @rust-script scripts/dev_workflow.rs init
 
-# =============================================================================
-# DEVSPACE - DESARROLLO COMPLETO CON MINIKUBE
-# =============================================================================
-# Workflow completo: deploy → sync → hotreload → cleanup automático
-#
-# Usage:
-#   just devspace-dev   # Deploy + sync + terminal + cleanup (Ctrl+C)
-#   just devspace-status # Ver estado del servidor
-#   just devspace-logs  # Ver logs en tiempo real
-#
-# El chart se deploya al inicio, el código se sincroniza automáticamente,
 # y al salir (Ctrl+C) los recursos se limpian automáticamente.
-# =============================================================================
 
-# Compile release and start DevSpace development (FULL WORKFLOW)
-devspace-dev:
-    @echo "╔═══════════════════════════════════════════════════════════════╗"
-    @echo "║         HODEI JOBS - DESARROLLO RÁPIDO DEVSPACE               ║"
-    @echo "╚═══════════════════════════════════════════════════════════════╝"
-    @echo ""
     @echo "🚀 INICIANDO SESIÓN DE DESARROLLO..."
     @echo ""
     @echo "Este comando:"
@@ -330,18 +309,7 @@ devspace-dev:
     @echo "  • Edita archivos localmente - se sincronizan solos"
     @echo "  • Para recompilar: cargo build --release -p hodei-server-bin"
     @echo ""
-    @echo "🛑 Para SALIR: Ctrl+C (los recursos se limpian automáticamente)"
-    @echo ""
-    KUBECONFIG=/etc/rancher/k3s/k3s.yaml devspace dev --namespace hodei-jobs
 
-# Cleanup DevSpace + Docker space
-devspace-cleanup-all:
-    @echo "🧹 Limpiando recursos de desarrollo y Docker..."
-    @echo ""
-    @echo "📦 Limpiando recursos de DevSpace..."
-    devspace purge --namespace hodei-jobs 2>/dev/null || true
-    helm uninstall hodei -n hodei-jobs 2>/dev/null || true
-    @echo ""
     @echo "🐳 Limpiando espacio Docker..."
     minikube ssh "docker system prune -af --volumes" 2>/dev/null || true
     @echo ""
@@ -480,10 +448,6 @@ job-cleanup:
     kubectl delete job -n hodei-jobs-workers --field-selector status.successful=1
     @echo "✅ Jobs completados eliminados"
 
-# Ver estado del servidor
-devspace-status:
-    @echo "╔═══════════════════════════════════════════════════════════════╗"
-    @echo "║              ESTADO DEL SERVIDOR                              ║"
     @echo "╚═══════════════════════════════════════════════════════════════╝"
     @echo ""
     @echo "📦 Deployments:"
@@ -499,15 +463,6 @@ devspace-status:
                echo "⚠️  Proceso no encontrado"' 2>/dev/null || \
         echo "⚠️  Pod no disponible"
 
-# Stream server logs
-devspace-logs:
-    @echo "📝 Logs del servidor (Ctrl+C para salir):"
-    kubectl logs -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform --follow --tail=100
-
-# Restart full pod (slow - use only if needed)
-devspace-restart:
-    @echo "🔄 Reiniciando pod completo..."
-    kubectl delete pod -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform
     @echo "⏳ Esperando a que el pod esté listo..."
     kubectl rollout status deployment -n hodei-jobs hodei-hodei-jobs-platform --timeout=120s
 
@@ -516,7 +471,6 @@ deploy-dev:
     @echo "╔═══════════════════════════════════════════════════════════════╗"
     @echo "║    DEPLOY CHART CON VALORES DE DESARROLLO                    ║"
     @echo "╚═══════════════════════════════════════════════════════════════╝"
-    @echo "⚠️  Nota: Usa 'just devspace-dev' para el workflow completo"
     helm upgrade --install hodei ./deploy/hodei-jobs-platform \
         --namespace hodei-jobs \
         --create-namespace \
@@ -524,10 +478,7 @@ deploy-dev:
         -f ./deploy/hodei-jobs-platform/values-dev.yaml \
         --wait --timeout 300s
 
-# Cleanup resources manually
-devspace-cleanup:
-    @echo "🧹 Limpiando recursos de desarrollo..."
-    helm uninstall hodei -n hodei-jobs 2>/dev/null || true
+
     kubectl delete pvc -n hodei-jobs -l app.kubernetes.io/name=hodei-jobs-platform 2>/dev/null || true
     @echo "✅ Recursos limpiados"
 

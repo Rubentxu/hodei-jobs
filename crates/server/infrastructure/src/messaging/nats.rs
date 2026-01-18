@@ -379,6 +379,11 @@ impl NatsEventBus {
             DomainEvent::JobQueueDepthChanged { .. } => "queue",
             DomainEvent::GarbageCollectionCompleted { .. } => "gc",
             DomainEvent::SchedulingDecisionFailed { .. } => "scheduling",
+
+            // GAP-006: Saga events
+            DomainEvent::SagaCompleted { .. } => "sagas",
+            DomainEvent::SagaFailed { .. } => "sagas",
+            DomainEvent::SagaTimedOut { .. } => "sagas",
         };
 
         let action = event.event_type().to_lowercase();

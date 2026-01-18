@@ -137,8 +137,7 @@ impl WorkerProviderConfig for DockerConfigExt {
 }
 
 /// Extension object for Firecracker-specific configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FirecrackerConfigExt {
     /// Path to kernel image
     pub kernel_path: String,
@@ -158,7 +157,6 @@ pub struct FirecrackerConfigExt {
     #[serde(default)]
     pub snapshot_path: Option<String>,
 }
-
 
 impl WorkerProviderConfig for FirecrackerConfigExt {
     fn provider_type(&self) -> ProviderType {
@@ -799,16 +797,18 @@ impl WorkerProviderExt for dyn WorkerProvider {
 // Shared Types
 // ============================================================================
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum HealthStatus {
     Healthy,
-    Degraded { reason: String },
-    Unhealthy { reason: String },
+    Degraded {
+        reason: String,
+    },
+    Unhealthy {
+        reason: String,
+    },
     #[default]
     Unknown,
 }
-
 
 /// GPU vendor enumeration for typed provider capabilities
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1007,8 +1007,7 @@ impl Default for ResourceLimits {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobRequirements {
     pub resources: ResourceRequirements,
     pub architecture: Option<Architecture>,
@@ -1022,7 +1021,6 @@ pub struct JobRequirements {
     /// Annotations requeridas en el provider
     pub required_annotations: HashMap<String, String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostEstimate {

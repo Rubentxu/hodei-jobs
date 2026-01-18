@@ -35,13 +35,13 @@ impl AuditService {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use hodei_server_domain::JobCreated;
     use hodei_server_domain::audit::{AuditLog, AuditRepository};
     use hodei_server_domain::events::DomainEvent;
     use hodei_server_domain::events::TerminationReason;
     use hodei_server_domain::jobs::JobSpec;
     use hodei_server_domain::shared_kernel::{JobId, ProviderId, Result, WorkerId};
     use std::sync::{Arc, Mutex};
-    use hodei_server_domain::JobCreated;
 
     struct MockAuditRepository {
         pub saved_logs: Arc<Mutex<Vec<AuditLog>>>,

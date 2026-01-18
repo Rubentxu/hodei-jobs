@@ -277,19 +277,19 @@ impl DynRecoverySagaCoordinatorBuilder {
         self,
     ) -> std::result::Result<DynRecoverySagaCoordinator, DynRecoverySagaCoordinatorBuilderError>
     {
-        let orchestrator = self.orchestrator.ok_or_else(|| {
-            DynRecoverySagaCoordinatorBuilderError::MissingField("orchestrator")
-        })?;
+        let orchestrator = self
+            .orchestrator
+            .ok_or_else(|| DynRecoverySagaCoordinatorBuilderError::MissingField("orchestrator"))?;
         // GAP-60-01: command_bus is now required
-        let command_bus = self.command_bus.ok_or_else(|| {
-            DynRecoverySagaCoordinatorBuilderError::MissingField("command_bus")
-        })?;
+        let command_bus = self
+            .command_bus
+            .ok_or_else(|| DynRecoverySagaCoordinatorBuilderError::MissingField("command_bus"))?;
         let worker_registry = self.worker_registry.ok_or_else(|| {
             DynRecoverySagaCoordinatorBuilderError::MissingField("worker_registry")
         })?;
-        let event_bus = self.event_bus.ok_or_else(|| {
-            DynRecoverySagaCoordinatorBuilderError::MissingField("event_bus")
-        })?;
+        let event_bus = self
+            .event_bus
+            .ok_or_else(|| DynRecoverySagaCoordinatorBuilderError::MissingField("event_bus"))?;
 
         Ok(DynRecoverySagaCoordinator::new(
             orchestrator,
@@ -480,7 +480,9 @@ pub enum RecoverySagaCoordinatorBuilderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::saga::{Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator};
+    use hodei_server_domain::saga::{
+        Saga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator,
+    };
     use std::sync::Arc;
     use tokio::sync::Mutex;
 

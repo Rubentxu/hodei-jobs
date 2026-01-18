@@ -15,13 +15,13 @@ use tokio::time::timeout;
 
 use chrono::Utc;
 use futures::StreamExt;
+use hodei_server_domain::JobCreated;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobSpec;
 use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
 use hodei_server_infrastructure::messaging::postgres::PostgresEventBus;
 use sqlx::postgres::PgPoolOptions;
-use hodei_server_domain::JobCreated;
 
 /// Default channel used by PostgresEventBus
 const HODEI_EVENTS_CHANNEL: &str = "hodei_events";
@@ -73,7 +73,10 @@ async fn event_bus_publish_and_subscribe() -> anyhow::Result<()> {
     assert_eq!(received_event.event_type(), "JobCreated");
 
     // Verify it's the same event we published
-    if let DomainEvent::JobCreated(JobCreated { job_id: received_id, .. }) = received_event
+    if let DomainEvent::JobCreated(JobCreated {
+        job_id: received_id,
+        ..
+    }) = received_event
     {
         assert_eq!(received_id, job_id);
     } else {

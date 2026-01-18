@@ -21,7 +21,10 @@ pub use correlation::{CORRELATION_ID_HEADER, CorrelationIdManager, RequestCorrel
 pub use heartbeat_processor::{HeartbeatProcessor, HeartbeatProcessorConfig, HeartbeatResult};
 pub use interceptors::context::context_interceptor;
 pub use job_execution::JobExecutionServiceImpl;
-pub use log_ingestor::{LogBatch, LogFinalizationResult, LogIngestionResult, LogIngestor, LogIngestorConfig, LogIngestorMetrics};
+pub use log_ingestor::{
+    LogBatch, LogFinalizationResult, LogIngestionResult, LogIngestor, LogIngestorConfig,
+    LogIngestorMetrics,
+};
 pub use log_stream::{LogStreamService, LogStreamServiceGrpc};
 pub use metrics::MetricsServiceImpl;
 pub use provider_management::ProviderManagementServiceImpl;

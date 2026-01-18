@@ -66,7 +66,8 @@ async fn test_hybrid_relay_processes_events() -> anyhow::Result<()> {
     };
 
     // Create relay (will use polling since LISTEN/NOTIFY may not work in test env)
-    let (relay, mut shutdown_rx) = HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
+    let (relay, mut shutdown_rx) =
+        HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
 
     // Give it time to process
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -117,7 +118,8 @@ async fn test_hybrid_relay_batch_processing() -> anyhow::Result<()> {
         channel: "test_batch_work".to_string(),
     };
 
-    let (relay, mut shutdown_rx) = HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
+    let (relay, mut shutdown_rx) =
+        HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
 
     // Give it time to process all events
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -152,7 +154,8 @@ async fn test_hybrid_relay_metrics() -> anyhow::Result<()> {
         channel: "test_metrics_work".to_string(),
     };
 
-    let (relay, mut shutdown_rx) = HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
+    let (relay, mut shutdown_rx) =
+        HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
 
     // Get initial metrics
     let metrics = relay.metrics().await;
@@ -361,7 +364,9 @@ async fn test_relay_with_mock_repository() {
         channel: "test_mock".to_string(),
     };
 
-    let (relay, _rx) = HybridOutboxRelay::new(&pool, repo, Some(config)).await.unwrap();
+    let (relay, _rx) = HybridOutboxRelay::new(&pool, repo, Some(config))
+        .await
+        .unwrap();
 
     let metrics = relay.metrics().await;
     assert_eq!(metrics.events_processed_total, 0);

@@ -83,8 +83,7 @@ mod tests {
 
     #[test]
     fn test_builder_channel() {
-        let builder = PgNotifyListenerBuilder::new()
-            .channel("custom_channel");
+        let builder = PgNotifyListenerBuilder::new().channel("custom_channel");
         assert_eq!(builder.channel, "custom_channel");
     }
 }

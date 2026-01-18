@@ -14,8 +14,10 @@ mod shutdown;
 pub use grpc_server::{GrpcServerConfig, start_grpc_server};
 pub use providers_init::{ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer};
 pub use services_init::{
-    GrpcServices, initialize_grpc_services, start_background_tasks, start_job_coordinator,
-    start_saga_consumers,
+    GrpcServices, initialize_grpc_services, start_background_tasks, start_command_relay,
+    start_execution_saga_consumer, start_job_coordinator, start_nats_outbox_relay,
+    start_reactive_saga_processor, start_saga_consumers, start_saga_poller,
+    start_worker_ephemeral_terminating_consumer,
 };
 pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
@@ -32,6 +34,7 @@ use hodei_server_domain::shared_kernel::ProviderId;
 use hodei_server_domain::workers::WorkerProvider;
 use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
+use hodei_server_infrastructure::persistence::postgres::PostgresSagaOrchestrator;
 use hodei_server_infrastructure::persistence::postgres::PostgresSagaRepository;
 use hodei_server_infrastructure::persistence::postgres::migrations::{
     MigrationConfig, run_migrations,
@@ -295,15 +298,16 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         Arc::new(PostgresOutboxRepository::new(pool.clone()));
     info!("✓ OutboxRepository initialized");
 
-    // Step 6: Initialize saga orchestrator with in-memory implementation
+    // Step 6: Initialize saga orchestrator with Postgres persistence (NOT in-memory)
     let saga_repository: Arc<PostgresSagaRepository> =
         Arc::new(PostgresSagaRepository::new(pool.clone()));
     info!("✓ SagaRepository initialized");
 
+    // ✅ Use PostgresSagaOrchestrator for persistent saga state (CRITICAL FIX)
     let saga_orchestrator: Arc<
         dyn SagaOrchestrator<Error = hodei_server_domain::shared_kernel::DomainError> + Send + Sync,
-    > = Arc::new(InMemorySagaOrchestrator::new(saga_repository, None));
-    info!("✓ SagaOrchestrator initialized");
+    > = Arc::new(PostgresSagaOrchestrator::new(saga_repository, None));
+    info!("✓ PostgresSagaOrchestrator initialized (persistent saga state)");
 
     // Step 7: Initialize provider configuration repository
     let provider_config_repository: Arc<

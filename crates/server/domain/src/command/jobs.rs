@@ -124,10 +124,7 @@ where
 {
     type Error = MarkJobFailedError;
 
-    async fn handle(
-        &self,
-        command: MarkJobFailedCommand,
-    ) -> Result<JobFailureResult, Self::Error> {
+    async fn handle(&self, command: MarkJobFailedCommand) -> Result<JobFailureResult, Self::Error> {
         // Clone job_id since we need it in multiple closures
         let job_id = command.job_id.clone();
 
@@ -320,20 +317,24 @@ where
 
         // Check if in ManualInterventionRequired state
         if !previous_state.requires_manual_intervention() {
-            return Err(ResumeFromManualInterventionError::NotInManualInterventionState {
-                job_id: job_id.clone(),
-                current: previous_state.clone(),
-            });
+            return Err(
+                ResumeFromManualInterventionError::NotInManualInterventionState {
+                    job_id: job_id.clone(),
+                    current: previous_state.clone(),
+                },
+            );
         }
 
         // Transition back to Pending
         self.job_repository
             .update_state(&job_id, JobState::Pending)
             .await
-            .map_err(|_e| ResumeFromManualInterventionError::NotInManualInterventionState {
-                job_id: job_id.clone(),
-                current: previous_state.clone(),
-            })?;
+            .map_err(
+                |_e| ResumeFromManualInterventionError::NotInManualInterventionState {
+                    job_id: job_id.clone(),
+                    current: previous_state.clone(),
+                },
+            )?;
 
         Ok(ResumeFromManualInterventionResult::success(previous_state))
     }
@@ -370,7 +371,10 @@ mod tests {
             "Admin manually reviewed and approved",
         );
 
-        assert_eq!(cmd.resume_reason, Some("Admin manually reviewed and approved".to_string()));
+        assert_eq!(
+            cmd.resume_reason,
+            Some("Admin manually reviewed and approved".to_string())
+        );
     }
 
     #[tokio::test]
@@ -391,14 +395,16 @@ mod tests {
 
     #[tokio::test]
     async fn job_failure_result_invalid_transition() {
-        let result = JobFailureResult::failure(JobState::Succeeded, "Cannot transition from terminal");
+        let result =
+            JobFailureResult::failure(JobState::Succeeded, "Cannot transition from terminal");
         assert!(!result.success);
         assert_eq!(result.previous_state, JobState::Succeeded);
     }
 
     #[tokio::test]
     async fn resume_result_success() {
-        let result = ResumeFromManualInterventionResult::success(JobState::ManualInterventionRequired);
+        let result =
+            ResumeFromManualInterventionResult::success(JobState::ManualInterventionRequired);
         assert!(result.success);
         assert_eq!(result.previous_state, JobState::ManualInterventionRequired);
         assert_eq!(result.new_state, JobState::Pending);
@@ -406,7 +412,10 @@ mod tests {
 
     #[tokio::test]
     async fn resume_result_failure() {
-        let result = ResumeFromManualInterventionResult::failure(JobState::Running, "Not in manual intervention");
+        let result = ResumeFromManualInterventionResult::failure(
+            JobState::Running,
+            "Not in manual intervention",
+        );
         assert!(!result.success);
         assert_eq!(result.previous_state, JobState::Running);
         assert!(result.error_message.is_some());

@@ -9,15 +9,15 @@
 //! - Manejar reassignación de jobs
 //! - Actualizar estados de workers
 
+use chrono::Utc;
 use hodei_server_domain::{
     event_bus::EventBus,
     outbox::{OutboxEventInsert, OutboxRepository},
     shared_kernel::{JobId, WorkerId, WorkerState},
+    workers::Worker,
     workers::WorkerRegistry,
     workers::health::WorkerHealthService,
-    workers::Worker,
 };
-use chrono::Utc;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -178,7 +178,12 @@ impl WorkerReconciler {
 
                     // Emitir WorkerStatusChanged event
                     if let Err(e) = self
-                        .emit_status_changed(&worker_id, worker.state().clone(), WorkerState::Terminated, "heartbeat_timeout")
+                        .emit_status_changed(
+                            &worker_id,
+                            worker.state().clone(),
+                            WorkerState::Terminated,
+                            "heartbeat_timeout",
+                        )
                         .await
                     {
                         warn!(
@@ -236,7 +241,11 @@ impl WorkerReconciler {
     }
 
     /// Emitir evento JobReassignmentRequired
-    async fn emit_job_reassignment_required(&self, worker: &Worker, job_id: &JobId) -> Result<(), String> {
+    async fn emit_job_reassignment_required(
+        &self,
+        worker: &Worker,
+        job_id: &JobId,
+    ) -> Result<(), String> {
         let now = Utc::now();
         let worker_id = worker.id();
 

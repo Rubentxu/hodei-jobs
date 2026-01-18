@@ -9,6 +9,7 @@
 //! - Emitir eventos de cleanup
 //! - Retry de destrucción fallida
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use hodei_server_domain::{
     event_bus::EventBus,
@@ -17,7 +18,6 @@ use hodei_server_domain::{
     shared_kernel::{ProviderId, WorkerId, WorkerState},
     workers::{Worker, WorkerFilter, WorkerProvider, WorkerRegistry},
 };
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -309,7 +309,8 @@ impl WorkerGarbageCollector {
 
         info!("🔍 Starting orphan worker detection...");
 
-        let provider_ids: Vec<ProviderId> = self.providers.iter().map(|e| e.key().clone()).collect();
+        let provider_ids: Vec<ProviderId> =
+            self.providers.iter().map(|e| e.key().clone()).collect();
 
         for provider_id in provider_ids {
             let provider = match self.providers.get(&provider_id) {
@@ -317,7 +318,10 @@ impl WorkerGarbageCollector {
                 None => continue,
             };
 
-            match self.detect_orphans_for_provider(&provider, provider_id.clone()).await {
+            match self
+                .detect_orphans_for_provider(&provider, provider_id.clone())
+                .await
+            {
                 Ok(orphans) => {
                     result.providers_scanned += 1;
                     result.orphans_detected += orphans.len();
@@ -346,7 +350,10 @@ impl WorkerGarbageCollector {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to detect orphans for provider {}: {}", provider_id, e);
+                    warn!(
+                        "Failed to detect orphans for provider {}: {}",
+                        provider_id, e
+                    );
                     result.errors += 1;
                 }
             }
@@ -377,17 +384,24 @@ impl WorkerGarbageCollector {
         let mut orphans = Vec::new();
 
         // Workers del provider
-        let provider_workers = provider
-            .list_workers()
-            .await
-            .map_err(|e| format!("Failed to list workers from provider {}: {}", provider_id, e))?;
+        let provider_workers = provider.list_workers().await.map_err(|e| {
+            format!(
+                "Failed to list workers from provider {}: {}",
+                provider_id, e
+            )
+        })?;
 
         // Workers registrados para este provider
-        let registered_workers = self
-            .registry
-            .find_by_provider(&provider_id)
-            .await
-            .map_err(|e| format!("Failed to find registered workers for provider {}: {}", provider_id, e))?;
+        let registered_workers =
+            self.registry
+                .find_by_provider(&provider_id)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to find registered workers for provider {}: {}",
+                        provider_id, e
+                    )
+                })?;
         let registered_ids: std::collections::HashSet<String> = registered_workers
             .iter()
             .map(|w| w.handle().provider_resource_id.clone())

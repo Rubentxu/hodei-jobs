@@ -420,10 +420,10 @@ where
                 job_id: job_id.clone(),
                 source: e,
             }
-        })?
-            && *job.state() == target_state {
-                return Ok(UpdateJobStateResult::already_in_state(target_state));
-            }
+        })? && *job.state() == target_state
+        {
+            return Ok(UpdateJobStateResult::already_in_state(target_state));
+        }
 
         // Update the job state
         self.job_repository

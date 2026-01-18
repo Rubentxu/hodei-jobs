@@ -776,8 +776,9 @@ impl WorkerEventSource for DockerProvider {
         let client = self.client.clone();
 
         // Create a channel to bridge between stream and our consumers
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<std::result::Result<WorkerInfrastructureEvent, ProviderError>>(100);
+        let (tx, rx) = tokio::sync::mpsc::channel::<
+            std::result::Result<WorkerInfrastructureEvent, ProviderError>,
+        >(100);
 
         // Spawn a task to process events from Docker Events API
         let _handle = tokio::spawn(async move {

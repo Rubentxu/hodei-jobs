@@ -38,6 +38,7 @@ use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_infrastructure::messaging::cancellation_saga_consumer::CancellationSagaConsumer;
 use hodei_server_infrastructure::messaging::cleanup_saga_consumer::CleanupSagaConsumer;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::ExecutionSagaConsumer;
+use hodei_server_infrastructure::messaging::hybrid::create_command_relay;
 use hodei_server_infrastructure::messaging::nats::NatsEventBus;
 use hodei_server_infrastructure::messaging::nats_outbox_relay::NatsOutboxRelay;
 use hodei_server_infrastructure::messaging::worker_ephemeral_terminating_consumer::WorkerEphemeralTerminatingConsumer;
@@ -768,4 +769,35 @@ pub async fn start_worker_ephemeral_terminating_consumer(
 
     info!("✅ WorkerEphemeralTerminatingConsumer started");
     Ok(WorkerEphemeralTerminatingConsumerShutdownHandle { stop_tx })
+}
+
+/// Shutdown handle for CommandRelay
+pub struct CommandRelayShutdownHandle {
+    pub stop_tx: tokio::sync::broadcast::Sender<()>,
+}
+
+/// Start Command Relay for publishing commands to NATS
+pub async fn start_command_relay(
+    pool: sqlx::PgPool,
+    nats_client: Arc<async_nats::Client>,
+) -> Result<CommandRelayShutdownHandle, anyhow::Error> {
+    info!("🚀 Starting Command Relay for command publishing...");
+
+    // Create the relay using the factory function
+    let (relay, shutdown_signal_sender) = create_command_relay(&pool, nats_client, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create command relay: {}", e))?;
+
+    // We can spawn the relay runner
+    tokio::spawn(async move {
+        relay.run().await;
+        info!("🛑 Command Relay stopped running");
+    });
+
+    info!("✅ Command Relay started");
+
+    // We return the sender so the caller can trigger shutdown
+    Ok(CommandRelayShutdownHandle {
+        stop_tx: shutdown_signal_sender,
+    })
 }

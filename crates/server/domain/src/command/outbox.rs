@@ -490,7 +490,8 @@ where
                 self.dispatch_mark_job_failed(record).await?;
             }
             "ResumeFromManualIntervention" => {
-                self.dispatch_resume_from_manual_intervention(record).await?;
+                self.dispatch_resume_from_manual_intervention(record)
+                    .await?;
             }
             _ => {
                 tracing::warn!(
@@ -544,10 +545,7 @@ where
 
         match result {
             Ok(_) => {
-                tracing::debug!(
-                    job_id = payload.job_id,
-                    "MarkJobFailed command completed"
-                );
+                tracing::debug!(job_id = payload.job_id, "MarkJobFailed command completed");
                 Ok(())
             }
             Err(e) => Err(CommandOutboxError::HandlerError(e.to_string())),
@@ -580,9 +578,9 @@ where
                 reason,
             )
         } else {
-            ResumeFromManualInterventionCommand::new(
-                super::super::shared_kernel::JobId(job_id_uuid),
-            )
+            ResumeFromManualInterventionCommand::new(super::super::shared_kernel::JobId(
+                job_id_uuid,
+            ))
         };
 
         // Dispatch via CommandBus
@@ -651,12 +649,13 @@ mod tests {
             command: Box<dyn Any + Send>,
             _command_type_id: TypeId,
         ) -> Result<Box<dyn Any + Send>, CommandError> {
-            let command = *command
-                .downcast::<TestCommand>()
-                .map_err(|_| CommandError::TypeMismatch {
-                    expected: std::any::type_name::<TestCommand>().to_string(),
-                    actual: "command type mismatch".to_string(),
-                })?;
+            let command =
+                *command
+                    .downcast::<TestCommand>()
+                    .map_err(|_| CommandError::TypeMismatch {
+                        expected: std::any::type_name::<TestCommand>().to_string(),
+                        actual: "command type mismatch".to_string(),
+                    })?;
 
             self.dispatched.lock().unwrap().push(command.clone());
 
@@ -722,10 +721,7 @@ mod tests {
         async fn get_stats(&self) -> Result<CommandOutboxStats, CommandOutboxError> {
             let commands = self.inserted.lock().unwrap();
             Ok(CommandOutboxStats {
-                pending_count: commands
-                    .iter()
-                    .filter(|c| c.is_pending())
-                    .count() as u64,
+                pending_count: commands.iter().filter(|c| c.is_pending()).count() as u64,
                 completed_count: 0,
                 failed_count: 0,
                 oldest_pending_age_seconds: None,
@@ -765,10 +761,7 @@ mod tests {
         };
 
         let result = outbox_bus
-            .dispatch_erased(
-                Box::new(command),
-                TypeId::of::<TestCommand>(),
-            )
+            .dispatch_erased(Box::new(command), TypeId::of::<TestCommand>())
             .await;
 
         assert!(result.is_ok());
@@ -777,7 +770,10 @@ mod tests {
 
         // Verify command was persisted to outbox
         assert_eq!(repository.inserted.lock().unwrap().len(), 1);
-        assert_eq!(repository.inserted.lock().unwrap()[0].target_type, CommandTargetType::Saga);
+        assert_eq!(
+            repository.inserted.lock().unwrap()[0].target_type,
+            CommandTargetType::Saga
+        );
     }
 
     #[tokio::test]
@@ -793,10 +789,7 @@ mod tests {
         };
 
         let result = outboxed
-            .dispatch_erased(
-                Box::new(command),
-                TypeId::of::<TestCommand>(),
-            )
+            .dispatch_erased(Box::new(command), TypeId::of::<TestCommand>())
             .await;
 
         assert!(result.is_ok());
@@ -816,10 +809,7 @@ mod tests {
         };
 
         let result = cloned
-            .dispatch_erased(
-                Box::new(command),
-                TypeId::of::<TestCommand>(),
-            )
+            .dispatch_erased(Box::new(command), TypeId::of::<TestCommand>())
             .await;
 
         assert!(result.is_ok());

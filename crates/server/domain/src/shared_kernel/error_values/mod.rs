@@ -107,7 +107,10 @@ impl JobTimeout {
         } else if seconds > Self::MAX_SECS {
             Err(DomainError::InvalidJobSpec {
                 field: "timeout".to_string(),
-                reason: format!("timeout cannot exceed {} seconds (24 hours)", Self::MAX_SECS),
+                reason: format!(
+                    "timeout cannot exceed {} seconds (24 hours)",
+                    Self::MAX_SECS
+                ),
             })
         } else {
             Ok(Self(Duration::from_secs(seconds)))
@@ -195,7 +198,11 @@ impl ValidationError {
         }
     }
 
-    pub fn with_value(field: impl Into<String>, reason: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_value(
+        field: impl Into<String>,
+        reason: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             field: field.into(),
             reason: reason.into(),

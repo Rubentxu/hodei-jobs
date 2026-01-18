@@ -374,3 +374,17 @@ Este proyecto está licenciado bajo la Licencia MIT - ver el archivo [LICENSE](L
 <p align="center">
   Hecho con ❤️ por <a href="https://github.com/Rubentxu">Rubentxu</a>
 </p>
+
+---
+Nuevos comandos en el justfile:
+
+
+
+
+
+
+# Después de cada cambio
+just reload         # ~6-11 segundos
+
+
+---

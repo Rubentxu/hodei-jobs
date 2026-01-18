@@ -624,6 +624,52 @@ pub enum DomainEvent {
         correlation_id: Option<String>,
         actor: Option<String>,
     },
+    /// GAP-006: A saga has completed successfully
+    SagaCompleted {
+        /// ID of the saga
+        saga_id: Uuid,
+        /// Type of saga (e.g., "Execution", "Provisioning", "Recovery")
+        saga_type: String,
+        /// Duration in milliseconds
+        duration_ms: u64,
+        /// Number of steps executed
+        steps_executed: u32,
+        /// Correlation ID for tracing
+        correlation_id: Option<String>,
+        occurred_at: DateTime<Utc>,
+    },
+    /// GAP-006: A saga has failed
+    SagaFailed {
+        /// ID of the saga
+        saga_id: Uuid,
+        /// Type of saga
+        saga_type: String,
+        /// Error message describing the failure
+        error_message: String,
+        /// Step where failure occurred
+        failed_at_step: u32,
+        /// Whether compensation was triggered
+        compensation_triggered: bool,
+        /// Correlation ID for tracing
+        correlation_id: Option<String>,
+        occurred_at: DateTime<Utc>,
+    },
+    /// GAP-006 & GAP-011: A saga has timed out
+    SagaTimedOut {
+        /// ID of the saga
+        saga_id: Uuid,
+        /// Type of saga
+        saga_type: String,
+        /// Configured timeout duration
+        timeout_duration_ms: u64,
+        /// Elapsed time before timeout
+        elapsed_ms: u64,
+        /// Steps completed before timeout
+        steps_completed: u32,
+        /// Correlation ID for tracing
+        correlation_id: Option<String>,
+        occurred_at: DateTime<Utc>,
+    },
 }
 
 /// Razón de limpieza de un worker efímero
@@ -1054,7 +1100,10 @@ impl DomainEvent {
             | DomainEvent::ScheduledJobCreated { correlation_id, .. }
             | DomainEvent::ScheduledJobTriggered { correlation_id, .. }
             | DomainEvent::ScheduledJobMissed { correlation_id, .. }
-            | DomainEvent::ScheduledJobError { correlation_id, .. } => correlation_id.clone(),
+            | DomainEvent::ScheduledJobError { correlation_id, .. }
+            | DomainEvent::SagaCompleted { correlation_id, .. }
+            | DomainEvent::SagaFailed { correlation_id, .. }
+            | DomainEvent::SagaTimedOut { correlation_id, .. } => correlation_id.clone(),
         }
     }
 
@@ -1112,6 +1161,10 @@ impl DomainEvent {
             | DomainEvent::ScheduledJobTriggered { actor, .. }
             | DomainEvent::ScheduledJobMissed { actor, .. }
             | DomainEvent::ScheduledJobError { actor, .. } => actor.clone(),
+            // Saga events don't have actors (internal system events)
+            DomainEvent::SagaCompleted { .. }
+            | DomainEvent::SagaFailed { .. }
+            | DomainEvent::SagaTimedOut { .. } => None,
         }
     }
 
@@ -1175,6 +1228,10 @@ impl DomainEvent {
             DomainEvent::ScheduledJobTriggered { occurred_at, .. } => *occurred_at,
             DomainEvent::ScheduledJobMissed { occurred_at, .. } => *occurred_at,
             DomainEvent::ScheduledJobError { occurred_at, .. } => *occurred_at,
+            // GAP-006: Saga events
+            DomainEvent::SagaCompleted { occurred_at, .. } => *occurred_at,
+            DomainEvent::SagaFailed { occurred_at, .. } => *occurred_at,
+            DomainEvent::SagaTimedOut { occurred_at, .. } => *occurred_at,
         }
     }
 
@@ -1237,6 +1294,10 @@ impl DomainEvent {
             DomainEvent::ScheduledJobTriggered { .. } => "ScheduledJobTriggered",
             DomainEvent::ScheduledJobMissed { .. } => "ScheduledJobMissed",
             DomainEvent::ScheduledJobError { .. } => "ScheduledJobError",
+            // GAP-006: Saga events
+            DomainEvent::SagaCompleted { .. } => "SagaCompleted",
+            DomainEvent::SagaFailed { .. } => "SagaFailed",
+            DomainEvent::SagaTimedOut { .. } => "SagaTimedOut",
         }
     }
 
@@ -1314,6 +1375,10 @@ impl DomainEvent {
             DomainEvent::ScheduledJobError {
                 scheduled_job_id, ..
             } => scheduled_job_id.clone(),
+            // GAP-006: Saga events - aggregate ID is the saga ID
+            DomainEvent::SagaCompleted { saga_id, .. } => saga_id.to_string(),
+            DomainEvent::SagaFailed { saga_id, .. } => saga_id.to_string(),
+            DomainEvent::SagaTimedOut { saga_id, .. } => saga_id.to_string(),
         }
     }
 }

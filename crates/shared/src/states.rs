@@ -92,10 +92,7 @@ impl JobState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            JobState::Succeeded
-                | JobState::Failed
-                | JobState::Cancelled
-                | JobState::Timeout
+            JobState::Succeeded | JobState::Failed | JobState::Cancelled | JobState::Timeout
         )
         // ManualInterventionRequired NO es terminal - puede volver a Pending
     }

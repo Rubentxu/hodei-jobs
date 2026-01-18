@@ -11,7 +11,6 @@
 //! This module provides sagas with standardized telemetry attributes
 //! and uses the `tracing` crate for span creation and recording.
 
-
 /// Result type for telemetry operations
 pub type TelemetryResult<T> = std::result::Result<T, TelemetryError>;
 

@@ -195,15 +195,13 @@ pub enum ProviderCategory {
 }
 
 /// Arquitectura del worker
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Architecture {
     #[default]
     Amd64,
     Arm64,
     Arm,
 }
-
 
 /// Recursos requeridos para un worker
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,8 +4,8 @@
 //! This repository is storage-agnostic and works with any storage backend.
 
 use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
-use sqlx::postgres::PgPool;
 use sqlx::Row;
+use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 /// Reference to a persistent log storage (agnostic to storage type)

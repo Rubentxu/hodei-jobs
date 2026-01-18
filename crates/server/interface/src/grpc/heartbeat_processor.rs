@@ -173,11 +173,9 @@ impl HeartbeatProcessor {
                 state: worker.state().clone(),
                 load_average: None,
                 memory_usage_mb: None,
-                current_job_id: running_job_ids.first().and_then(|id| {
-                    id.parse::<uuid::Uuid>()
-                        .ok()
-                        .map(JobId)
-                }),
+                current_job_id: running_job_ids
+                    .first()
+                    .and_then(|id| id.parse::<uuid::Uuid>().ok().map(JobId)),
                 occurred_at: chrono::Utc::now(),
                 correlation_id: None,
                 actor: Some("heartbeat_processor".to_string()),
@@ -207,8 +205,8 @@ impl HeartbeatProcessor {
 
     /// Parse worker UUID
     fn parse_worker_uuid(worker_id: &str) -> Result<WorkerId, String> {
-        let id = uuid::Uuid::parse_str(worker_id)
-            .map_err(|_| "worker_id must be a UUID".to_string())?;
+        let id =
+            uuid::Uuid::parse_str(worker_id).map_err(|_| "worker_id must be a UUID".to_string())?;
         Ok(WorkerId(id))
     }
 }
@@ -264,9 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_valid_uuid() {
-        let result = HeartbeatProcessor::parse_worker_uuid(
-            "550e8400-e29b-41d4-a716-446655440000",
-        );
+        let result = HeartbeatProcessor::parse_worker_uuid("550e8400-e29b-41d4-a716-446655440000");
         assert!(result.is_ok());
     }
 

@@ -27,8 +27,8 @@
 use crate::persistence::outbox::PostgresOutboxRepository;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepositoryTx};
 use hodei_server_domain::shared_kernel::ProviderId;
-use hodei_server_domain::workers::provider_api::{ProviderError, WorkerProvider};
 use hodei_server_domain::workers::Worker;
+use hodei_server_domain::workers::provider_api::{ProviderError, WorkerProvider};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;

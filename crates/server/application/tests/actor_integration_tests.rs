@@ -8,7 +8,7 @@
 //! - Integration with saga system
 
 use hodei_server_application::workers::actor::{
-    WorkerSupervisorBuilder, WorkerSupervisorConfig, WorkerMsg, DisconnectionReason,
+    DisconnectionReason, WorkerMsg, WorkerSupervisorBuilder, WorkerSupervisorConfig,
     WorkerSupervisorHandle,
 };
 use hodei_server_domain::shared_kernel::{ProviderId, WorkerId};
@@ -31,7 +31,14 @@ fn create_test_provider_id() -> ProviderId {
 fn create_test_handle() -> WorkerHandle {
     WorkerHandle::new(
         create_test_worker_id(),
-        format!("container-{}", uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>()),
+        format!(
+            "container-{}",
+            uuid::Uuid::new_v4()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>()
+        ),
         ProviderType::Docker,
         create_test_provider_id(),
     )
@@ -47,11 +54,14 @@ fn create_test_spec() -> WorkerSpec {
 /// Spawns a supervisor and returns a handle along with a shutdown signal sender
 async fn spawn_supervisor(
     config: Option<WorkerSupervisorConfig>,
-) -> (WorkerSupervisorHandle, tokio::task::JoinHandle<()>, watch::Sender<()>) {
+) -> (
+    WorkerSupervisorHandle,
+    tokio::task::JoinHandle<()>,
+    watch::Sender<()>,
+) {
     let config = config.unwrap_or_default();
-    let (handle, supervisor, shutdown_tx) = WorkerSupervisorBuilder::new()
-        .with_config(config)
-        .build();
+    let (handle, supervisor, shutdown_tx) =
+        WorkerSupervisorBuilder::new().with_config(config).build();
 
     let supervisor_handle = tokio::spawn(async move {
         supervisor.run().await;
@@ -83,14 +93,20 @@ async fn test_actor_worker_full_lifecycle() {
         )
         .await;
 
-    assert!(register_result.is_ok(), "Worker registration should succeed");
+    assert!(
+        register_result.is_ok(),
+        "Worker registration should succeed"
+    );
     let worker_state = register_result.unwrap();
     assert_eq!(worker_state.status, WorkerState::Creating);
     assert!(worker_state.last_heartbeat.is_none());
 
     // 2. Set up worker channel for bidirectional communication
     let (worker_tx, mut worker_rx) = mpsc::channel::<WorkerMsg>(10);
-    handle.set_worker_channel(&worker_id, worker_tx).await.unwrap();
+    handle
+        .set_worker_channel(&worker_id, worker_tx)
+        .await
+        .unwrap();
 
     // 3. Send heartbeat
     let heartbeat_result = handle.heartbeat(&worker_id).await;
@@ -214,7 +230,8 @@ async fn test_actor_concurrent_registrations() {
     let success_count = results.iter().filter(|r| r.is_ok()).count();
     assert_eq!(
         success_count, worker_count,
-        "All {} workers should be registered", worker_count
+        "All {} workers should be registered",
+        worker_count
     );
 
     // Verify all workers exist
@@ -260,9 +277,7 @@ async fn test_actor_concurrent_heartbeats() {
     for worker_id in &worker_ids {
         let handle = handle.clone();
         let worker_id = worker_id.clone();
-        let join = tokio::spawn(async move {
-            handle.heartbeat(&worker_id).await
-        });
+        let join = tokio::spawn(async move { handle.heartbeat(&worker_id).await });
         handles.push(join);
     }
 
@@ -272,7 +287,8 @@ async fn test_actor_concurrent_heartbeats() {
     let success_count = results.iter().filter(|r| r.is_ok()).count();
     assert_eq!(
         success_count, worker_count,
-        "All {} heartbeats should succeed", worker_count
+        "All {} heartbeats should succeed",
+        worker_count
     );
 
     // All workers should be Ready
@@ -322,9 +338,7 @@ async fn test_actor_message_ordering_under_load() {
             args: vec![],
             env: vec![],
         };
-        let join = tokio::spawn(async move {
-            handle.send_to_worker(&worker_id, msg).await
-        });
+        let join = tokio::spawn(async move { handle.send_to_worker(&worker_id, msg).await });
         handles.push(join);
     }
 
@@ -374,7 +388,10 @@ async fn test_actor_recovery_after_channel_close() {
         .unwrap();
 
     let (tx, _) = mpsc::channel::<WorkerMsg>(10);
-    handle.set_worker_channel(&worker_id, tx.clone()).await.unwrap();
+    handle
+        .set_worker_channel(&worker_id, tx.clone())
+        .await
+        .unwrap();
 
     // Drop the sender to simulate channel close
     drop(tx);
@@ -809,9 +826,7 @@ async fn test_actor_high_throughput() {
             args: vec![],
             env: vec![],
         };
-        let join = tokio::spawn(async move {
-            handle.send_to_worker(&worker_id, msg).await
-        });
+        let join = tokio::spawn(async move { handle.send_to_worker(&worker_id, msg).await });
         handles.push(join);
     }
 
@@ -863,9 +878,7 @@ async fn test_actor_many_workers() {
     for worker in &workers {
         let handle = handle.clone();
         let worker_id = worker.worker_id.clone();
-        let join = tokio::spawn(async move {
-            handle.heartbeat(&worker_id).await
-        });
+        let join = tokio::spawn(async move { handle.heartbeat(&worker_id).await });
         handles.push(join);
     }
 

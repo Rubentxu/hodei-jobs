@@ -308,204 +308,204 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Inner communication loop
                 loop {
                     tokio::select! {
-                        _ = shutdown_rx.recv() => {
-                            info!("Graceful shutdown triggered in inner loop");
-                            shutdown_triggered = true;
-                            break;
-                        }
-
-// Check auto-termination timeout
-                        _ = auto_terminate_interval.tick() => {
-                            let is_busy = !running_jobs.lock().await.is_empty();
-                            if let Some(actual_wait_ms) = auto_terminate_state.lock().await.should_terminate(is_busy) {
-                                let last_job_id = auto_terminate_state.lock().await.last_job_id.clone();
-                                let expected_ms = auto_terminate_state.lock().await.expected_cleanup_ms;
-                                warn!("🛑 Auto-termination triggered after {}ms (expected: {}ms), last_job: {:?}",
-                                    actual_wait_ms, expected_ms, last_job_id);
-
-                                // Send self-termination message to server before exiting
-                                let term_msg = WorkerMessage {
-                                    payload: Some(WorkerPayload::SelfTerminate(SelfTerminateMessage {
-                                        worker_id: config.worker_id.clone(),
-                                        last_job_id: last_job_id.unwrap_or_default(),
-                                        expected_cleanup_ms: expected_ms,
-                                        actual_wait_ms,
-                                        reason: "Cleanup timeout expired (idle/after job)".to_string(),
-                                    }))
-                                };
-
-                                // Try to send, but exit anyway
-                                let _ = tx.send(term_msg).await;
-
-                                shutdown_triggered = true;
-                                break;
-                            }
-                        }
-
-                        // Outgoing: Heartbeats
-                        _ = heartbeat_interval.tick() => {
-                            let resource_usage = if let Some(cache) = &cached_metrics {
-                                 if cache.is_fresh() {
-                                     cache.get_usage().clone()
-                                 } else {
-                                      let usage = metrics_collector.collect();
-                                      cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
-                                      usage
-                                  }
-                             } else {
-                                  let usage = metrics_collector.collect();
-                                  cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
-                                  usage
-                             };
-
-                            let active_jobs_count = running_jobs.lock().await.len() as i32;
-                            let running_ids = running_jobs.lock().await.keys().cloned().collect();
-
-                            let heartbeat_req = WorkerHeartbeat {
-                                 worker_id: Some(WorkerId { value: config.worker_id.clone() }),
-                                 usage: Some(resource_usage),
-                                 status: WorkerStatus::Available as i32,
-                                 active_jobs: active_jobs_count,
-                                 running_job_ids: running_ids,
-                                 timestamp: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
-                                 dropped_logs: metrics.dropped_logs.load(std::sync::atomic::Ordering::Relaxed),
-                            };
-
-                            if let Err(e) = tx.send(WorkerMessage {
-                                payload: Some(WorkerPayload::Heartbeat(heartbeat_req))
-                            }).await {
-                                error!("Failed to send heartbeat: {}", e);
-                                break;
-                            }
-                        }
-
-                        // Forward pending job results to server
-                        pending_result = result_rx.recv() => {
-                            if let Some(result) = pending_result {
-                                info!("📤 Forwarding job result for {} to server", result.job_id);
-                                let result_msg = WorkerMessage {
-                                    payload: Some(WorkerPayload::Result(JobResultMessage {
-                                        job_id: result.job_id.clone(),
-                                        exit_code: result.exit_code,
-                                        success: result.success,
-                                        error_message: result.error_message.clone(),
-                                        completed_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
-                                    }))
-                                };
-                                if let Err(e) = tx.send(result_msg).await {
-                                    // Connection failed - store result for retry on reconnection
-                                    error!("Failed to send result for job {}, storing for retry: {}", result.job_id, e);
-                                    pending_results.lock().await.push(result);
-                                    break; // Exit inner loop to trigger reconnection
-                                } else {
-                                    info!("✅ Job {} result delivered to server (exit code: {})", result.job_id, result.exit_code);
-                                    // Trigger auto-termination timer after successful result delivery
-                                    auto_terminate_state.lock().await.on_job_completed(result.job_id.clone());
-                                    info!("🔄 Auto-termination timer started ({}ms)", config.cleanup_timeout_ms);
-                                }
-                            }
-                        }
-
-                        // Incoming: Server Messages
-                        msg = server_stream.message() => {
-                            match msg {
-                                Ok(Some(ServerMessage { payload: Some(payload) })) => {
-                                    match payload {
-                                        ServerPayload::RunJob(run_job) => {
-                                            info!("🚀 Received job: {}", run_job.job_id);
-                                            // Reset auto-termination timer when receiving new job
-                                            auto_terminate_state.lock().await.on_job_started();
-                                            info!("🔄 Auto-termination timer reset (new job received)");
-
-                                            let exec = executor.clone();
-                                            let log_tx = tx.clone(); // For streaming logs only
-                                            let persistent_result_tx = result_tx.clone(); // Persistent channel for results
-                                            let job_id = run_job.job_id.clone();
-                                            let timeout_ms = run_job.timeout_ms as u64;
-                                            let jobs_registry = running_jobs.clone();
-
-                                            // Send acknowledgment to server immediately
-                                            let ack_msg = WorkerMessage {
-                                                payload: Some(WorkerPayload::Ack(hodei_jobs::AckMessage {
-                                                    message_id: format!("job-{}", run_job.job_id),
-                                                    success: true,
-                                                    worker_id: config.worker_id.clone(),
-                                                }))
-                                            };
-                                            if let Err(e) = tx.send(ack_msg).await {
-                                                error!("Failed to send acknowledgment: {}", e);
-                                            } else {
-                                                info!("✅ Sent acknowledgment for job {}", run_job.job_id);
+                                            _ = shutdown_rx.recv() => {
+                                                info!("Graceful shutdown triggered in inner loop");
+                                                shutdown_triggered = true;
+                                                break;
                                             }
 
-                                            let handle = tokio::spawn(async move {
-                                                #[allow(deprecated)]
-                                                // Execute job - logs are streamed via the worker_stream channel
-                                                // but results go through the PERSISTENT result channel
-                                                let result = exec.execute_from_command(
-                                                    &job_id,
-                                                    run_job.command,
-                                                    run_job.env,
-                                                    Some(run_job.working_dir),
-                                                    log_tx, // Logs go through ephemeral stream (best effort)
-                                                    Some(timeout_ms / 1000),
-                                                    run_job.stdin,
-                                                    run_job.secrets_json,
-                                                    InjectionStrategy::TmpfsFile,
-                                                ).await;
+                    // Check auto-termination timeout
+                                            _ = auto_terminate_interval.tick() => {
+                                                let is_busy = !running_jobs.lock().await.is_empty();
+                                                if let Some(actual_wait_ms) = auto_terminate_state.lock().await.should_terminate(is_busy) {
+                                                    let last_job_id = auto_terminate_state.lock().await.last_job_id.clone();
+                                                    let expected_ms = auto_terminate_state.lock().await.expected_cleanup_ms;
+                                                    warn!("🛑 Auto-termination triggered after {}ms (expected: {}ms), last_job: {:?}",
+                                                        actual_wait_ms, expected_ms, last_job_id);
 
-                                                // Remove from registry when done
-                                                jobs_registry.lock().await.remove(&job_id);
+                                                    // Send self-termination message to server before exiting
+                                                    let term_msg = WorkerMessage {
+                                                        payload: Some(WorkerPayload::SelfTerminate(SelfTerminateMessage {
+                                                            worker_id: config.worker_id.clone(),
+                                                            last_job_id: last_job_id.unwrap_or_default(),
+                                                            expected_cleanup_ms: expected_ms,
+                                                            actual_wait_ms,
+                                                            reason: "Cleanup timeout expired (idle/after job)".to_string(),
+                                                        }))
+                                                    };
 
-                                                let (exit_code, success, error_message) = match result {
-                                                    Ok((code, _, _)) => (code, code == 0, String::new()),
-                                                    Err(e) => (-1, false, e),
-                                                };
+                                                    // Try to send, but exit anyway
+                                                    let _ = tx.send(term_msg).await;
 
-                                                // CRITICAL: Send result via PERSISTENT channel
-                                                // This channel survives reconnections, ensuring results are NEVER lost
-                                                let pending_result = PendingJobResult {
-                                                    job_id: job_id.clone(),
-                                                    exit_code,
-                                                    success,
-                                                    error_message,
-                                                };
-
-                                                if let Err(e) = persistent_result_tx.send(pending_result).await {
-                                                    // This should never happen unless worker is shutting down
-                                                    error!("CRITICAL: Failed to queue job result (internal channel closed): {}", e);
-                                                    error!("Job ID: {}, Exit Code: {} - Result may be lost!", job_id, exit_code);
-                                                } else {
-                                                    info!("📋 Job {} execution complete, result queued for delivery", job_id);
+                                                    shutdown_triggered = true;
+                                                    break;
                                                 }
-                                            });
+                                            }
 
-                                            running_jobs.lock().await.insert(run_job.job_id, handle);
-                                        }
-                                        ServerPayload::Cancel(cancel) => {
-                                            info!("⏹ Received cancel for job: {}", cancel.job_id);
-                                            if let Some(handle) = running_jobs.lock().await.remove(&cancel.job_id) {
-                                                handle.abort();
-                                                info!("✓ Job {} aborted", cancel.job_id);
-                                            } else {
-                                                warn!("Job {} not found in registry", cancel.job_id);
+                                            // Outgoing: Heartbeats
+                                            _ = heartbeat_interval.tick() => {
+                                                let resource_usage = if let Some(cache) = &cached_metrics {
+                                                     if cache.is_fresh() {
+                                                         cache.get_usage().clone()
+                                                     } else {
+                                                          let usage = metrics_collector.collect();
+                                                          cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
+                                                          usage
+                                                      }
+                                                 } else {
+                                                      let usage = metrics_collector.collect();
+                                                      cached_metrics = Some(CachedResourceUsage::new(usage.clone()));
+                                                      usage
+                                                 };
+
+                                                let active_jobs_count = running_jobs.lock().await.len() as i32;
+                                                let running_ids = running_jobs.lock().await.keys().cloned().collect();
+
+                                                let heartbeat_req = WorkerHeartbeat {
+                                                     worker_id: Some(WorkerId { value: config.worker_id.clone() }),
+                                                     usage: Some(resource_usage),
+                                                     status: WorkerStatus::Available as i32,
+                                                     active_jobs: active_jobs_count,
+                                                     running_job_ids: running_ids,
+                                                     timestamp: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+                                                     dropped_logs: metrics.dropped_logs.load(std::sync::atomic::Ordering::Relaxed),
+                                                };
+
+                                                if let Err(e) = tx.send(WorkerMessage {
+                                                    payload: Some(WorkerPayload::Heartbeat(heartbeat_req))
+                                                }).await {
+                                                    error!("Failed to send heartbeat: {}", e);
+                                                    break;
+                                                }
+                                            }
+
+                                            // Forward pending job results to server
+                                            pending_result = result_rx.recv() => {
+                                                if let Some(result) = pending_result {
+                                                    info!("📤 Forwarding job result for {} to server", result.job_id);
+                                                    let result_msg = WorkerMessage {
+                                                        payload: Some(WorkerPayload::Result(JobResultMessage {
+                                                            job_id: result.job_id.clone(),
+                                                            exit_code: result.exit_code,
+                                                            success: result.success,
+                                                            error_message: result.error_message.clone(),
+                                                            completed_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+                                                        }))
+                                                    };
+                                                    if let Err(e) = tx.send(result_msg).await {
+                                                        // Connection failed - store result for retry on reconnection
+                                                        error!("Failed to send result for job {}, storing for retry: {}", result.job_id, e);
+                                                        pending_results.lock().await.push(result);
+                                                        break; // Exit inner loop to trigger reconnection
+                                                    } else {
+                                                        info!("✅ Job {} result delivered to server (exit code: {})", result.job_id, result.exit_code);
+                                                        // Trigger auto-termination timer after successful result delivery
+                                                        auto_terminate_state.lock().await.on_job_completed(result.job_id.clone());
+                                                        info!("🔄 Auto-termination timer started ({}ms)", config.cleanup_timeout_ms);
+                                                    }
+                                                }
+                                            }
+
+                                            // Incoming: Server Messages
+                                            msg = server_stream.message() => {
+                                                match msg {
+                                                    Ok(Some(ServerMessage { payload: Some(payload) })) => {
+                                                        match payload {
+                                                            ServerPayload::RunJob(run_job) => {
+                                                                info!("🚀 Received job: {}", run_job.job_id);
+                                                                // Reset auto-termination timer when receiving new job
+                                                                auto_terminate_state.lock().await.on_job_started();
+                                                                info!("🔄 Auto-termination timer reset (new job received)");
+
+                                                                let exec = executor.clone();
+                                                                let log_tx = tx.clone(); // For streaming logs only
+                                                                let persistent_result_tx = result_tx.clone(); // Persistent channel for results
+                                                                let job_id = run_job.job_id.clone();
+                                                                let timeout_ms = run_job.timeout_ms as u64;
+                                                                let jobs_registry = running_jobs.clone();
+
+                                                                // Send acknowledgment to server immediately
+                                                                let ack_msg = WorkerMessage {
+                                                                    payload: Some(WorkerPayload::Ack(hodei_jobs::AckMessage {
+                                                                        message_id: format!("job-{}", run_job.job_id),
+                                                                        success: true,
+                                                                        worker_id: config.worker_id.clone(),
+                                                                    }))
+                                                                };
+                                                                if let Err(e) = tx.send(ack_msg).await {
+                                                                    error!("Failed to send acknowledgment: {}", e);
+                                                                } else {
+                                                                    info!("✅ Sent acknowledgment for job {}", run_job.job_id);
+                                                                }
+
+                                                                let handle = tokio::spawn(async move {
+                                                                    #[allow(deprecated)]
+                                                                    // Execute job - logs are streamed via the worker_stream channel
+                                                                    // but results go through the PERSISTENT result channel
+                                                                    let result = exec.execute_from_command(
+                                                                        &job_id,
+                                                                        run_job.command,
+                                                                        run_job.env,
+                                                                        Some(run_job.working_dir),
+                                                                        log_tx, // Logs go through ephemeral stream (best effort)
+                                                                        Some(timeout_ms / 1000),
+                                                                        run_job.stdin,
+                                                                        run_job.secrets_json,
+                                                                        InjectionStrategy::TmpfsFile,
+                                                                    ).await;
+
+                                                                    // Remove from registry when done
+                                                                    jobs_registry.lock().await.remove(&job_id);
+
+                                                                    let (exit_code, success, error_message) = match result {
+                                                                        Ok((code, _, _)) => (code, code == 0, String::new()),
+                                                                        Err(e) => (-1, false, e),
+                                                                    };
+
+                                                                    // CRITICAL: Send result via PERSISTENT channel
+                                                                    // This channel survives reconnections, ensuring results are NEVER lost
+                                                                    let pending_result = PendingJobResult {
+                                                                        job_id: job_id.clone(),
+                                                                        exit_code,
+                                                                        success,
+                                                                        error_message,
+                                                                    };
+
+                                                                    if let Err(e) = persistent_result_tx.send(pending_result).await {
+                                                                        // This should never happen unless worker is shutting down
+                                                                        error!("CRITICAL: Failed to queue job result (internal channel closed): {}", e);
+                                                                        error!("Job ID: {}, Exit Code: {} - Result may be lost!", job_id, exit_code);
+                                                                    } else {
+                                                                        info!("📋 Job {} execution complete, result queued for delivery", job_id);
+                                                                    }
+                                                                });
+
+                                                                running_jobs.lock().await.insert(run_job.job_id, handle);
+                                                            }
+                                                            ServerPayload::Cancel(cancel) => {
+                                                                info!("⏹ Received cancel for job: {}", cancel.job_id);
+                                                                if let Some(handle) = running_jobs.lock().await.remove(&cancel.job_id) {
+                                                                    handle.abort();
+                                                                    info!("✓ Job {} aborted", cancel.job_id);
+                                                                } else {
+                                                                    warn!("Job {} not found in registry", cancel.job_id);
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                    Ok(None) => {
+                                                        warn!("Server closed the connection");
+                                                        break;
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Stream error: {}", e);
+                                                        break;
+                                                    }
+                                                    _ => {}
+                                                }
                                             }
                                         }
-                                        _ => {}
-                                    }
-                                }
-                                Ok(None) => {
-                                    warn!("Server closed the connection");
-                                    break;
-                                }
-                                Err(e) => {
-                                    error!("Stream error: {}", e);
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
                 }
             }
             Err(e) => {

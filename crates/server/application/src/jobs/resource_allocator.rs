@@ -97,10 +97,7 @@ impl ResourceAllocator {
 
     /// Convertir lista de ProviderConfigs (por referencia) a ProviderInfos
     /// GAP-GO-04: Método adicional para evitar conversión a Arc
-    pub fn configs_to_provider_infos_ref(
-        &self,
-        providers: &[ProviderConfig],
-    ) -> Vec<ProviderInfo> {
+    pub fn configs_to_provider_infos_ref(&self, providers: &[ProviderConfig]) -> Vec<ProviderInfo> {
         providers
             .iter()
             .map(|p| self.config_to_provider_info(p))
@@ -135,8 +132,8 @@ impl ResourceAllocator {
         if let Some(max_exec_time) = provider.capabilities.max_execution_time {
             // Use max_execution_time as a reasonable estimate for startup
             // Typically startup is 10-20% of max execution time for well-tuned systems
-            let estimated = (max_exec_time.as_secs() as f64 * self.config.startup_time_fraction)
-                as u64;
+            let estimated =
+                (max_exec_time.as_secs() as f64 * self.config.startup_time_fraction) as u64;
             std::time::Duration::from_secs(estimated.max(5))
         } else {
             // Fallback to provider-type-based estimates
@@ -220,17 +217,15 @@ impl ResourceAllocator {
             ProviderTypeConfig::AzureFunctions(_) => 0.05,
 
             // VM providers - typically pay-per-hour
-            ProviderTypeConfig::EC2(ec2) => {
-                match ec2.instance_type.as_str() {
-                    t if t.contains("t3") || t.contains("t2") => 0.05,
-                    t if t.contains("m5") || t.contains("m6") => 0.10,
-                    t if t.contains("c5") || t.contains("c6") => 0.12,
-                    t if t.contains("r5") || t.contains("r6") => 0.15,
-                    t if t.contains("p3") || t.contains("p4") => 3.00,
-                    t if t.contains("g4") || t.contains("g5") => 2.50,
-                    _ => 0.10,
-                }
-            }
+            ProviderTypeConfig::EC2(ec2) => match ec2.instance_type.as_str() {
+                t if t.contains("t3") || t.contains("t2") => 0.05,
+                t if t.contains("m5") || t.contains("m6") => 0.10,
+                t if t.contains("c5") || t.contains("c6") => 0.12,
+                t if t.contains("r5") || t.contains("r6") => 0.15,
+                t if t.contains("p3") || t.contains("p4") => 3.00,
+                t if t.contains("g4") || t.contains("g5") => 2.50,
+                _ => 0.10,
+            },
             ProviderTypeConfig::ComputeEngine(_) => 0.08,
             ProviderTypeConfig::AzureVMs(_) => 0.08,
 
@@ -251,11 +246,7 @@ mod tests {
         provider_type: ProviderType,
         type_config: ProviderTypeConfig,
     ) -> ProviderConfig {
-        ProviderConfig::new(
-            "test-provider".to_string(),
-            provider_type,
-            type_config,
-        )
+        ProviderConfig::new("test-provider".to_string(), provider_type, type_config)
     }
 
     #[tokio::test]

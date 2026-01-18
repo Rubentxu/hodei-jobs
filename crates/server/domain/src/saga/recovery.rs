@@ -279,8 +279,7 @@ impl SagaStep for ProvisionNewWorkerStep {
             };
 
             // Parse worker ID
-            let worker_id =
-                WorkerId::from_string(&worker_id_str).unwrap_or_default();
+            let worker_id = WorkerId::from_string(&worker_id_str).unwrap_or_default();
 
             let provider_id = crate::ProviderId::new(); // Placeholder, command will use what's needed
 
@@ -386,8 +385,7 @@ impl SagaStep for TransferJobStep {
                 will_compensate: true,
             })?;
 
-        let new_worker_id =
-            WorkerId::from_string(&new_worker_id_str).unwrap_or_default();
+        let new_worker_id = WorkerId::from_string(&new_worker_id_str).unwrap_or_default();
 
         // Create TransferJobCommand
         let command = TransferJobCommand::new(

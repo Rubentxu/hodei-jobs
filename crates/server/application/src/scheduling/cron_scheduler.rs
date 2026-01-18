@@ -9,9 +9,7 @@
 
 use chrono::{DateTime, Utc};
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::jobs::{
-    JobExecutionStatus, JobTemplate, JobTemplateId, TriggerType,
-};
+use hodei_server_domain::jobs::{JobExecutionStatus, JobTemplate, JobTemplateId, TriggerType};
 use hodei_server_domain::shared_kernel::{JobId, Result};
 use std::collections::HashMap;
 use std::sync::Arc;

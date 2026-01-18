@@ -16,6 +16,7 @@ pub mod outbox;
 pub mod shared_kernel;
 pub mod telemetry;
 pub mod testing;
+pub mod transaction;
 
 // Bounded Contexts
 pub mod audit;
@@ -43,6 +44,7 @@ pub use events::*;
 pub use logging::*;
 pub use request_context::*;
 pub use shared_kernel::*;
+pub use transaction::*;
 
 // Re-exports de bounded contexts
 pub use audit::*;

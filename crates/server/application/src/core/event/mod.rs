@@ -210,8 +210,8 @@ impl EventHandler for MockEventHandler {
 
 #[cfg(test)]
 mod tests {
-    use hodei_server_domain::JobCreated;
     use super::*;
+    use hodei_server_domain::JobCreated;
 
     #[tokio::test]
     async fn test_event_publish_and_subscribe() {

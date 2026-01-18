@@ -1,4 +1,3 @@
-# DevSpace Development Image - Multi-stage build for faster setup
 # Download pre-built sccache binary
 FROM ubuntu:22.04 AS downloader
 

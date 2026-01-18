@@ -498,12 +498,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::JobCreated;
     use crate::outbox::{OutboxEventInsert, OutboxStatus};
     use crate::shared_kernel::JobId;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
-    use crate::JobCreated;
 
     // Mock EventPublisher
     struct MockEventPublisher {

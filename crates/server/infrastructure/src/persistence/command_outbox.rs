@@ -362,7 +362,7 @@ impl CommandOutboxRepository for PostgresCommandOutboxRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::{postgres::PgPoolOptions, PgPool};
+    use sqlx::{PgPool, postgres::PgPoolOptions};
 
     async fn setup_test_db() -> PgPool {
         let connection_string = std::env::var("DATABASE_URL")

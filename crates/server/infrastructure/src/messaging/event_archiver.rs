@@ -53,7 +53,10 @@ impl EventArchiver {
 
     /// Run the archiver continuously
     pub async fn run(&self) -> Result<(), EventBusError> {
-        info!("📜 Event Archiver starting (topic: {})...", self.config.topic);
+        info!(
+            "📜 Event Archiver starting (topic: {})...",
+            self.config.topic
+        );
 
         // Subscribe to all events with a durable consumer
         // The consumer name "event-archiver" ensures we pick up where we left off
@@ -105,9 +108,8 @@ impl EventArchiver {
         let correlation_id = event.correlation_id();
         let actor = event.actor();
 
-        let payload = serde_json::to_value(event).map_err(|e| {
-            sqlx::Error::Protocol(format!("Serialization error: {}", e).into())
-        })?;
+        let payload = serde_json::to_value(event)
+            .map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e).into()))?;
 
         // Extract inner payload if needed (same logic as OutboxAdapter)
         let payload = if let serde_json::Value::Object(map) = &payload {
@@ -125,7 +127,7 @@ impl EventArchiver {
             INSERT INTO domain_events
             (id, occurred_at, event_type, aggregate_id, correlation_id, actor, payload)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "#
+            "#,
         )
         .bind(event_id)
         .bind(occurred_at)

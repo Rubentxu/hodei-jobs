@@ -52,9 +52,7 @@ impl JobController {
         scheduler_config: SchedulerConfig,
         worker_command_sender: Arc<dyn WorkerCommandSender>,
         event_bus: Arc<dyn EventBus>,
-        outbox_repository: Arc<
-            dyn OutboxRepository + Send + Sync,
-        >,
+        outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,

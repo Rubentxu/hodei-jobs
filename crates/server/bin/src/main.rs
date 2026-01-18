@@ -10,7 +10,8 @@ mod startup;
 use clap::Parser;
 use startup::{
     GracefulShutdown, GrpcServerConfig, ShutdownConfig, initialize_grpc_services, run,
-    start_background_tasks, start_job_coordinator, start_saga_consumers, start_signal_handler,
+    start_background_tasks, start_command_relay, start_job_coordinator, start_saga_consumers,
+    start_signal_handler,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -103,6 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saga_repository = Arc::new(PostgresSagaRepository::new(app_state.pool.clone()));
     let saga_orchestrator = Arc::new(PostgresSagaOrchestrator::new(saga_repository, None));
 
+    // Start saga consumers (Cancellation + Cleanup)
     let _saga_consumers_handle = start_saga_consumers(
         &app_state.nats_event_bus,
         saga_orchestrator.clone(),
@@ -110,9 +112,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await;
 
+    // ✅ Start ExecutionSagaConsumer for reactive job execution
+    let _execution_saga_consumer_handle = startup::start_execution_saga_consumer(
+        &app_state.nats_event_bus,
+        saga_orchestrator.clone(),
+        app_state.pool.clone(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to start ExecutionSagaConsumer: {}", e))?;
+
+    // ✅ Start WorkerEphemeralTerminatingConsumer for reactive worker cleanup
+    let _worker_ephemeral_consumer_handle = startup::start_worker_ephemeral_terminating_consumer(
+        &app_state.nats_event_bus,
+        saga_orchestrator.clone(),
+        app_state.pool.clone(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to start WorkerEphemeralTerminatingConsumer: {}", e))?;
+
     // Start background tasks (TimeoutChecker)
     let _background_tasks_handle =
         start_background_tasks(app_state.pool.clone(), saga_orchestrator.clone()).await;
+
+    // ✅ Start Command Relay (EPIC-63)
+    let _command_relay_handle = start_command_relay(
+        app_state.pool.clone(),
+        Arc::new(app_state.nats_event_bus.client().clone()),
+    )
+    .await;
+
+    // ✅ Start SagaPoller for processing pending sagas (GAP 3 FIX)
+    let _saga_poller_handle =
+        startup::start_saga_poller(app_state.pool.clone(), saga_orchestrator.clone()).await;
+
+    // ✅ Start NatsOutboxRelay for event publishing (GAP 4 FIX)
+    let _nats_outbox_relay_handle =
+        startup::start_nats_outbox_relay(app_state.pool.clone(), app_state.nats_event_bus.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start NatsOutboxRelay: {}", e))?;
+
+    // ✅ Start ReactiveSagaProcessor for reactive saga processing (GAP 8 FIX)
+    let _reactive_saga_processor_handle =
+        startup::start_reactive_saga_processor(app_state.pool.clone(), saga_orchestrator.clone())
+            .await;
 
     // Wait for shutdown signal
     info!("Server running. Waiting for shutdown signal (SIGTERM/SIGINT)...");

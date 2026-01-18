@@ -96,6 +96,12 @@ pub enum SagaLifecycleEvent {
         last_completed_step: Option<String>,
         duration_ms: u64,
     },
+    /// GAP-011: Saga has timed out
+    SagaTimedOut {
+        timeout_duration_ms: u64,
+        elapsed_ms: u64,
+        steps_completed: u32,
+    },
 }
 
 /// Result of handling an event
@@ -201,6 +207,12 @@ impl SagaEventHandler<SagaLifecycleEvent> for MetricsRecordingHandler {
                 value: 1.0,
                 tags: vec![format!("type={}", saga_type.as_str())],
             }],
+            // GAP-011: Record timeout metrics
+            SagaLifecycleEvent::SagaTimedOut { .. } => vec![SagaAction::RecordMetric {
+                metric_name: "saga.timed_out".to_string(),
+                value: 1.0,
+                tags: vec![format!("type={}", saga_type.as_str())],
+            }],
             SagaLifecycleEvent::StepFailed {
                 step_name,
                 will_compensate,
@@ -294,6 +306,21 @@ impl SagaEventHandler<SagaLifecycleEvent> for LoggingHandler {
             SagaLifecycleEvent::CompensationStarted { step_name } => (
                 LogLevel::Info,
                 format!("Compensating step '{}' in saga {}", step_name, saga_id),
+            ),
+            SagaLifecycleEvent::SagaTimedOut {
+                timeout_duration_ms,
+                elapsed_ms,
+                steps_completed,
+            } => (
+                LogLevel::Warn,
+                format!(
+                    "Saga {} ({}) timed out after {}ms (timeout: {}ms, steps completed: {})",
+                    saga_id,
+                    saga_type.as_str(),
+                    elapsed_ms,
+                    timeout_duration_ms,
+                    steps_completed
+                ),
             ),
             _ => return Vec::new(),
         };
