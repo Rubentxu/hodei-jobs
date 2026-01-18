@@ -4,12 +4,12 @@
 
 use hodei_server_domain::command::DynCommandBus;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::jobs::aggregate::JobRepositoryTx;
 use hodei_server_domain::saga::{
     ExecutionSaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaServices,
 };
 use hodei_server_domain::shared_kernel::{JobId, WorkerId};
-use hodei_server_domain::workers::WorkerRegistry;
+use hodei_server_domain::workers::registry::WorkerRegistryTx;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -52,8 +52,8 @@ pub struct DynExecutionSagaDispatcher {
     orchestrator: Arc<
         dyn SagaOrchestrator<Error = hodei_server_domain::shared_kernel::DomainError> + Send + Sync,
     >,
-    job_repository: Arc<dyn JobRepository + Send + Sync>,
-    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     event_bus: Arc<dyn EventBus + Send + Sync>,
     command_bus: DynCommandBus,
     config: ExecutionSagaDispatcherConfig,
@@ -67,8 +67,8 @@ impl DynExecutionSagaDispatcher {
                 + Send
                 + Sync,
         >,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
         command_bus: DynCommandBus,
         config: Option<ExecutionSagaDispatcherConfig>,
@@ -193,8 +193,8 @@ pub struct DynExecutionSagaDispatcherBuilder {
                 + Sync,
         >,
     >,
-    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
-    worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepositoryTx + Send + Sync>>,
+    worker_registry: Option<Arc<dyn WorkerRegistryTx + Send + Sync>>,
     event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
     command_bus: Option<DynCommandBus>,
     config: Option<ExecutionSagaDispatcherConfig>,
@@ -226,7 +226,7 @@ impl DynExecutionSagaDispatcherBuilder {
 
     pub fn with_job_repository(
         mut self,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
     ) -> Self {
         self.job_repository = Some(job_repository);
         self
@@ -234,7 +234,7 @@ impl DynExecutionSagaDispatcherBuilder {
 
     pub fn with_worker_registry(
         mut self,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     ) -> Self {
         self.worker_registry = Some(worker_registry);
         self
@@ -297,8 +297,8 @@ where
     OR: SagaOrchestrator,
 {
     orchestrator: Arc<OR>,
-    job_repository: Arc<dyn JobRepository + Send + Sync>,
-    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     event_bus: Arc<dyn EventBus + Send + Sync>,
     command_bus: DynCommandBus,
     config: ExecutionSagaDispatcherConfig,
@@ -310,8 +310,8 @@ where
 {
     pub fn new(
         orchestrator: Arc<OR>,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
         command_bus: DynCommandBus,
         config: Option<ExecutionSagaDispatcherConfig>,
@@ -437,8 +437,8 @@ where
     OR: SagaOrchestrator,
 {
     orchestrator: Option<Arc<OR>>,
-    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
-    worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepositoryTx + Send + Sync>>,
+    worker_registry: Option<Arc<dyn WorkerRegistryTx + Send + Sync>>,
     event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
     command_bus: Option<DynCommandBus>,
     config: Option<ExecutionSagaDispatcherConfig>,
@@ -463,7 +463,7 @@ impl<OR: SagaOrchestrator> ExecutionSagaDispatcherBuilder<OR> {
 
     pub fn with_job_repository(
         mut self,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
     ) -> Self {
         self.job_repository = Some(job_repository);
         self
@@ -471,7 +471,7 @@ impl<OR: SagaOrchestrator> ExecutionSagaDispatcherBuilder<OR> {
 
     pub fn with_worker_registry(
         mut self,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     ) -> Self {
         self.worker_registry = Some(worker_registry);
         self

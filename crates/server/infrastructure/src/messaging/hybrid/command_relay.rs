@@ -424,11 +424,10 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
             "Processing command"
         );
 
-        // 1. Determine NATS subject based on command type (and potentially target)
-        // Convention: hodei.command.{command_type_lowercase}
-        // e.g. AssignWorkerCommand -> hodei.command.assignworker
-        // This allows consumers to subscribe specifically to commands they handle
-        let subject = format!("hodei.command.{}", command.command_type.to_lowercase());
+        // 1. Determine NATS subject based on command type and target
+        // Convention: hodei.commands.{target_type}.{command_type}
+        // e.g. AssignWorkerCommand -> hodei.commands.worker.assignworker
+        let subject = Self::build_nats_subject(command);
 
         // 2. Serialize payload (it's already JSON Value, so we just stringify it)
         // We wrap it in a standard envelope if needed, but for now raw payload is fine
@@ -506,6 +505,17 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         self.metrics.lock().await.clone()
     }
 
+    /// Build NATS subject for a command
+    /// Format: hodei.commands.{target_type}.{command_type}
+    fn build_nats_subject(command: &CommandOutboxRecord) -> String {
+        // Lowercase target type (e.g., "worker", "job")
+        let target = command.target_type.to_string().to_lowercase();
+        // Lowercase command type (e.g., "assignworker")
+        let cmd_type = command.command_type.to_lowercase();
+
+        format!("hodei.commands.{}.{}", target, cmd_type)
+    }
+
     /// Signal shutdown.
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(());
@@ -557,6 +567,14 @@ mod tests {
             _command: &CommandOutboxInsert,
         ) -> Result<Uuid, hodei_server_domain::command::CommandOutboxError> {
             Ok(Uuid::new_v4())
+        }
+
+        async fn insert_command_with_tx(
+            &self,
+            _tx: &mut hodei_server_domain::transaction::PgTransaction<'_>,
+            command: &CommandOutboxInsert,
+        ) -> Result<Uuid, hodei_server_domain::command::CommandOutboxError> {
+            self.insert_command(command).await
         }
 
         async fn get_pending_commands(
@@ -625,6 +643,45 @@ mod tests {
                 oldest_pending_age_seconds: None,
             })
         }
+    }
+
+    #[test]
+    fn test_build_nats_subject() {
+        let command = CommandOutboxRecord {
+            id: Uuid::new_v4(),
+            target_id: Uuid::new_v4(),
+            target_type: CommandTargetType::Worker,
+            command_type: "AssignWorker".to_string(),
+            payload: serde_json::json!({}),
+            metadata: None,
+            idempotency_key: None,
+            status: CommandOutboxStatus::Pending,
+            created_at: chrono::Utc::now(),
+            processed_at: None,
+            retry_count: 0,
+            last_error: None,
+        };
+
+        let subject = CommandRelay::<MockCommandRepository>::build_nats_subject(&command);
+        assert_eq!(subject, "hodei.commands.worker.assignworker");
+
+        let job_command = CommandOutboxRecord {
+            id: Uuid::new_v4(),
+            target_id: Uuid::new_v4(),
+            target_type: CommandTargetType::Job,
+            command_type: "ExecuteJob".to_string(),
+            payload: serde_json::json!({}),
+            metadata: None,
+            idempotency_key: None,
+            status: CommandOutboxStatus::Pending,
+            created_at: chrono::Utc::now(),
+            processed_at: None,
+            retry_count: 0,
+            last_error: None,
+        };
+
+        let subject = CommandRelay::<MockCommandRepository>::build_nats_subject(&job_command);
+        assert_eq!(subject, "hodei.commands.job.executejob");
     }
 
     #[test]

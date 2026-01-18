@@ -6,13 +6,11 @@
 //!
 //! GAP-60-01: Saga Command Dispatch Infrastructure
 
-use hodei_server_domain::DomainError;
 use hodei_server_domain::command::InMemoryErasedCommandBus;
 use hodei_server_domain::saga::commands::provisioning::{
     CreateWorkerCommand, CreateWorkerHandler, DestroyWorkerCommand, DestroyWorkerHandler,
 };
 use hodei_server_domain::workers::WorkerProvisioning;
-use std::result::Result;
 use std::sync::Arc;
 
 /// Register all provisioning command handlers with the provided CommandBus.

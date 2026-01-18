@@ -16,7 +16,6 @@
 //! se requiere que el trait JobRepository incluya update_with_tx.
 
 use crate::workers::commands::WorkerCommandSender;
-use async_trait::async_trait;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::saga::commands::execution::{ExecuteJobError, JobExecutor};

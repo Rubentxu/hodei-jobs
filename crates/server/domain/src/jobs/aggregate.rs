@@ -1291,6 +1291,21 @@ pub trait JobRepositoryTx: JobRepository {
         job_id: &JobId,
         new_status: &str,
     ) -> Result<()>;
+
+    /// Find jobs by state within an existing transaction.
+    async fn find_by_state_with_tx(
+        &self,
+        tx: &mut sqlx::PgTransaction<'_>,
+        state: &JobState,
+    ) -> Result<Vec<Job>>;
+
+    /// Update job state within an existing transaction.
+    async fn update_state_with_tx(
+        &self,
+        tx: &mut sqlx::PgTransaction<'_>,
+        job_id: &JobId,
+        state: JobState,
+    ) -> Result<()>;
 }
 
 /// Trait para colas de jobs

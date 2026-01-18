@@ -14,6 +14,7 @@ use crate::saga::commands::cancellation::ReleaseWorkerCommand;
 use crate::saga::commands::timeout::{MarkJobTimedOutCommand, TerminateWorkerCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
+use crate::transaction::PgTransaction;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -122,8 +123,12 @@ impl SagaStep for ValidateTimeoutStep {
         "ValidateTimeout"
     }
 
-    #[instrument(skip(context), fields(step = "ValidateTimeout", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "ValidateTimeout", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -147,15 +152,14 @@ impl SagaStep for ValidateTimeoutStep {
         }
 
         // Fetch job
-        let job_opt =
-            job_repository
-                .find_by_id(&self.job_id)
-                .await
-                .map_err(|e| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to fetch job: {}", e),
-                    will_compensate: false,
-                })?;
+        let job_opt = job_repository
+            .find_by_id_with_tx(tx, &self.job_id)
+            .await
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to fetch job: {}", e),
+                will_compensate: false,
+            })?;
 
         let job = job_opt.ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
@@ -220,7 +224,11 @@ impl SagaStep for ValidateTimeoutStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         Ok(())
     }
 
@@ -257,8 +265,12 @@ impl SagaStep for TerminateWorkerStep {
     }
 
     /// GAP-52-03: Execute worker termination via CommandBus
-    #[instrument(skip(context), fields(step = "TerminateWorker", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "TerminateWorker", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // GAP-52-03: Get CommandBus from context
         let command_bus = {
             let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -362,8 +374,12 @@ impl SagaStep for TerminateWorkerStep {
     /// EPIC-53: Compensation for worker termination
     ///
     /// Attempts to restore the worker via CommandBus if the saga needs to rollback.
-    #[instrument(skip(context), fields(step = "TerminateWorker"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    #[instrument(skip(context, tx), fields(step = "TerminateWorker"))]
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Get worker_id from metadata
         let worker_id_str = match context.get_metadata::<String>("timed_out_worker_id") {
             Some(Ok(id)) => id,
@@ -405,7 +421,7 @@ impl SagaStep for TerminateWorkerStep {
         // Note: In production, the actual worker process may already be terminated
         // This is a best-effort compensation
         worker_registry
-            .update_state(&worker_id, WorkerState::Busy)
+            .update_state_with_tx(tx, &worker_id, WorkerState::Busy)
             .await
             .map_err(|e| {
                 warn!(worker_id = %worker_id, "Failed to restore worker state: {}", e);
@@ -457,8 +473,12 @@ impl SagaStep for MarkJobFailedStep {
     }
 
     /// GAP-52-03: Execute job failure marking via CommandBus
-    #[instrument(skip(context), fields(step = "MarkJobFailed", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "MarkJobFailed", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // GAP-52-03: Get CommandBus from context
         let command_bus = {
             let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -547,7 +567,11 @@ impl SagaStep for MarkJobFailedStep {
         Ok(())
     }
 
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         let _services = context
             .services()
             .ok_or_else(|| SagaError::CompensationFailed {
@@ -605,8 +629,12 @@ impl SagaStep for ReleaseWorkerStep {
     }
 
     /// GAP-52-03: Execute worker release via CommandBus
-    #[instrument(skip(context), fields(step = "ReleaseWorker", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "ReleaseWorker", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // GAP-52-03: Get CommandBus from context
         let command_bus = {
             let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -718,8 +746,12 @@ impl SagaStep for ReleaseWorkerStep {
     ///
     /// If the saga needs to rollback, attempt to re-associate the worker
     /// with the timed-out job.
-    #[instrument(skip(context), fields(step = "ReleaseWorker"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    #[instrument(skip(context, tx), fields(step = "ReleaseWorker"))]
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Get worker_id from metadata
         let worker_id_str = match context.get_metadata::<String>("timed_out_worker_id") {
             Some(Ok(id)) => id,
@@ -755,7 +787,7 @@ impl SagaStep for ReleaseWorkerStep {
         // Mark worker as terminated on compensation
         // The worker was terminated due to timeout, so it cannot receive new jobs
         worker_registry
-            .update_state(&worker_id, WorkerState::Terminated)
+            .update_state_with_tx(tx, &worker_id, WorkerState::Terminated)
             .await
             .map_err(|e| {
                 warn!(worker_id = %worker_id, "Failed to mark worker as terminated: {}", e);

@@ -14,6 +14,7 @@ use crate::saga::commands::execution::{
 };
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
+use crate::transaction::PgTransaction;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -132,8 +133,12 @@ impl SagaStep for ValidateJobStep {
         "ValidateJob"
     }
 
-    #[instrument(skip(context), fields(step = "ValidateJob", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "ValidateJob", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Get services from context
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
@@ -160,15 +165,14 @@ impl SagaStep for ValidateJobStep {
         info!(job_id = %self.job_id, "🔍 Validating job for execution...");
 
         // Fetch job from repository
-        let job_opt =
-            job_repository
-                .find_by_id(&self.job_id)
-                .await
-                .map_err(|e| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to fetch job from repository: {}", e),
-                    will_compensate: false,
-                })?;
+        let job_opt = job_repository
+            .find_by_id_with_tx(tx, &self.job_id)
+            .await
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to fetch job from repository: {}", e),
+                will_compensate: false,
+            })?;
 
         // Validate job exists
         let job = job_opt.ok_or_else(|| SagaError::StepFailed {
@@ -233,7 +237,11 @@ impl SagaStep for ValidateJobStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // No compensation needed - this step only reads data
         info!(job_id = %self.job_id, "No compensation needed for ValidateJobStep");
         Ok(())
@@ -291,8 +299,12 @@ impl SagaStep for AssignWorkerStep {
     }
 
     /// EPIC-50 GAP-52-01: Execute worker assignment via CommandBus
-    #[instrument(skip(context), fields(step = "AssignWorker", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "AssignWorker", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         info!(job_id = %self.job_id, saga_id = %context.saga_id, "🔍 AssignWorkerStep: Starting execution");
 
         // GAP-52-01: Get CommandBus from context
@@ -394,8 +406,12 @@ impl SagaStep for AssignWorkerStep {
     }
 
     /// EPIC-50 GAP-52-01: Compensate worker assignment via registry release
-    #[instrument(skip(context), fields(step = "AssignWorker"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    #[instrument(skip(context, tx), fields(step = "AssignWorker"))]
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         let worker_id_str = match context.get_metadata::<String>("execution_worker_id") {
             Some(Ok(id)) => id,
             None => {
@@ -435,7 +451,7 @@ impl SagaStep for AssignWorkerStep {
         if let Ok(Some(worker)) = worker_registry.get(&worker_id).await {
             if *worker.state() == crate::shared_kernel::WorkerState::Busy {
                 worker_registry
-                    .update_state(&worker_id, crate::shared_kernel::WorkerState::Ready)
+                    .update_state_with_tx(tx, &worker_id, crate::shared_kernel::WorkerState::Ready)
                     .await
                     .map_err(|e| SagaError::CompensationFailed {
                         step: self.name().to_string(),
@@ -448,10 +464,10 @@ impl SagaStep for AssignWorkerStep {
 
         // Also ensure the job is unassigned if possible
         if let Some(ref job_repo) = services.job_repository {
-            if let Ok(Some(mut job)) = job_repo.find_by_id(&self.job_id).await {
+            if let Ok(Some(mut job)) = job_repo.find_by_id_with_tx(tx, &self.job_id).await {
                 if *job.state() == JobState::Assigned || *job.state() == JobState::Running {
                     job.set_state(JobState::Pending).ok();
-                    job_repo.update(&job).await.ok();
+                    job_repo.update_with_tx(tx, &job).await.ok();
                     info!(job_id = %self.job_id, "✅ Job state reverted to PENDING");
                 }
             }
@@ -509,8 +525,12 @@ impl SagaStep for ExecuteJobStep {
         "ExecuteJob"
     }
 
-    #[instrument(skip(context), fields(step = "ExecuteJob", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "ExecuteJob", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // GAP-52-01: Get CommandBus from context
         let command_bus = {
             let services = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -591,32 +611,28 @@ impl SagaStep for ExecuteJobStep {
     }
 
     /// EPIC-50 GAP-52-01: Compensate job execution via CommandBus
-    #[instrument(skip(context), fields(step = "ExecuteJob"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
-        // GAP-52-01: Get CommandBus from context
-        let _command_bus = {
-            let services = context
-                .services()
-                .ok_or_else(|| SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: "SagaServices not available".to_string(),
-                })?;
+    #[instrument(skip(context, tx), fields(step = "ExecuteJob"))]
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
+        let services = context
+            .services()
+            .ok_or_else(|| SagaError::CompensationFailed {
+                step: self.name().to_string(),
+                message: "SagaServices not available".to_string(),
+            })?;
 
-            services
-                .command_bus
-                .as_ref()
-                .ok_or_else(|| SagaError::CompensationFailed {
-                    step: self.name().to_string(),
-                    message: "CommandBus not available".to_string(),
-                })?
-                .clone()
-        };
-
-        info!(job_id = %self.job_id, "🔄 Compensating: reverting job state via CommandBus");
-
-        // For compensation, we use CompleteJobCommand with PENDING state
-        // This is a simplified approach - the command handler would need to support this
-        info!(job_id = %self.job_id, "✅ Job execution compensation complete");
+        if let Some(ref job_repo) = services.job_repository {
+            if let Ok(Some(mut job)) = job_repo.find_by_id_with_tx(tx, &self.job_id).await {
+                if *job.state() == JobState::Running {
+                    job.set_state(JobState::Assigned).ok();
+                    job_repo.update_with_tx(tx, &job).await.ok();
+                    info!(job_id = %self.job_id, "✅ Job state reverted to ASSIGNED");
+                }
+            }
+        }
 
         Ok(())
     }
@@ -668,8 +684,12 @@ impl SagaStep for CompleteJobStep {
     }
 
     /// EPIC-50 GAP-52-01: Complete job via CommandBus
-    #[instrument(skip(context), fields(step = "CompleteJob", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "CompleteJob", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // GAP-52-01: Get CommandBus from context
         let command_bus = {
             let services = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -761,7 +781,11 @@ impl SagaStep for CompleteJobStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Cannot compensate a completed job
         // In real scenarios, you'd need a separate CancellationSaga
         info!(job_id = %self.job_id, "Job completion cannot be compensated");

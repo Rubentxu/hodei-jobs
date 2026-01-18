@@ -20,6 +20,7 @@ use crate::saga::commands::cancellation::{
 };
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState};
+use crate::transaction::PgTransaction;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -110,8 +111,12 @@ impl SagaStep for ValidateCancellationStep {
         "ValidateCancellation"
     }
 
-    #[instrument(skip(context), fields(step = "ValidateCancellation", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "ValidateCancellation", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -135,15 +140,14 @@ impl SagaStep for ValidateCancellationStep {
         }
 
         // Fetch job
-        let job_opt =
-            job_repository
-                .find_by_id(&self.job_id)
-                .await
-                .map_err(|e| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to fetch job: {}", e),
-                    will_compensate: false,
-                })?;
+        let job_opt = job_repository
+            .find_by_id_with_tx(tx, &self.job_id)
+            .await
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to fetch job: {}", e),
+                will_compensate: false,
+            })?;
 
         let job = job_opt.ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
@@ -196,7 +200,11 @@ impl SagaStep for ValidateCancellationStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         Ok(())
     }
 
@@ -233,8 +241,12 @@ impl SagaStep for NotifyWorkerStep {
         "NotifyWorker"
     }
 
-    #[instrument(skip(context), fields(step = "NotifyWorker", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "NotifyWorker", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // GAP-52-02: Extract services data first to avoid borrow conflict
         let (command_bus, saga_id_str, worker_id_opt) = {
             let services = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -321,7 +333,11 @@ impl SagaStep for NotifyWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Cannot undo notification - it's a best-effort signal
         Ok(())
     }
@@ -374,8 +390,12 @@ impl SagaStep for UpdateJobStateStep {
         "UpdateJobState"
     }
 
-    #[instrument(skip(context), fields(step = "UpdateJobState", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "UpdateJobState", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -461,7 +481,11 @@ impl SagaStep for UpdateJobStateStep {
         Ok(())
     }
 
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         let services = context
             .services()
             .ok_or_else(|| SagaError::CompensationFailed {
@@ -550,8 +574,12 @@ impl SagaStep for ReleaseWorkerStep {
         "ReleaseWorker"
     }
 
-    #[instrument(skip(context), fields(step = "ReleaseWorker", job_id = %self.job_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "ReleaseWorker", job_id = %self.job_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -620,7 +648,11 @@ impl SagaStep for ReleaseWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Cannot undo worker release - it's a state transition
         Ok(())
     }

@@ -4,12 +4,13 @@
 
 use hodei_server_domain::command::DynCommandBus;
 use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::jobs::aggregate::JobRepositoryTx;
 use hodei_server_domain::saga::{
     RecoverySaga, SagaContext, SagaExecutionResult, SagaId, SagaOrchestrator, SagaServices,
 };
 use hodei_server_domain::shared_kernel::{DomainError, JobId, WorkerId};
-use hodei_server_domain::workers::{WorkerProvisioning, WorkerRegistry};
+use hodei_server_domain::workers::WorkerProvisioning;
+use hodei_server_domain::workers::registry::WorkerRegistryTx;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,11 +59,11 @@ pub struct DynRecoverySagaCoordinator {
     /// CommandBus for saga steps (FIX GAP-60-01: Critical - must be injected)
     command_bus: DynCommandBus,
     /// Worker registry for SagaServices injection
-    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     /// Event bus for SagaServices injection
     event_bus: Arc<dyn EventBus + Send + Sync>,
     /// Optional job repository for SagaServices injection
-    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepositoryTx + Send + Sync>>,
     /// Optional worker provisioning for SagaServices injection
     provisioning_service: Option<Arc<dyn WorkerProvisioning + Send + Sync>>,
 }
@@ -72,9 +73,9 @@ impl DynRecoverySagaCoordinator {
     pub fn new(
         orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
         command_bus: DynCommandBus,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
-        job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+        job_repository: Option<Arc<dyn JobRepositoryTx + Send + Sync>>,
         provisioning_service: Option<Arc<dyn WorkerProvisioning + Send + Sync>>,
         config: Option<RecoverySagaCoordinatorConfig>,
         target_provider_id: Option<String>,
@@ -191,11 +192,11 @@ pub struct DynRecoverySagaCoordinatorBuilder {
     /// CommandBus for saga steps (GAP-60-01 fix)
     command_bus: Option<DynCommandBus>,
     /// Worker registry for SagaServices injection
-    worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    worker_registry: Option<Arc<dyn WorkerRegistryTx + Send + Sync>>,
     /// Event bus for SagaServices injection
     event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
     /// Optional job repository for SagaServices injection
-    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
+    job_repository: Option<Arc<dyn JobRepositoryTx + Send + Sync>>,
     /// Optional worker provisioning for SagaServices injection
     provisioning_service: Option<Arc<dyn WorkerProvisioning + Send + Sync>>,
     config: Option<RecoverySagaCoordinatorConfig>,
@@ -233,7 +234,7 @@ impl DynRecoverySagaCoordinatorBuilder {
     /// Set the worker registry for saga services
     pub fn with_worker_registry(
         mut self,
-        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
     ) -> Self {
         self.worker_registry = Some(worker_registry);
         self
@@ -248,7 +249,7 @@ impl DynRecoverySagaCoordinatorBuilder {
     /// Set the job repository for saga services
     pub fn with_job_repository(
         mut self,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        job_repository: Arc<dyn JobRepositoryTx + Send + Sync>,
     ) -> Self {
         self.job_repository = Some(job_repository);
         self

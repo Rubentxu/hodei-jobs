@@ -182,6 +182,54 @@ pub trait WorkerRegistry: Send + Sync {
     async fn count(&self) -> Result<usize>;
 }
 
+/// Trait para el registro de workers con soporte de transacciones
+#[async_trait]
+pub trait WorkerRegistryTx: WorkerRegistry {
+    /// Guardar o actualizar un worker dentro de una transacción
+    async fn save_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        worker: &Worker,
+    ) -> Result<()>;
+
+    /// Actualizar estado del worker dentro de una transacción
+    async fn update_state_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        worker_id: &WorkerId,
+        state: WorkerState,
+    ) -> Result<()>;
+
+    /// Liberar worker de un job dentro de una transacción
+    async fn release_from_job_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        worker_id: &WorkerId,
+    ) -> Result<()>;
+
+    /// Registrar un nuevo worker dentro de una transacción
+    async fn register_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        handle: WorkerHandle,
+        spec: WorkerSpec,
+        job_id: JobId,
+    ) -> Result<Worker>;
+
+    /// Dar de baja un worker dentro de una transacción
+    async fn unregister_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        worker_id: &WorkerId,
+    ) -> Result<()>;
+
+    /// Obtener workers disponibles dentro de una transacción
+    async fn find_available_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+    ) -> Result<Vec<Worker>>;
+}
+
 /// Eventos del ciclo de vida de workers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerLifecycleEvent {

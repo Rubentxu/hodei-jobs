@@ -12,7 +12,7 @@
 
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::outbox::{OutboxError, OutboxEventInsert, OutboxRepository};
+use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
 use hodei_server_domain::shared_kernel::JobId;
 use hodei_shared::states::{DispatchFailureReason, JobState};
 use std::result::Result;

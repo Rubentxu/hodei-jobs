@@ -216,6 +216,10 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
     }
 
     async fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec> {
+        // GAP-006 FIX: Support HODEI_WORKER_IMAGE environment variable for worker image
+        // This allows configuring the worker image without modifying provider configs
+        let env_image = std::env::var("HODEI_WORKER_IMAGE").ok();
+
         // Get image from provider config, fallback to config default_image
         let result = self.provider_registry.get_provider(provider_id).await;
         match result {
@@ -225,47 +229,42 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
                     provider_id, config.name, config.provider_type
                 );
                 let image = match config.type_config {
-                    hodei_server_domain::providers::ProviderTypeConfig::Docker(docker) => {
-                        info!(
-                            "🖼️ Using Docker config default_image: {}",
-                            docker.default_image
-                        );
-                        docker.default_image
-                    }
+                    hodei_server_domain::providers::ProviderTypeConfig::Docker(docker) => env_image
+                        .clone()
+                        .unwrap_or_else(|| docker.default_image.clone()),
                     hodei_server_domain::providers::ProviderTypeConfig::Kubernetes(k8s) => {
-                        info!(
-                            "🖼️ Using Kubernetes config default_image: {}",
-                            k8s.default_image
-                        );
-                        k8s.default_image
+                        env_image
+                            .clone()
+                            .unwrap_or_else(|| k8s.default_image.clone())
                     }
-                    _ => {
-                        warn!("⚠️ Unknown provider type config");
-                        self.config.default_image.clone()
-                    }
+                    _ => env_image
+                        .clone()
+                        .unwrap_or_else(|| self.config.default_image.clone()),
                 };
                 info!("🎯 Selected image for worker: {}", image);
                 Some(WorkerSpec::new(image, self.config.server_address.clone()))
             }
             Ok(None) => {
+                // GAP-006 FIX: Support HODEI_WORKER_IMAGE environment variable for worker image
+                let image = env_image
+                    .clone()
+                    .unwrap_or_else(|| self.config.default_image.clone());
                 warn!(
-                    "⚠️ Provider {} not found in registry, using fallback: {}",
-                    provider_id, self.config.default_image
+                    "⚠️ Provider {} not found in registry, using fallback image: {}",
+                    provider_id, image
                 );
-                Some(WorkerSpec::new(
-                    self.config.default_image.clone(),
-                    self.config.server_address.clone(),
-                ))
+                Some(WorkerSpec::new(image, self.config.server_address.clone()))
             }
             Err(e) => {
+                // GAP-006 FIX: Support HODEI_WORKER_IMAGE environment variable for worker image
+                let image = env_image
+                    .clone()
+                    .unwrap_or_else(|| self.config.default_image.clone());
                 warn!(
-                    "⚠️ Error getting provider {} from registry: {}, using fallback: {}",
-                    provider_id, e, self.config.default_image
+                    "⚠️ Error getting provider {} from registry: {}, using fallback image: {}",
+                    provider_id, e, image
                 );
-                Some(WorkerSpec::new(
-                    self.config.default_image.clone(),
-                    self.config.server_address.clone(),
-                ))
+                Some(WorkerSpec::new(image, self.config.server_address.clone()))
             }
         }
     }

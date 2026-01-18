@@ -139,6 +139,48 @@ pub trait SagaRepository: Send + Sync {
         limit: u64,
         instance_id: &str,
     ) -> Result<Vec<SagaContext>, Self::Error>;
+
+    // ============ Transactional Operations ============
+
+    /// Save a saga instance within a transaction
+    async fn save_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        context: &SagaContext,
+    ) -> Result<(), Self::Error>;
+
+    /// Update saga state within a transaction
+    async fn update_state_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        saga_id: &SagaId,
+        state: SagaState,
+        error_message: Option<String>,
+    ) -> Result<(), Self::Error>;
+
+    /// Save a saga step within a transaction
+    async fn save_step_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        step: &SagaStepData,
+    ) -> Result<(), Self::Error>;
+
+    /// Update step state within a transaction
+    async fn update_step_state_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        step_id: &SagaStepId,
+        state: SagaStepState,
+        output: Option<serde_json::Value>,
+    ) -> Result<(), Self::Error>;
+
+    /// Update step compensation data within a transaction
+    async fn update_step_compensation_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        step_id: &SagaStepId,
+        compensation_data: serde_json::Value,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Unique identifier for a saga step
@@ -498,6 +540,52 @@ mod tests {
             _instance_id: &str,
         ) -> Result<Vec<SagaContext>, Self::Error> {
             Ok(Vec::new())
+        }
+
+        async fn save_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            context: &SagaContext,
+        ) -> Result<(), Self::Error> {
+            self.save(context).await
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            saga_id: &SagaId,
+            state: SagaState,
+            error_message: Option<String>,
+        ) -> Result<(), Self::Error> {
+            self.update_state(saga_id, state, error_message).await
+        }
+
+        async fn save_step_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step: &SagaStepData,
+        ) -> Result<(), Self::Error> {
+            self.save_step(step).await
+        }
+
+        async fn update_step_state_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step_id: &SagaStepId,
+            state: SagaStepState,
+            output: Option<serde_json::Value>,
+        ) -> Result<(), Self::Error> {
+            self.update_step_state(step_id, state, output).await
+        }
+
+        async fn update_step_compensation_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step_id: &SagaStepId,
+            compensation_data: serde_json::Value,
+        ) -> Result<(), Self::Error> {
+            self.update_step_compensation(step_id, compensation_data)
+                .await
         }
     }
 

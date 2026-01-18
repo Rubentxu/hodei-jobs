@@ -16,6 +16,7 @@ use crate::events::DomainEvent;
 use crate::saga::commands::UnregisterWorkerCommand;
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
+use crate::transaction::PgTransaction;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
@@ -156,8 +157,12 @@ impl SagaStep for IdentifyUnhealthyWorkersStep {
         "IdentifyUnhealthyWorkers"
     }
 
-    #[instrument(skip(context), fields(step = "IdentifyUnhealthyWorkers"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "IdentifyUnhealthyWorkers"))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -167,15 +172,14 @@ impl SagaStep for IdentifyUnhealthyWorkersStep {
         let worker_registry = &services.provider_registry;
 
         // Find all workers
-        let all_workers =
-            worker_registry
-                .find_available()
-                .await
-                .map_err(|e| SagaError::StepFailed {
-                    step: self.name().to_string(),
-                    message: format!("Failed to fetch workers: {}", e),
-                    will_compensate: false,
-                })?;
+        let all_workers = worker_registry
+            .find_available_with_tx(tx)
+            .await
+            .map_err(|e| SagaError::StepFailed {
+                step: self.name().to_string(),
+                message: format!("Failed to fetch workers: {}", e),
+                will_compensate: false,
+            })?;
 
         // EPIC-50 GAP-MOD-02: Filter for unhealthy workers by checking:
         // 1. Workers stuck in Creating state (possibly failed to start)
@@ -241,7 +245,11 @@ impl SagaStep for IdentifyUnhealthyWorkersStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         Ok(())
     }
 
@@ -277,8 +285,12 @@ impl SagaStep for IdentifyOrphanedJobsStep {
         "IdentifyOrphanedJobs"
     }
 
-    #[instrument(skip(context), fields(step = "IdentifyOrphanedJobs"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "IdentifyOrphanedJobs"))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -297,7 +309,7 @@ impl SagaStep for IdentifyOrphanedJobsStep {
 
         // Find all running jobs
         let running_jobs = job_repository
-            .find_by_state(&JobState::Running)
+            .find_by_state_with_tx(tx, &JobState::Running)
             .await
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),
@@ -342,7 +354,11 @@ impl SagaStep for IdentifyOrphanedJobsStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         Ok(())
     }
 
@@ -378,8 +394,12 @@ impl SagaStep for CleanupUnhealthyWorkersStep {
         "CleanupUnhealthyWorkers"
     }
 
-    #[instrument(skip(context), fields(step = "CleanupUnhealthyWorkers"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "CleanupUnhealthyWorkers"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -466,7 +486,11 @@ impl SagaStep for CleanupUnhealthyWorkersStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Cannot undo cleanup in dry_run mode
         // In real mode, we would need a more complex recovery mechanism
         Ok(())
@@ -504,8 +528,12 @@ impl SagaStep for ResetOrphanedJobsStep {
         "ResetOrphanedJobs"
     }
 
-    #[instrument(skip(context), fields(step = "ResetOrphanedJobs"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "ResetOrphanedJobs"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -610,7 +638,11 @@ impl SagaStep for ResetOrphanedJobsStep {
         Ok(())
     }
 
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         if self.dry_run {
             return Ok(());
         }
@@ -646,7 +678,7 @@ impl SagaStep for ResetOrphanedJobsStep {
             })?);
 
             let _ = job_repository
-                .update_state(&job_id, JobState::Running)
+                .update_state_with_tx(tx, &job_id, JobState::Running)
                 .await
                 .map_err(|e| {
                     warn!(job_id = %job_id, "Failed to restore job state: {}", e);
@@ -692,8 +724,12 @@ impl SagaStep for PublishCleanupMetricsStep {
         "PublishCleanupMetrics"
     }
 
-    #[instrument(skip(context), fields(step = "PublishCleanupMetrics"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "PublishCleanupMetrics"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         let services = context.services().ok_or_else(|| SagaError::StepFailed {
             step: self.name().to_string(),
             message: "SagaServices not available".to_string(),
@@ -742,7 +778,11 @@ impl SagaStep for PublishCleanupMetricsStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         Ok(())
     }
 

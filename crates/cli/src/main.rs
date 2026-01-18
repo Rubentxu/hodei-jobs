@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channel = Channel::from_shared(cli.server.clone())?.connect().await?;
 
     match cli.command {
-        Commands::Job { action } => handle_job(channel, action).await?,
+        Commands::Job { action } => handle_job(channel, cli.server.clone(), action).await?,
         Commands::Scheduler { action } => handle_scheduler(channel, action).await?,
         Commands::Logs { action } => handle_logs(channel, action).await?,
     }
@@ -210,7 +210,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_job(
+    channel: Channel,
+    server_url: String,
+    action: JobAction,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut client = JobExecutionServiceClient::new(channel.clone());
 
     match action {
@@ -354,12 +358,14 @@ async fn handle_job(channel: Channel, action: JobAction) -> Result<(), Box<dyn s
             println!("   Job ID: {}", job_id);
             println!();
 
-            // Now subscribe to logs
+            // Now subscribe to logs - create NEW channel for streaming to avoid h2/CANCEL issues
+            // Reusing the same channel for unary + streaming calls can cause protocol errors
             println!("📡 Subscribing to log stream...");
             println!("{:-<60}", "");
             println!();
 
-            let mut log_client = LogStreamServiceClient::new(channel);
+            let log_channel = Channel::from_shared(server_url.clone())?.connect().await?;
+            let mut log_client = LogStreamServiceClient::new(log_channel);
             let subscribe_request = SubscribeLogsRequest {
                 job_id: job_id.clone(),
                 include_history: true,

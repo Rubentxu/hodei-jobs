@@ -5,13 +5,13 @@
 //! EPIC-50 GAP-CRITICAL-01: Updated to perform real provisioning operations
 //! instead of just storing metadata.
 
-use super::Saga;
-use super::types::{SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::command::erased::dispatch_erased;
 use crate::saga::commands::{
     CreateWorkerCommand, DestroyOldWorkerCommand, DestroyWorkerCommand, TransferJobCommand,
 };
+use crate::saga::types::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, JobState, WorkerId};
+use crate::transaction::PgTransaction;
 use std::time::Duration;
 use tracing::{info, instrument, warn};
 
@@ -97,8 +97,12 @@ impl SagaStep for CheckWorkerConnectivityStep {
         "CheckWorkerConnectivity"
     }
 
-    #[instrument(skip(context), fields(step = "CheckWorkerConnectivity"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "CheckWorkerConnectivity"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Store metadata for connectivity check
         context
             .set_metadata("failed_worker_id", &self.failed_worker_id.to_string())
@@ -114,7 +118,11 @@ impl SagaStep for CheckWorkerConnectivityStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         Ok(())
     }
 
@@ -152,8 +160,12 @@ impl SagaStep for ProvisionNewWorkerStep {
     }
 
     /// Execute with real provisioning operations
-    #[instrument(skip(context), fields(step = "ProvisionNewWorker"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "ProvisionNewWorker"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Check idempotency - skip if already provisioned
         if let Some(Ok(true)) = context.get_metadata::<bool>("recovery_provisioning_done") {
             info!(job_id = %self.job_id, "Recovery provisioning already done, skipping");
@@ -241,7 +253,11 @@ impl SagaStep for ProvisionNewWorkerStep {
     }
 
     /// Compensate by destroying provisioned worker
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Check if we actually provisioned a worker
         let provisioning_done = context
             .get_metadata::<bool>("recovery_provisioning_done")
@@ -348,8 +364,12 @@ impl SagaStep for TransferJobStep {
     }
 
     /// Execute real job transfer operations
-    #[instrument(skip(context), fields(step = "TransferJob"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "TransferJob"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Check idempotency - skip if already transferred
         if let Some(Ok(true)) = context.get_metadata::<bool>("job_transfer_done") {
             info!(job_id = %self.job_id, "Job transfer already done, skipping");
@@ -426,7 +446,11 @@ impl SagaStep for TransferJobStep {
     }
 
     /// Compensate by reverting job assignment
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         let transfer_done = context
             .get_metadata::<bool>("job_transfer_done")
             .and_then(|r| r.ok())
@@ -450,7 +474,7 @@ impl SagaStep for TransferJobStep {
         if let Some(job_repo) = job_repo {
             // Revert job state to Failed since the recovery failed
             job_repo
-                .update_state(&self.job_id, JobState::Failed)
+                .update_state_with_tx(tx, &self.job_id, JobState::Failed)
                 .await
                 .map_err(|e| SagaError::CompensationFailed {
                     step: self.name().to_string(),
@@ -496,8 +520,12 @@ impl SagaStep for TerminateOldWorkerStep {
     }
 
     /// EPIC-50 GAP-CRITICAL-01: Execute real worker termination
-    #[instrument(skip(context), fields(step = "TerminateOldWorker"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "TerminateOldWorker"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Get command bus from context (clone to release borrow)
         let command_bus = {
             let services_ref = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -550,7 +578,11 @@ impl SagaStep for TerminateOldWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // No compensation needed - we don't resurrect failed workers
         Ok(())
     }
@@ -585,8 +617,12 @@ impl SagaStep for CancelOldWorkerStep {
     }
 
     /// EPIC-50 GAP-CRITICAL-01: Execute real worker unregistration
-    #[instrument(skip(context), fields(step = "CancelOldWorker"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "CancelOldWorker"))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Get worker registry (clone to release borrow)
         let worker_registry = {
             let services = context.services().ok_or_else(|| SagaError::StepFailed {
@@ -599,7 +635,10 @@ impl SagaStep for CancelOldWorkerStep {
         };
 
         // Unregister the old worker from the registry
-        match worker_registry.unregister(&self.worker_id).await {
+        match worker_registry
+            .unregister_with_tx(tx, &self.worker_id)
+            .await
+        {
             Ok(_) => {
                 info!(worker_id = %self.worker_id, "Old worker unregistered from registry");
             }
@@ -622,7 +661,11 @@ impl SagaStep for CancelOldWorkerStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // No compensation needed - we don't re-register failed workers
         Ok(())
     }

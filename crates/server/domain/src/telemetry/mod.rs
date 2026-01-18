@@ -579,7 +579,7 @@ impl SagaMetrics {
         }
     }
 
-    pub fn record_step_complete(&self, step_name: &str, latency_ms: u64) {
+    pub fn record_step_complete(&self, _step_name: &str, latency_ms: u64) {
         self.steps_completed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.step_latency_ms.observe(latency_ms, 50);

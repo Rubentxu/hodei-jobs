@@ -12,6 +12,7 @@ use super::{
     SagaState, SagaType, TimeoutSaga,
 };
 use crate::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
+use crate::transaction::{PgTransaction, TransactionError, TransactionProvider};
 use crate::workers::WorkerSpec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -260,7 +261,7 @@ pub struct InMemorySagaOrchestrator<R: SagaRepository + Clone> {
     audit_consumers: Vec<Arc<dyn SagaAuditConsumer>>,
 }
 
-impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
+impl<R: SagaRepository + TransactionProvider + Clone> InMemorySagaOrchestrator<R> {
     /// Creates a new in-memory orchestrator
     pub fn new(repository: Arc<R>, config: Option<SagaOrchestratorConfig>) -> Self {
         let config = config.unwrap_or_default();
@@ -331,7 +332,12 @@ impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
         loop {
             attempt += 1;
             let comp_start = std::time::Instant::now();
-            match step.compensate(context).await {
+            let mut tx = self.repository.begin_transaction().await.map_err(|e| {
+                SagaError::PersistenceError {
+                    message: e.to_string(),
+                }
+            })?;
+            match step.compensate(&mut tx, context).await {
                 Ok(()) => {
                     // Record compensation completed (US-15)
                     let comp_duration = comp_start.elapsed();
@@ -437,7 +443,7 @@ impl<R: SagaRepository + Clone> InMemorySagaOrchestrator<R> {
 }
 
 #[async_trait::async_trait]
-impl<R: SagaRepository + Clone + Send + Sync + 'static> SagaOrchestrator
+impl<R: SagaRepository + TransactionProvider + Clone + Send + Sync + 'static> SagaOrchestrator
     for InMemorySagaOrchestrator<R>
 where
     <R as SagaRepository>::Error: std::fmt::Display + Send + Sync,
@@ -552,7 +558,13 @@ where
             }
 
             // Execute step with type-specific timeout
-            let step_result = tokio::time::timeout(step_timeout, step.execute(&mut context)).await;
+            let mut tx = self.repository.begin_transaction().await.map_err(|e| {
+                DomainError::InfrastructureError {
+                    message: e.to_string(),
+                }
+            })?;
+            let step_result =
+                tokio::time::timeout(step_timeout, step.execute(&mut tx, &mut context)).await;
 
             match step_result {
                 Ok(Ok(_output)) => {
@@ -956,7 +968,11 @@ mod tests {
             }
         }
 
-        async fn execute(&self, _context: &mut SagaContext) -> Result<(), SagaError> {
+        async fn execute(
+            &self,
+            _tx: &mut PgTransaction<'_>,
+            _context: &mut SagaContext,
+        ) -> Result<(), SagaError> {
             if self.should_fail {
                 Err(SagaError::StepFailed {
                     step: format!("Step{}", self.step_number),
@@ -968,7 +984,11 @@ mod tests {
             }
         }
 
-        async fn compensate(&self, _context: &mut SagaContext) -> Result<(), SagaError> {
+        async fn compensate(
+            &self,
+            _tx: &mut PgTransaction<'_>,
+            _context: &mut SagaContext,
+        ) -> Result<(), SagaError> {
             Ok(())
         }
     }
@@ -1090,6 +1110,59 @@ mod tests {
         ) -> Result<Vec<SagaContext>, Self::Error> {
             Ok(Vec::new())
         }
+
+        async fn save_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            context: &SagaContext,
+        ) -> Result<(), Self::Error> {
+            self.save(context).await
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            saga_id: &SagaId,
+            state: SagaState,
+            error_message: Option<String>,
+        ) -> Result<(), Self::Error> {
+            self.update_state(saga_id, state, error_message).await
+        }
+
+        async fn save_step_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step: &SagaStepData,
+        ) -> Result<(), Self::Error> {
+            self.save_step(step).await
+        }
+
+        async fn update_step_state_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step_id: &SagaStepId,
+            state: SagaStepState,
+            output: Option<serde_json::Value>,
+        ) -> Result<(), Self::Error> {
+            self.update_step_state(step_id, state, output).await
+        }
+
+        async fn update_step_compensation_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step_id: &SagaStepId,
+            compensation_data: serde_json::Value,
+        ) -> Result<(), Self::Error> {
+            self.update_step_compensation(step_id, compensation_data)
+                .await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TransactionProvider for MockSagaRepository {
+        async fn begin_transaction(&self) -> Result<PgTransaction<'_>, TransactionError> {
+            unreachable!("MockSagaRepository does not support real transactions")
+        }
     }
 
     #[tokio::test]
@@ -1157,7 +1230,11 @@ mod tests {
                 true
             }
 
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 if self.should_fail {
                     Err(SagaError::StepFailed {
                         step: format!("Step{}", self.step_number),
@@ -1169,7 +1246,11 @@ mod tests {
                 }
             }
 
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 let mut compensated = self.compensated.lock().unwrap();
                 compensated.push(self.step_number);
                 Ok(())
@@ -1248,11 +1329,19 @@ mod tests {
                 false
             }
 
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
 
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 panic!("Should not be called!");
             }
         }
@@ -1272,7 +1361,11 @@ mod tests {
                 true
             }
 
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Err(SagaError::StepFailed {
                     step: self.name().to_string(),
                     message: "Intentional failure".to_string(),
@@ -1280,7 +1373,11 @@ mod tests {
                 })
             }
 
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
         }
@@ -1338,10 +1435,18 @@ mod tests {
             fn has_compensation(&self) -> bool {
                 true
             }
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 let count = self.attempts.lock().unwrap().len() as u32 + 1;
                 self.attempts.lock().unwrap().push(count);
                 if count < self.fail_until_attempt {
@@ -1365,14 +1470,22 @@ mod tests {
             fn has_compensation(&self) -> bool {
                 true
             }
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Err(SagaError::StepFailed {
                     step: self.name().to_string(),
                     message: "Intentional failure".to_string(),
                     will_compensate: true,
                 })
             }
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
         }
@@ -1463,7 +1576,11 @@ mod tests {
                 false
             }
 
-            async fn execute(&self, context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 let mut executed = self.executed.lock().unwrap();
                 executed.push(self.step_number);
                 // Update context to track progress
@@ -1471,7 +1588,11 @@ mod tests {
                 Ok(())
             }
 
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
         }
@@ -1564,14 +1685,22 @@ mod tests {
                 false
             }
 
-            async fn execute(&self, context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 let mut executed = self.executed.lock().unwrap();
                 executed.push(self.step_number);
                 context.current_step = self.step_number + 1;
                 Ok(())
             }
 
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
         }
@@ -1674,11 +1803,19 @@ mod tests {
             fn has_compensation(&self) -> bool {
                 false
             }
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 self.count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
         }
@@ -1827,13 +1964,21 @@ mod tests {
                 false
             }
 
-            async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn execute(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 // Simulate slow operation
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 Ok(())
             }
 
-            async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+            async fn compensate(
+                &self,
+                _tx: &mut PgTransaction<'_>,
+                _context: &mut SagaContext,
+            ) -> SagaResult<()> {
                 Ok(())
             }
         }

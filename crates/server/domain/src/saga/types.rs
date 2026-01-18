@@ -383,7 +383,11 @@ pub trait SagaStep: Send + Sync {
     ///
     /// Returns Ok(output) on success, or Err on failure.
     /// A failure will trigger compensation of all previously executed steps.
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output>;
+    async fn execute(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output>;
 
     /// Compensates (undoes) the step's action.
     ///
@@ -394,14 +398,11 @@ pub trait SagaStep: Send + Sync {
     /// * `context` - The saga context containing metadata from the execute phase.
     ///   Steps should use `context.get_metadata()` to retrieve data stored
     ///   during `execute()` for performing compensation actions.
-    ///
-    /// # Design Change (EPIC-SAGA-ENGINE)
-    /// The signature changed from `compensate(&self, output: &Self::Output)` to
-    /// `compensate(&self, context: &mut SagaContext)` to enable compensation
-    /// logic to access metadata stored during execute phase. This allows steps
-    /// to perform real compensation actions (e.g., destroying a worker) rather
-    /// than relying on output stored in a separate field.
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()>;
+    async fn compensate(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()>;
 
     /// Returns true if this step is idempotent.
     ///
@@ -621,11 +622,11 @@ impl SagaContext {
 /// EPIC-50: Added CommandBus for saga command dispatch (Type Erasure pattern)
 pub struct SagaServices {
     /// Provider registry for infrastructure operations
-    pub provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+    pub provider_registry: Arc<dyn crate::workers::registry::WorkerRegistryTx + Send + Sync>,
     /// Event bus for publishing domain events
     pub event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
     /// Job repository for job operations
-    pub job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+    pub job_repository: Option<Arc<dyn crate::jobs::aggregate::JobRepositoryTx + Send + Sync>>,
     /// Worker provisioning service for creating/destroying workers (EPIC-SAGA-ENGINE)
     ///
     /// This field is optional because not all sagas require worker provisioning.
@@ -648,9 +649,9 @@ impl SagaServices {
     /// Creates a new SagaServices instance with all services.
     #[inline]
     pub fn new(
-        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        provider_registry: Arc<dyn crate::workers::registry::WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
-        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        job_repository: Option<Arc<dyn crate::jobs::aggregate::JobRepositoryTx + Send + Sync>>,
         provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
     ) -> Self {
         Self {
@@ -667,9 +668,9 @@ impl SagaServices {
     /// EPIC-46 GAP-20: Full constructor with all services.
     #[inline]
     pub fn with_orchestrator(
-        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        provider_registry: Arc<dyn crate::workers::registry::WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
-        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        job_repository: Option<Arc<dyn crate::jobs::aggregate::JobRepositoryTx + Send + Sync>>,
         provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
         orchestrator: Option<
             Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>,
@@ -691,9 +692,9 @@ impl SagaServices {
     /// commands from saga steps.
     #[inline]
     pub fn with_command_bus(
-        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        provider_registry: Arc<dyn crate::workers::registry::WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
-        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        job_repository: Option<Arc<dyn crate::jobs::aggregate::JobRepositoryTx + Send + Sync>>,
         provisioning_service: Option<Arc<dyn crate::workers::WorkerProvisioning + Send + Sync>>,
         orchestrator: Option<
             Arc<dyn SagaOrchestrator<Error = crate::saga::OrchestratorError> + Send + Sync>,
@@ -716,9 +717,9 @@ impl SagaServices {
     /// worker provisioning (e.g., execution, recovery sagas).
     #[inline]
     pub fn without_provisioning(
-        provider_registry: Arc<dyn crate::workers::WorkerRegistry + Send + Sync>,
+        provider_registry: Arc<dyn crate::workers::registry::WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn crate::event_bus::EventBus + Send + Sync>,
-        job_repository: Option<Arc<dyn crate::jobs::JobRepository + Send + Sync>>,
+        job_repository: Option<Arc<dyn crate::jobs::aggregate::JobRepositoryTx + Send + Sync>>,
     ) -> Self {
         Self::new(provider_registry, event_bus, job_repository, None)
     }
@@ -954,12 +955,20 @@ mod tests {
             "test"
         }
 
-        async fn execute(&self, _context: &mut SagaContext) -> SagaResult<()> {
+        async fn execute(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            _context: &mut SagaContext,
+        ) -> SagaResult<()> {
             Ok(())
         }
 
         // New signature: context instead of output (EPIC-SAGA-ENGINE)
-        async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+        async fn compensate(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            _context: &mut SagaContext,
+        ) -> SagaResult<()> {
             Ok(())
         }
 

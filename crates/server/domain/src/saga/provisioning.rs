@@ -7,6 +7,7 @@ use crate::events::DomainEvent;
 use crate::saga::commands::{CreateWorkerCommand, DestroyWorkerCommand};
 use crate::saga::{Saga, SagaContext, SagaError, SagaResult, SagaStep, SagaType};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
+use crate::transaction::PgTransaction;
 use crate::workers::WorkerSpec;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
@@ -127,8 +128,12 @@ impl SagaStep for ValidateProviderCapacityStep {
         "ValidateProviderCapacity"
     }
 
-    #[instrument(skip(context), fields(step = "ValidateProviderCapacity", provider_id = %self.provider_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "ValidateProviderCapacity", provider_id = %self.provider_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Store provider_id in context for coordinator use
         context
             .set_metadata("saga_provider_id", &self.provider_id.to_string())
@@ -141,7 +146,11 @@ impl SagaStep for ValidateProviderCapacityStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // No compensation needed for validation metadata
         Ok(())
     }
@@ -201,8 +210,12 @@ impl SagaStep for CreateInfrastructureStep {
         "CreateInfrastructure"
     }
 
-    #[instrument(skip(context), fields(step = "CreateInfrastructure", provider_id = %self.provider_id))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "CreateInfrastructure", provider_id = %self.provider_id))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Get command bus from context
         let services_ref = context
             .services()
@@ -303,8 +316,12 @@ impl SagaStep for CreateInfrastructureStep {
     ///
     /// This method reads the `worker_id` from the context metadata and
     /// dispatches a `DestroyWorkerCommand`.
-    #[instrument(skip(context), fields(step = "CreateInfrastructure"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    #[instrument(skip(context, _tx), fields(step = "CreateInfrastructure"))]
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Get worker_id from metadata
         let worker_id_str = match context.get_metadata::<String>("worker_id") {
             Some(Ok(id)) => id,
@@ -416,8 +433,12 @@ impl SagaStep for RegisterWorkerStep {
         "RegisterWorker"
     }
 
-    #[instrument(skip(context), fields(step = "RegisterWorker"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, tx), fields(step = "RegisterWorker"))]
+    async fn execute(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Get services from context
         let services = context
             .services()
@@ -507,7 +528,7 @@ impl SagaStep for RegisterWorkerStep {
 
         // Register worker in the central registry
         let worker = provider_registry
-            .register(worker_handle, spec, job_id)
+            .register_with_tx(tx, worker_handle, spec, job_id)
             .await
             .map_err(|e| SagaError::StepFailed {
                 step: self.name().to_string(),
@@ -539,8 +560,12 @@ impl SagaStep for RegisterWorkerStep {
     }
 
     /// Compensates by unregistering the worker from the central registry.
-    #[instrument(skip(context), fields(step = "RegisterWorker"))]
-    async fn compensate(&self, context: &mut SagaContext) -> SagaResult<()> {
+    #[instrument(skip(context, tx), fields(step = "RegisterWorker"))]
+    async fn compensate(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Get registered_worker_id from metadata
         let worker_id_str = match context.get_metadata::<String>("registered_worker_id") {
             Some(Ok(id)) => id,
@@ -578,7 +603,7 @@ impl SagaStep for RegisterWorkerStep {
 
         // Unregister worker (idempotent - no error if already unregistered)
         provider_registry
-            .unregister(&worker_id)
+            .unregister_with_tx(tx, &worker_id)
             .await
             .map_err(|e| SagaError::CompensationFailed {
                 step: self.name().to_string(),
@@ -633,8 +658,12 @@ impl SagaStep for PublishProvisionedEventStep {
         "PublishProvisionedEvent"
     }
 
-    #[instrument(skip(context), fields(step = "PublishProvisionedEvent"))]
-    async fn execute(&self, context: &mut SagaContext) -> SagaResult<Self::Output> {
+    #[instrument(skip(context, _tx), fields(step = "PublishProvisionedEvent"))]
+    async fn execute(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        context: &mut SagaContext,
+    ) -> SagaResult<Self::Output> {
         // Check if already executed (idempotency)
         if context
             .get_metadata::<bool>("event_published")
@@ -737,7 +766,11 @@ impl SagaStep for PublishProvisionedEventStep {
         Ok(())
     }
 
-    async fn compensate(&self, _context: &mut SagaContext) -> SagaResult<()> {
+    async fn compensate(
+        &self,
+        _tx: &mut PgTransaction<'_>,
+        _context: &mut SagaContext,
+    ) -> SagaResult<()> {
         // Event publishing cannot be compensated - events are immutable
         // The system should handle this through other means (e.g., a WorkerTerminated event)
         info!("Event publishing cannot be compensated (events are immutable)");

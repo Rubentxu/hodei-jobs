@@ -1,4 +1,5 @@
 pub mod audit_repository;
+pub mod command_outbox_repository;
 pub mod in_memory;
 pub mod job_execution_repository;
 pub mod job_log_repository;
@@ -15,6 +16,7 @@ pub mod scheduled_job_repository;
 pub mod template_parameter_repository;
 pub mod worker_bootstrap_token_store;
 pub mod worker_registry;
+pub mod worker_registry_tx;
 
 pub use audit_repository::*;
 pub use in_memory::*;

@@ -273,6 +273,69 @@ impl<R: SagaRepository> SagaRepository for CachedSagaRepository<R> {
     ) -> Result<Vec<SagaContext>, Self::Error> {
         self.inner.claim_pending_sagas(limit, instance_id).await
     }
+
+    // ============ Transactional Operations ============
+
+    async fn save_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        context: &SagaContext,
+    ) -> Result<(), Self::Error> {
+        self.inner.save_with_tx(tx, context).await?;
+        self.steps_cache.clear();
+        Ok(())
+    }
+
+    async fn update_state_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        saga_id: &SagaId,
+        state: SagaState,
+        error_message: Option<String>,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .update_state_with_tx(tx, saga_id, state, error_message)
+            .await?;
+        self.steps_cache.clear();
+        Ok(())
+    }
+
+    async fn save_step_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        step: &SagaStepData,
+    ) -> Result<(), Self::Error> {
+        self.inner.save_step_with_tx(tx, step).await?;
+        self.steps_cache.clear();
+        Ok(())
+    }
+
+    async fn update_step_state_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        step_id: &SagaStepId,
+        state: SagaStepState,
+        output: Option<serde_json::Value>,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .update_step_state_with_tx(tx, step_id, state, output)
+            .await?;
+        self.steps_cache.clear();
+        Ok(())
+    }
+
+    async fn update_step_compensation_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        step_id: &SagaStepId,
+        compensation_data: serde_json::Value,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .update_step_compensation_with_tx(tx, step_id, compensation_data)
+            .await?;
+        self.steps_cache.clear();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -415,6 +478,52 @@ mod tests {
             _instance_id: &str,
         ) -> Result<Vec<SagaContext>, Self::Error> {
             Ok(vec![])
+        }
+
+        async fn save_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            context: &SagaContext,
+        ) -> Result<(), Self::Error> {
+            self.save(context).await
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            saga_id: &SagaId,
+            state: SagaState,
+            error_message: Option<String>,
+        ) -> Result<(), Self::Error> {
+            self.update_state(saga_id, state, error_message).await
+        }
+
+        async fn save_step_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step: &SagaStepData,
+        ) -> Result<(), Self::Error> {
+            self.save_step(step).await
+        }
+
+        async fn update_step_state_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step_id: &SagaStepId,
+            state: SagaStepState,
+            output: Option<serde_json::Value>,
+        ) -> Result<(), Self::Error> {
+            self.update_step_state(step_id, state, output).await
+        }
+
+        async fn update_step_compensation_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            step_id: &SagaStepId,
+            compensation_data: serde_json::Value,
+        ) -> Result<(), Self::Error> {
+            self.update_step_compensation(step_id, compensation_data)
+                .await
         }
     }
 

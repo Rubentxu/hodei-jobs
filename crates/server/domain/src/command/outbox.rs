@@ -219,6 +219,13 @@ pub trait CommandOutboxRepository: Send + Sync {
         command: &CommandOutboxInsert,
     ) -> Result<Uuid, CommandOutboxError>;
 
+    /// Insert a command into the outbox within an existing transaction
+    async fn insert_command_with_tx(
+        &self,
+        tx: &mut crate::transaction::PgTransaction<'_>,
+        command: &CommandOutboxInsert,
+    ) -> Result<Uuid, CommandOutboxError>;
+
     /// Get pending commands for processing
     async fn get_pending_commands(
         &self,
@@ -692,6 +699,14 @@ mod tests {
             };
             self.inserted.lock().unwrap().push(record);
             Ok(id)
+        }
+
+        async fn insert_command_with_tx(
+            &self,
+            _tx: &mut crate::transaction::PgTransaction<'_>,
+            command: &CommandOutboxInsert,
+        ) -> Result<Uuid, CommandOutboxError> {
+            self.insert_command(command).await
         }
 
         async fn get_pending_commands(

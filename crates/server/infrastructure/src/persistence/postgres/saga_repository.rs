@@ -12,6 +12,7 @@ use hodei_server_domain::saga::{
     SagaType, TimeoutSaga,
 };
 use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
+use hodei_server_domain::transaction::{PgTransaction, TransactionProvider};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -59,6 +60,25 @@ impl PostgresSagaRepository {
         // Migrations are now handled by the central MigrationService
         // See: hodei_server_infrastructure::persistence::postgres::migrations::run_migrations
         Ok(())
+    }
+
+    /// Get the database pool
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+}
+
+#[async_trait::async_trait]
+impl hodei_server_domain::transaction::TransactionProvider for PostgresSagaRepository {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<
+        hodei_server_domain::transaction::PgTransaction<'_>,
+        hodei_server_domain::transaction::TransactionError,
+    > {
+        self.pool.begin().await.map_err(|e| {
+            hodei_server_domain::transaction::TransactionError::Database(e.to_string())
+        })
     }
 }
 
@@ -219,35 +239,15 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
     type Error = hodei_server_domain::shared_kernel::DomainError;
 
     async fn save(&self, context: &SagaContext) -> Result<(), Self::Error> {
-        let saga_id = context.saga_id.0;
-        let saga_type = context.saga_type.as_str();
-        let state = "PENDING";
-        let metadata = serde_json::to_value(&context.metadata).map_err(|e| {
+        let mut tx = self.pool.begin().await.map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
-                message: format!("Serialization error: {}", e),
+                message: format!("Database error: {}", e),
             }
         })?;
 
-        sqlx::query(
-            r#"
-            INSERT INTO sagas (id, saga_type, state, correlation_id, actor, started_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (id) DO UPDATE SET
-                state = EXCLUDED.state,
-                metadata = EXCLUDED.metadata,
-                updated_at = NOW()
-            "#,
-        )
-        .bind(saga_id)
-        .bind(saga_type)
-        .bind(state)
-        .bind(&context.correlation_id)
-        .bind(&context.actor)
-        .bind(context.started_at)
-        .bind(metadata)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
+        self.save_with_tx(&mut tx, context).await?;
+
+        tx.commit().await.map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
                 message: format!("Database error: {}", e),
             }
@@ -403,38 +403,16 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         state: SagaState,
         error_message: Option<String>,
     ) -> Result<(), Self::Error> {
-        let state_str = match state {
-            SagaState::Pending => "PENDING",
-            SagaState::InProgress => "IN_PROGRESS",
-            SagaState::Compensating => "COMPENSATING",
-            SagaState::Completed => "COMPLETED",
-            SagaState::Failed => "FAILED",
-            SagaState::Cancelled => "CANCELLED",
-        };
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
 
-        let completed_at = if state.is_terminal() {
-            Some(Utc::now())
-        } else {
-            None
-        };
+        self.update_state_with_tx(&mut tx, saga_id, state, error_message)
+            .await?;
 
-        sqlx::query(
-            r#"
-            UPDATE sagas SET
-                state = $2,
-                completed_at = COALESCE($3, completed_at),
-                error_message = COALESCE($4, error_message),
-                updated_at = NOW()
-            WHERE id = $1
-            "#,
-        )
-        .bind(saga_id.0)
-        .bind(state_str)
-        .bind(completed_at)
-        .bind(error_message)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
+        tx.commit().await.map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
                 message: format!("Database error: {}", e),
             }
@@ -574,15 +552,181 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         state: SagaStepState,
         output: Option<serde_json::Value>,
     ) -> Result<(), Self::Error> {
-        let state_str = match state {
-            SagaStepState::Pending => "PENDING",
-            SagaStepState::InProgress => "IN_PROGRESS",
-            SagaStepState::Completed => "COMPLETED",
-            SagaStepState::Failed => "FAILED",
-            SagaStepState::Compensating => "COMPENSATING",
-            SagaStepState::Compensated => "COMPENSATED",
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        self.update_step_state_with_tx(&mut tx, step_id, state, output)
+            .await?;
+
+        tx.commit().await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        Ok(())
+    }
+
+    async fn update_step_compensation(
+        &self,
+        step_id: &SagaStepId,
+        compensation_data: serde_json::Value,
+    ) -> Result<(), Self::Error> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        self.update_step_compensation_with_tx(&mut tx, step_id, compensation_data)
+            .await?;
+
+        tx.commit().await.map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        Ok(())
+    }
+
+    // ============ Transactional Operations ============
+
+    async fn save_with_tx(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        context: &SagaContext,
+    ) -> Result<(), Self::Error> {
+        let saga_id = context.saga_id.0;
+        let saga_type = context.saga_type.as_str();
+        let state = context.state.to_string();
+        let metadata = serde_json::to_value(&context.metadata).map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Serialization error: {}", e),
+            }
+        })?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO sagas (id, saga_type, state, correlation_id, actor, started_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO UPDATE SET
+                state = EXCLUDED.state,
+                metadata = EXCLUDED.metadata,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(saga_id)
+        .bind(saga_type)
+        .bind(state)
+        .bind(&context.correlation_id)
+        .bind(&context.actor)
+        .bind(context.started_at)
+        .bind(metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        Ok(())
+    }
+
+    async fn update_state_with_tx(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        saga_id: &SagaId,
+        state: SagaState,
+        error_message: Option<String>,
+    ) -> Result<(), Self::Error> {
+        let state_str = state.to_string();
+        let completed_at = if state.is_terminal() {
+            Some(Utc::now())
+        } else {
+            None
         };
 
+        sqlx::query(
+            r#"
+            UPDATE sagas SET
+                state = $2,
+                completed_at = COALESCE($3, completed_at),
+                error_message = COALESCE($4, error_message),
+                updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(saga_id.0)
+        .bind(state_str)
+        .bind(completed_at)
+        .bind(error_message)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                message: format!("Database error: {}", e),
+            }
+        })?;
+
+        Ok(())
+    }
+
+    async fn save_step_with_tx(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        step: &SagaStepData,
+    ) -> Result<(), Self::Error> {
+        let input_data = step.input_data.clone();
+        let output_data = step.output_data.clone();
+        let compensation_data = step.compensation_data.clone();
+
+        sqlx::query(
+            r#"
+            INSERT INTO saga_steps (id, saga_id, step_name, step_order, state, input_data, output_data, compensation_data, started_at, completed_at, error_message, retry_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (id) DO UPDATE SET
+                state = EXCLUDED.state,
+                output_data = EXCLUDED.output_data,
+                compensation_data = EXCLUDED.compensation_data,
+                completed_at = EXCLUDED.completed_at,
+                error_message = EXCLUDED.error_message,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(step.step_id.0)
+        .bind(step.saga_id.0)
+        .bind(&step.step_name)
+        .bind(step.step_order)
+        .bind(step.state.to_string())
+        .bind(input_data)
+        .bind(output_data)
+        .bind(compensation_data)
+        .bind(step.started_at)
+        .bind(step.completed_at)
+        .bind(step.error_message.as_ref())
+        .bind(step.retry_count)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+            message: format!("Database error: {}", e),
+        })?;
+
+        Ok(())
+    }
+
+    async fn update_step_state_with_tx(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        step_id: &SagaStepId,
+        state: SagaStepState,
+        output: Option<serde_json::Value>,
+    ) -> Result<(), Self::Error> {
+        let state_str = state.to_string();
         let (started_at, completed_at) = match state {
             SagaStepState::InProgress => (Some(Utc::now()), None),
             SagaStepState::Completed => (None, Some(Utc::now())),
@@ -605,7 +749,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         .bind(output)
         .bind(started_at)
         .bind(completed_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -616,8 +760,9 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         Ok(())
     }
 
-    async fn update_step_compensation(
+    async fn update_step_compensation_with_tx(
         &self,
+        tx: &mut PgTransaction<'_>,
         step_id: &SagaStepId,
         compensation_data: serde_json::Value,
     ) -> Result<(), Self::Error> {
@@ -631,7 +776,7 @@ impl SagaRepositoryTrait for PostgresSagaRepository {
         )
         .bind(step_id.0)
         .bind(compensation_data)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -920,7 +1065,7 @@ impl<R: SagaRepositoryTrait + Clone> PostgresSagaOrchestrator<R> {
 }
 
 #[async_trait::async_trait]
-impl<R: SagaRepositoryTrait + Clone + Send + Sync + 'static> SagaOrchestrator
+impl<R: SagaRepositoryTrait + TransactionProvider + Clone + Send + Sync + 'static> SagaOrchestrator
     for PostgresSagaOrchestrator<R>
 where
     <R as SagaRepositoryTrait>::Error: std::fmt::Display
@@ -977,8 +1122,16 @@ where
             semaphore: self.concurrency_semaphore.clone(),
         };
 
-        // Save initial context
-        self.repository.save(&context).await?;
+        // Save initial context (EPIC-88: Ensure this is also transactional if needed, but for now we keep it as is or wrap in tx)
+        {
+            let mut tx = self.repository.begin_transaction().await.map_err(|e| {
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Transaction error: {}", e),
+                }
+            })?;
+            self.repository.save_with_tx(&mut tx, &context).await?;
+            tx.commit().await?;
+        }
 
         // EPIC-SAGA-ENGINE: RESUME LOGIC
         // Load existing steps to determine if we are resuming
@@ -1056,10 +1209,21 @@ where
             // Check saga timeout
             if start_time.elapsed() > self.config.saga_timeout {
                 context.set_error(format!("Saga timed out after {:?}", start_time.elapsed()));
+                let mut tx = self.repository.begin_transaction().await.map_err(|e| {
+                    hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                        message: format!("Transaction error: {}", e),
+                    }
+                })?;
                 self.repository
-                    .update_state(&saga_id, SagaState::Failed, context.error_message.clone())
+                    .update_state_with_tx(
+                        &mut tx,
+                        &saga_id,
+                        SagaState::Failed,
+                        context.error_message.clone(),
+                    )
                     .await
                     .ok();
+                tx.commit().await.ok();
 
                 return Err(Self::Error::from(
                     hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
@@ -1078,40 +1242,83 @@ where
                 step_id,
             );
 
+            // EPIC-88: Start transaction for the entire step execution
+            let mut tx = self.repository.begin_transaction().await?;
+
             // Save step start
-            self.repository.save_step(&step_data).await?;
+            self.repository
+                .save_step_with_tx(&mut tx, &step_data)
+                .await?;
 
             // Mark step as IN_PROGRESS before execution
             self.repository
-                .update_step_state(&step_data.step_id, SagaStepState::InProgress, None)
+                .update_step_state_with_tx(
+                    &mut tx,
+                    &step_data.step_id,
+                    SagaStepState::InProgress,
+                    None,
+                )
                 .await?;
 
-            // Execute step with timeout
-            let step_result =
-                tokio::time::timeout(self.config.step_timeout, step.execute(&mut context)).await;
+            // Execute step with timeout (Note: we hold the transaction during execution)
+            let step_result = tokio::time::timeout(
+                self.config.step_timeout,
+                step.execute(&mut tx, &mut context),
+            )
+            .await;
 
             match step_result {
                 Ok(Ok(())) => {
                     // Step succeeded
                     executed_steps += 1;
                     self.repository
-                        .update_step_state(&step_data.step_id, SagaStepState::Completed, None)
+                        .update_step_state_with_tx(
+                            &mut tx,
+                            &step_data.step_id,
+                            SagaStepState::Completed,
+                            None,
+                        )
                         .await?;
 
                     // EPIC-45 FIX: Persist updated context (metadata) after each successful step
-                    self.repository.save(&context).await?;
+                    self.repository.save_with_tx(&mut tx, &context).await?;
+
+                    // Commit step transaction
+                    tx.commit().await?;
                 }
                 Ok(Err(e)) => {
-                    // Step failed - mark it as FAILED first
+                    // Step failed - rollback transaction
+                    tx.rollback().await?;
+
+                    // Start a new transaction for state update and potential compensation
+                    let mut fail_tx = self.repository.begin_transaction().await.map_err(|e| {
+                        hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                            message: format!("Transaction error: {}", e),
+                        }
+                    })?;
+
+                    // Mark it as FAILED in a fresh transaction or within the compensation block
                     self.repository
-                        .update_step_state(&step_data.step_id, SagaStepState::Failed, None)
+                        .update_step_state_with_tx(
+                            &mut fail_tx,
+                            &step_data.step_id,
+                            SagaStepState::Failed,
+                            None,
+                        )
                         .await?;
 
-                    // Start compensation
+                    // Start compensation state
                     context.set_error(e.to_string());
                     self.repository
-                        .update_state(&saga_id, SagaState::Compensating, Some(e.to_string()))
+                        .update_state_with_tx(
+                            &mut fail_tx,
+                            &saga_id,
+                            SagaState::Compensating,
+                            Some(e.to_string()),
+                        )
                         .await?;
+
+                    fail_tx.commit().await?;
 
                     // EPIC-SAGA-ENGINE: Execute compensation for completed steps in reverse order
                     info!(
@@ -1156,13 +1363,21 @@ where
                                     "🔄 Compensating step"
                                 );
 
+                                // EPIC-88: Start transaction for each compensation step
+                                let mut comp_tx = self.repository.begin_transaction().await.map_err(|e| {
+                        hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                            message: format!("Transaction error: {}", e),
+                        }
+                    })?;
+
                                 // Mark step as COMPENSATING
                                 if let Some(step_record) = completed_steps_data
                                     .iter()
                                     .find(|s| s.step_order as usize == i)
                                 {
                                     self.repository
-                                        .update_step_state(
+                                        .update_step_state_with_tx(
+                                            &mut comp_tx,
                                             &step_record.step_id,
                                             SagaStepState::Compensating,
                                             None,
@@ -1178,7 +1393,7 @@ where
                                 }
 
                                 // Execute compensation
-                                match step_def.compensate(&mut context).await {
+                                match step_def.compensate(&mut comp_tx, &mut context).await {
                                     Ok(()) => {
                                         info!(
                                             saga_id = %saga_id,
@@ -1192,7 +1407,8 @@ where
                                             .find(|s| s.step_order as usize == i)
                                         {
                                             self.repository
-                                                .update_step_state(
+                                                .update_step_state_with_tx(
+                                                    &mut comp_tx,
                                                     &step_record.step_id,
                                                     SagaStepState::Compensated,
                                                     None,
@@ -1209,6 +1425,9 @@ where
                                                 .map_err(Into::<Self::Error>::into)?;
                                         }
 
+                                        // Commit compensation transaction
+                                        comp_tx.commit().await?;
+
                                         compensations_executed += 1;
                                     }
                                     Err(comp_err) => {
@@ -1219,9 +1438,19 @@ where
                                             "❌ Compensation failed - saga will be marked as FAILED"
                                         );
 
+                                        // Rollback compensation transaction
+                                        comp_tx.rollback().await?;
+
                                         // Mark saga as FAILED (compensation also failed)
+                                        let mut final_tx =
+                                            self.repository.begin_transaction().await.map_err(|e| {
+                        hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                            message: format!("Transaction error: {}", e),
+                        }
+                    })?;
                                         self.repository
-                                            .update_state(
+                                            .update_state_with_tx(
+                                                &mut final_tx,
                                                 &saga_id,
                                                 SagaState::Failed,
                                                 Some(format!(
@@ -1232,6 +1461,7 @@ where
                                             )
                                             .await
                                             .ok();
+                                        final_tx.commit().await.ok();
 
                                         return Err::<_, Self::Error>(
                                             DomainError::SagaStepFailed {
@@ -1253,8 +1483,19 @@ where
                     }
 
                     // Mark saga as COMPLETED (successful compensation = complete rollback)
+                    let mut final_comp_tx =
+                        self.repository.begin_transaction().await.map_err(|e| {
+                            hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                                message: format!("Transaction error: {}", e),
+                            }
+                        })?;
                     self.repository
-                        .update_state(&saga_id, SagaState::Completed, None)
+                        .update_state_with_tx(
+                            &mut final_comp_tx,
+                            &saga_id,
+                            SagaState::Completed,
+                            None,
+                        )
                         .await
                         .map_err(|db_err| DomainError::InfrastructureError {
                             message: format!(
@@ -1263,6 +1504,8 @@ where
                             ),
                         })
                         .map_err(Into::<Self::Error>::into)?;
+
+                    final_comp_tx.commit().await?;
 
                     info!(
                         saga_id = %saga_id,
@@ -1280,6 +1523,9 @@ where
                     ));
                 }
                 Err(_) => {
+                    // Step timed out - rollback step transaction
+                    tx.rollback().await.ok();
+
                     // Step timed out
                     let timeout_error =
                         format!("Step timed out after {:?}", self.config.step_timeout);
@@ -1296,9 +1542,13 @@ where
         }
 
         // All steps completed successfully
-        self.repository
-            .update_state(&saga_id, SagaState::Completed, None)
-            .await?;
+        {
+            let mut tx = self.repository.begin_transaction().await?;
+            self.repository
+                .update_state_with_tx(&mut tx, &saga_id, SagaState::Completed, None)
+                .await?;
+            tx.commit().await?;
+        }
 
         Ok(SagaExecutionResult::completed_with_steps(
             saga_id,
