@@ -279,6 +279,21 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         }
     }
 
+    /// EPIC-88 Task 4.3: Get full metrics including messaging purity
+    pub async fn get_metrics(&self) -> CommandRelayMetrics {
+        self.metrics.lock().await.clone()
+    }
+
+    /// EPIC-88 Task 4.3: Get messaging purity percentage
+    pub async fn messaging_purity(&self) -> f64 {
+        self.metrics.lock().await.messaging_purity_percentage()
+    }
+
+    /// EPIC-88 Task 4.2: Check if relay is in degraded mode
+    pub async fn is_degraded_mode(&self) -> bool {
+        self.metrics.lock().await.is_degraded_mode
+    }
+
     /// Run the command relay.
     ///
     /// Uses LISTEN/NOTIFY for reactive processing when available.
@@ -288,6 +303,7 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         let mut watchdog_interval = interval(Duration::from_secs(30));
         let mut shutdown_rx = self.shutdown.subscribe();
         let has_listener = self.listener.is_some();
+        let mut degraded_mode_warned = false;
 
         // Log the operating mode
         if has_listener {
@@ -298,8 +314,10 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         } else {
             warn!(
                 channel = self.config.channel,
-                "No notification listener available. Starting in DEGRADED mode with 30s watchdog polling"
+                "⚠️  No notification listener available. Starting in DEGRADED mode with 30s watchdog polling"
             );
+            self.metrics.lock().await.record_listener_failure();
+            degraded_mode_warned = true;
         }
 
         // EPIC-85 US-05: Ensure NATS JetStream stream exists for command persistence
@@ -314,23 +332,49 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
                 notification = self.recv_notification() => {
                     match notification {
                         Ok(Some(_)) => {
-                            self.metrics.lock().await.record_notification();
+                            // EPIC-88 Task 4.2: Record successful notification
+                            let mut metrics = self.metrics.lock().await;
+                            metrics.record_notification();
+                            if metrics.is_degraded_mode {
+                                info!("✅ Listener recovered from degraded mode");
+                                metrics.record_listener_recovery();
+                                degraded_mode_warned = false;
+                            }
+                            drop(metrics);
                             self.process_pending_batch().await;
                         }
                         Ok(None) => {
                             // No listener available, this is expected in degraded mode
                         }
                         Err(e) => {
-                            warn!(error = %e, "Notification error");
+                            // EPIC-88 Task 4.2: Detect listener failure
+                            let mut metrics = self.metrics.lock().await;
+                            if !metrics.is_degraded_mode {
+                                warn!(error = %e, "⚠️  Listener failure detected - entering DEGRADED mode");
+                                metrics.record_listener_failure();
+                                degraded_mode_warned = false;
+                            }
+                            drop(metrics);
                             self.process_pending_batch().await;
                         }
                     }
                 }
                 _ = watchdog_interval.tick() => {
-                    // Only poll in degraded mode (no listener)
-                    if !has_listener {
+                    // EPIC-88 Task 4.2: Warn periodically if in degraded mode
+                    let metrics = self.metrics.lock().await;
+                    let is_degraded = metrics.is_degraded_mode || !has_listener;
+                    drop(metrics);
+
+                    if is_degraded {
+                        if !degraded_mode_warned {
+                            warn!(
+                                channel = self.config.channel,
+                                "⚠️  DEGRADED MODE: Using polling fallback (30s interval). LISTEN/NOTIFY unavailable."
+                            );
+                            degraded_mode_warned = true;
+                        }
                         self.metrics.lock().await.record_polling_wakeup();
-                        info!("Watchdog tick: checking for pending commands in degraded mode");
+                        debug!("Watchdog tick: checking for pending commands in degraded mode");
                         self.process_pending_batch().await;
                     }
                     // In reactive mode, watchdog does nothing (notifications drive processing)
