@@ -97,11 +97,13 @@ impl GracefulShutdown {
     }
 
     /// Get current state
+    #[allow(dead_code)]
     pub fn state(&self) -> ShutdownState {
         (*self.state_rx.borrow()).clone()
     }
 
     /// Check if shutdown has been initiated
+    #[allow(dead_code)]
     pub fn is_shutting_down(&self) -> bool {
         matches!(*self.state_rx.borrow(), ShutdownState::ShuttingDown(_))
     }
@@ -131,16 +133,6 @@ impl ShutdownReceiver {
                 },
             }
         })
-    }
-
-    /// Get current state
-    pub fn state(&self) -> ShutdownState {
-        self.state_rx.borrow().clone()
-    }
-
-    /// Check if shutdown has been initiated
-    pub fn is_shutting_down(&self) -> bool {
-        matches!(&*self.state_rx.borrow(), ShutdownState::ShuttingDown(_))
     }
 }
 
