@@ -439,3 +439,407 @@ mod tests {
         assert!(ctx.trace_id().is_none());
     }
 }
+
+// ============================================================================
+// Advanced Metrics for Saga, Outbox, and Command Processing
+// ============================================================================
+
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Mutex;
+
+/// Histogram-style metric using atomic bucketing
+#[derive(Clone, Default)]
+pub struct HistogramMetric {
+    counts: Arc<Mutex<Vec<u64>>>,
+    total: Arc<std::sync::atomic::AtomicU64>,
+    sum: Arc<std::sync::atomic::AtomicU64>,
+    min: Arc<std::sync::atomic::AtomicU64>,
+    max: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl HistogramMetric {
+    pub fn new(bucket_count: usize) -> Self {
+        Self {
+            counts: Arc::new(Mutex::new(vec![0; bucket_count])),
+            total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            sum: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            min: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
+            max: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    pub fn observe(&self, value: u64, bucket_size: u64) {
+        let bucket_count = self.counts.blocking_lock().len();
+        let bucket = (value / bucket_size).min(bucket_count as u64 - 1) as usize;
+        self.counts.blocking_lock()[bucket] += 1;
+
+        self.total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.sum
+            .fetch_add(value, std::sync::atomic::Ordering::Relaxed);
+
+        if value < 1_000_000_000 {
+            self.min
+                .fetch_min(value, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.max
+            .fetch_max(value, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn get_stats(&self) -> HistogramStats {
+        let counts = self.counts.blocking_lock().clone();
+        let total = self.total.load(std::sync::atomic::Ordering::Relaxed);
+        let sum = self.sum.load(std::sync::atomic::Ordering::Relaxed);
+        let min = self.min.load(std::sync::atomic::Ordering::Relaxed);
+        let max = self.max.load(std::sync::atomic::Ordering::Relaxed);
+
+        HistogramStats {
+            total,
+            sum,
+            min: if min == u64::MAX { 0 } else { min },
+            max,
+            buckets: counts,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HistogramStats {
+    pub total: u64,
+    pub sum: u64,
+    pub min: u64,
+    pub max: u64,
+    pub buckets: Vec<u64>,
+}
+
+impl HistogramStats {
+    pub fn percentile(&self, p: f64) -> u64 {
+        if self.total == 0 {
+            return 0;
+        }
+        let target = (self.total as f64 * p / 100.0).ceil() as u64;
+        let mut cumulative = 0;
+        for (i, &count) in self.buckets.iter().enumerate() {
+            cumulative += count;
+            if cumulative >= target {
+                return (i as u64 * 100);
+            }
+        }
+        self.max
+    }
+}
+
+/// Saga Execution Metrics
+#[derive(Clone, Default)]
+pub struct SagaMetrics {
+    pub execution_duration_ms: HistogramMetric,
+    pub active_sagas: Arc<std::sync::atomic::AtomicU64>,
+    pub completed_total: Arc<std::sync::atomic::AtomicU64>,
+    pub failed_total: Arc<std::sync::atomic::AtomicU64>,
+    pub timed_out_total: Arc<std::sync::atomic::AtomicU64>,
+    pub steps_completed: Arc<std::sync::atomic::AtomicU64>,
+    pub step_failures: Arc<std::sync::Mutex<Vec<(String, u64)>>>,
+    pub step_latency_ms: HistogramMetric,
+}
+
+impl SagaMetrics {
+    pub fn new() -> Self {
+        Self {
+            execution_duration_ms: HistogramMetric::new(20),
+            active_sagas: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            completed_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            failed_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            timed_out_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            steps_completed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            step_failures: Arc::new(std::sync::Mutex::new(Vec::new())),
+            step_latency_ms: HistogramMetric::new(20),
+        }
+    }
+
+    pub fn record_execution_start(&self) {
+        self.active_sagas
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_execution_complete(&self, duration_ms: u64, success: bool, timed_out: bool) {
+        self.active_sagas
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.execution_duration_ms.observe(duration_ms, 100);
+
+        if timed_out {
+            self.timed_out_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if success {
+            self.completed_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.failed_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_step_complete(&self, step_name: &str, latency_ms: u64) {
+        self.steps_completed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.step_latency_ms.observe(latency_ms, 50);
+    }
+
+    pub fn record_step_failure(&self, step_name: &str) {
+        let mut failures = self.step_failures.lock().unwrap();
+        if let Some((_, count)) = failures.iter_mut().find(|(name, _)| name == step_name) {
+            *count += 1;
+        } else {
+            failures.push((step_name.to_string(), 1));
+        }
+    }
+
+    pub fn get_summary(&self) -> SagaMetricsSummary {
+        let duration_stats = self.execution_duration_ms.get_stats();
+        let step_stats = self.step_latency_ms.get_stats();
+        let step_failures = self.step_failures.lock().unwrap().clone();
+
+        SagaMetricsSummary {
+            active_sagas: self.active_sagas.load(std::sync::atomic::Ordering::Relaxed),
+            completed_total: self
+                .completed_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            failed_total: self.failed_total.load(std::sync::atomic::Ordering::Relaxed),
+            timed_out_total: self
+                .timed_out_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            steps_completed: self
+                .steps_completed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            execution_p50_ms: duration_stats.percentile(50.0),
+            execution_p95_ms: duration_stats.percentile(95.0),
+            execution_p99_ms: duration_stats.percentile(99.0),
+            step_latency_p50_ms: step_stats.percentile(50.0),
+            step_latency_p95_ms: step_stats.percentile(95.0),
+            step_failures_by_name: step_failures,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SagaMetricsSummary {
+    pub active_sagas: u64,
+    pub completed_total: u64,
+    pub failed_total: u64,
+    pub timed_out_total: u64,
+    pub steps_completed: u64,
+    pub execution_p50_ms: u64,
+    pub execution_p95_ms: u64,
+    pub execution_p99_ms: u64,
+    pub step_latency_p50_ms: u64,
+    pub step_latency_p95_ms: u64,
+    pub step_failures_by_name: Vec<(String, u64)>,
+}
+
+/// Outbox Metrics
+#[derive(Clone, Default)]
+pub struct OutboxMetrics {
+    pub pending_count: Arc<std::sync::atomic::AtomicU64>,
+    pub processing_lag_seconds: HistogramMetric,
+    pub published_total: Arc<std::sync::atomic::AtomicU64>,
+    pub publish_failures: Arc<std::sync::atomic::AtomicU64>,
+    pub batch_size: HistogramMetric,
+    pub relay_cycle_duration_ms: HistogramMetric,
+    pub last_publish_at: Arc<Mutex<Option<Instant>>>,
+}
+
+impl OutboxMetrics {
+    pub fn new() -> Self {
+        Self {
+            pending_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            processing_lag_seconds: HistogramMetric::new(30),
+            published_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            publish_failures: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            batch_size: HistogramMetric::new(10),
+            relay_cycle_duration_ms: HistogramMetric::new(20),
+            last_publish_at: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn set_pending_count(&self, count: u64) {
+        self.pending_count
+            .store(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_publish(&self, lag_seconds: u64, batch_size: u64) {
+        self.processing_lag_seconds.observe(lag_seconds, 1);
+        self.batch_size.observe(batch_size, 10);
+        self.published_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *self.last_publish_at.blocking_lock() = Some(Instant::now());
+    }
+
+    pub fn record_publish_failure(&self) {
+        self.publish_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_relay_cycle(&self, duration_ms: u64) {
+        self.relay_cycle_duration_ms.observe(duration_ms, 50);
+    }
+
+    pub fn get_summary(&self) -> OutboxMetricsSummary {
+        let lag_stats = self.processing_lag_seconds.get_stats();
+        let batch_stats = self.batch_size.get_stats();
+        let cycle_stats = self.relay_cycle_duration_ms.get_stats();
+
+        OutboxMetricsSummary {
+            pending_count: self
+                .pending_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            published_total: self
+                .published_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            publish_failures: self
+                .publish_failures
+                .load(std::sync::atomic::Ordering::Relaxed),
+            lag_p50_seconds: lag_stats.percentile(50.0),
+            lag_p95_seconds: lag_stats.percentile(95.0),
+            lag_p99_seconds: lag_stats.percentile(99.0),
+            avg_batch_size: if batch_stats.total > 0 {
+                batch_stats.sum / batch_stats.total
+            } else {
+                0
+            },
+            relay_cycle_p50_ms: cycle_stats.percentile(50.0),
+            last_publish_seconds_ago: {
+                let last = *self.last_publish_at.blocking_lock();
+                last.map(|i| i.elapsed().as_secs()).unwrap_or(0)
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OutboxMetricsSummary {
+    pub pending_count: u64,
+    pub published_total: u64,
+    pub publish_failures: u64,
+    pub lag_p50_seconds: u64,
+    pub lag_p95_seconds: u64,
+    pub lag_p99_seconds: u64,
+    pub avg_batch_size: u64,
+    pub relay_cycle_p50_ms: u64,
+    pub last_publish_seconds_ago: u64,
+}
+
+/// Command Dispatch Metrics
+#[derive(Clone, Default)]
+pub struct CommandMetrics {
+    pub dispatch_latency_ms: HistogramMetric,
+    pub dispatched_total: Arc<std::sync::atomic::AtomicU64>,
+    pub completed_total: Arc<std::sync::atomic::AtomicU64>,
+    pub failed_total: Arc<std::sync::atomic::AtomicU64>,
+    pub in_flight: Arc<std::sync::atomic::AtomicU64>,
+    pub retry_count: HistogramMetric,
+}
+
+impl CommandMetrics {
+    pub fn new() -> Self {
+        Self {
+            dispatch_latency_ms: HistogramMetric::new(30),
+            dispatched_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            completed_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            failed_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            in_flight: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            retry_count: HistogramMetric::new(10),
+        }
+    }
+
+    pub fn record_dispatch(&self, latency_ms: u64) {
+        self.dispatch_latency_ms.observe(latency_ms, 100);
+        self.dispatched_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_complete(&self, retries: u64) {
+        self.in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.completed_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.retry_count.observe(retries, 1);
+    }
+
+    pub fn record_failure(&self) {
+        self.in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.failed_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn get_summary(&self) -> CommandMetricsSummary {
+        let dispatch_stats = self.dispatch_latency_ms.get_stats();
+        let retry_stats = self.retry_count.get_stats();
+
+        CommandMetricsSummary {
+            dispatched_total: self
+                .dispatched_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            completed_total: self
+                .completed_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            failed_total: self.failed_total.load(std::sync::atomic::Ordering::Relaxed),
+            in_flight: self.in_flight.load(std::sync::atomic::Ordering::Relaxed),
+            dispatch_p50_ms: dispatch_stats.percentile(50.0),
+            dispatch_p95_ms: dispatch_stats.percentile(95.0),
+            dispatch_p99_ms: dispatch_stats.percentile(99.0),
+            avg_retries: if retry_stats.total > 0 {
+                retry_stats.sum / retry_stats.total
+            } else {
+                0
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandMetricsSummary {
+    pub dispatched_total: u64,
+    pub completed_total: u64,
+    pub failed_total: u64,
+    pub in_flight: u64,
+    pub dispatch_p50_ms: u64,
+    pub dispatch_p95_ms: u64,
+    pub dispatch_p99_ms: u64,
+    pub avg_retries: u64,
+}
+
+/// Combined System Telemetry
+#[derive(Clone, Default)]
+pub struct SystemTelemetry {
+    pub saga: SagaMetrics,
+    pub outbox: OutboxMetrics,
+    pub command: CommandMetrics,
+}
+
+impl SystemTelemetry {
+    pub fn new() -> Self {
+        Self {
+            saga: SagaMetrics::new(),
+            outbox: OutboxMetrics::new(),
+            command: CommandMetrics::new(),
+        }
+    }
+
+    pub fn get_full_summary(&self) -> SystemTelemetrySummary {
+        SystemTelemetrySummary {
+            saga: self.saga.get_summary(),
+            outbox: self.outbox.get_summary(),
+            command: self.command.get_summary(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemTelemetrySummary {
+    pub saga: SagaMetricsSummary,
+    pub outbox: OutboxMetricsSummary,
+    pub command: CommandMetricsSummary,
+}
