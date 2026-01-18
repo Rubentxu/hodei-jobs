@@ -395,12 +395,15 @@ impl PodSpecFactory {
             },
         ];
 
+        // Add OTP token if provided and not already in environment
         if let Some(token) = otp_token {
-            env_vars.push(EnvVar {
-                name: "HODEI_OTP_TOKEN".to_string(),
-                value: Some(token.to_string()),
-                ..Default::default()
-            });
+            if !spec.environment.contains_key("HODEI_OTP_TOKEN") {
+                env_vars.push(EnvVar {
+                    name: "HODEI_OTP_TOKEN".to_string(),
+                    value: Some(token.to_string()),
+                    ..Default::default()
+                });
+            }
         }
 
         // Add spec environment variables

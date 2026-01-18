@@ -218,51 +218,31 @@ impl WorkerEphemeralTerminatingConsumer {
 
     /// Get the stream name for this consumer
     fn stream_name(&self) -> String {
-        format!("{}_WORKER_EVENTS", self.config.stream_prefix)
+        format!("{}_EVENTS", self.config.stream_prefix)
     }
 
     /// Ensure the stream exists with correct configuration
-    async fn ensure_stream(&self) -> Result<(), DomainError> {
+    /// Uses the shared HODEI_EVENTS stream instead of creating a separate one
+    async fn ensure_stream(&self) -> Result<async_nats::jetstream::stream::Stream, DomainError> {
         let stream_name = self.stream_name();
 
         match self.jetstream.get_stream(&stream_name).await {
-            Ok(_) => {
+            Ok(stream) => {
                 debug!(
-                    "🧹 WorkerEphemeralTerminatingConsumer: Stream {} already exists",
+                    "🧹 WorkerEphemeralTerminatingConsumer: Using shared stream '{}'",
                     stream_name
                 );
-                Ok(())
+                Ok(stream)
             }
             Err(_) => {
-                info!(
-                    "🧹 WorkerEphemeralTerminatingConsumer: Creating stream {}",
-                    stream_name
-                );
-
-                let _stream = self
-                    .jetstream
-                    .create_stream(StreamConfig {
-                        name: stream_name.clone(),
-                        subjects: vec![
-                            worker_topics::EPHEMERAL_TERMINATING.to_string(),
-                            worker_topics::EPHEMERAL_TERMINATED.to_string(),
-                            worker_topics::TERMINATED.to_string(),
-                        ],
-                        retention: RetentionPolicy::WorkQueue,
-                        max_messages: 10000,
-                        max_bytes: 1024 * 1024 * 100, // 100MB
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| DomainError::InfrastructureError {
-                        message: format!("Failed to create stream {}: {}", stream_name, e),
-                    })?;
-
-                info!(
-                    "🧹 WorkerEphemeralTerminatingConsumer: Stream {} created",
-                    stream_name
-                );
-                Ok(())
+                // Stream doesn't exist - this is an error condition
+                // The main server should have created HODEI_EVENTS
+                Err(DomainError::InfrastructureError {
+                    message: format!(
+                        "Stream '{}' does not exist. Ensure the server is running and has created the events stream.",
+                        stream_name
+                    ),
+                })
             }
         }
     }
