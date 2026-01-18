@@ -174,6 +174,10 @@ impl JobDispatcher {
     ///
     /// ## Responsabilidad Core #1: Orquestación
     /// Este método solo orquesta el flujo, delegando los detalles a servicios especializados.
+    ///
+    /// @deprecated Use reactive dispatch methods (dispatch_job_to_worker, dispatch_pending_job_to_worker)
+    /// instead. This method is kept for legacy fallback scenarios.
+    #[deprecated(since = "0.59.1", note = "Use reactive dispatch methods instead")]
     #[instrument(skip(self), fields(job_id), ret)]
     pub async fn dispatch_once(&self) -> anyhow::Result<usize> {
         info!("🔄 JobDispatcher: Starting dispatch cycle");
@@ -784,7 +788,8 @@ impl JobDispatcher {
                     self.request_worker_provisioning(&job).await;
                 }
                 Ok(_) => {
-                    // Fallback to traditional dispatch
+                    // @deprecated Legacy fallback - should not happen with proper scheduling
+                    #[allow(deprecated)]
                     info!("📤 JobDispatcher: Using legacy dispatch for job {}", job_id);
                     let _job = self
                         .job_repository

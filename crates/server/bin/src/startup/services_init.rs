@@ -180,6 +180,10 @@ pub fn initialize_grpc_services(
 
 /// Simple job processor that polls the job queue and assigns jobs to workers.
 /// This is a fallback mechanism when the full JobCoordinator is not available.
+///
+/// @deprecated Use JobCoordinator with reactive event processing instead.
+/// This function is kept for emergency recovery scenarios only.
+#[deprecated(since = "0.59.1", note = "Use JobCoordinator reactive mode instead")]
 async fn start_simple_job_processor(
     job_queue: Arc<dyn JobQueue>,
     mut shutdown_rx: watch::Receiver<()>,
@@ -340,6 +344,10 @@ pub async fn start_job_coordinator(
 }
 
 /// Dispatch loop that polls and dispatches jobs
+///
+/// @deprecated Use JobCoordinator reactive mode instead.
+/// This function is only used when JobCoordinator fails.
+#[deprecated(since = "0.59.1", note = "Use JobCoordinator reactive mode instead")]
 async fn start_dispatch_loop(dispatcher: Arc<JobDispatcher>, mut shutdown_rx: watch::Receiver<()>) {
     info!("Starting dispatch loop");
 
