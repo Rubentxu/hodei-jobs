@@ -8,6 +8,10 @@
 
 use crate::persistence::command_outbox::PostgresCommandOutboxRepository;
 use hodei_server_domain::command::{CommandOutboxRecord, CommandOutboxRepository};
+use hodei_server_domain::saga::circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
+};
+use hodei_server_domain::shared_kernel::DomainError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -26,6 +30,12 @@ pub struct CommandRelayConfig {
     pub channel: String,
     /// Maximum retries before dead-lettering
     pub max_retries: i32,
+
+    /// EPIC-85 US-05: Circuit breaker configuration
+    pub circuit_breaker_failure_threshold: u64,
+    pub circuit_breaker_open_duration: Duration,
+    pub circuit_breaker_success_threshold: u64,
+    pub circuit_breaker_call_timeout: Duration,
 }
 
 impl Default for CommandRelayConfig {
@@ -35,6 +45,11 @@ impl Default for CommandRelayConfig {
             poll_interval_ms: 100,
             channel: "outbox_work".to_string(),
             max_retries: 3,
+            // EPIC-85 US-05: Circuit breaker defaults
+            circuit_breaker_failure_threshold: 5,
+            circuit_breaker_open_duration: Duration::from_secs(30),
+            circuit_breaker_success_threshold: 2,
+            circuit_breaker_call_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -113,6 +128,9 @@ pub struct CommandRelay<R: CommandOutboxRepository> {
     metrics: Arc<Mutex<CommandRelayMetrics>>,
     shutdown: broadcast::Sender<()>,
     listener: Option<crate::messaging::hybrid::PgNotifyListener>,
+
+    /// EPIC-85 US-05: Circuit breaker for resilience
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl<R: CommandOutboxRepository> CommandRelay<R> {
@@ -137,6 +155,19 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
             }
         };
 
+        // EPIC-85 US-05: Initialize circuit breaker
+        let circuit_breaker = Arc::new(CircuitBreaker::new(
+            format!("command-relay-{}", config.channel),
+            CircuitBreakerConfig {
+                failure_threshold: config.circuit_breaker_failure_threshold,
+                open_duration: config.circuit_breaker_open_duration,
+                success_threshold: config.circuit_breaker_success_threshold,
+                call_timeout: config.circuit_breaker_call_timeout,
+                failure_rate_threshold: 50,
+                failure_rate_window: 100,
+            },
+        ));
+
         Ok((
             Self {
                 pool: pool.clone(),
@@ -146,9 +177,26 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
                 metrics: Arc::new(Mutex::new(CommandRelayMetrics::default())),
                 shutdown: shutdown.clone(),
                 listener,
+                circuit_breaker: Some(circuit_breaker),
             },
             shutdown,
         ))
+    }
+
+    /// EPIC-85 US-05: Get current circuit breaker state
+    pub fn circuit_breaker_state(&self) -> CircuitState {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.state())
+            .unwrap_or(CircuitState::Closed)
+    }
+
+    /// EPIC-85 US-05: Check if circuit allows requests
+    pub fn is_circuit_closed(&self) -> bool {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.allow_request())
+            .unwrap_or(true)
     }
 
     /// Run the command relay.
@@ -208,7 +256,6 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         }
     }
 
-    /// Try to receive a notification from the listener.
     async fn recv_notification(
         &mut self,
     ) -> Result<Option<sqlx::postgres::PgNotification>, sqlx::Error> {
@@ -217,6 +264,19 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
         } else {
             Ok(None)
         }
+    }
+
+    /// EPIC-85 US-05: Calculate exponential backoff delay with jitter
+    fn calculate_backoff(&self, retry_count: i32) -> Duration {
+        let base = self.config.poll_interval_ms as f64 * (2.0_f64.powf(retry_count as f64));
+        let base_secs = base / 1000.0;
+
+        // Add jitter (±25% of the base delay)
+        let jitter_range = base_secs * 0.25;
+        let jitter = (rand::random::<f64>() * 2.0 - 1.0) * jitter_range;
+        let final_delay = (base_secs + jitter).max(0.1); // Ensure at least 100ms
+
+        Duration::from_secs_f64(final_delay)
     }
 
     /// Process a batch of pending commands.
@@ -239,9 +299,17 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
 
         debug!(count = commands.len(), "Processing pending commands batch");
 
-        for command in commands {
-            let result = self.process_single_command(&command).await;
+        // EPIC-85 US-05: Process commands in parallel using FuturesUnordered
+        use futures::StreamExt;
+        use futures::stream::FuturesUnordered;
 
+        let tasks = FuturesUnordered::new();
+        for command in commands {
+            tasks.push(self.process_command_with_retry(command));
+        }
+
+        let mut results = tasks;
+        while let Some(result) = results.next().await {
             let mut metrics = self.metrics.lock().await;
             match result {
                 Ok(_) => {
@@ -255,6 +323,52 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
                 }
                 Err(CommandProcessorError::HandlerError { .. }) => {
                     metrics.record_failed();
+                }
+            }
+        }
+    }
+
+    /// EPIC-85 US-05: Process a single command with retry logic and exponential backoff
+    async fn process_command_with_retry(
+        &self,
+        command: CommandOutboxRecord,
+    ) -> Result<(), CommandProcessorError> {
+        let mut attempts = 0;
+        let max_attempts = self.config.max_retries;
+
+        loop {
+            match self.process_single_command(&command).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        error!(
+                            command_id = %command.id,
+                            attempts = attempts,
+                            "Command exceeded max retries: {}", e
+                        );
+
+                        // EPIC-85 US-05: Mark as failed in DB when max retries exceeded
+                        let _ = self
+                            .repository
+                            .mark_failed(&command.id, &e.to_string())
+                            .await;
+
+                        // If it's a retryable error that exceeded max retries, treat as permanent
+                        return Err(CommandProcessorError::PermanentError {
+                            message: format!("Max retries exceeded: {}", e),
+                        });
+                    }
+
+                    let delay = self.calculate_backoff(attempts);
+                    warn!(
+                        command_id = %command.id,
+                        attempt = attempts,
+                        delay_ms = delay.as_millis(),
+                        "Command failed, retrying: {}", e
+                    );
+
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
@@ -286,18 +400,51 @@ impl<R: CommandOutboxRepository> CommandRelay<R> {
             }
         })?;
 
-        // 3. Publish to NATS
-        // We use publish (fire and forget at NATS level, but with TCP reliability)
-        // or request if we wanted immediate reply (but this is outbox, so async)
-        if let Err(e) = self
-            .nats_client
-            .publish(subject.clone(), payload.into())
+        // 3. Publish to NATS with circuit breaker protection
+        // EPIC-85 US-05: Wrap publication in circuit breaker
+        let publication_result = if let Some(ref cb) = self.circuit_breaker {
+            let nats_client = self.nats_client.clone();
+            let subject_clone = subject.clone();
+            let payload_clone = payload.clone();
+
+            cb.execute(async move {
+                nats_client
+                    .publish(subject_clone, payload_clone.into())
+                    .await
+                    .map_err(|e| DomainError::InfrastructureError {
+                        message: format!("NATS publish failed: {}", e),
+                    })
+            })
             .await
-        {
-            return Err(CommandProcessorError::RetryableError {
-                message: format!("NATS publish failed: {}", e),
-            });
+            .map_err(|e| match e {
+                CircuitBreakerError::Open => CommandProcessorError::RetryableError {
+                    message: "Circuit breaker open".to_string(),
+                },
+                CircuitBreakerError::Timeout => CommandProcessorError::RetryableError {
+                    message: "Circuit breaker timeout".to_string(),
+                },
+                CircuitBreakerError::Failed(e) => CommandProcessorError::RetryableError {
+                    message: e.to_string(),
+                },
+            })
+        } else {
+            self.nats_client
+                .publish(subject.clone(), payload.into())
+                .await
+                .map_err(|e| CommandProcessorError::RetryableError {
+                    message: format!("NATS publish failed: {}", e),
+                })
+        };
+
+        // Record success or failure in circuit breaker
+        if let Some(ref cb) = self.circuit_breaker {
+            match publication_result {
+                Ok(_) => cb.record_success(),
+                Err(_) => cb.record_failure(),
+            }
         }
+
+        publication_result?;
 
         // 4. Mark as completed in DB
         self.repository
@@ -496,6 +643,11 @@ mod tests {
             poll_interval_ms: 100,
             channel: "test_command_channel".to_string(),
             max_retries: 3,
+            // EPIC-85 US-05: Added missing fields
+            circuit_breaker_failure_threshold: 5,
+            circuit_breaker_open_duration: Duration::from_secs(30),
+            circuit_breaker_success_threshold: 2,
+            circuit_breaker_call_timeout: Duration::from_secs(10),
         });
 
         // Use demo NATS for tests if needed, or ignore
