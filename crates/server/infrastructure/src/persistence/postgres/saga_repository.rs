@@ -1243,7 +1243,11 @@ where
             );
 
             // EPIC-88: Start transaction for the entire step execution
-            let mut tx = self.repository.begin_transaction().await?;
+            let mut tx = self.repository.begin_transaction().await.map_err(|e| {
+                hodei_server_domain::shared_kernel::DomainError::InfrastructureError {
+                    message: format!("Transaction error: {}", e),
+                }
+            })?;
 
             // Save step start
             self.repository
