@@ -296,24 +296,24 @@ dev-init:
 
 # y al salir (Ctrl+C) los recursos se limpian automáticamente.
 
-    @echo "🚀 INICIANDO SESIÓN DE DESARROLLO..."
-    @echo ""
-    @echo "Este comando:"
-    @echo "  1️⃣  Deploya el Helm chart con valores de desarrollo"
-    @echo "  2️⃣  Sincroniza código automáticamente"
-    @echo "  3️⃣  Abre terminal en el pod"
-    @echo "  4️⃣  Limpia recursos al salir (Ctrl+C)"
-    @echo ""
-    @echo "📝 En la terminal del pod:"
-    @echo "  • El servidor compilará y arrancará automáticamente"
-    @echo "  • Edita archivos localmente - se sincronizan solos"
-    @echo "  • Para recompilar: cargo build --release -p hodei-server-bin"
-    @echo ""
-
-    @echo "🐳 Limpiando espacio Docker..."
-    minikube ssh "docker system prune -af --volumes" 2>/dev/null || true
-    @echo ""
-    @echo "✅ Cleanup completo"
+#    @echo "🚀 INICIANDO SESIÓN DE DESARROLLO..."
+#    @echo ""
+#    @echo "Este comando:"
+#    @echo "  1️⃣  Deploya el Helm chart con valores de desarrollo"
+#    @echo "  2️⃣  Sincroniza código automáticamente"
+#    @echo "  3️⃣  Abre terminal en el pod"
+#    @echo "  4️⃣  Limpia recursos al salir (Ctrl+C)"
+#    @echo ""
+#    @echo "📝 En la terminal del pod:"
+#    @echo "  • El servidor compilará y arrancará automáticamente"
+#    @echo "  • Edita archivos localmente - se sincronizan solos"
+#    @echo "  • Para recompilar: cargo build --release -p hodei-server-bin"
+#    @echo ""
+#
+#    @echo "🐳 Limpiando espacio Docker..."
+#    minikube ssh "docker system prune -af --volumes" 2>/dev/null || true
+#    @echo ""
+#    @echo "✅ Cleanup completo"
 
 # =============================================================================
 # HODEI-CLI COMMANDS - Job Testing
