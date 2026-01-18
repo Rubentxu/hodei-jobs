@@ -265,19 +265,15 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     }
 
     async fn find_all(&self, limit: usize, offset: usize) -> Result<(Vec<Job>, usize)> {
-        let rows: (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*) as total
-            FROM jobs
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::InfrastructureError {
-            message: format!("Failed to count jobs: {}", e),
-        })?;
+        // Use query() with try_get() instead of query_as!() to avoid compile-time schema verification
+        let count_row = sqlx::query("SELECT COUNT(*) as total FROM jobs")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::InfrastructureError {
+                message: format!("Failed to count jobs: {}", e),
+            })?;
 
-        let total = rows.0 as usize;
+        let total: i64 = count_row.try_get("total").unwrap_or(0);
 
         let job_rows = sqlx::query(
             r#"
@@ -302,7 +298,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
             jobs.push(job);
         }
 
-        Ok((jobs, total))
+        Ok((jobs, total as usize))
     }
 
     async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>> {

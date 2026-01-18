@@ -65,7 +65,7 @@ pub struct NatsConfig {
 impl Default for NatsConfig {
     fn default() -> Self {
         Self {
-            urls: default_urls(),
+            urls: urls_from_env(),
             connection_timeout_secs: default_connect_timeout(),
             request_timeout_secs: default_request_timeout(),
             max_reconnects: default_max_reconnects(),
@@ -79,6 +79,13 @@ impl Default for NatsConfig {
 
 fn default_urls() -> Vec<String> {
     vec!["nats://localhost:4222".to_string()]
+}
+
+/// Get NATS URLs from environment variable or defaults
+fn urls_from_env() -> Vec<String> {
+    std::env::var("HODEI_NATS_URL")
+        .map(|url| vec![url])
+        .unwrap_or_else(|_| vec!["nats://localhost:4222".to_string()])
 }
 
 const fn default_connect_timeout() -> u64 {
@@ -97,7 +104,7 @@ impl NatsConfig {
     /// Creates a new NatsConfig with default settings for local development
     pub fn for_local() -> Self {
         Self {
-            urls: vec!["nats://localhost:4222".to_string()],
+            urls: urls_from_env(),
             connection_timeout_secs: 5,
             request_timeout_secs: Some(30),
             max_reconnects: Some(5),

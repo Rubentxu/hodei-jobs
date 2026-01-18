@@ -35,9 +35,7 @@ use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
 use hodei_server_infrastructure::persistence::postgres::PostgresSagaOrchestrator;
 use hodei_server_infrastructure::persistence::postgres::PostgresSagaRepository;
-use hodei_server_infrastructure::persistence::postgres::migrations::{
-    MigrationConfig, run_migrations,
-};
+use hodei_server_infrastructure::persistence::postgres::migrations::MigrationConfig;
 use hodei_server_infrastructure::persistence::postgres::{
     PostgresJobRepository, PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore,
     PostgresWorkerRegistry,
@@ -239,8 +237,17 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     info!("✓ Database connected");
 
     // Step 2: Run migrations using existing infrastructure service
-    let _config_migration = MigrationConfig::default();
-    let validation = run_migrations(&pool).await?;
+    let migration_config = MigrationConfig::with_paths(vec![
+        "crates/server/infrastructure/src/persistence/postgres/migrations/core".to_string(),
+        "crates/server/infrastructure/src/persistence/postgres/migrations/infra".to_string(),
+    ]);
+    let service =
+        hodei_server_infrastructure::persistence::postgres::migrations::MigrationService::new(
+            pool.clone(),
+            migration_config,
+        );
+    let _results = service.run_all().await?;
+    let validation = service.validate().await?;
     info!("✓  Migrations: {}", validation.summary());
 
     // Step 3: Connect to NATS with exponential backoff
