@@ -232,7 +232,12 @@ pub async fn start_job_coordinator(
         );
 
     // Create ProvisioningService with real implementation
-    let provisioning_config = ProvisioningConfig::new(server_address);
+    let default_image = std::env::var("HODEI_WORKER_IMAGE")
+        .unwrap_or_else(|_| "localhost:31500/hodei-jobs-worker:latest".to_string());
+    info!("🎯 Using worker image: {}", default_image);
+
+    let provisioning_config =
+        ProvisioningConfig::new(server_address).with_default_image(default_image);
     let providers_map = lifecycle_manager.providers_map();
     let provisioning_service: Arc<dyn WorkerProvisioningService> =
         Arc::new(DefaultWorkerProvisioningService::new(
@@ -530,12 +535,8 @@ pub async fn start_execution_saga_consumer(
         Arc::new(PostgresOutboxRepository::new(pool.clone()));
 
     // GAP-006 FIX: Create OutboxCommandBus for transactional command persistence
-    let (command_bus, command_outbox_repo) = create_command_bus(pool);
-
-    // Extract inner bus for handler registration (register needs InMemoryErasedCommandBus)
-    let inner_command_bus = command_bus.as_ref() as *const _ as *const InMemoryErasedCommandBus;
-    // SAFETY: We know the inner type is InMemoryErasedCommandBus from create_command_bus
-    let inner_command_bus = unsafe { &*inner_command_bus };
+    // We need to get a reference to the inner bus BEFORE wrapping it with OutboxCommandBus
+    let (inner_command_bus, command_outbox_repo) = create_command_bus_with_inner(pool);
 
     // Use the NatsEventBus as the event bus
     let event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus + Send + Sync> =
@@ -562,7 +563,7 @@ pub async fn start_execution_saga_consumer(
     // This enables ExecuteJobHandler to send RUN_JOB to workers
     // Note: We pass None for command_outbox_repo since it's a different type
     register_execution_command_handlers_with_executor(
-        inner_command_bus,
+        &inner_command_bus,
         job_repository.clone(),
         worker_registry.clone(),
         Some(job_executor),
@@ -571,6 +572,13 @@ pub async fn start_execution_saga_consumer(
     .await;
 
     let (stop_tx, _stop_rx) = tokio::sync::broadcast::channel(1);
+
+    // Wrap the inner bus with outbox support for transactional command persistence
+    let command_bus: Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync> =
+        Arc::new(hodei_server_domain::command::OutboxCommandBus::new(
+            command_outbox_repo,
+            inner_command_bus,
+        ));
 
     let consumer = ExecutionSagaConsumer::new(
         nats_event_bus.client().clone(),
@@ -604,17 +612,34 @@ pub fn create_command_bus(
     Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync>,
     Arc<PostgresCommandOutboxRepository>,
 ) {
+    let (inner_bus, outbox_repository) = create_command_bus_with_inner(pool);
+
+    // Wrap the command bus with outbox support
+    let outboxed_bus: hodei_server_domain::command::OutboxCommandBus<
+        PostgresCommandOutboxRepository,
+        InMemoryErasedCommandBus,
+    > = hodei_server_domain::command::OutboxCommandBus::new(outbox_repository.clone(), inner_bus);
+
+    (Arc::new(outboxed_bus), outbox_repository)
+}
+
+/// Create a command bus and return the inner bus for handler registration
+///
+/// This function separates the inner bus creation from the outbox wrapping,
+/// allowing handlers to be registered on the inner bus before it's wrapped.
+pub fn create_command_bus_with_inner(
+    pool: sqlx::PgPool,
+) -> (
+    Arc<InMemoryErasedCommandBus>,
+    Arc<PostgresCommandOutboxRepository>,
+) {
     // Create the command outbox repository
     let outbox_repository = Arc::new(PostgresCommandOutboxRepository::new(pool));
 
-    // Create the in-memory command bus first (as concrete type)
-    let inner_bus = InMemoryErasedCommandBus::new();
+    // Create the in-memory command bus as a concrete type (not wrapped)
+    let inner_bus: Arc<InMemoryErasedCommandBus> = Arc::new(InMemoryErasedCommandBus::new());
 
-    // Wrap the command bus with outbox support (takes ownership)
-    let outboxed_bus: OutboxCommandBus<PostgresCommandOutboxRepository, InMemoryErasedCommandBus> =
-        OutboxCommandBus::new(outbox_repository.clone(), Arc::new(inner_bus));
-
-    (Arc::new(outboxed_bus), outbox_repository)
+    (inner_bus, outbox_repository)
 }
 
 /// Start background tasks (TimeoutChecker)
