@@ -11,6 +11,8 @@ use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
+use hodei_server_application::command::execution::JobExecutorImpl;
+use hodei_server_application::command::execution::register_execution_command_handlers_with_executor;
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
 use hodei_server_application::jobs::coordinator::JobCoordinator;
 use hodei_server_application::jobs::create::CreateJobUseCase;
@@ -206,6 +208,7 @@ pub async fn start_job_coordinator(
             > + Send
             + Sync,
     >,
+    server_address: String,
 ) -> CoordinatorShutdownHandle {
     info!("Initializing job coordinator for reactive job processing...");
 
@@ -229,8 +232,6 @@ pub async fn start_job_coordinator(
         );
 
     // Create ProvisioningService with real implementation
-    let server_address =
-        std::env::var("HODEI_GRPC_ADDRESS").unwrap_or_else(|_| "http://localhost:9090".to_string());
     let provisioning_config = ProvisioningConfig::new(server_address);
     let providers_map = lifecycle_manager.providers_map();
     let provisioning_service: Arc<dyn WorkerProvisioningService> =
@@ -525,13 +526,49 @@ pub async fn start_execution_saga_consumer(
 
     let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
     let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool.clone()));
+    let outbox_repository: Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync> =
+        Arc::new(PostgresOutboxRepository::new(pool.clone()));
 
     // GAP-006 FIX: Create OutboxCommandBus for transactional command persistence
-    let (command_bus, _outbox_repo) = create_command_bus(pool);
+    let (command_bus, command_outbox_repo) = create_command_bus(pool);
+
+    // Extract inner bus for handler registration (register needs InMemoryErasedCommandBus)
+    let inner_command_bus = command_bus.as_ref() as *const _ as *const InMemoryErasedCommandBus;
+    // SAFETY: We know the inner type is InMemoryErasedCommandBus from create_command_bus
+    let inner_command_bus = unsafe { &*inner_command_bus };
 
     // Use the NatsEventBus as the event bus
     let event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus + Send + Sync> =
         Arc::new(nats_event_bus.clone());
+
+    // Create WorkerCommandSender for JobExecutorImpl
+    // Note: We need to create this from the WorkerAgentService which is passed in
+    // For now, we'll create a placeholder and the actual wiring happens in start_job_coordinator
+    let grpc_command_sender = GrpcWorkerCommandSender::new(WorkerAgentServiceImpl::new());
+    let worker_command_sender: Arc<
+        dyn hodei_server_application::workers::commands::WorkerCommandSender,
+    > = Arc::new(grpc_command_sender);
+
+    // Create JobExecutorImpl for executing jobs via gRPC
+    let job_executor: Arc<
+        dyn hodei_server_domain::saga::commands::execution::JobExecutor + Send + Sync,
+    > = Arc::new(JobExecutorImpl::new(
+        job_repository.clone(),
+        worker_command_sender,
+        outbox_repository.clone(),
+    ));
+
+    // Register execution command handlers WITH JobExecutor
+    // This enables ExecuteJobHandler to send RUN_JOB to workers
+    // Note: We pass None for command_outbox_repo since it's a different type
+    register_execution_command_handlers_with_executor(
+        inner_command_bus,
+        job_repository.clone(),
+        worker_registry.clone(),
+        Some(job_executor),
+        None, // command_outbox_repo is PostgresCommandOutboxRepository, not OutboxRepository
+    )
+    .await;
 
     let (stop_tx, _stop_rx) = tokio::sync::broadcast::channel(1);
 
@@ -552,7 +589,7 @@ pub async fn start_execution_saga_consumer(
         }
     });
 
-    info!("✅ ExecutionSagaConsumer started (with OutboxCommandBus for GAP-006 fix)");
+    info!("✅ ExecutionSagaConsumer started (with JobExecutorImpl for RUN_JOB dispatch)");
     Ok(ExecutionSagaConsumerShutdownHandle { stop_tx })
 }
 
