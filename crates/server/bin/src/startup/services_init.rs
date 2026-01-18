@@ -359,13 +359,18 @@ pub async fn start_saga_consumers(
     let (cancellation_stop_tx, cancellation_stop_rx) = tokio::sync::broadcast::channel(1);
     let (cleanup_stop_tx, cleanup_stop_rx) = tokio::sync::broadcast::channel(1);
 
+    // Create command bus for saga consumers
+    let (command_bus, _) = create_command_bus(pool.clone());
+
     // Start CancellationSagaConsumer
     let cancellation_consumer = CancellationSagaConsumer::new(
         nats_event_bus.client().clone(),
         nats_event_bus.jetstream().clone(),
         saga_orchestrator.clone(),
         job_repository.clone(),
+        worker_registry.clone(),
         None,
+        command_bus.clone(),
     );
 
     tokio::spawn(async move {
@@ -811,4 +816,42 @@ pub async fn start_command_relay(
     Ok(CommandRelayShutdownHandle {
         stop_tx: shutdown_signal_sender,
     })
+}
+
+/// Start execution command consumers (NATS Consumers for handlers)
+pub async fn start_execution_command_consumers_service(
+    nats_client: Arc<async_nats::Client>,
+    pool: sqlx::PgPool,
+) -> anyhow::Result<()> {
+    info!("🚀 Starting Execution Command Consumers...");
+
+    let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
+    let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool.clone()));
+    let outbox_repository: Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync> =
+        Arc::new(PostgresOutboxRepository::new(pool.clone()));
+
+    // Create WorkerCommandSender and JobExecutor for ExecuteJobHandler
+    let grpc_command_sender = GrpcWorkerCommandSender::new(WorkerAgentServiceImpl::new());
+    let worker_command_sender: Arc<
+        dyn hodei_server_application::workers::commands::WorkerCommandSender,
+    > = Arc::new(grpc_command_sender);
+
+    let job_executor: Arc<
+        dyn hodei_server_domain::saga::commands::execution::JobExecutor + Send + Sync,
+    > = Arc::new(JobExecutorImpl::new(
+        job_repository.clone(),
+        worker_command_sender,
+        outbox_repository.clone(),
+    ));
+
+    hodei_server_infrastructure::messaging::execution_command_consumers::start_execution_command_consumers(
+        nats_client.as_ref().clone(),
+        job_repository,
+        worker_registry,
+        Some(job_executor),
+    )
+    .await?;
+
+    info!("✅ Execution Command Consumers started");
+    Ok(())
 }

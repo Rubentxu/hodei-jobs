@@ -52,6 +52,10 @@ impl Command for ValidateJobCommand {
     fn target_type(&self) -> CommandTargetType {
         CommandTargetType::Job
     }
+
+    fn command_name(&self) -> Cow<'_, str> {
+        Cow::Borrowed("ValidateJob")
+    }
 }
 
 /// Result of job validation.
@@ -213,6 +217,10 @@ impl Command for AssignWorkerCommand {
 
     fn target_type(&self) -> CommandTargetType {
         CommandTargetType::Worker
+    }
+
+    fn command_name(&self) -> Cow<'_, str> {
+        Cow::Borrowed("AssignWorker")
     }
 }
 
@@ -446,6 +454,10 @@ impl Command for ExecuteJobCommand {
     fn target_type(&self) -> CommandTargetType {
         CommandTargetType::Worker
     }
+
+    fn command_name(&self) -> Cow<'_, str> {
+        Cow::Borrowed("ExecuteJob")
+    }
 }
 
 /// Result of job execution.
@@ -674,6 +686,10 @@ impl Command for CompleteJobCommand {
 
     fn target_type(&self) -> CommandTargetType {
         CommandTargetType::Job
+    }
+
+    fn command_name(&self) -> Cow<'_, str> {
+        Cow::Borrowed("CompleteJob")
     }
 }
 

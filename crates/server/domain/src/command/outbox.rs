@@ -289,7 +289,7 @@ where
         // or in the relay using a command type registry
         let insert = CommandOutboxInsert::new(
             target_id,
-            target_type,
+            target_type.clone(),
             command_name.clone(),
             serde_json::json!({"type_id": format!("{:?}", command_type_id)}),
             None,
@@ -777,7 +777,12 @@ mod tests {
         };
 
         let result = outboxed
-            .dispatch_erased(Box::new(command), TypeId::of::<TestCommand>())
+            .dispatch_erased(
+                Box::new(command),
+                TypeId::of::<TestCommand>(),
+                "TestCommand".to_string(),
+                CommandTargetType::Saga,
+            )
             .await;
 
         assert!(result.is_ok());
@@ -797,7 +802,12 @@ mod tests {
         };
 
         let result = cloned
-            .dispatch_erased(Box::new(command), TypeId::of::<TestCommand>())
+            .dispatch_erased(
+                Box::new(command),
+                TypeId::of::<TestCommand>(),
+                "TestCommand".to_string(),
+                CommandTargetType::Saga,
+            )
             .await;
 
         assert!(result.is_ok());

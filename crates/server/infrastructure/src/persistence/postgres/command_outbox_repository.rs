@@ -4,9 +4,12 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use hodei_server_domain::command::outbox::{
-    CommandOutboxError, CommandOutboxInsert, CommandOutboxRecord, CommandOutboxRepository,
-    CommandOutboxStats, CommandOutboxStatus, CommandTargetType,
+use hodei_server_domain::command::{
+    CommandTargetType,
+    outbox::{
+        CommandOutboxError, CommandOutboxInsert, CommandOutboxRecord, CommandOutboxRepository,
+        CommandOutboxStats, CommandOutboxStatus,
+    },
 };
 use sqlx::{PgPool, PgTransaction, Postgres, Row};
 use std::sync::Arc;

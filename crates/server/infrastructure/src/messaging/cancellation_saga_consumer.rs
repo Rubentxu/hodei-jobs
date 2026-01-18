@@ -19,8 +19,9 @@ use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
 };
-use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
+use hodei_server_domain::saga::{SagaOrchestrator, SagaServices, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId};
+use hodei_server_domain::workers::WorkerRegistry;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,10 +118,11 @@ pub enum CancellationSagaTriggerResult {
 /// 3. Update job state to CANCELLED
 /// 4. Release the worker for new jobs
 #[derive(Clone)]
-pub struct CancellationSagaConsumer<SO, JR>
+pub struct CancellationSagaConsumer<SO, JR, WR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
 {
     /// NATS client
     _client: Client,
@@ -134,20 +136,27 @@ where
     /// Job repository for validation
     job_repository: Arc<JR>,
 
+    /// Worker registry for saga steps
+    worker_registry: Arc<WR>,
+
     /// Consumer configuration
     config: CancellationSagaConsumerConfig,
 
-    /// EPIC-85 US-05: Circuit breaker for resilience
+    /// Circuit breaker for resilience
     circuit_breaker: Option<Arc<CircuitBreaker>>,
 
     /// Shutdown signal
     shutdown_tx: mpsc::Sender<()>,
+
+    /// Command bus for saga steps
+    command_bus: Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync>,
 }
 
-impl<SO, JR> CancellationSagaConsumer<SO, JR>
+impl<SO, JR, WR> CancellationSagaConsumer<SO, JR, WR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
 {
     /// Create a new CancellationSagaConsumer
     #[allow(clippy::too_many_arguments)]
@@ -156,7 +165,9 @@ where
         jetstream: JetStreamContext,
         orchestrator: Arc<SO>,
         job_repository: Arc<JR>,
+        worker_registry: Arc<WR>,
         config: Option<CancellationSagaConsumerConfig>,
+        command_bus: Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync>,
     ) -> Self {
         let config = config.unwrap_or_default();
         let (shutdown_tx, _) = mpsc::channel(1);
@@ -179,9 +190,11 @@ where
             jetstream,
             orchestrator,
             job_repository,
+            worker_registry,
             config,
             circuit_breaker: Some(circuit_breaker),
             shutdown_tx,
+            command_bus,
         }
     }
 
@@ -614,22 +627,26 @@ where
 
 /// Builder for CancellationSagaConsumer
 #[derive(Debug)]
-pub struct CancellationSagaConsumerBuilder<SO, JR>
+pub struct CancellationSagaConsumerBuilder<SO, JR, WR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
 {
     client: Option<Client>,
     jetstream: Option<JetStreamContext>,
     orchestrator: Option<Arc<SO>>,
     job_repository: Option<Arc<JR>>,
+    worker_registry: Option<Arc<WR>>,
     config: Option<CancellationSagaConsumerConfig>,
+    command_bus: Option<Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync>>,
 }
 
-impl<SO, JR> Default for CancellationSagaConsumerBuilder<SO, JR>
+impl<SO, JR, WR> Default for CancellationSagaConsumerBuilder<SO, JR, WR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
 {
     fn default() -> Self {
         Self {
@@ -637,15 +654,18 @@ where
             jetstream: None,
             orchestrator: None,
             job_repository: None,
+            worker_registry: None,
             config: None,
+            command_bus: None,
         }
     }
 }
 
-impl<SO, JR> CancellationSagaConsumerBuilder<SO, JR>
+impl<SO, JR, WR> CancellationSagaConsumerBuilder<SO, JR, WR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
     JR: JobRepository + Send + Sync + 'static,
+    WR: WorkerRegistry + Send + Sync + 'static,
 {
     pub fn new() -> Self {
         Self::default()
@@ -690,12 +710,21 @@ where
             .job_repository
             .ok_or_else(|| anyhow::anyhow!("job_repository is required"))?;
 
+        let worker_registry = self
+            .worker_registry
+            .ok_or_else(|| anyhow::anyhow!("worker_registry is required"))?;
+        let command_bus = self
+            .command_bus
+            .ok_or_else(|| anyhow::anyhow!("command_bus is required"))?;
+
         Ok(CancellationSagaConsumer::new(
             client,
             jetstream,
             orchestrator,
             job_repository,
+            worker_registry,
             self.config,
+            command_bus,
         ))
     }
 }

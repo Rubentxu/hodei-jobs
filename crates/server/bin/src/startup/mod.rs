@@ -15,9 +15,9 @@ pub use grpc_server::{GrpcServerConfig, start_grpc_server};
 pub use providers_init::{ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer};
 pub use services_init::{
     GrpcServices, initialize_grpc_services, start_background_tasks, start_command_relay,
-    start_execution_saga_consumer, start_job_coordinator, start_nats_outbox_relay,
-    start_reactive_saga_processor, start_saga_consumers, start_saga_poller,
-    start_worker_ephemeral_terminating_consumer,
+    start_execution_command_consumers_service, start_execution_saga_consumer,
+    start_job_coordinator, start_nats_outbox_relay, start_reactive_saga_processor,
+    start_saga_consumers, start_saga_poller, start_worker_ephemeral_terminating_consumer,
 };
 pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
@@ -384,6 +384,14 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     // 3. Monitor provider infrastructure events
     lifecycle_manager.start_event_monitoring().await;
     info!("✓ WorkerLifecycleManager event monitoring started (reactive cleanup enabled)");
+
+    // EPIC-88: Start Execution Command Consumers
+    services_init::start_execution_command_consumers_service(
+        Arc::new(nats_event_bus.client().clone()),
+        pool.clone(),
+    )
+    .await?;
+    info!("✓ Execution Command Consumers started");
 
     info!("✓ All connections established, ready for gRPC");
 

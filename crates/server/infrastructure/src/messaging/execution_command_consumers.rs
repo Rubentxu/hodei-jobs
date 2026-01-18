@@ -102,16 +102,19 @@ where
     let consumer_name = format!("cmd-consumer-{}", consumer_name_base.to_lowercase());
 
     // Create/Update Consumer configuration
-    let consumer = jetstream
+    // Get the stream first
+    let stream = jetstream
+        .get_stream("HODEI_COMMANDS")
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get stream HODEI_COMMANDS: {}", e))?;
+
+    // Create/Update Consumer using the stream
+    let consumer: async_nats::jetstream::consumer::PullConsumer = stream
         .get_or_create_consumer(
-            "HODEI_COMMANDS",
+            &consumer_name,
             jetstream::consumer::pull::Config {
                 durable_name: Some(consumer_name.clone()),
                 filter_subject: subject.to_string(),
-                // Ensure we process commands in order per subject if needed,
-                // but concurrency helps.
-                // For commands updates to same aggregate (Job) might conflict if parallel,
-                // but ID locking in DB usually handles it.
                 ..Default::default()
             },
         )
