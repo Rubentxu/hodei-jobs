@@ -9,6 +9,7 @@
 // - scheduling: Estrategias de scheduling y selección
 // - audit: AuditLog y repositorio de auditoría
 // - iam: Tokens OTP y autenticación
+// - telemetry: Advanced metrics for saga, outbox, and commands
 
 pub mod event_bus;
 pub mod health;
