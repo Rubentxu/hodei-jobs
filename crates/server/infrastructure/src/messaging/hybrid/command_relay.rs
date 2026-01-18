@@ -81,6 +81,16 @@ pub struct CommandRelayMetrics {
     pub in_flight_commands: u64,
     pub dispatch_latency_ms: u64,
     pub last_dispatch_timestamp: u64,
+
+    // EPIC-88 Task 4.2: Degraded mode detection
+    pub listener_failures: u64,
+    pub is_degraded_mode: bool,
+    pub last_listener_failure_timestamp: Option<u64>,
+
+    // EPIC-88 Task 4.3: Messaging purity metrics
+    pub commands_via_nats: u64,
+    pub commands_via_polling: u64,
+    pub commands_via_notify: u64,
 }
 
 impl CommandRelayMetrics {
@@ -108,11 +118,41 @@ impl CommandRelayMetrics {
 
     pub fn record_notification(&mut self) {
         self.notifications_received += 1;
+        self.commands_via_notify += 1;
     }
 
     pub fn record_polling_wakeup(&mut self) {
         self.polling_wakeups += 1;
         self.batch_count += 1;
+        self.commands_via_polling += 1;
+    }
+
+    pub fn record_nats_dispatch(&mut self) {
+        self.commands_via_nats += 1;
+    }
+
+    pub fn record_listener_failure(&mut self) {
+        self.listener_failures += 1;
+        self.is_degraded_mode = true;
+        self.last_listener_failure_timestamp = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+    }
+
+    pub fn record_listener_recovery(&mut self) {
+        self.is_degraded_mode = false;
+    }
+
+    /// Calculate messaging purity percentage (% of commands via NATS)
+    pub fn messaging_purity_percentage(&self) -> f64 {
+        let total = self.commands_via_nats + self.commands_via_polling + self.commands_via_notify;
+        if total == 0 {
+            return 100.0;
+        }
+        (self.commands_via_nats as f64 / total as f64) * 100.0
     }
 
     /// Update health check metrics

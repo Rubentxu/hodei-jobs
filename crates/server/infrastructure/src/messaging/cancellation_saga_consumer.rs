@@ -626,7 +626,6 @@ where
 }
 
 /// Builder for CancellationSagaConsumer
-#[derive(Debug)]
 pub struct CancellationSagaConsumerBuilder<SO, JR, WR>
 where
     SO: SagaOrchestrator<Error = DomainError> + Send + Sync + 'static,
@@ -696,7 +695,7 @@ where
         self
     }
 
-    pub fn build(self) -> anyhow::Result<CancellationSagaConsumer<SO, JR>> {
+    pub fn build(self) -> anyhow::Result<CancellationSagaConsumer<SO, JR, WR>> {
         let client = self
             .client
             .ok_or_else(|| anyhow::anyhow!("client is required"))?;
