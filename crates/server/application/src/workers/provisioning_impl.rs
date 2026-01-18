@@ -217,20 +217,57 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
 
     async fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec> {
         // Get image from provider config, fallback to config default_image
-        let image = match self.provider_registry.get_provider(provider_id).await {
-            Ok(Some(config)) => match config.type_config {
-                hodei_server_domain::providers::ProviderTypeConfig::Docker(docker) => {
-                    docker.default_image
-                }
-                hodei_server_domain::providers::ProviderTypeConfig::Kubernetes(k8s) => {
-                    k8s.default_image
-                }
-                _ => self.config.default_image.clone(),
-            },
-            _ => self.config.default_image.clone(),
-        };
-
-        Some(WorkerSpec::new(image, self.config.server_address.clone()))
+        let result = self.provider_registry.get_provider(provider_id).await;
+        match result {
+            Ok(Some(config)) => {
+                info!(
+                    "✅ Found provider config for {}: name={}, type={:?}",
+                    provider_id, config.name, config.provider_type
+                );
+                let image = match config.type_config {
+                    hodei_server_domain::providers::ProviderTypeConfig::Docker(docker) => {
+                        info!(
+                            "🖼️ Using Docker config default_image: {}",
+                            docker.default_image
+                        );
+                        docker.default_image
+                    }
+                    hodei_server_domain::providers::ProviderTypeConfig::Kubernetes(k8s) => {
+                        info!(
+                            "🖼️ Using Kubernetes config default_image: {}",
+                            k8s.default_image
+                        );
+                        k8s.default_image
+                    }
+                    _ => {
+                        warn!("⚠️ Unknown provider type config");
+                        self.config.default_image.clone()
+                    }
+                };
+                info!("🎯 Selected image for worker: {}", image);
+                Some(WorkerSpec::new(image, self.config.server_address.clone()))
+            }
+            Ok(None) => {
+                warn!(
+                    "⚠️ Provider {} not found in registry, using fallback: {}",
+                    provider_id, self.config.default_image
+                );
+                Some(WorkerSpec::new(
+                    self.config.default_image.clone(),
+                    self.config.server_address.clone(),
+                ))
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️ Error getting provider {} from registry: {}, using fallback: {}",
+                    provider_id, e, self.config.default_image
+                );
+                Some(WorkerSpec::new(
+                    self.config.default_image.clone(),
+                    self.config.server_address.clone(),
+                ))
+            }
+        }
     }
 
     async fn list_providers(&self) -> Result<Vec<ProviderId>> {

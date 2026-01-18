@@ -137,6 +137,7 @@ pub struct StartupConfig {
     pub docker_enabled: bool,
     pub kubernetes_enabled: bool,
     pub rust_log: String,
+    pub server_address: String,
 }
 
 impl Default for StartupConfig {
@@ -156,6 +157,7 @@ impl Default for StartupConfig {
             docker_enabled: true,
             kubernetes_enabled: true,
             rust_log: "info".to_string(),
+            server_address: "http://localhost:9090".to_string(),
         }
     }
 }
@@ -187,6 +189,9 @@ impl StartupConfig {
                 .unwrap_or_else(|_| "1".to_string())
                 == "1",
             rust_log: env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+            server_address: env::var("HODEI_SERVER_ADDRESS")
+                .or_else(|_| env::var("HODEI_GRPC_ADDRESS"))
+                .unwrap_or_else(|_| format!("http://127.0.0.1:{}", grpc_port)),
             ..Self::default()
         })
     }

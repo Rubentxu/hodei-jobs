@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 Starting Hodei Jobs Platform on {}", grpc_config.addr);
 
     // Run the application (connects to DB, runs migrations, connects to NATS, initializes services)
-    let app_state = run(config).await?;
+    let app_state = run(config.clone()).await?;
 
     // Initialize gRPC services first (before starting job coordinator)
     let event_bus = app_state.event_bus();
@@ -90,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_state.lifecycle_manager.clone(),
         grpc_services.worker_agent_service.clone(),
         app_state.saga_orchestrator.clone(),
+        config.server_address,
     )
     .await;
 
