@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use hodei_shared::event_topics::{job_topics, worker_topics};
 
@@ -338,6 +338,7 @@ impl ExecutionSagaConsumer {
     }
 
     /// Process a single NATS message payload
+    #[instrument(skip_all)]
     async fn process_message(&self, payload: &[u8]) -> Result<(), DomainError> {
         // Parse the envelope from the message payload
         let envelope: NatsMessageEnvelope =
@@ -379,6 +380,7 @@ impl ExecutionSagaConsumer {
     }
 
     /// Handle JobQueued event - trigger execution saga
+    #[instrument(skip(self), fields(job_id = %job_id))]
     async fn handle_job_queued(&self, job_id: &JobId) -> Result<(), DomainError> {
         // Fetch job details
         let job = self
@@ -433,6 +435,7 @@ impl ExecutionSagaConsumer {
     }
 
     /// Handle WorkerReady event - dispatch pending job
+    #[instrument(skip(self), fields(worker_id = %worker_id))]
     async fn handle_worker_ready(&self, worker_id: &WorkerId) -> Result<(), DomainError> {
         // Check if worker exists and is in correct state
         let _worker = self

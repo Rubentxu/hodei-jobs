@@ -18,6 +18,9 @@ use async_nats::jetstream::stream::{Config as StreamConfig, RetentionPolicy};
 use futures::StreamExt;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::OutboxEventInsert;
+use hodei_server_domain::saga::circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
+};
 use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, ProviderId, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
@@ -25,7 +28,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use hodei_shared::event_topics::worker_topics;
@@ -73,6 +76,12 @@ pub struct OrphanWorkerDetectorConsumerConfig {
 
     /// Default saga timeout
     pub saga_timeout: Duration,
+
+    /// EPIC-85 US-05: Circuit breaker configuration
+    pub circuit_breaker_failure_threshold: u64,
+    pub circuit_breaker_open_duration: Duration,
+    pub circuit_breaker_success_threshold: u64,
+    pub circuit_breaker_call_timeout: Duration,
 }
 
 impl Default for OrphanWorkerDetectorConsumerConfig {
@@ -87,6 +96,11 @@ impl Default for OrphanWorkerDetectorConsumerConfig {
             max_deliver: 3,
             orphan_termination_threshold_secs: 3600, // 1 hour = immediate terminate
             saga_timeout: Duration::from_secs(180),
+            // EPIC-85 US-05: Circuit breaker defaults
+            circuit_breaker_failure_threshold: 5,
+            circuit_breaker_open_duration: Duration::from_secs(30),
+            circuit_breaker_success_threshold: 2,
+            circuit_breaker_call_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -130,6 +144,9 @@ pub struct OrphanWorkerDetectorConsumer {
     /// Consumer configuration
     pub config: OrphanWorkerDetectorConsumerConfig,
 
+    /// EPIC-85 US-05: Circuit breaker for resilience
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+
     /// Shutdown signal
     shutdown_tx: mpsc::Sender<()>,
 }
@@ -157,6 +174,19 @@ impl OrphanWorkerDetectorConsumer {
         let config = config.unwrap_or_default();
         let (shutdown_tx, _) = mpsc::channel(1);
 
+        // EPIC-85 US-05: Initialize circuit breaker
+        let circuit_breaker = Arc::new(CircuitBreaker::new(
+            format!("orphan-detector-{}", config.consumer_name),
+            CircuitBreakerConfig {
+                failure_threshold: config.circuit_breaker_failure_threshold,
+                open_duration: config.circuit_breaker_open_duration,
+                success_threshold: config.circuit_breaker_success_threshold,
+                call_timeout: config.circuit_breaker_call_timeout,
+                failure_rate_threshold: 50,
+                failure_rate_window: 100,
+            },
+        ));
+
         Self {
             _client: client,
             jetstream,
@@ -164,8 +194,25 @@ impl OrphanWorkerDetectorConsumer {
             worker_registry,
             outbox_repository,
             config,
+            circuit_breaker: Some(circuit_breaker),
             shutdown_tx,
         }
+    }
+
+    /// EPIC-85 US-05: Get current circuit breaker state
+    pub fn circuit_breaker_state(&self) -> CircuitState {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.state())
+            .unwrap_or(CircuitState::Closed)
+    }
+
+    /// EPIC-85 US-05: Check if circuit allows requests
+    pub fn is_circuit_closed(&self) -> bool {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.allow_request())
+            .unwrap_or(true)
     }
 
     /// Get the stream name for this consumer
@@ -317,12 +364,73 @@ impl OrphanWorkerDetectorConsumer {
         while let Some(message_result) = messages.next().await {
             match message_result {
                 Ok(message) => {
-                    if let Err(e) = self.process_message(&message.payload).await {
-                        error!(
-                            "🔍 OrphanWorkerDetectorConsumer: Error processing message: {}",
-                            e
+                    // EPIC-85 US-05: Check if circuit allows processing
+                    let can_process = self
+                        .circuit_breaker
+                        .as_ref()
+                        .map(|cb| cb.allow_request())
+                        .unwrap_or(true);
+
+                    if can_process {
+                        let payload = message.payload.clone();
+                        let circuit_breaker = self.circuit_breaker.clone();
+
+                        // EPIC-85 US-05: Process with circuit breaker protection
+                        let result = match &circuit_breaker {
+                            Some(cb) => {
+                                let process_future = self.process_message(&payload);
+                                cb.execute(async {
+                                    process_future.await.map_err(|e| {
+                                        DomainError::InfrastructureError {
+                                            message: e.to_string(),
+                                        }
+                                    })
+                                })
+                                .await
+                                .map_err(|e| match e {
+                                    CircuitBreakerError::Open => DomainError::InfrastructureError {
+                                        message: "Circuit breaker open".to_string(),
+                                    },
+                                    CircuitBreakerError::Timeout => {
+                                        DomainError::InfrastructureError {
+                                            message: "Circuit breaker timeout".to_string(),
+                                        }
+                                    }
+                                    CircuitBreakerError::Failed(e) => e,
+                                })
+                            }
+                            None => self.process_message(&message.payload).await,
+                        };
+
+                        match result {
+                            Ok(()) => {
+                                // EPIC-85 US-05: Record success
+                                if let Some(ref cb) = circuit_breaker {
+                                    cb.record_success();
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "🔍 OrphanWorkerDetectorConsumer: Error processing message: {}",
+                                    e
+                                );
+                                // EPIC-85 US-05: Record failure
+                                if let Some(ref cb) = circuit_breaker {
+                                    cb.record_failure();
+                                }
+                            }
+                        }
+                    } else {
+                        // Circuit is open - log warning
+                        warn!(
+                            "🔍 OrphanWorkerDetectorConsumer: Circuit breaker open, skipping message"
                         );
+                        // EPIC-85 US-05: Record failure for circuit being open
+                        if let Some(ref cb) = self.circuit_breaker {
+                            cb.record_failure();
+                        }
                     }
+
                     // Ack the message
                     if let Err(e) = message.ack().await {
                         error!(
@@ -336,6 +444,10 @@ impl OrphanWorkerDetectorConsumer {
                         "🔍 OrphanWorkerDetectorConsumer: Message receive error: {}",
                         e
                     );
+                    // EPIC-85 US-05: Record failure in circuit breaker
+                    if let Some(ref cb) = self.circuit_breaker {
+                        cb.record_failure();
+                    }
                 }
             }
         }
@@ -344,6 +456,7 @@ impl OrphanWorkerDetectorConsumer {
     }
 
     /// Process a single NATS message payload
+    #[instrument(skip_all)]
     async fn process_message(&self, payload: &[u8]) -> Result<(), DomainError> {
         // Parse the envelope from the message payload
         let envelope: NatsMessageEnvelope =

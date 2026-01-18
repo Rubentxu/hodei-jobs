@@ -15,8 +15,11 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
-use hodei_server_domain::outbox::OutboxRepository;
-use hodei_server_domain::outbox::{OutboxError, OutboxEventView};
+use hodei_server_domain::outbox::{OutboxError, OutboxEventView, OutboxRepository};
+use hodei_server_domain::saga::circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
+};
+use hodei_server_domain::shared_kernel::DomainError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -41,6 +44,12 @@ pub struct NatsOutboxRelayConfig {
     pub enable_dlq: bool,
     /// DLQ stream name (if enabled)
     pub dlq_stream_name: String,
+
+    /// EPIC-85 US-05: Circuit breaker configuration
+    pub circuit_breaker_failure_threshold: u64,
+    pub circuit_breaker_open_duration: Duration,
+    pub circuit_breaker_success_threshold: u64,
+    pub circuit_breaker_call_timeout: Duration,
 }
 
 impl Default for NatsOutboxRelayConfig {
@@ -53,6 +62,11 @@ impl Default for NatsOutboxRelayConfig {
             max_retry_delay: Duration::from_secs(60),
             enable_dlq: true,
             dlq_stream_name: "HODEI_DLQ".to_string(),
+            // EPIC-85 US-05: Circuit breaker defaults
+            circuit_breaker_failure_threshold: 5,
+            circuit_breaker_open_duration: Duration::from_secs(30),
+            circuit_breaker_success_threshold: 2,
+            circuit_breaker_call_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -102,6 +116,21 @@ impl NatsOutboxRelayConfigBuilder {
 
     pub fn dlq_stream_name(mut self, name: String) -> Self {
         self.config.dlq_stream_name = name;
+        self
+    }
+
+    /// EPIC-85 US-05: Configure circuit breaker
+    pub fn circuit_breaker(
+        mut self,
+        failure_threshold: u64,
+        open_duration: Duration,
+        success_threshold: u64,
+        call_timeout: Duration,
+    ) -> Self {
+        self.config.circuit_breaker_failure_threshold = failure_threshold;
+        self.config.circuit_breaker_open_duration = open_duration;
+        self.config.circuit_breaker_success_threshold = success_threshold;
+        self.config.circuit_breaker_call_timeout = call_timeout;
         self
     }
 
@@ -312,6 +341,9 @@ pub struct NatsOutboxRelay {
     event_bus: NatsEventBus,
     config: NatsOutboxRelayConfig,
     metrics: NatsOutboxRelayMetrics,
+
+    /// EPIC-85 US-05: Circuit breaker for resilience
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl NatsOutboxRelay {
@@ -324,13 +356,45 @@ impl NatsOutboxRelay {
         let repository: Arc<dyn OutboxRepository> =
             Arc::new(PostgresOutboxRepository::new(pool.clone()));
 
+        let config = config.unwrap_or_default();
+
+        // EPIC-85 US-05: Initialize circuit breaker
+        let circuit_breaker = Arc::new(CircuitBreaker::new(
+            "nats-outbox-relay".to_string(),
+            CircuitBreakerConfig {
+                failure_threshold: config.circuit_breaker_failure_threshold,
+                open_duration: config.circuit_breaker_open_duration,
+                success_threshold: config.circuit_breaker_success_threshold,
+                call_timeout: config.circuit_breaker_call_timeout,
+                failure_rate_threshold: 50,
+                failure_rate_window: 100,
+            },
+        ));
+
         Self {
             pool,
             repository,
             event_bus,
-            config: config.unwrap_or_default(),
+            config,
             metrics: NatsOutboxRelayMetrics::new(),
+            circuit_breaker: Some(circuit_breaker),
         }
+    }
+
+    /// EPIC-85 US-05: Get current circuit breaker state
+    pub fn circuit_breaker_state(&self) -> CircuitState {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.state())
+            .unwrap_or(CircuitState::Closed)
+    }
+
+    /// EPIC-85 US-05: Check if circuit allows requests
+    pub fn is_circuit_closed(&self) -> bool {
+        self.circuit_breaker
+            .as_ref()
+            .map(|cb| cb.allow_request())
+            .unwrap_or(true)
     }
 
     /// Create with builder for fine-grained configuration
@@ -343,10 +407,16 @@ impl NatsOutboxRelay {
         self.metrics.snapshot().await
     }
 
-    /// Calculate exponential backoff delay
+    /// Calculate exponential backoff delay with jitter
     fn calculate_backoff(&self, retry_count: u32) -> Duration {
-        let delay = self.config.retry_delay.as_secs_f64() * (2.0_f64.powf(retry_count as f64));
-        let delay = Duration::from_secs_f64(delay);
+        let base = self.config.retry_delay.as_secs_f64() * (2.0_f64.powf(retry_count as f64));
+
+        // EPIC-85 US-05: Add jitter (±25% of the base delay)
+        let jitter_range = base * 0.25;
+        let jitter = (rand::random::<f64>() * 2.0 - 1.0) * jitter_range;
+        let final_delay = (base + jitter).max(0.1); // Ensure at least 100ms
+
+        let delay = Duration::from_secs_f64(final_delay);
         std::cmp::min(delay, self.config.max_retry_delay)
     }
 
@@ -423,10 +493,45 @@ impl NatsOutboxRelay {
     async fn process_event(&self, event: &OutboxEventView) -> Result<(), NatsOutboxRelayError> {
         let domain_event = self.outbox_event_to_domain_event(event)?;
 
-        self.event_bus
-            .publish(&domain_event)
+        // EPIC-85 US-05: Publish with circuit breaker protection
+        let publication_result = if let Some(ref cb) = self.circuit_breaker {
+            let event_bus = self.event_bus.clone();
+
+            cb.execute(async move {
+                event_bus.publish(&domain_event).await.map_err(|e| {
+                    DomainError::InfrastructureError {
+                        message: format!("Event bus publish failed: {}", e),
+                    }
+                })
+            })
             .await
-            .map_err(|e| NatsOutboxRelayError::EventBus(e))?;
+            .map_err(|e| match e {
+                CircuitBreakerError::Open => NatsOutboxRelayError::InfrastructureError {
+                    message: "Circuit breaker open".to_string(),
+                },
+                CircuitBreakerError::Timeout => NatsOutboxRelayError::InfrastructureError {
+                    message: "Circuit breaker timeout".to_string(),
+                },
+                CircuitBreakerError::Failed(e) => {
+                    NatsOutboxRelayError::EventBus(EventBusError::PublishError(e.to_string()))
+                }
+            })
+        } else {
+            self.event_bus
+                .publish(&domain_event)
+                .await
+                .map_err(|e| NatsOutboxRelayError::EventBus(e))
+        };
+
+        // Record success or failure in circuit breaker
+        if let Some(ref cb) = self.circuit_breaker {
+            match publication_result {
+                Ok(_) => cb.record_success(),
+                Err(_) => cb.record_failure(),
+            }
+        }
+
+        publication_result?;
 
         // Mark event as published
         self.mark_published(&[event.id]).await?;
