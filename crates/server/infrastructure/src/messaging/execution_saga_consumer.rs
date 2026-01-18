@@ -15,12 +15,14 @@ use async_nats::jetstream::Context as JetStreamContext;
 use async_nats::jetstream::consumer::pull::Config as PullConsumerConfig;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use futures::StreamExt;
+use hodei_server_domain::command::DynCommandBus;
+use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
 };
-use hodei_server_domain::saga::{SagaOrchestrator, SagaType};
+use hodei_server_domain::saga::{SagaOrchestrator, SagaServices, SagaType};
 use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState, WorkerId};
 use hodei_server_domain::workers::WorkerRegistry;
 use serde::Deserialize;
@@ -140,6 +142,12 @@ pub struct ExecutionSagaConsumer {
     /// Worker registry for checking worker availability
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 
+    /// Event bus for saga services (GAP-006 FIX)
+    event_bus: Arc<dyn EventBus + Send + Sync>,
+
+    /// Command bus for saga command dispatch (GAP-006 FIX)
+    command_bus: DynCommandBus,
+
     /// Consumer configuration
     config: ExecutionSagaConsumerConfig,
 
@@ -159,6 +167,8 @@ impl ExecutionSagaConsumer {
         orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>,
         job_repository: Arc<dyn JobRepository + Send + Sync>,
         worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        event_bus: Arc<dyn EventBus + Send + Sync>,
+        command_bus: DynCommandBus,
         config: Option<ExecutionSagaConsumerConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
@@ -183,6 +193,8 @@ impl ExecutionSagaConsumer {
             orchestrator,
             job_repository,
             worker_registry,
+            event_bus,
+            command_bus,
             config,
             circuit_breaker: Some(circuit_breaker),
             shutdown_tx,
@@ -481,6 +493,27 @@ impl ExecutionSagaConsumer {
             .set_metadata("worker_id", &worker_id.to_string())
             .ok();
 
+        // GAP-006 FIX: Create SagaServices with command_bus and inject into context
+        // This enables saga steps to dispatch commands via CommandBus
+        let saga_services = Arc::new(SagaServices::with_command_bus(
+            self.worker_registry.clone(),
+            self.event_bus.clone(),
+            Some(self.job_repository.clone()),
+            None, // provisioning_service - not needed for execution sagas
+            None, // orchestrator - not needed for execution sagas
+            self.command_bus.clone(),
+        ));
+
+        // Inject services into context (critical for saga steps to access CommandBus)
+        let context = context.with_services(saga_services);
+
+        info!(
+            saga_id = %context.saga_id,
+            job_id = %job_id,
+            worker_id = %worker_id,
+            "🚀 ExecutionSagaConsumer: Triggering saga with SagaServices (CommandBus injected)"
+        );
+
         // Create execution saga
         let saga = hodei_server_domain::saga::ExecutionSaga::new(job_id.clone());
 
@@ -660,6 +693,8 @@ pub struct ExecutionSagaConsumerBuilder {
     orchestrator: Option<Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync>>,
     job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
     worker_registry: Option<Arc<dyn WorkerRegistry + Send + Sync>>,
+    event_bus: Option<Arc<dyn EventBus + Send + Sync>>,
+    command_bus: Option<DynCommandBus>,
     config: Option<ExecutionSagaConsumerConfig>,
 }
 
@@ -671,6 +706,8 @@ impl Default for ExecutionSagaConsumerBuilder {
             orchestrator: None,
             job_repository: None,
             worker_registry: None,
+            event_bus: None,
+            command_bus: None,
             config: None,
         }
     }
@@ -684,6 +721,8 @@ impl fmt::Debug for ExecutionSagaConsumerBuilder {
             .field("orchestrator", &self.orchestrator.is_some())
             .field("job_repository", &self.job_repository.is_some())
             .field("worker_registry", &self.worker_registry.is_some())
+            .field("event_bus", &self.event_bus.is_some())
+            .field("command_bus", &self.command_bus.is_some())
             .field("config", &self.config)
             .finish()
     }
@@ -728,6 +767,16 @@ impl ExecutionSagaConsumerBuilder {
         self
     }
 
+    pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus + Send + Sync>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    pub fn with_command_bus(mut self, command_bus: DynCommandBus) -> Self {
+        self.command_bus = Some(command_bus);
+        self
+    }
+
     pub fn with_config(mut self, config: ExecutionSagaConsumerConfig) -> Self {
         self.config = Some(config);
         self
@@ -749,6 +798,12 @@ impl ExecutionSagaConsumerBuilder {
         let worker_registry = self
             .worker_registry
             .ok_or_else(|| anyhow::anyhow!("worker_registry is required"))?;
+        let event_bus = self
+            .event_bus
+            .ok_or_else(|| anyhow::anyhow!("event_bus is required"))?;
+        let command_bus = self
+            .command_bus
+            .ok_or_else(|| anyhow::anyhow!("command_bus is required"))?;
 
         Ok(ExecutionSagaConsumer::new(
             client,
@@ -756,6 +811,8 @@ impl ExecutionSagaConsumerBuilder {
             orchestrator,
             job_repository,
             worker_registry,
+            event_bus,
+            command_bus,
             self.config,
         ))
     }

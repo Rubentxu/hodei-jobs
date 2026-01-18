@@ -555,6 +555,9 @@ pub struct ExecutionSagaConsumerShutdownHandle {
 ///
 /// This consumer listens to JobQueued and WorkerReady events from NATS
 /// and triggers execution sagas reactively.
+///
+/// GAP-006 FIX: Now creates OutboxCommandBus and injects SagaServices
+/// to enable saga steps to dispatch commands via the transactional outbox.
 pub async fn start_execution_saga_consumer(
     nats_event_bus: &NatsEventBus,
     saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
@@ -563,9 +566,16 @@ pub async fn start_execution_saga_consumer(
     info!("📦 Starting ExecutionSagaConsumer for reactive saga triggering...");
 
     let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
-    let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool));
+    let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool.clone()));
 
-    let (stop_tx, stop_rx) = tokio::sync::broadcast::channel(1);
+    // GAP-006 FIX: Create OutboxCommandBus for transactional command persistence
+    let (command_bus, _outbox_repo) = create_command_bus(pool);
+
+    // Use the NatsEventBus as the event bus
+    let event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus + Send + Sync> =
+        Arc::new(nats_event_bus.clone());
+
+    let (stop_tx, _stop_rx) = tokio::sync::broadcast::channel(1);
 
     let consumer = ExecutionSagaConsumer::new(
         nats_event_bus.client().clone(),
@@ -573,6 +583,8 @@ pub async fn start_execution_saga_consumer(
         saga_orchestrator,
         job_repository,
         worker_registry,
+        event_bus,
+        command_bus,
         None,
     );
 
@@ -582,7 +594,7 @@ pub async fn start_execution_saga_consumer(
         }
     });
 
-    info!("✅ ExecutionSagaConsumer started");
+    info!("✅ ExecutionSagaConsumer started (with OutboxCommandBus for GAP-006 fix)");
     Ok(ExecutionSagaConsumerShutdownHandle { stop_tx })
 }
 
