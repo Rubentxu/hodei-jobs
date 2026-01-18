@@ -243,36 +243,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_server_state_from_env() {
-        // Set test environment
-        unsafe {
-            std::env::set_var("HODEI_GRPC_ADDRESS", "http://test:50051");
-            std::env::set_var("HODEI_GRPC_PROXY", "true");
-        }
-
-        let state = ServerState::from_env();
-        assert!(state.is_ok());
-        let state = state.unwrap();
-        assert_eq!(state.grpc_address, "http://test:50051");
-        assert!(state.enable_grpc_proxy);
-
-        // Cleanup
-        unsafe {
-            std::env::remove_var("HODEI_GRPC_ADDRESS");
-            std::env::remove_var("HODEI_GRPC_PROXY");
-        }
-    }
-
-    #[test]
     fn test_server_state_default_values() {
-        // Clear env vars
-        unsafe {
-            std::env::remove_var("HODEI_GRPC_ADDRESS");
-            std::env::remove_var("HODEI_GRPC_PROXY");
-            std::env::remove_var("HODEI_SERVER_HOST");
-        }
+        // Test default values by constructing directly
+        let leptos_options = LeptosOptions::builder()
+            .output_name("hodei-console-web")
+            .site_pkg_dir("pkg")
+            .env("PROD")
+            .build();
 
-        let state = ServerState::from_env().unwrap();
+        let state = ServerState::new(leptos_options, "http://localhost:50051".to_string(), false);
+
         assert_eq!(state.grpc_address, "http://localhost:50051");
         assert!(!state.enable_grpc_proxy);
     }

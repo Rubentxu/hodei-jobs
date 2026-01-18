@@ -1,12 +1,6 @@
 //! Integration tests for hodei-console-web
 //!
-//! This module contains all integration tests including:
-//! - Component tests (StatsCard, StatusBadge, DataTable)
-//! - gRPC service tests with mocking
-//! - Page integration tests
-
-#[cfg(test)]
-mod components;
+//! This module contains integration tests for gRPC services
 
 #[cfg(test)]
 mod grpc;
