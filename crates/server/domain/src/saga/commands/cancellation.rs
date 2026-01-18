@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Command to notify a worker that it should stop execution.
@@ -380,30 +381,27 @@ pub enum UpdateJobStateError {
 }
 
 /// Handler for UpdateJobStateCommand.
-#[derive(Debug)]
-pub struct UpdateJobStateHandler<J>
-where
-    J: JobRepository + Debug,
-{
-    job_repository: J,
+pub struct UpdateJobStateHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
 }
 
-impl<J> UpdateJobStateHandler<J>
-where
-    J: JobRepository + Debug,
-{
+impl UpdateJobStateHandler {
     /// Creates a new handler with the given job repository.
     #[inline]
-    pub fn new(job_repository: J) -> Self {
+    pub fn new(job_repository: Arc<dyn JobRepository + Send + Sync>) -> Self {
         Self { job_repository }
     }
 }
 
+impl std::fmt::Debug for UpdateJobStateHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateJobStateHandler")
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait]
-impl<J> CommandHandler<UpdateJobStateCommand> for UpdateJobStateHandler<J>
-where
-    J: JobRepository + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<UpdateJobStateCommand> for UpdateJobStateHandler {
     type Error = UpdateJobStateError;
 
     async fn handle(
@@ -545,30 +543,27 @@ pub enum ReleaseWorkerError {
 }
 
 /// Handler for ReleaseWorkerCommand.
-#[derive(Debug)]
-pub struct ReleaseWorkerHandler<W>
-where
-    W: WorkerRegistry + Debug,
-{
-    worker_registry: W,
+pub struct ReleaseWorkerHandler {
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
-impl<W> ReleaseWorkerHandler<W>
-where
-    W: WorkerRegistry + Debug,
-{
+impl ReleaseWorkerHandler {
     /// Creates a new handler with the given worker registry.
     #[inline]
-    pub fn new(worker_registry: W) -> Self {
+    pub fn new(worker_registry: Arc<dyn WorkerRegistry + Send + Sync>) -> Self {
         Self { worker_registry }
     }
 }
 
+impl std::fmt::Debug for ReleaseWorkerHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseWorkerHandler")
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait]
-impl<W> CommandHandler<ReleaseWorkerCommand> for ReleaseWorkerHandler<W>
-where
-    W: WorkerRegistry + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<ReleaseWorkerCommand> for ReleaseWorkerHandler {
     type Error = ReleaseWorkerError;
 
     async fn handle(

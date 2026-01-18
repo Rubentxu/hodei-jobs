@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Command to terminate a worker that has exceeded its timeout.
@@ -395,30 +396,27 @@ pub enum MarkJobTimedOutError {
 }
 
 /// Handler for MarkJobTimedOutCommand.
-#[derive(Debug)]
-pub struct MarkJobTimedOutHandler<J>
-where
-    J: JobRepository + Debug,
-{
-    job_repository: J,
+pub struct MarkJobTimedOutHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
 }
 
-impl<J> MarkJobTimedOutHandler<J>
-where
-    J: JobRepository + Debug,
-{
+impl MarkJobTimedOutHandler {
     /// Creates a new handler with the given job repository.
     #[inline]
-    pub fn new(job_repository: J) -> Self {
+    pub fn new(job_repository: Arc<dyn JobRepository + Send + Sync>) -> Self {
         Self { job_repository }
     }
 }
 
+impl std::fmt::Debug for MarkJobTimedOutHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MarkJobTimedOutHandler")
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait]
-impl<J> CommandHandler<MarkJobTimedOutCommand> for MarkJobTimedOutHandler<J>
-where
-    J: JobRepository + Debug + Send + Sync + 'static,
-{
+impl CommandHandler<MarkJobTimedOutCommand> for MarkJobTimedOutHandler {
     type Error = MarkJobTimedOutError;
 
     async fn handle(
