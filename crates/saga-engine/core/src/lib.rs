@@ -13,6 +13,7 @@
 //! - [`event`]: [`HistoryEvent`], [`EventType`], [`EventCategory`]
 //! - [`codec`]: [`EventCodec`] trait for serialization
 //! - [`port`]: Ports for infrastructure adapters (EventStore, SignalDispatcher, TaskQueue, TimerStore)
+//! - [`snapshot`]: [`SnapshotManager`] for efficient event replay
 //! - [`error`]: Domain errors
 //!
 //! ## Usage
@@ -36,6 +37,7 @@
 pub mod codec;
 pub mod event;
 pub mod port;
+pub mod snapshot;
 
 pub use codec::{BincodeCodec, CodecError, EventCodec, JsonCodec};
 pub use event::{CURRENT_EVENT_VERSION, EventCategory, EventId, EventType, HistoryEvent, SagaId};
@@ -43,4 +45,7 @@ pub use port::{
     ConsumerConfig, DurableTimer, EventStore, EventStoreError, SignalDispatcher,
     SignalDispatcherError, SignalNotification, SignalSubscription, SignalType, Task, TaskId,
     TaskMessage, TaskQueue, TaskQueueError, TimerStatus, TimerStore, TimerStoreError, TimerType,
+};
+pub use snapshot::{
+    Snapshot, SnapshotChecksum, SnapshotConfig, SnapshotError, SnapshotManager, SnapshotResult,
 };
