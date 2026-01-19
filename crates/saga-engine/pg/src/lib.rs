@@ -16,19 +16,27 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use saga_engine_pg::PostgresEventStore;
+//! use saga_engine_pg::{PostgresEventStore, PostgresTimerStore};
 //!
 //! let store = PostgresEventStore::with_config(
 //!     "postgres://user:pass@localhost/saga",
 //!     PostgresEventStoreConfig::default(),
 //! ).await?;
 //!
+//! let timer_store = PostgresTimerStore::with_config(
+//!     "postgres://user:pass@localhost/saga",
+//!     PostgresTimerStoreConfig::default(),
+//! ).await?;
+//!
 //! // Run migrations
 //! store.migrate().await?;
+//! timer_store.migrate().await?;
 //!
-//! // Use the store...
+//! // Use the stores...
 //! ```
 
 pub mod event_store;
+pub mod timer_store;
 
 pub use event_store::{PostgresEventStore, PostgresEventStoreConfig};
+pub use timer_store::{PostgresTimerStore, PostgresTimerStoreConfig};

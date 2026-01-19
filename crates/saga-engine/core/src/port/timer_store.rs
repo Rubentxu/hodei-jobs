@@ -37,6 +37,14 @@ impl<E> TimerStoreError<E> {
     }
 }
 
+impl<E> From<E> for TimerStoreError<E> {
+    fn from(err: E) -> Self {
+        // Determine the variant based on context is not possible without more info
+        // Default to Create error
+        Self::Create(err)
+    }
+}
+
 /// Status of a timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -90,6 +98,36 @@ impl TimerType {
             TimerType::Scheduled => "scheduled",
             TimerType::RetryBackoff => "retry_backoff",
             TimerType::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl std::str::FromStr for TimerType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "workflow_timeout" => Ok(TimerType::WorkflowTimeout),
+            "activity_timeout" => Ok(TimerType::ActivityTimeout),
+            "sleep" => Ok(TimerType::Sleep),
+            "scheduled" => Ok(TimerType::Scheduled),
+            "retry_backoff" => Ok(TimerType::RetryBackoff),
+            _ => Ok(TimerType::Custom(s.to_string())),
+        }
+    }
+}
+
+impl std::str::FromStr for TimerStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PENDING" | "pending" => Ok(TimerStatus::Pending),
+            "PROCESSING" | "processing" => Ok(TimerStatus::Processing),
+            "FIRED" | "fired" => Ok(TimerStatus::Fired),
+            "CANCELLED" | "cancelled" => Ok(TimerStatus::Cancelled),
+            "FAILED" | "failed" => Ok(TimerStatus::Failed),
+            _ => Err(format!("Unknown timer status: {}", s)),
         }
     }
 }

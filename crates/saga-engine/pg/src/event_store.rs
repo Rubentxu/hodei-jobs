@@ -152,16 +152,7 @@ impl PostgresEventStore {
         connection_string: &str,
         config: PostgresEventStoreConfig,
     ) -> Result<Self, sqlx::Error> {
-        let pool = PgPool::connect_with(
-            sqlx::postgres::PgConnectOptions::new()
-                .connect(connection_string)
-                .max_connections(config.max_connections)
-                .connect_timeout(std::time::Duration::from_secs(
-                    config.connection_timeout_secs,
-                )),
-        )
-        .await?;
-
+        let pool = PgPool::connect(connection_string).await?;
         Ok(Self::new(pool))
     }
 
@@ -254,9 +245,7 @@ impl EventStore for PostgresEventStore {
     ) -> Result<u64, EventStoreError<Self::Error>> {
         let saga_uuid = Uuid::parse_str(&saga_id.0).map_err(uuid_err)?;
 
-        let mut tx = self.pool.begin().await.map_err(EventStoreError::from)?;
-
-        // Get current version - query within transaction using &mut tx
+        // Get current version directly from pool
         let result = sqlx::query(
             "SELECT event_id FROM saga_events
              WHERE saga_id = $1
@@ -264,7 +253,7 @@ impl EventStore for PostgresEventStore {
              LIMIT 1",
         )
         .bind(saga_uuid)
-        .fetch_one(&mut tx)
+        .fetch_one(&self.pool)
         .await;
 
         let current_id = match result {
@@ -275,7 +264,6 @@ impl EventStore for PostgresEventStore {
 
         // Optimistic locking check
         if current_id != expected_next_event_id {
-            tx.rollback().await.ok();
             return Err(EventStoreError::conflict(
                 expected_next_event_id,
                 current_id,
@@ -288,7 +276,7 @@ impl EventStore for PostgresEventStore {
         let payload = serde_json::to_value(event)
             .map_err(|e| EventStoreError::Codec(format!("Failed to encode event: {}", e)))?;
 
-        // Insert event using &mut tx
+        // Insert event
         sqlx::query(
             "INSERT INTO saga_events (
                 saga_id, event_id, event_type, category, payload,
@@ -307,11 +295,9 @@ impl EventStore for PostgresEventStore {
         .bind(event.parent_event_id.map(|id| id.0 as i64))
         .bind(event.task_queue.as_ref())
         .bind(event.trace_id.as_ref())
-        .execute(&mut tx)
+        .execute(&self.pool)
         .await
         .map_err(EventStoreError::from)?;
-
-        tx.commit().await.map_err(EventStoreError::from)?;
 
         Ok(event_id)
     }
