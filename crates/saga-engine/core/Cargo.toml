@@ -1,0 +1,39 @@
+[package]
+name = "saga-engine-core"
+description = "Core saga engine library with zero infrastructure dependencies - Event Sourcing, Workflows, and Activities"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Hodei Team Platform"]
+
+[features]
+default = ["json-codec", "bincode-codec"]
+json-codec = ["serde_json"]
+bincode-codec = ["bincode"]
+
+[dependencies]
+# Async runtime
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "macros"] }
+
+# Serialization
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", optional = true, features = ["preserve_order"] }
+bincode = { version = "1", optional = true }
+
+# Time and IDs
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Utilities
+futures = "0.3"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+assert_matches = "1"

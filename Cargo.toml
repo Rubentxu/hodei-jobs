@@ -14,6 +14,7 @@ members = [
     "crates/cli",
     "crates/console-web",
     "proto",
+    "crates/saga-engine/core",
 ]
 
 [workspace.package]
