@@ -17,6 +17,7 @@ members = [
     "crates/saga-engine/core",
     "crates/saga-engine/testing",
     "crates/saga-engine/pg",
+    "crates/saga-engine/nats",
 ]
 
 [workspace.package]

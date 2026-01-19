@@ -1,0 +1,38 @@
+[package]
+name = "saga-engine-nats"
+description = "NATS backend for saga-engine - SignalDispatcher and TaskQueue using NATS Core & JetStream"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Hodei Team Platform"]
+
+[dependencies]
+# Core saga engine
+saga-engine-core = { path = "../core" }
+
+# Async trait for trait implementations
+async-trait = "0.1"
+
+# NATS client - async-nats is the maintained async client
+async-nats = "0.34"
+
+# Async runtime
+tokio = { version = "1", features = ["sync", "macros", "time", "fs"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+
+# Time utilities
+chrono = { version = "0.4" }
+
+# Utilities
+futures = "0.3"
+tokio-stream = "0.1"
+async-stream = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
