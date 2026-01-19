@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Command to check connectivity to a worker.
 ///
@@ -102,16 +103,65 @@ pub enum CheckConnectivityError {
     },
 }
 
-/// Handler for CheckConnectivityCommand.
+/// Handler for CheckConnectivityCommand (concrete implementation for Arc<dyn Trait>).
+pub struct CheckConnectivityHandler {
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl CheckConnectivityHandler {
+    /// Creates a new handler with the given worker registry.
+    #[inline]
+    pub fn new(worker_registry: Arc<dyn WorkerRegistry + Send + Sync>) -> Self {
+        Self { worker_registry }
+    }
+}
+
+impl std::fmt::Debug for CheckConnectivityHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckConnectivityHandler")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<CheckConnectivityCommand> for CheckConnectivityHandler {
+    type Error = CheckConnectivityError;
+
+    async fn handle(
+        &self,
+        command: CheckConnectivityCommand,
+    ) -> Result<CheckConnectivityResult, Self::Error> {
+        let worker_id = command.worker_id.clone();
+
+        let worker = self
+            .worker_registry
+            .find_by_id(&worker_id)
+            .await
+            .map_err(|e| CheckConnectivityError::CheckFailed {
+                worker_id: worker_id.clone(),
+                source: e,
+            })?
+            .ok_or_else(|| CheckConnectivityError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            })?;
+
+        Ok(CheckConnectivityResult::reachable(
+            worker.state().clone(),
+            0,
+        ))
+    }
+}
+
+/// Generic handler for CheckConnectivityCommand (kept for testing purposes).
 #[derive(Debug)]
-pub struct CheckConnectivityHandler<W>
+pub struct GenericCheckConnectivityHandler<W>
 where
     W: WorkerRegistry + Debug,
 {
     worker_repository: W,
 }
 
-impl<W> CheckConnectivityHandler<W>
+impl<W> GenericCheckConnectivityHandler<W>
 where
     W: WorkerRegistry + Debug,
 {
@@ -123,7 +173,7 @@ where
 }
 
 #[async_trait]
-impl<W> CommandHandler<CheckConnectivityCommand> for CheckConnectivityHandler<W>
+impl<W> CommandHandler<CheckConnectivityCommand> for GenericCheckConnectivityHandler<W>
 where
     W: WorkerRegistry + Debug + Send + Sync + 'static,
 {
@@ -133,10 +183,8 @@ where
         &self,
         command: CheckConnectivityCommand,
     ) -> Result<CheckConnectivityResult, Self::Error> {
-        // Clone worker_id since we need it in closures
         let worker_id = command.worker_id.clone();
 
-        // Get worker info
         let worker = self
             .worker_repository
             .find_by_id(&worker_id)
@@ -149,8 +197,6 @@ where
                 worker_id: worker_id.clone(),
             })?;
 
-        // For now, we just report the current state
-        // In a real implementation, this would ping the worker
         Ok(CheckConnectivityResult::reachable(
             worker.state().clone(),
             0,
@@ -268,16 +314,69 @@ pub enum MarkJobForRecoveryError {
     },
 }
 
-/// Handler for MarkJobForRecoveryCommand.
+/// Handler for MarkJobForRecoveryCommand (concrete implementation for Arc<dyn Trait>).
+pub struct MarkJobForRecoveryHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl MarkJobForRecoveryHandler {
+    /// Creates a new handler with the given job repository.
+    #[inline]
+    pub fn new(job_repository: Arc<dyn JobRepository + Send + Sync>) -> Self {
+        Self { job_repository }
+    }
+}
+
+impl std::fmt::Debug for MarkJobForRecoveryHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MarkJobForRecoveryHandler")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<MarkJobForRecoveryCommand> for MarkJobForRecoveryHandler {
+    type Error = MarkJobForRecoveryError;
+
+    async fn handle(
+        &self,
+        command: MarkJobForRecoveryCommand,
+    ) -> Result<JobRecoveryMarkResult, Self::Error> {
+        let job_id = command.job_id.clone();
+
+        self.job_repository
+            .find_by_id(&job_id)
+            .await
+            .map_err(|e| MarkJobForRecoveryError::MarkFailed {
+                job_id: job_id.clone(),
+                source: e,
+            })?
+            .ok_or_else(|| MarkJobForRecoveryError::JobNotFound {
+                job_id: job_id.clone(),
+            })?;
+
+        self.job_repository
+            .update_state(&job_id, JobState::Pending)
+            .await
+            .map_err(|e| MarkJobForRecoveryError::MarkFailed {
+                job_id: job_id.clone(),
+                source: e,
+            })?;
+
+        Ok(JobRecoveryMarkResult::success(JobState::Pending))
+    }
+}
+
+/// Generic handler for MarkJobForRecoveryCommand (kept for testing purposes).
 #[derive(Debug)]
-pub struct MarkJobForRecoveryHandler<J>
+pub struct GenericMarkJobForRecoveryHandler<J>
 where
     J: JobRepository + Debug,
 {
     job_repository: J,
 }
 
-impl<J> MarkJobForRecoveryHandler<J>
+impl<J> GenericMarkJobForRecoveryHandler<J>
 where
     J: JobRepository + Debug,
 {
@@ -289,7 +388,7 @@ where
 }
 
 #[async_trait]
-impl<J> CommandHandler<MarkJobForRecoveryCommand> for MarkJobForRecoveryHandler<J>
+impl<J> CommandHandler<MarkJobForRecoveryCommand> for GenericMarkJobForRecoveryHandler<J>
 where
     J: JobRepository + Debug + Send + Sync + 'static,
 {
@@ -299,12 +398,9 @@ where
         &self,
         command: MarkJobForRecoveryCommand,
     ) -> Result<JobRecoveryMarkResult, Self::Error> {
-        // Clone job_id since we need it in closures
         let job_id = command.job_id.clone();
 
-        // Get current job state
-        let _job = self
-            .job_repository
+        self.job_repository
             .find_by_id(&job_id)
             .await
             .map_err(|e| MarkJobForRecoveryError::MarkFailed {
@@ -315,8 +411,6 @@ where
                 job_id: job_id.clone(),
             })?;
 
-        // Transition job back to Pending for recovery
-        // This allows the scheduler to pick it up again
         self.job_repository
             .update_state(&job_id, JobState::Pending)
             .await
@@ -582,9 +676,74 @@ pub enum TransferJobError {
     },
 }
 
-/// Handler for TransferJobCommand.
+/// Handler for TransferJobCommand (concrete implementation for Arc<dyn Trait>).
+pub struct TransferJobHandler {
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl TransferJobHandler {
+    /// Creates a new handler with the given repositories.
+    #[inline]
+    pub fn new(
+        job_repository: Arc<dyn JobRepository + Send + Sync>,
+        worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    ) -> Self {
+        Self {
+            job_repository,
+            worker_registry,
+        }
+    }
+}
+
+impl std::fmt::Debug for TransferJobHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransferJobHandler").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<TransferJobCommand> for TransferJobHandler {
+    type Error = TransferJobError;
+
+    async fn handle(&self, command: TransferJobCommand) -> Result<JobTransferResult, Self::Error> {
+        let job_id = command.job_id.clone();
+        let new_worker_id = command.new_worker_id.clone();
+
+        self.job_repository
+            .find_by_id(&job_id)
+            .await
+            .map_err(|e| TransferJobError::TransferFailed {
+                job_id: job_id.clone(),
+                source: e,
+            })?
+            .ok_or_else(|| TransferJobError::JobNotFound {
+                job_id: job_id.clone(),
+            })?;
+
+        self.worker_registry
+            .update_state(&new_worker_id, WorkerState::Busy)
+            .await
+            .map_err(|e| TransferJobError::TransferFailed {
+                job_id: job_id.clone(),
+                source: e,
+            })?;
+
+        self.job_repository
+            .update_state(&job_id, JobState::Running)
+            .await
+            .map_err(|e| TransferJobError::TransferFailed {
+                job_id: job_id.clone(),
+                source: e,
+            })?;
+
+        Ok(JobTransferResult::success(JobState::Running))
+    }
+}
+
+/// Generic handler for TransferJobCommand (kept for testing purposes).
 #[derive(Debug)]
-pub struct TransferJobHandler<J, W>
+pub struct GenericTransferJobHandler<J, W>
 where
     J: JobRepository + Debug,
     W: WorkerRegistry + Debug,
@@ -593,7 +752,7 @@ where
     worker_repository: W,
 }
 
-impl<J, W> TransferJobHandler<J, W>
+impl<J, W> GenericTransferJobHandler<J, W>
 where
     J: JobRepository + Debug,
     W: WorkerRegistry + Debug,
@@ -609,7 +768,7 @@ where
 }
 
 #[async_trait]
-impl<J, W> CommandHandler<TransferJobCommand> for TransferJobHandler<J, W>
+impl<J, W> CommandHandler<TransferJobCommand> for GenericTransferJobHandler<J, W>
 where
     J: JobRepository + Debug + Send + Sync + 'static,
     W: WorkerRegistry + Debug + Send + Sync + 'static,
@@ -617,13 +776,10 @@ where
     type Error = TransferJobError;
 
     async fn handle(&self, command: TransferJobCommand) -> Result<JobTransferResult, Self::Error> {
-        // Clone job_id since we need it in closures
         let job_id = command.job_id.clone();
         let new_worker_id = command.new_worker_id.clone();
 
-        // Get job and update it with new worker assignment
-        let _job = self
-            .job_repository
+        self.job_repository
             .find_by_id(&job_id)
             .await
             .map_err(|e| TransferJobError::TransferFailed {
@@ -634,11 +790,6 @@ where
                 job_id: job_id.clone(),
             })?;
 
-        // Update job's execution context with new worker
-        // This is done through the Job's methods rather than a direct assign_worker call
-        // The worker registry already has the job association via current_job_id
-
-        // Mark new worker as busy
         self.worker_repository
             .update_state(&new_worker_id, WorkerState::Busy)
             .await
@@ -647,7 +798,6 @@ where
                 source: e,
             })?;
 
-        // Transition job back to Running (it was marked Pending for recovery)
         self.job_repository
             .update_state(&job_id, JobState::Running)
             .await

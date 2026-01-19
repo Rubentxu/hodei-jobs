@@ -379,6 +379,7 @@ use crate::jobs::event_subscriber::EventHandler;
 mod tests {
     use super::*;
     use hodei_server_domain::jobs::{Job, JobsFilter};
+    use hodei_server_domain::outbox::OutboxError;
     use hodei_server_domain::shared_kernel::{
         DomainError, JobId, JobState, ProviderId, Result, WorkerId, WorkerState,
     };

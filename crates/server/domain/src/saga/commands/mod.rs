@@ -25,8 +25,12 @@ pub use provisioning::{
     UnregisterWorkerHandler,
 };
 pub use recovery::{
-    CheckConnectivityCommand, CheckConnectivityResult, DestroyOldWorkerCommand,
-    MarkJobForRecoveryCommand, ProvisionNewWorkerCommand, TransferJobCommand,
+    CheckConnectivityCommand, CheckConnectivityError, CheckConnectivityHandler,
+    CheckConnectivityResult, DestroyOldWorkerCommand, GenericCheckConnectivityHandler,
+    GenericMarkJobForRecoveryHandler, GenericTransferJobHandler, JobRecoveryMarkResult,
+    JobTransferResult, MarkJobForRecoveryCommand, MarkJobForRecoveryError,
+    MarkJobForRecoveryHandler, ProvisionNewWorkerCommand, TransferJobCommand, TransferJobError,
+    TransferJobHandler,
 };
 pub use timeout::{
     MarkJobTimedOutCommand, MarkJobTimedOutError, MarkJobTimedOutHandler, MarkJobTimedOutResult,

@@ -386,6 +386,23 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        async fn find_by_state_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _state: &JobState,
+        ) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _job_id: &JobId,
+            _state: JobState,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     /// Mock implementation of TransactionalOutbox for testing

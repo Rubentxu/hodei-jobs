@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+use anyhow::Context;
+
 use hodei_server_domain::command::{
     CommandOutboxInsert, CommandOutboxRepository, CommandOutboxStatus, CommandTargetType,
 };
@@ -33,10 +35,12 @@ async fn get_postgres_pool() -> Result<sqlx::PgPool, sqlx::Error> {
 }
 
 /// Helper to get NATS client
-async fn get_nats_client() -> Result<async_nats::Client, async_nats::Error> {
+async fn get_nats_client() -> anyhow::Result<async_nats::Client> {
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
-    async_nats::connect(nats_url).await
+    async_nats::connect(nats_url)
+        .await
+        .context("Failed to connect to NATS")
 }
 
 #[tokio::test]

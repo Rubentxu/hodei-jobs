@@ -17,7 +17,7 @@ use hodei_server_domain::{
     shared_kernel::{DomainError, JobId, ProviderId, WorkerId},
     workers::WorkerProvider,
     workers::WorkerSpec,
-    workers::{WorkerRegistry, WorkerRegistryStats},
+    workers::{WorkerRegistry, WorkerRegistryStats, WorkerRegistryTx},
 };
 use std::{sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
@@ -597,6 +597,60 @@ mod tests {
         }
     }
 
+    // Implement WorkerRegistryTx for MockWorkerRegistry
+    #[async_trait::async_trait]
+    impl WorkerRegistryTx for MockWorkerRegistry {
+        async fn save_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _worker: &hodei_server_domain::workers::Worker,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _worker_id: &WorkerId,
+            _state: hodei_server_domain::shared_kernel::WorkerState,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn release_from_job_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _worker_id: &WorkerId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn register_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _handle: hodei_server_domain::workers::WorkerHandle,
+            _spec: WorkerSpec,
+            _job_id: JobId,
+        ) -> Result<hodei_server_domain::workers::Worker> {
+            unimplemented!()
+        }
+
+        async fn unregister_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            _worker_id: &WorkerId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn find_available_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+        ) -> Result<Vec<hodei_server_domain::workers::Worker>> {
+            Ok(vec![])
+        }
+    }
+
     struct MockOutboxRepository;
 
     use hodei_server_domain::saga::{
@@ -661,7 +715,7 @@ mod tests {
 
     /// Create a mock DynRecoverySagaCoordinator for tests
     fn create_mock_recovery_coordinator(
-        registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
     ) -> Arc<DynRecoverySagaCoordinator> {
         use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
@@ -765,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_creation() {
-        let registry: Arc<dyn WorkerRegistry> = Arc::new(MockWorkerRegistry);
+        let registry: Arc<dyn WorkerRegistryTx> = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
@@ -787,7 +841,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_job_enqueues_when_no_resources() {
-        let registry: Arc<dyn WorkerRegistry> = Arc::new(MockWorkerRegistry);
+        let registry: Arc<dyn WorkerRegistryTx> = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
@@ -819,7 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_stats() {
-        let registry: Arc<dyn WorkerRegistry> = Arc::new(MockWorkerRegistry);
+        let registry: Arc<dyn WorkerRegistryTx> = Arc::new(MockWorkerRegistry);
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);

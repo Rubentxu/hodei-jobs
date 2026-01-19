@@ -10,6 +10,8 @@
 //! - ExecuteJobCommand
 //! - CompleteJobCommand
 
+use anyhow::Context;
+
 use hodei_server_domain::command::{Command, CommandMetadataDefault};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::execution::{
@@ -36,10 +38,12 @@ async fn get_postgres_pool() -> Result<sqlx::PgPool, sqlx::Error> {
         .await
 }
 
-async fn get_nats_client() -> Result<async_nats::Client, async_nats::Error> {
+async fn get_nats_client() -> anyhow::Result<async_nats::Client> {
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
-    async_nats::connect(nats_url).await
+    async_nats::connect(nats_url)
+        .await
+        .context("Failed to connect to NATS")
 }
 
 #[tokio::test]
@@ -59,7 +63,7 @@ async fn test_assign_worker_command_flow() -> anyhow::Result<()> {
 
     // Insert Job (Pending)
     sqlx::query(
-        "INSERT INTO hodei_jobs (id, state, created_at, updated_at, request, execution_history) 
+        "INSERT INTO hodei_jobs (id, state, created_at, updated_at, request, execution_history)
          VALUES ($1, 'PENDING', NOW(), NOW(), '{}', '[]')",
     )
     .bind(job_id.to_string())
@@ -68,7 +72,7 @@ async fn test_assign_worker_command_flow() -> anyhow::Result<()> {
 
     // Insert Worker (Ready)
     sqlx::query(
-        "INSERT INTO hodei_workers (id, state, last_heartbeat, capabilities, current_load, version, status) 
+        "INSERT INTO hodei_workers (id, state, last_heartbeat, capabilities, current_load, version, status)
          VALUES ($1, 'READY', NOW(), '[]', 0, '1.0.0', 'ONLINE')"
     )
     .bind(worker_id.to_string())

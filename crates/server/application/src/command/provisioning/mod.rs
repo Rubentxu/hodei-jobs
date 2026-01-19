@@ -55,6 +55,7 @@ pub async fn register_provisioning_command_handlers(
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use hodei_server_domain::shared_kernel::DomainError;
     use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
     use hodei_server_domain::workers::WorkerProvisioningResult;
 

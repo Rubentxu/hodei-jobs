@@ -195,6 +195,7 @@ mod tests {
     use super::*;
     use hodei_server_domain::JobCreated;
     use hodei_server_domain::jobs::{Job, JobsFilter};
+    use hodei_server_domain::outbox::OutboxError;
     use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
     use hodei_shared::states::{DispatchFailureReason, JobState};
     use uuid::Uuid;

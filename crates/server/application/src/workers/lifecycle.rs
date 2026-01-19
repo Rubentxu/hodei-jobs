@@ -31,7 +31,7 @@ use hodei_server_domain::{
     workers::health::WorkerHealthService,
     workers::provider_api::{HealthStatus, WorkerInfrastructureEvent},
     workers::{Worker, WorkerFilter, WorkerSpec},
-    workers::{WorkerRegistry, WorkerRegistryStats},
+    workers::{WorkerRegistry, WorkerRegistryStats, WorkerRegistryTx},
 };
 use hodei_shared::event_topics::worker_topics;
 use std::{sync::Arc, time::Duration};
@@ -1551,7 +1551,7 @@ mod tests {
 
     /// Helper to create test lifecycle manager with mock recovery coordinator (US-4.2)
     fn create_test_lifecycle_manager(
-        registry: Arc<dyn WorkerRegistry>,
+        registry: Arc<dyn WorkerRegistryTx>,
         providers: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>>,
         config: WorkerLifecycleConfig,
         event_bus: Arc<dyn EventBus>,
@@ -1780,7 +1780,7 @@ mod tests {
 
     /// Create a real DynRecoverySagaCoordinator with mock orchestrator for tests (US-4.2)
     fn create_mock_recovery_coordinator(
-        registry: Arc<dyn WorkerRegistry + Send + Sync>,
+        registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
         event_bus: Arc<dyn EventBus + Send + Sync>,
     ) -> Arc<DynRecoverySagaCoordinator> {
         let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
@@ -2141,6 +2141,64 @@ mod tests {
                 .filter(|w| w.is_ttl_after_completion_exceeded())
                 .cloned()
                 .collect())
+        }
+    }
+
+    // Implement WorkerRegistryTx for MockWorkerRegistry (required by DynRecoverySagaCoordinator)
+    #[async_trait::async_trait]
+    impl WorkerRegistryTx for MockWorkerRegistry {
+        async fn save_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            worker: &Worker,
+        ) -> Result<()> {
+            self.workers
+                .write()
+                .await
+                .insert(worker.handle().worker_id.clone(), worker.clone());
+            Ok(())
+        }
+
+        async fn update_state_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            worker_id: &WorkerId,
+            state: WorkerState,
+        ) -> Result<()> {
+            self.update_state(worker_id, state).await
+        }
+
+        async fn release_from_job_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            worker_id: &WorkerId,
+        ) -> Result<()> {
+            self.release_from_job(worker_id).await
+        }
+
+        async fn register_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            handle: WorkerHandle,
+            spec: WorkerSpec,
+            job_id: JobId,
+        ) -> Result<Worker> {
+            self.register(handle, spec, job_id).await
+        }
+
+        async fn unregister_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+            worker_id: &WorkerId,
+        ) -> Result<()> {
+            self.unregister(worker_id).await
+        }
+
+        async fn find_available_with_tx(
+            &self,
+            _tx: &mut sqlx::PgTransaction<'_>,
+        ) -> Result<Vec<Worker>> {
+            self.find_available().await
         }
     }
 

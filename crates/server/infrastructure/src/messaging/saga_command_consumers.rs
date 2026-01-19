@@ -6,8 +6,8 @@
 //!
 //! # Sprints
 //!
-//! - Sprint 1: Low-complexity commands (UpdateJobState, ReleaseWorker, MarkJobTimedOut)
-//! - Sprint 2: Network operations (NotifyWorker, CheckConnectivity) - deferred
+//! - Sprint 1: Low-complexity commands (UpdateJobState, ReleaseWorker, MarkJobTimedOut) ✅ COMPLETED
+//! - Sprint 2: Network operations (NotifyWorker, CheckConnectivity, TransferJob) ✅ COMPLETED
 //! - Sprint 3: Infrastructure operations (TerminateWorker, CreateWorker, DestroyWorker, UnregisterWorker) - deferred
 //! - Sprint 4: Production readiness (DLQ, metrics) - deferred
 
@@ -16,7 +16,12 @@ use futures::StreamExt;
 use hodei_server_domain::command::{Command, CommandHandler};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::cancellation::{
-    ReleaseWorkerCommand, ReleaseWorkerHandler, UpdateJobStateCommand, UpdateJobStateHandler,
+    NotifyWorkerCommand, NotifyWorkerHandler, ReleaseWorkerCommand, ReleaseWorkerHandler,
+    UpdateJobStateCommand, UpdateJobStateHandler,
+};
+use hodei_server_domain::saga::commands::recovery::{
+    CheckConnectivityCommand, CheckConnectivityHandler, MarkJobForRecoveryCommand,
+    MarkJobForRecoveryHandler, TransferJobCommand, TransferJobHandler,
 };
 use hodei_server_domain::saga::commands::timeout::{
     MarkJobTimedOutCommand, MarkJobTimedOutHandler,
@@ -81,7 +86,54 @@ pub async fn start_timeout_command_consumers(
     Ok(())
 }
 
-/// Start all saga command consumers (Sprint 1)
+/// Start consumers for recovery saga commands (Sprint 2)
+pub async fn start_recovery_command_consumers(
+    nats: async_nats::Client,
+    job_repository: Arc<dyn JobRepository + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+) -> anyhow::Result<()> {
+    let jetstream = async_nats::jetstream::new(nats);
+
+    // CheckConnectivityCommand Consumer
+    let check_connectivity_handler =
+        Arc::new(CheckConnectivityHandler::new(worker_registry.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "CheckConnectivity",
+        "hodei.commands.worker.checkconnectivity",
+        check_connectivity_handler,
+    )
+    .await?;
+
+    // TransferJobCommand Consumer
+    let transfer_job_handler = Arc::new(TransferJobHandler::new(
+        job_repository.clone(),
+        worker_registry.clone(),
+    ));
+    spawn_consumer(
+        jetstream.clone(),
+        "TransferJob",
+        "hodei.commands.job.transferjob",
+        transfer_job_handler,
+    )
+    .await?;
+
+    // MarkJobForRecoveryCommand Consumer
+    let mark_job_for_recovery_handler =
+        Arc::new(MarkJobForRecoveryHandler::new(job_repository.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "MarkJobForRecovery",
+        "hodei.commands.job.markjobforrecovery",
+        mark_job_for_recovery_handler,
+    )
+    .await?;
+
+    info!("🚀 Recovery command consumers started");
+    Ok(())
+}
+
+/// Start all saga command consumers (Sprint 1 & 2)
 pub async fn start_saga_command_consumers(
     nats: async_nats::Client,
     pool: sqlx::PgPool,
@@ -108,7 +160,15 @@ pub async fn start_saga_command_consumers(
     )
     .await?;
 
-    info!("🚀 All saga command consumers (Sprint 1) started");
+    // Start recovery saga command consumers (Sprint 2)
+    start_recovery_command_consumers(
+        nats.clone(),
+        job_repository.clone(),
+        worker_registry.clone(),
+    )
+    .await?;
+
+    info!("🚀 All saga command consumers (Sprint 1 & 2) started");
     Ok(())
 }
 
