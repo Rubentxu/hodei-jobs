@@ -81,7 +81,7 @@ async fn test_assign_worker_command_flow() -> anyhow::Result<()> {
 
     // 2. Start Consumer
     hodei_server_infrastructure::messaging::execution_command_consumers::start_execution_command_consumers(
-       nats.clone(), job_repo.clone(), worker_repo.clone(), None
+       nats.clone(), pool.clone(), job_repo.clone(), worker_repo.clone(), None
     ).await?;
 
     // Simulate NATS subscription receiving

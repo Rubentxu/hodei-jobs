@@ -8,6 +8,7 @@ pub mod hybrid;
 pub mod nats;
 pub mod nats_outbox_relay;
 pub mod orphan_worker_detector_consumer;
+pub mod postgres;
 pub mod reactive_outbox_relay;
 pub mod saga_command_consumers;
 pub mod worker_disconnection_handler_consumer;

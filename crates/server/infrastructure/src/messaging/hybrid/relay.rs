@@ -86,7 +86,20 @@ pub struct HybridOutboxRelay<R: OutboxRepository> {
     config: HybridOutboxConfig,
     metrics: Arc<Mutex<HybridOutboxMetrics>>,
     shutdown: broadcast::Sender<()>,
-    listener: Option<crate::messaging::hybrid::PgNotifyListener>,
+    listener: Arc<Mutex<Option<crate::messaging::hybrid::PgNotifyListener>>>,
+}
+
+impl<R: OutboxRepository> Clone for HybridOutboxRelay<R> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            repository: self.repository.clone(),
+            config: self.config.clone(),
+            metrics: self.metrics.clone(),
+            shutdown: self.shutdown.clone(),
+            listener: self.listener.clone(),
+        }
+    }
 }
 
 impl<R: OutboxRepository> HybridOutboxRelay<R> {
@@ -117,17 +130,17 @@ impl<R: OutboxRepository> HybridOutboxRelay<R> {
                 config,
                 metrics: Arc::new(Mutex::new(HybridOutboxMetrics::default())),
                 shutdown,
-                listener,
+                listener: Arc::new(Mutex::new(listener)),
             },
             rx,
         ))
     }
 
     /// Run the hybrid relay.
-    pub async fn run(mut self) {
+    pub async fn run(self) {
         let mut interval = interval(Duration::from_millis(self.config.poll_interval_ms));
         let mut shutdown_rx = self.shutdown.subscribe();
-        let has_listener = self.listener.is_some();
+        let has_listener = self.listener.lock().await.is_some();
 
         info!(
             channel = self.config.channel,
@@ -165,9 +178,10 @@ impl<R: OutboxRepository> HybridOutboxRelay<R> {
 
     /// Try to receive a notification from the listener.
     async fn recv_notification(
-        &mut self,
+        &self,
     ) -> Result<Option<sqlx::postgres::PgNotification>, sqlx::Error> {
-        if let Some(ref mut listener) = self.listener {
+        let mut listener = self.listener.lock().await;
+        if let Some(ref mut listener) = *listener {
             listener.recv().await.map(Some)
         } else {
             // Return immediately with None when no listener

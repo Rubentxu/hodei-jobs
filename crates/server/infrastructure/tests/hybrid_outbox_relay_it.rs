@@ -47,6 +47,11 @@ async fn test_hybrid_relay_processes_events() -> anyhow::Result<()> {
     // Run migrations
     repo.run_migrations().await?;
 
+    // Cleanup previous runs
+    sqlx::query("TRUNCATE TABLE outbox_events")
+        .execute(&pool)
+        .await?;
+
     // Insert a test event
     let event_id = Uuid::new_v4();
     let event = OutboxEventInsert::for_job(
@@ -68,6 +73,12 @@ async fn test_hybrid_relay_processes_events() -> anyhow::Result<()> {
     // Create relay (will use polling since LISTEN/NOTIFY may not work in test env)
     let (relay, mut shutdown_rx) =
         HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
+
+    // Start the relay background task (using a clone to keep a handle)
+    let relay_handle = relay.clone();
+    tokio::spawn(async move {
+        relay_handle.run().await;
+    });
 
     // Give it time to process
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -97,6 +108,11 @@ async fn test_hybrid_relay_batch_processing() -> anyhow::Result<()> {
     // Run migrations
     repo.run_migrations().await?;
 
+    // Cleanup previous runs
+    sqlx::query("TRUNCATE TABLE outbox_events")
+        .execute(&pool)
+        .await?;
+
     // Insert multiple test events
     let event_count = 5;
     for i in 0..event_count {
@@ -120,6 +136,12 @@ async fn test_hybrid_relay_batch_processing() -> anyhow::Result<()> {
 
     let (relay, mut shutdown_rx) =
         HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
+
+    // Start the relay background task (using a clone to keep a handle)
+    let relay_handle = relay.clone();
+    tokio::spawn(async move {
+        relay_handle.run().await;
+    });
 
     // Give it time to process all events
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -147,6 +169,11 @@ async fn test_hybrid_relay_metrics() -> anyhow::Result<()> {
     // Run migrations
     repo.run_migrations().await?;
 
+    // Cleanup previous runs
+    sqlx::query("TRUNCATE TABLE outbox_events")
+        .execute(&pool)
+        .await?;
+
     // Create relay
     let config = HybridOutboxConfig {
         batch_size: 10,
@@ -156,6 +183,12 @@ async fn test_hybrid_relay_metrics() -> anyhow::Result<()> {
 
     let (relay, mut shutdown_rx) =
         HybridOutboxRelay::new(&pool, repo.clone(), Some(config)).await?;
+
+    // Start the relay background task (using a clone to keep a handle)
+    let relay_handle = relay.clone();
+    tokio::spawn(async move {
+        relay_handle.run().await;
+    });
 
     // Get initial metrics
     let metrics = relay.metrics().await;
