@@ -1,0 +1,28 @@
+[package]
+name = "saga-engine-testing"
+description = "Testing utilities for saga-engine - InMemory implementations and test harness"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Hodei Team Platform"]
+
+[dependencies]
+# Core saga engine
+saga-engine-core = { path = "../core" }
+
+# Async runtime
+tokio = { version = "1", features = ["sync", "macros", "time", "rt-multi-thread"] }
+
+# Serialization
+serde_json = "1"
+
+# Async traits
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
+
+# Utilities
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }

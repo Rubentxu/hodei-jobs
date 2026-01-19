@@ -442,7 +442,10 @@ fn next_event_id() -> u64 {
     EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
-#[cfg(test)]
-fn reset_event_id_generator() {
+/// Reset the event ID generator.
+///
+/// This is primarily for testing purposes to ensure consistent event IDs
+/// across test runs. Not thread-safe - only use in single-threaded contexts.
+pub fn reset_event_id_generator() {
     EVENT_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
 }

@@ -6,7 +6,9 @@
 use super::super::event::SagaId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::time::Duration;
 
 /// Errors from timer store operations.
@@ -23,10 +25,20 @@ pub enum TimerStoreError<E> {
 
     #[error("Timer update failed: {0}")]
     Update(E),
+
+    #[error("Timer not found: {0}")]
+    NotFound(String),
+}
+
+impl<E> TimerStoreError<E> {
+    /// Create a not found error.
+    pub fn not_found(timer_id: impl Into<String>) -> Self {
+        Self::NotFound(timer_id.into())
+    }
 }
 
 /// Status of a timer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerStatus {
     /// Timer is pending and waiting to fire.
