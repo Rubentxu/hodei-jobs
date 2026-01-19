@@ -1,11 +1,11 @@
 # EPIC-93: Event Sourcing Base - HistoryEvent & EventStore
 
-**Status**: 🚧 IN PROGRESS (8/11 US completadas)  
+**Status**: ✅ COMPLETADO (11/11 US completadas - 100%)  
 **Priority**: 🔴 Critical (Foundation)  
 **Estimated Effort**: 18 days  
 **Dependencies**: None (foundational)  
 **Start Date**: 2026-01-19  
-**Target Completion**: TBD  
+**Completion Date**: 2026-01-19  
 
 ---
 
@@ -679,13 +679,13 @@ CREATE INDEX idx_saga_timers_ready
 | ✅ | US-93.6 | InMemoryEventStore + InMemoryTimerStore |
 | ✅ | US-93.7 | SnapshotManager |
 | ✅ | US-93.8 | PostgresEventStore Backend |
+| ✅ | US-93.9 | SignalDispatcher (NATS Core Pub/Sub) |
+| ✅ | US-93.10 | TaskQueue (NATS JetStream Pull) |
 | ✅ | US-93.11 | PostgresTimerStore (PostgreSQL) |
-| ⏳ | US-93.9 | SignalDispatcher (NATS Core) |
-| ⏳ | US-93.10 | TaskQueue (NATS JetStream Pull) |
 
 ---
 
-**Progreso del EPIC**: 9/11 User Stories completadas (82%)
+**Progreso del EPIC**: 11/11 User Stories completadas (100%) ✅
 
 ---
 

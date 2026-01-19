@@ -29,7 +29,7 @@
 | **Épica 62: Type Erasure Safety Tests** | ✅ **COMPLETADO** | 3/3 historias | **P0** |
 | **Épica 63: Hybrid Command Outbox Relay (LISTEN/NOTIFY + Polling)** | 🆕 **NUEVA** | 0/8 historias | **P1** |
 | **Épica 64: Unified Hybrid Outbox Architecture** | 🆕 **NUEVA** | 0/8 historias | **P1** |
-| **Épica 93: Event Sourcing Base - Saga Engine v4.0** | 🚧 **EN PROGRESO** | 9/11 historias (82%) | **P0** |
+| **Épica 93: Event Sourcing Base - Saga Engine v4.0** | ✅ **COMPLETADO** | 11/11 historias (100%) | **P0** |
 
 ---
 
@@ -69,7 +69,7 @@
 16. [Apéndice A: Priorización General](#apéndice-a-priorización-general)
 17. [Apéndice B: Dependencias entre Épicas](#apéndice-b-dependencias-entre-épicas)
 18. [Apéndice C: Plan de Implementación](#apéndice-c-plan-de-implementación)
-19. [**Épica 93: Event Sourcing Base - Saga Engine v4.0**](#épica-93-event-sourcing-base---historyevent--eventstore) 🚧
+19. [**Épica 93: Event Sourcing Base - Saga Engine v4.0**](#épica-93-event-sourcing-base---historyevent--eventstore) ✅
 
 ---
 
@@ -1924,9 +1924,9 @@ async fn test_full_saga_with_erased_command_bus() {
 
 ---
 
-## Épica 93: Event Sourcing Base - Saga Engine v4.0 🚧
+## Épica 93: Event Sourcing Base - Saga Engine v4.0 ✅
 
-**Estado:** 🚧 EN PROGRESO (8/11 historias completadas)  
+**Estado:** ✅ COMPLETADO (11/11 historias - 100%)  
 **Prioridad:** P0 - CRÍTICA  
 **Versión:** v0.70.0  
 **Documentación:** `docs/epics/EPIC-93-SAGA-ENGINE-V4-EVENT-SOURCING.md`
