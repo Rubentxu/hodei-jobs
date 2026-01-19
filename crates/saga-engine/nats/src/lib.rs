@@ -3,6 +3,13 @@
 //! This module provides NATS-based implementations for:
 //! - [`SignalDispatcher`]: Lightweight Pub/Sub for saga event notifications
 //! - [`TaskQueue`]: Durable task processing with JetStream pull consumers
+//!
+//! # Features
+//!
+//! - **JetStream Pull Consumers**: On-demand message fetching for horizontal scaling
+//! - **Exactly-Once Semantics**: Explicit ACK/NAK for reliable processing
+//! - **Dead Letter Queue**: Automatic handling of permanently failed tasks
+//! - **Automatic Retry**: Configurable exponential backoff for transient failures
 
 pub mod signal_dispatcher;
 pub mod task_queue;
