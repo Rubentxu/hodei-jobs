@@ -41,6 +41,7 @@ use hodei_server_infrastructure::messaging::cancellation_saga_consumer::Cancella
 use hodei_server_infrastructure::messaging::cleanup_saga_consumer::CleanupSagaConsumer;
 use hodei_server_infrastructure::messaging::command_dlq;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::ExecutionSagaConsumer;
+use hodei_server_infrastructure::messaging::hybrid::command_relay::CommandRelay;
 use hodei_server_infrastructure::messaging::hybrid::create_command_relay;
 use hodei_server_infrastructure::messaging::nats::NatsEventBus;
 use hodei_server_infrastructure::messaging::nats_outbox_relay::NatsOutboxRelay;
@@ -848,6 +849,7 @@ pub async fn start_execution_command_consumers_service(
 
     hodei_server_infrastructure::messaging::execution_command_consumers::start_execution_command_consumers(
         nats_client.as_ref().clone(),
+        pool.clone(),
         job_repository,
         worker_registry,
         Some(job_executor),

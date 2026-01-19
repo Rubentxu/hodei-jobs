@@ -19,27 +19,29 @@ use hodei_server_domain::saga::commands::execution::{
     ExecuteJobCommand, ExecuteJobHandler, JobExecutor, ValidateJobCommand, ValidateJobHandler,
 };
 use hodei_server_domain::workers::WorkerRegistry;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::{error, info, instrument, warn};
+
+use crate::messaging::consumer_utils::spawn_idempotent_consumer;
 
 /// Start consumers for execution commands
 pub async fn start_execution_command_consumers(
     nats: async_nats::Client,
+    pool: PgPool,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
     job_executor: Option<Arc<dyn JobExecutor + Send + Sync>>,
 ) -> anyhow::Result<()> {
     let jetstream = async_nats::jetstream::new(nats);
 
-    // Ensure stream exists (created by CommandRelay usually, but good to be safe)
-    // We assume stream "HODEI_COMMANDS" exists with subject "hodei.commands.>"
-
-    // 1. AssignWorkerCommand Consumer
+    // 1. AssignWorkerCommand Consumer -> Idempotent
     let assign_worker_handler = Arc::new(AssignWorkerHandler::new(
         job_repository.clone(),
         worker_registry.clone(),
     ));
-    spawn_consumer(
+    spawn_idempotent_consumer::<AssignWorkerCommand, _>(
+        pool.clone(),
         jetstream.clone(),
         "AssignWorker",
         "hodei.commands.worker.assignworker",
@@ -47,13 +49,14 @@ pub async fn start_execution_command_consumers(
     )
     .await?;
 
-    // 2. ExecuteJobCommand Consumer
+    // 2. ExecuteJobCommand Consumer -> Idempotent
     let execute_job_handler = Arc::new(ExecuteJobHandler::new(
         job_repository.clone(),
         worker_registry.clone(),
         job_executor,
     ));
-    spawn_consumer(
+    spawn_idempotent_consumer::<ExecuteJobCommand, _>(
+        pool.clone(),
         jetstream.clone(),
         "ExecuteJob",
         "hodei.commands.worker.executejob",
@@ -61,12 +64,13 @@ pub async fn start_execution_command_consumers(
     )
     .await?;
 
-    // 3. CompleteJobCommand Consumer
+    // 3. CompleteJobCommand Consumer -> Idempotent
     let complete_job_handler = Arc::new(CompleteJobHandler::new(
         job_repository.clone(),
         worker_registry.clone(),
     ));
-    spawn_consumer(
+    spawn_idempotent_consumer::<CompleteJobCommand, _>(
+        pool.clone(),
         jetstream.clone(),
         "CompleteJob",
         "hodei.commands.job.completejob",
@@ -74,9 +78,10 @@ pub async fn start_execution_command_consumers(
     )
     .await?;
 
-    // 4. ValidateJobCommand Consumer
+    // 4. ValidateJobCommand Consumer -> Idempotent
     let validate_job_handler = Arc::new(ValidateJobHandler::new(job_repository.clone()));
-    spawn_consumer(
+    spawn_idempotent_consumer::<ValidateJobCommand, _>(
+        pool.clone(),
         jetstream.clone(),
         "ValidateJob",
         "hodei.commands.job.validatejob",
@@ -85,126 +90,5 @@ pub async fn start_execution_command_consumers(
     .await?;
 
     info!("🚀 Execution command consumers started");
-    Ok(())
-}
-
-/// Helper method to spawn a consumer for a specific command type
-async fn spawn_consumer<C, H>(
-    jetstream: jetstream::Context,
-    consumer_name_base: &'static str,
-    subject: &'static str,
-    handler: Arc<H>,
-) -> anyhow::Result<()>
-where
-    C: Command + serde::de::DeserializeOwned + Send + Sync + 'static,
-    H: CommandHandler<C> + Send + Sync + 'static,
-{
-    let consumer_name = format!("cmd-consumer-{}", consumer_name_base.to_lowercase());
-
-    // Create/Update Consumer configuration
-    // Get the stream first
-    let stream = jetstream
-        .get_stream("HODEI_COMMANDS")
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get stream HODEI_COMMANDS: {}", e))?;
-
-    // Create/Update Consumer using the stream
-    let consumer: async_nats::jetstream::consumer::PullConsumer = stream
-        .get_or_create_consumer(
-            &consumer_name,
-            jetstream::consumer::pull::Config {
-                durable_name: Some(consumer_name.clone()),
-                filter_subject: subject.to_string(),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create consumer {}: {}", consumer_name, e))?;
-
-    let mut messages = consumer
-        .messages()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get messages: {}", e))?;
-
-    tokio::spawn(async move {
-        info!("Started NATS consumer: {} -> {}", consumer_name, subject);
-
-        // Process messages
-        while let Some(msg_result) = messages.next().await {
-            match msg_result {
-                Ok(msg) => {
-                    let payload = msg.payload.clone();
-
-                    // Decode command
-                    // Note: The payload in Outbox is wrapped in `CommandOutboxInsert`.
-                    // But CommandRelay publishes the `payload` field directly?
-                    // Let's check CommandRelay.
-                    // CommandRelay::process_command deserializes payload to `MarkJobFailedPayload`?
-                    // No, for `MarkJobFailed` it has specific logic.
-                    // For generic commands in ExecuteJob, we assume the payload json IS the command struct.
-                    // IF CommandOutboxRelay inserts `serde_json::to_value(cmd)` as payload.
-                    // We need to ensure serialization format matches.
-
-                    match serde_json::from_slice::<C>(&payload) {
-                        Ok(command) => {
-                            info!(
-                                consumer = consumer_name,
-                                command_type = %command.command_name(),
-                                "📥 Received command"
-                            );
-
-                            match handler.handle(command).await {
-                                Ok(_) => {
-                                    if let Err(e) = msg.ack().await {
-                                        warn!(
-                                            consumer = consumer_name,
-                                            "Failed to ack message: {}", e
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(
-                                        consumer = consumer_name,
-                                        error = ?e,
-                                        "❌ Failed to handle command"
-                                    );
-                                    // Nak with delay? Or term?
-                                    // For now, let it timeout and retry (default NATS behavior)
-                                    // or explicit nak.
-                                    if let Err(e) = msg.ack().await {
-                                        // Acking failed message essentially drops it if we don't handle DLQ here.
-                                        // TODO: Implement DLQ or Retry logic
-                                        warn!(
-                                            consumer = consumer_name,
-                                            "Failed to ack (failed) message: {}", e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                consumer = consumer_name,
-                                error = %e,
-                                "❌ Failed to deserialize command payload"
-                            );
-                            // Cannot process this message, term it.
-                            if let Err(e) = msg.ack().await {
-                                // Ack to remove poison message
-                                warn!(
-                                    consumer = consumer_name,
-                                    "Failed to term poison message: {}", e
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(consumer = consumer_name, "Error receiving message: {}", e);
-                }
-            }
-        }
-    });
-
     Ok(())
 }

@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
 use hodei_server_domain::outbox::{
@@ -383,6 +383,6 @@ async fn test_relay_shutdown_signal() {
     relay.shutdown();
 
     // The receiver should receive the shutdown signal
-    let result = rx.recv().await;
+    let result: Result<(), broadcast::error::RecvError> = rx.recv().await;
     assert!(result.is_ok());
 }
