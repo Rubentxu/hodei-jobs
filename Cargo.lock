@@ -4590,6 +4590,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4607,6 +4608,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.17",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

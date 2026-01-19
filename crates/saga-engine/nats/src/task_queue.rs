@@ -22,11 +22,14 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
 use saga_engine_core::event::SagaId;
-use saga_engine_core::port::task_queue::{ConsumerConfig, Task, TaskId, TaskMessage, TaskQueue, TaskQueueError};
+use saga_engine_core::port::task_queue::{
+    ConsumerConfig, Task, TaskId, TaskMessage, TaskQueue, TaskQueueError,
+};
 
 /// Default subject prefix for tasks.
 const DEFAULT_SUBJECT_PREFIX: &str = "saga.tasks";
@@ -114,7 +117,7 @@ pub struct NatsTaskQueue {
     config: NatsTaskQueueConfig,
 
     /// Channel receivers for each consumer (name -> receiver).
-    receivers: Arc<RwLock<HashMap<String, mpsc::Receiver<TaskMessage>>>>,
+    receivers: Arc<RwLock<HashMap<String, Arc<Mutex<mpsc::Receiver<TaskMessage>>>>>>,
 
     /// Senders for each consumer (name -> sender).
     senders: Arc<RwLock<HashMap<String, mpsc::Sender<TaskMessage>>>>,
@@ -128,10 +131,15 @@ pub struct NatsTaskQueue {
 
 impl NatsTaskQueue {
     /// Create a new NatsTaskQueue with default configuration.
-    pub async fn new(config: NatsTaskQueueConfig) -> Result<Self, TaskQueueError<Box<dyn std::error::Error + Send + Sync>>> {
-        let client = async_nats::connect(&config.nats_url).await.map_err(|e| {
-            TaskQueueError::ConsumerCreation(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        });
+    pub async fn new(
+        config: NatsTaskQueueConfig,
+    ) -> Result<Self, TaskQueueError<Box<dyn std::error::Error + Send + Sync>>> {
+        let client =
+            async_nats::connect(&config.nats_url).await.map_err(|e| {
+                TaskQueueError::ConsumerCreation(
+                    Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+                )
+            })?;
 
         let subject = format!("{}.*", config.subject_prefix);
 
@@ -146,7 +154,10 @@ impl NatsTaskQueue {
     }
 
     /// Subscribe to a consumer's task subject.
-    async fn subscribe_consumer(&self, consumer_name: &str) -> Result<(), TaskQueueError<Box<dyn std::error::Error + Send + Sync>>> {
+    async fn subscribe_consumer(
+        &self,
+        consumer_name: &str,
+    ) -> Result<(), TaskQueueError<Box<dyn std::error::Error + Send + Sync>>> {
         let subject = format!("{}.{}", self.config.subject_prefix, consumer_name);
 
         let receivers = self.receivers.read().await;
@@ -156,6 +167,7 @@ impl NatsTaskQueue {
         }
 
         let (tx, rx) = mpsc::channel(self.config.channel_size);
+        let tx_for_spawn = tx.clone();
 
         {
             let mut senders = self.senders.write().await;
@@ -163,47 +175,51 @@ impl NatsTaskQueue {
             let mut ack_trackers = self.ack_trackers.write().await;
 
             senders.insert(consumer_name.to_string(), tx);
-            receivers_mut.insert(consumer_name.to_string(), rx);
-            ack_trackers.insert(consumer_name.to_string(), AckTracker {
-                pending: HashMap::new(),
-                acknowledged: HashMap::new(),
-            });
+            receivers_mut.insert(consumer_name.to_string(), Arc::new(Mutex::new(rx)));
+            ack_trackers.insert(
+                consumer_name.to_string(),
+                AckTracker {
+                    pending: HashMap::new(),
+                    acknowledged: HashMap::new(),
+                },
+            );
         }
 
-        let mut subscriber = self.client.subscribe(subject.clone()).await.map_err(|e| {
-            tracing::error!("Failed to subscribe to {}: {}", subject, e);
-            TaskQueueError::ConsumerCreation(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        })?;
+        let mut subscriber =
+            self.client.subscribe(subject.clone()).await.map_err(|e| {
+                tracing::error!("Failed to subscribe to {}: {}", subject, e);
+                TaskQueueError::ConsumerCreation(
+                    Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+                )
+            })?;
 
         let consumer_name_owned = consumer_name.to_string();
+        let tx = tx_for_spawn;
+        let subject_clone = subject.clone();
 
         tokio::spawn(async move {
-            loop {
-                match subscriber.next().await {
-                    Some(message) => {
-                        if let Ok(task) = serde_json::from_slice::<Task>(&message.payload) {
-                            let task_message = TaskMessage::new(
-                                message.sid.to_string(),
-                                task,
-                                message.subject.clone(),
-                                false,
-                                1,
-                            );
+            use futures::StreamExt;
+            use uuid::Uuid;
 
-                            let _ = tx.send(task_message).await;
-                        } else {
-                            tracing::warn!("Failed to deserialize task from NATS message");
-                        }
-                    }
-                    None => {
-                        tracing::debug!("Subscriber stream ended for {}", subject);
-                        break;
-                    }
+            while let Some(message) = subscriber.next().await {
+                if let Ok(task) = serde_json::from_slice::<Task>(&message.payload) {
+                    let message_id = Uuid::new_v4().to_string();
+                    let task_message =
+                        TaskMessage::new(message_id, task, message.subject.to_string(), false, 1);
+
+                    let _ = tx.send(task_message).await;
+                } else {
+                    tracing::warn!("Failed to deserialize task from NATS message");
                 }
             }
+            tracing::debug!("Subscriber stream ended for {}", subject_clone);
         });
 
-        tracing::info!("Subscribed consumer {} to subject {}", consumer_name, subject);
+        tracing::info!(
+            "Subscribed consumer {} to subject {}",
+            consumer_name,
+            subject
+        );
         Ok(())
     }
 }
@@ -258,7 +274,7 @@ impl TaskQueue for NatsTaskQueue {
                     std::io::ErrorKind::NotFound,
                     format!("Consumer {} not found", consumer_name),
                 ))
-                as Box<dyn std::error::Error + Send + Sync>
+                    as Box<dyn std::error::Error + Send + Sync>)
             })?
         };
 
@@ -267,14 +283,17 @@ impl TaskQueue for NatsTaskQueue {
         let max_messages = _max_messages as usize;
 
         loop {
-            match tokio::time::timeout(timeout, receiver.recv()).await {
+            match tokio::time::timeout(timeout, receiver.lock().await.recv()).await {
                 Ok(Some(message)) => {
                     let mut ack_trackers = self.ack_trackers.write().await;
                     if let Some(tracker) = ack_trackers.get_mut(consumer_name) {
-                        tracker.pending.insert(message.message_id.clone(), PendingMessage {
-                            message: message.clone(),
-                            received_at: std::time::Instant::now(),
-                        });
+                        tracker.pending.insert(
+                            message.message_id.clone(),
+                            PendingMessage {
+                                message: message.clone(),
+                                received_at: std::time::Instant::now(),
+                            },
+                        );
                     }
 
                     messages.push(message);
@@ -305,20 +324,20 @@ impl TaskQueue for NatsTaskQueue {
         Ok(messages)
     }
 
-    async fn ack(
-        &self,
-        message_id: &str,
-    ) -> Result<(), TaskQueueError<Self::Error>> {
+    async fn ack(&self, message_id: &str) -> Result<(), TaskQueueError<Self::Error>> {
         let mut ack_trackers = self.ack_trackers.write().await;
 
-        let tracker_opt = ack_trackers
-            .iter_mut()
-            .find_map(|(name, tracker)| {
-                tracker.pending.remove(message_id).map(|p| (name.clone(), tracker))
-            });
+        let tracker_opt = ack_trackers.iter_mut().find_map(|(name, tracker)| {
+            tracker
+                .pending
+                .remove(message_id)
+                .map(|p| (name.clone(), tracker))
+        });
 
         if let Some((consumer_name, tracker)) = tracker_opt {
-            tracker.acknowledged.insert(message_id.to_string(), AckStatus::Acknowledged);
+            tracker
+                .acknowledged
+                .insert(message_id.to_string(), AckStatus::Acknowledged);
 
             let elapsed = tracker
                 .pending
@@ -344,17 +363,17 @@ impl TaskQueue for NatsTaskQueue {
     ) -> Result<(), TaskQueueError<Self::Error>> {
         let mut ack_trackers = self.ack_trackers.write().await;
 
-        let tracker_opt = ack_trackers
-            .iter_mut()
-            .find_map(|(name, tracker)| {
-                tracker.pending.remove(message_id).map(|p| (name.clone(), tracker))
-            });
+        let tracker_opt = ack_trackers.iter_mut().find_map(|(name, tracker)| {
+            tracker
+                .pending
+                .remove(message_id)
+                .map(|p| (name.clone(), tracker))
+        });
 
         if let Some((consumer_name, tracker)) = tracker_opt {
-            tracker.acknowledged.insert(
-                message_id.to_string(),
-                AckStatus::Nak { delay },
-            );
+            tracker
+                .acknowledged
+                .insert(message_id.to_string(), AckStatus::Nak { delay });
 
             tracing::warn!(
                 "Negatively acknowledged message {} for consumer {} with delay {:?}",
@@ -367,20 +386,20 @@ impl TaskQueue for NatsTaskQueue {
         Ok(())
     }
 
-    async fn terminate(
-        &self,
-        message_id: &str,
-    ) -> Result<(), TaskQueueError<Self::Error>> {
+    async fn terminate(&self, message_id: &str) -> Result<(), TaskQueueError<Self::Error>> {
         let mut ack_trackers = self.ack_trackers.write().await;
 
-        let tracker_opt = ack_trackers
-            .iter_mut()
-            .find_map(|(name, tracker)| {
-                tracker.pending.remove(message_id).map(|p| (name.clone(), tracker))
-            });
+        let tracker_opt = ack_trackers.iter_mut().find_map(|(name, tracker)| {
+            tracker
+                .pending
+                .remove(message_id)
+                .map(|p| (name.clone(), tracker))
+        });
 
         if let Some((consumer_name, tracker)) = tracker_opt {
-            tracker.acknowledged.insert(message_id.to_string(), AckStatus::Terminated);
+            tracker
+                .acknowledged
+                .insert(message_id.to_string(), AckStatus::Terminated);
 
             tracing::warn!(
                 "Terminated message {} for consumer {}",
@@ -423,16 +442,19 @@ mod tests {
             b"test payload".to_vec(),
         );
 
-        let task_id = queue
-            .publish(&task, "test.subject")
-            .await
-            .unwrap();
+        let task_id = queue.publish(&task, "test.subject").await.unwrap();
 
         assert!(!task_id.0.is_empty());
 
-        queue.ensure_consumer("test-consumer", &Default::default()).await.unwrap();
+        queue
+            .ensure_consumer("test-consumer", &Default::default())
+            .await
+            .unwrap();
 
-        let messages = queue.fetch("test-consumer", 1, Duration::from_secs(5)).await.unwrap();
+        let messages = queue
+            .fetch("test-consumer", 1, Duration::from_secs(5))
+            .await
+            .unwrap();
 
         assert!(messages.len() <= 1);
     }

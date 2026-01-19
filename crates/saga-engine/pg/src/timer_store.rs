@@ -151,7 +151,7 @@ impl PostgresTimerStore {
     pub async fn migrate(&self) -> Result<(), SqlxError> {
         let mut tx = self.pool.begin().await?;
 
-        tx.execute(
+        sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS saga_timers (
                 id              BIGSERIAL PRIMARY KEY,
@@ -170,24 +170,27 @@ impl PostgresTimerStore {
             )
             "#,
         )
+        .execute(&mut *tx)
         .await?;
 
-        tx.execute(
+        sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_timers_pending
             ON saga_timers(status, fire_at)
             WHERE status = 'PENDING'
             "#,
         )
+        .execute(&mut *tx)
         .await?;
 
-        tx.execute(
+        sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_timers_processing
             ON saga_timers(status, scheduler_id)
             WHERE status = 'PROCESSING'
             "#,
         )
+        .execute(&mut *tx)
         .await?;
 
         tx.commit().await?;
@@ -224,8 +227,7 @@ impl TimerStore for PostgresTimerStore {
         .bind(&timer.attributes)
         .bind("PENDING")
         .bind(0i32)
-        .bind(1i32)
-        .bind(&timer.scheduler_id)
+        .bind(timer.max_attempts as i32)
         .execute(&self.pool)
         .await
         .map_err(TimerStoreError::Create)?;
@@ -282,10 +284,9 @@ impl TimerStore for PostgresTimerStore {
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
-        .map_err(TimerStoreError::Retrieve)?
-        .into_iter()
-        .map(|row| row.into())
-        .collect()
+        .map_err(TimerStoreError::Retrieve)?;
+
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     async fn claim_timers(
@@ -337,13 +338,11 @@ impl TimerStore for PostgresTimerStore {
             TimerStatus::Failed => "FAILED",
         };
 
-        let result = sqlx::query(
-            r#"UPDATE saga_timers SET status = $1 WHERE timer_id = $2"#,
-        )
-        .bind(status_str)
-        .bind(timer_uuid)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query(r#"UPDATE saga_timers SET status = $1 WHERE timer_id = $2"#)
+            .bind(status_str)
+            .bind(timer_uuid)
+            .execute(&self.pool)
+            .await?;
 
         if result.rows_affected() == 0 {
             return Err(TimerStoreError::not_found(timer_id));
@@ -360,7 +359,7 @@ impl TimerStore for PostgresTimerStore {
     ) -> Result<Vec<DurableTimer>, TimerStoreError<Self::Error>> {
         let saga_uuid = Uuid::parse_str(&saga_id.0).map_err(uuid_err)?;
 
-        let query = if include_fired {
+        let rows: Vec<TimerRow> = if include_fired {
             sqlx::query_as::<_, TimerRow>(
                 r#"
                 SELECT
@@ -372,6 +371,8 @@ impl TimerStore for PostgresTimerStore {
                 "#,
             )
             .bind(saga_uuid)
+            .fetch_all(&self.pool)
+            .await?
         } else {
             sqlx::query_as::<_, TimerRow>(
                 r#"
@@ -384,11 +385,9 @@ impl TimerStore for PostgresTimerStore {
                 "#,
             )
             .bind(saga_uuid)
+            .fetch_all(&self.pool)
+            .await?
         };
-        }
-
-        let rows = query.bind(saga_uuid).fetch_all(&self.pool).await
-            .map_err(TimerStoreError::Retrieve)?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
     }

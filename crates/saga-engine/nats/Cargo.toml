@@ -37,5 +37,8 @@ async-stream = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# UUID for message IDs
+uuid = { workspace = true, features = ["v4", "serde"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

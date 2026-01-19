@@ -42,9 +42,10 @@ pub mod snapshot;
 pub use codec::{BincodeCodec, CodecError, EventCodec, JsonCodec};
 pub use event::{CURRENT_EVENT_VERSION, EventCategory, EventId, EventType, HistoryEvent, SagaId};
 pub use port::{
-    ConsumerConfig, DurableTimer, EventStore, EventStoreError, SignalDispatcher,
-    SignalDispatcherError, SignalNotification, SignalSubscription, SignalType, Task, TaskId,
-    TaskMessage, TaskQueue, TaskQueueError, TimerStatus, TimerStore, TimerStoreError, TimerType,
+    ConsumerConfig, DurableTimer, HistoryReplayer, ReplayConfig, ReplayError, ReplayResult,
+    SignalDispatcher, SignalDispatcherError, SignalNotification, SignalSubscription, SignalType,
+    Task, TaskId, TaskMessage, TaskQueue, TaskQueueError, TimerStatus, TimerStore, TimerStoreError,
+    TimerType,
 };
 pub use snapshot::{
     Snapshot, SnapshotChecksum, SnapshotConfig, SnapshotError, SnapshotManager, SnapshotResult,

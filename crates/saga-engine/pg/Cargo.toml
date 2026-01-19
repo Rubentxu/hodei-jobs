@@ -37,5 +37,8 @@ sha2 = { workspace = true, features = ["asm"] }
 # Utilities
 parking_lot = { workspace = true }
 
+# Tracing for logging
+tracing = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
