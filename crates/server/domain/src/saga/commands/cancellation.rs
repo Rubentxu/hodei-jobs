@@ -228,6 +228,66 @@ where
     }
 }
 
+/// Concrete handler for NotifyWorkerCommand using Arc<dyn WorkerRegistry>.
+pub struct GenericNotifyWorkerHandler {
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl GenericNotifyWorkerHandler {
+    /// Creates a new handler with the given worker registry.
+    #[inline]
+    pub fn new(worker_registry: Arc<dyn WorkerRegistry + Send + Sync>) -> Self {
+        Self { worker_registry }
+    }
+}
+
+impl std::fmt::Debug for GenericNotifyWorkerHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericNotifyWorkerHandler")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<NotifyWorkerCommand> for GenericNotifyWorkerHandler {
+    type Error = NotifyWorkerError;
+
+    async fn handle(
+        &self,
+        command: NotifyWorkerCommand,
+    ) -> Result<NotifyWorkerResult, Self::Error> {
+        let job_id = command.job_id.clone();
+        let worker_id_opt = command.worker_id.clone();
+
+        let worker_id = match worker_id_opt {
+            Some(id) => id,
+            None => {
+                let worker = self
+                    .worker_registry
+                    .get_by_job_id(&job_id)
+                    .await
+                    .map_err(|e| NotifyWorkerError::NotificationFailed {
+                        worker_id: WorkerId::new(),
+                        source: e,
+                    })?
+                    .ok_or_else(|| NotifyWorkerError::NoWorkerAssigned {
+                        job_id: job_id.clone(),
+                    })?;
+                worker.id().clone()
+            }
+        };
+
+        info!(
+            job_id = %job_id,
+            worker_id = %worker_id,
+            reason = %command.reason,
+            "Worker notified of cancellation"
+        );
+
+        Ok(NotifyWorkerResult::success(Some(worker_id)))
+    }
+}
+
 /// Command to update a job's state.
 ///
 /// This command encapsulates the intent to transition a job to a new state,

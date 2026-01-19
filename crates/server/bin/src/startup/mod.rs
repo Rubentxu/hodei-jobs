@@ -28,10 +28,13 @@ use hodei_server_application::saga::recovery_saga::DynRecoverySagaCoordinator;
 use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
 };
+use hodei_server_application::workers::provisioning_impl::{
+    DefaultWorkerProvisioningService, ProvisioningConfig,
+};
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::saga::{InMemorySagaOrchestrator, SagaOrchestrator};
 use hodei_server_domain::shared_kernel::ProviderId;
-use hodei_server_domain::workers::WorkerProvider;
+use hodei_server_domain::workers::{WorkerProvider, WorkerProvisioning};
 use hodei_server_infrastructure::messaging::nats::{NatsConfig, NatsEventBus};
 use hodei_server_infrastructure::persistence::outbox::PostgresOutboxRepository;
 use hodei_server_infrastructure::persistence::postgres::PostgresSagaOrchestrator;
@@ -74,6 +77,8 @@ pub struct AppState {
     >,
     /// Worker lifecycle manager for provisioning and recovery
     pub lifecycle_manager: Arc<WorkerLifecycleManager>,
+    /// Worker provisioning for saga commands (EPIC-89 Sprint 3)
+    pub worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
     /// Provider initialization result
     pub provider_init_result: Option<ProvidersInitResult>,
     /// gRPC services container (for sharing between coordinator and server)
@@ -97,6 +102,7 @@ impl AppState {
                 + Sync,
         >,
         lifecycle_manager: Arc<WorkerLifecycleManager>,
+        worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
         provider_init_result: Option<ProvidersInitResult>,
         grpc_services: Option<Arc<GrpcServices>>,
     ) -> Self {
@@ -110,6 +116,7 @@ impl AppState {
             outbox_repository,
             saga_orchestrator,
             lifecycle_manager,
+            worker_provisioning,
             provider_init_result,
             grpc_services,
         }
@@ -386,6 +393,29 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     lifecycle_manager.start_event_monitoring().await;
     info!("✓ WorkerLifecycleManager event monitoring started (reactive cleanup enabled)");
 
+    // EPIC-89: Initialize WorkerProvisioning for saga command consumers (Sprint 3)
+    let default_image = std::env::var("HODEI_WORKER_IMAGE")
+        .unwrap_or_else(|_| "localhost:31500/hodei-jobs-worker:latest".to_string());
+    let provisioning_config =
+        ProvisioningConfig::new(config.server_address.clone()).with_default_image(default_image);
+
+    // Create ProviderRegistry from provider_config_repository
+    let provider_registry = Arc::new(
+        hodei_server_application::providers::registry::ProviderRegistry::new(
+            provider_config_repository.clone(),
+        ),
+    );
+
+    let worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+        Arc::new(DefaultWorkerProvisioningService::new(
+            worker_registry.clone(),
+            token_store.clone(),
+            providers_map.clone(),
+            provider_registry.clone(),
+            provisioning_config,
+        ));
+    info!("✓ WorkerProvisioningService initialized for saga commands");
+
     // EPIC-88: Start Execution Command Consumers
     services_init::start_execution_command_consumers_service(
         Arc::new(nats_event_bus.client().clone()),
@@ -394,14 +424,14 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     .await?;
     info!("✓ Execution Command Consumers started");
 
-    // EPIC-89: Start Saga Command Consumers (Sprint 1 - low-complexity commands only)
-    // Commands requiring WorkerProvisioning are deferred to Sprint 3
+    // EPIC-89: Start Saga Command Consumers (Sprint 3 - including provisioning commands)
     services_init::start_saga_command_consumers_service(
         Arc::new(nats_event_bus.client().clone()),
         pool.clone(),
+        worker_provisioning.clone(),
     )
     .await?;
-    info!("✓ Saga Command Consumers started (EPIC-89 Sprint 1)");
+    info!("✓ Saga Command Consumers started (EPIC-89 Sprint 3)");
 
     info!("✓ All connections established, ready for gRPC");
 
@@ -415,6 +445,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         outbox_repository,
         saga_orchestrator,
         lifecycle_manager,
+        worker_provisioning,
         Some(provider_init_result),
         None, // grpc_services will be initialized later as Arc
     ))

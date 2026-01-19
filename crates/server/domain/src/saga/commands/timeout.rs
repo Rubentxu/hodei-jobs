@@ -243,6 +243,80 @@ where
     }
 }
 
+/// Concrete handler for TerminateWorkerCommand using Arc<dyn WorkerRegistry>.
+pub struct GenericTerminateWorkerHandler {
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl GenericTerminateWorkerHandler {
+    /// Creates a new handler with the given worker registry.
+    #[inline]
+    pub fn new(worker_registry: Arc<dyn WorkerRegistry + Send + Sync>) -> Self {
+        Self { worker_registry }
+    }
+}
+
+impl std::fmt::Debug for GenericTerminateWorkerHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericTerminateWorkerHandler")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<TerminateWorkerCommand> for GenericTerminateWorkerHandler {
+    type Error = TerminateWorkerError;
+
+    async fn handle(
+        &self,
+        command: TerminateWorkerCommand,
+    ) -> Result<TerminateWorkerResult, Self::Error> {
+        let worker_id = command.worker_id.clone();
+
+        let worker_opt = self
+            .worker_registry
+            .find_by_id(&worker_id)
+            .await
+            .map_err(|e| TerminateWorkerError::TerminationFailed {
+                worker_id: worker_id.clone(),
+                source: e,
+            })?;
+
+        if let Some(ref worker) = worker_opt
+            && *worker.state() == WorkerState::Terminated
+        {
+            debug!(worker_id = %worker_id, "Worker already terminated");
+            return Ok(TerminateWorkerResult::already_terminated());
+        }
+
+        if worker_opt.is_none() {
+            debug!(worker_id = %worker_id, "Worker not found, treating as terminated");
+            return Ok(TerminateWorkerResult::already_terminated());
+        }
+
+        self.worker_registry
+            .update_state(&worker_id, WorkerState::Terminated)
+            .await
+            .map_err(|e| TerminateWorkerError::TerminationFailed {
+                worker_id: worker_id.clone(),
+                source: e,
+            })?;
+
+        info!(
+            worker_id = %worker_id,
+            job_id = ?command.job_id,
+            reason = %command.reason,
+            "Worker terminated"
+        );
+
+        if command.unregister {
+            debug!(worker_id = %worker_id, "Worker marked for unregistration");
+        }
+
+        Ok(TerminateWorkerResult::success(WorkerState::Terminated))
+    }
+}
+
 /// Command to mark a job as timed out.
 ///
 /// This command transitions a job to the FAILED state with a timeout reason

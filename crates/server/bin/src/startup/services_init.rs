@@ -859,21 +859,26 @@ pub async fn start_execution_command_consumers_service(
 
 /// Start saga command consumers (NATS Consumers for saga commands - EPIC-89)
 ///
-/// This function starts NATS consumers for all saga command handlers (Sprint 1):
-/// - Cancellation Saga: UpdateJobStateCommand, ReleaseWorkerCommand
-/// - Timeout Saga: MarkJobTimedOutCommand
-///
-/// Commands requiring WorkerProvisioning (CreateWorker, DestroyWorker, etc.)
-/// are deferred to Sprint 3.
+/// This function starts NATS consumers for all saga command handlers (Sprint 3):
+/// - Cancellation Saga: UpdateJobStateCommand, ReleaseWorkerCommand, NotifyWorkerCommand
+/// - Timeout Saga: MarkJobTimedOutCommand, TerminateWorkerCommand
+/// - Recovery Saga: CheckConnectivityCommand, TransferJobCommand, MarkJobForRecoveryCommand,
+///                  ProvisionNewWorkerCommand, DestroyOldWorkerCommand
+/// - Provisioning Saga: CreateWorkerCommand, DestroyWorkerCommand, UnregisterWorkerCommand
 pub async fn start_saga_command_consumers_service(
     nats_client: Arc<async_nats::Client>,
     pool: sqlx::PgPool,
+    provisioning: Arc<dyn hodei_server_domain::workers::WorkerProvisioning + Send + Sync>,
 ) -> anyhow::Result<()> {
-    info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 1)...");
+    info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 3)...");
 
-    saga_command_consumers::start_saga_command_consumers(nats_client.as_ref().clone(), pool)
-        .await?;
+    saga_command_consumers::start_saga_command_consumers(
+        nats_client.as_ref().clone(),
+        pool,
+        provisioning,
+    )
+    .await?;
 
-    info!("✅ Saga Command Consumers started (Sprint 1)");
+    info!("✅ Saga Command Consumers started (Sprint 3)");
     Ok(())
 }

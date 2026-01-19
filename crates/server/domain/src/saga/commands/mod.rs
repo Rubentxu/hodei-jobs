@@ -10,9 +10,10 @@ pub mod recovery;
 pub mod timeout;
 
 pub use cancellation::{
-    NotifyWorkerCommand, NotifyWorkerError, NotifyWorkerHandler, NotifyWorkerResult,
-    ReleaseWorkerCommand, ReleaseWorkerError, ReleaseWorkerHandler, ReleaseWorkerResult,
-    UpdateJobStateCommand, UpdateJobStateError, UpdateJobStateHandler, UpdateJobStateResult,
+    GenericNotifyWorkerHandler, NotifyWorkerCommand, NotifyWorkerError, NotifyWorkerHandler,
+    NotifyWorkerResult, ReleaseWorkerCommand, ReleaseWorkerError, ReleaseWorkerHandler,
+    ReleaseWorkerResult, UpdateJobStateCommand, UpdateJobStateError, UpdateJobStateHandler,
+    UpdateJobStateResult,
 };
 pub use execution::{
     AssignWorkerCommand, AssignWorkerError, AssignWorkerHandler, CompleteJobCommand,
@@ -27,12 +28,14 @@ pub use provisioning::{
 pub use recovery::{
     CheckConnectivityCommand, CheckConnectivityError, CheckConnectivityHandler,
     CheckConnectivityResult, DestroyOldWorkerCommand, GenericCheckConnectivityHandler,
-    GenericMarkJobForRecoveryHandler, GenericTransferJobHandler, JobRecoveryMarkResult,
+    GenericDestroyOldWorkerHandler, GenericMarkJobForRecoveryHandler,
+    GenericProvisionNewWorkerHandler, GenericTransferJobHandler, JobRecoveryMarkResult,
     JobTransferResult, MarkJobForRecoveryCommand, MarkJobForRecoveryError,
     MarkJobForRecoveryHandler, ProvisionNewWorkerCommand, TransferJobCommand, TransferJobError,
     TransferJobHandler,
 };
 pub use timeout::{
-    MarkJobTimedOutCommand, MarkJobTimedOutError, MarkJobTimedOutHandler, MarkJobTimedOutResult,
-    TerminateWorkerCommand, TerminateWorkerError, TerminateWorkerHandler, TerminateWorkerResult,
+    GenericTerminateWorkerHandler, MarkJobTimedOutCommand, MarkJobTimedOutError,
+    MarkJobTimedOutHandler, MarkJobTimedOutResult, TerminateWorkerCommand, TerminateWorkerError,
+    TerminateWorkerHandler, TerminateWorkerResult,
 };

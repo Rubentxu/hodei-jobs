@@ -580,6 +580,57 @@ where
     }
 }
 
+/// Concrete handler for ProvisionNewWorkerCommand using Arc<dyn WorkerProvisioning>.
+pub struct GenericProvisionNewWorkerHandler {
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+}
+
+impl GenericProvisionNewWorkerHandler {
+    /// Creates a new handler with the given provisioning service.
+    #[inline]
+    pub fn new(provisioning: Arc<dyn WorkerProvisioning + Send + Sync>) -> Self {
+        Self { provisioning }
+    }
+}
+
+impl std::fmt::Debug for GenericProvisionNewWorkerHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericProvisionNewWorkerHandler")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<ProvisionNewWorkerCommand> for GenericProvisionNewWorkerHandler {
+    type Error = ProvisionNewWorkerError;
+
+    async fn handle(
+        &self,
+        command: ProvisionNewWorkerCommand,
+    ) -> Result<WorkerProvisioningResult, Self::Error> {
+        let spec = crate::workers::WorkerSpec::new(
+            "hodei-worker:latest".to_string(),
+            "localhost:50051".to_string(),
+        )
+        .with_label("recovery", "true")
+        .with_label("original_worker_id", command.old_worker_id.to_string());
+
+        let result = self
+            .provisioning
+            .provision_worker(&command.provider_id, spec, command.job_id)
+            .await
+            .map_err(|e| ProvisionNewWorkerError::ProvisioningFailed {
+                provider_id: command.provider_id,
+                source: e,
+            })?;
+
+        Ok(WorkerProvisioningResult::success(
+            result.worker_id,
+            result.provider_id,
+        ))
+    }
+}
+
 /// Command to transfer a job to a new worker.
 ///
 /// This command updates the job to use the new worker.
@@ -917,6 +968,43 @@ where
     async fn handle(&self, command: DestroyOldWorkerCommand) -> Result<(), Self::Error> {
         // Attempt to destroy the worker
         // This is best-effort - the worker might already be gone
+        let result = self.provisioning.destroy_worker(&command.worker_id).await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(DestroyOldWorkerError::DestructionFailed {
+                worker_id: command.worker_id,
+                source: e,
+            }),
+        }
+    }
+}
+
+/// Concrete handler for DestroyOldWorkerCommand using Arc<dyn WorkerProvisioning>.
+pub struct GenericDestroyOldWorkerHandler {
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+}
+
+impl GenericDestroyOldWorkerHandler {
+    /// Creates a new handler with the given provisioning service.
+    #[inline]
+    pub fn new(provisioning: Arc<dyn WorkerProvisioning + Send + Sync>) -> Self {
+        Self { provisioning }
+    }
+}
+
+impl std::fmt::Debug for GenericDestroyOldWorkerHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericDestroyOldWorkerHandler")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CommandHandler<DestroyOldWorkerCommand> for GenericDestroyOldWorkerHandler {
+    type Error = DestroyOldWorkerError;
+
+    async fn handle(&self, command: DestroyOldWorkerCommand) -> Result<(), Self::Error> {
         let result = self.provisioning.destroy_worker(&command.worker_id).await;
 
         match result {

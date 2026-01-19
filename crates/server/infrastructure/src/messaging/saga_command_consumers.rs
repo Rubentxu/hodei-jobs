@@ -7,8 +7,8 @@
 //! # Sprints
 //!
 //! - Sprint 1: Low-complexity commands (UpdateJobState, ReleaseWorker, MarkJobTimedOut) ✅ COMPLETED
-//! - Sprint 2: Network operations (NotifyWorker, CheckConnectivity, TransferJob) ✅ COMPLETED
-//! - Sprint 3: Infrastructure operations (TerminateWorker, CreateWorker, DestroyWorker, UnregisterWorker) - deferred
+//! - Sprint 2: Network operations (CheckConnectivity, TransferJob) ✅ COMPLETED
+//! - Sprint 3: Infrastructure operations (CreateWorker, DestroyWorker, UnregisterWorker, TerminateWorker, ProvisionNewWorker, DestroyOldWorker) 🚀 IN PROGRESS
 //! - Sprint 4: Production readiness (DLQ, metrics) - deferred
 
 use async_nats::jetstream::{self, stream};
@@ -16,17 +16,23 @@ use futures::StreamExt;
 use hodei_server_domain::command::{Command, CommandHandler};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::cancellation::{
-    NotifyWorkerCommand, NotifyWorkerHandler, ReleaseWorkerCommand, ReleaseWorkerHandler,
+    GenericNotifyWorkerHandler, NotifyWorkerCommand, ReleaseWorkerCommand, ReleaseWorkerHandler,
     UpdateJobStateCommand, UpdateJobStateHandler,
 };
+use hodei_server_domain::saga::commands::provisioning::{
+    CreateWorkerCommand, CreateWorkerHandler, DestroyWorkerCommand, DestroyWorkerHandler,
+    UnregisterWorkerCommand, UnregisterWorkerHandler,
+};
 use hodei_server_domain::saga::commands::recovery::{
-    CheckConnectivityCommand, CheckConnectivityHandler, MarkJobForRecoveryCommand,
-    MarkJobForRecoveryHandler, TransferJobCommand, TransferJobHandler,
+    CheckConnectivityCommand, CheckConnectivityHandler, DestroyOldWorkerCommand,
+    GenericDestroyOldWorkerHandler, GenericProvisionNewWorkerHandler, MarkJobForRecoveryCommand,
+    MarkJobForRecoveryHandler, ProvisionNewWorkerCommand, TransferJobCommand, TransferJobHandler,
 };
 use hodei_server_domain::saga::commands::timeout::{
-    MarkJobTimedOutCommand, MarkJobTimedOutHandler,
+    GenericTerminateWorkerHandler, MarkJobTimedOutCommand, MarkJobTimedOutHandler,
+    TerminateWorkerCommand,
 };
-use hodei_server_domain::workers::registry::WorkerRegistry;
+use hodei_server_domain::workers::{WorkerProvisioning, WorkerRegistry};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -60,6 +66,16 @@ pub async fn start_cancellation_command_consumers(
     )
     .await?;
 
+    // NotifyWorkerCommand Consumer (Sprint 3 fix)
+    let notify_worker_handler = Arc::new(GenericNotifyWorkerHandler::new(worker_registry.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "NotifyWorker",
+        "hodei.commands.worker.notifyworker",
+        notify_worker_handler,
+    )
+    .await?;
+
     info!("🚀 Cancellation command consumers started");
     Ok(())
 }
@@ -68,7 +84,7 @@ pub async fn start_cancellation_command_consumers(
 pub async fn start_timeout_command_consumers(
     nats: async_nats::Client,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
-    _worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
 ) -> anyhow::Result<()> {
     let jetstream = async_nats::jetstream::new(nats);
 
@@ -82,15 +98,27 @@ pub async fn start_timeout_command_consumers(
     )
     .await?;
 
+    // TerminateWorkerCommand Consumer (Sprint 3)
+    let terminate_worker_handler =
+        Arc::new(GenericTerminateWorkerHandler::new(worker_registry.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "TerminateWorker",
+        "hodei.commands.worker.terminateworker",
+        terminate_worker_handler,
+    )
+    .await?;
+
     info!("🚀 Timeout command consumers started");
     Ok(())
 }
 
-/// Start consumers for recovery saga commands (Sprint 2)
+/// Start consumers for recovery saga commands (Sprint 2 & 3)
 pub async fn start_recovery_command_consumers(
     nats: async_nats::Client,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
 ) -> anyhow::Result<()> {
     let jetstream = async_nats::jetstream::new(nats);
 
@@ -129,14 +157,79 @@ pub async fn start_recovery_command_consumers(
     )
     .await?;
 
+    // ProvisionNewWorkerCommand Consumer (Sprint 3)
+    let provision_new_worker_handler =
+        Arc::new(GenericProvisionNewWorkerHandler::new(provisioning.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "ProvisionNewWorker",
+        "hodei.commands.worker.provisionnewworker",
+        provision_new_worker_handler,
+    )
+    .await?;
+
+    // DestroyOldWorkerCommand Consumer (Sprint 3)
+    let destroy_old_worker_handler =
+        Arc::new(GenericDestroyOldWorkerHandler::new(provisioning.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "DestroyOldWorker",
+        "hodei.commands.worker.destroyoldworker",
+        destroy_old_worker_handler,
+    )
+    .await?;
+
     info!("🚀 Recovery command consumers started");
     Ok(())
 }
 
-/// Start all saga command consumers (Sprint 1 & 2)
+/// Start consumers for provisioning saga commands (Sprint 3)
+pub async fn start_provisioning_command_consumers(
+    nats: async_nats::Client,
+    worker_registry: Arc<dyn WorkerRegistry + Send + Sync>,
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+) -> anyhow::Result<()> {
+    let jetstream = async_nats::jetstream::new(nats);
+
+    // CreateWorkerCommand Consumer
+    let create_worker_handler = Arc::new(CreateWorkerHandler::new(provisioning.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "CreateWorker",
+        "hodei.commands.worker.createworker",
+        create_worker_handler,
+    )
+    .await?;
+
+    // DestroyWorkerCommand Consumer
+    let destroy_worker_handler = Arc::new(DestroyWorkerHandler::new(provisioning.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "DestroyWorker",
+        "hodei.commands.worker.destroyworker",
+        destroy_worker_handler,
+    )
+    .await?;
+
+    // UnregisterWorkerCommand Consumer
+    let unregister_worker_handler = Arc::new(UnregisterWorkerHandler::new(worker_registry.clone()));
+    spawn_consumer(
+        jetstream.clone(),
+        "UnregisterWorker",
+        "hodei.commands.worker.unregisterworker",
+        unregister_worker_handler,
+    )
+    .await?;
+
+    info!("🚀 Provisioning command consumers started");
+    Ok(())
+}
+
+/// Start all saga command consumers (Sprint 1, 2 & 3)
 pub async fn start_saga_command_consumers(
     nats: async_nats::Client,
     pool: sqlx::PgPool,
+    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
 ) -> anyhow::Result<()> {
     // Create concrete repositories wrapped in Arc<dyn Trait>
     let job_repository: Arc<dyn JobRepository + Send + Sync> =
@@ -165,10 +258,19 @@ pub async fn start_saga_command_consumers(
         nats.clone(),
         job_repository.clone(),
         worker_registry.clone(),
+        provisioning.clone(),
     )
     .await?;
 
-    info!("🚀 All saga command consumers (Sprint 1 & 2) started");
+    // Start provisioning saga command consumers (Sprint 3)
+    start_provisioning_command_consumers(
+        nats.clone(),
+        worker_registry.clone(),
+        provisioning.clone(),
+    )
+    .await?;
+
+    info!("🚀 All saga command consumers (Sprint 1, 2 & 3) started");
     Ok(())
 }
 
