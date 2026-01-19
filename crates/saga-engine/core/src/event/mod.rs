@@ -90,6 +90,19 @@ impl EventCategory {
     pub fn is_signal(&self) -> bool {
         matches!(self, EventCategory::Signal)
     }
+
+    /// Get the string representation.
+    pub fn as_str(&self) -> &str {
+        match self {
+            EventCategory::Workflow => "workflow",
+            EventCategory::Activity => "activity",
+            EventCategory::Timer => "timer",
+            EventCategory::Signal => "signal",
+            EventCategory::Marker => "marker",
+            EventCategory::Snapshot => "snapshot",
+            EventCategory::Command => "command",
+        }
+    }
 }
 
 /// Type of events in the saga history.
@@ -251,6 +264,47 @@ impl std::str::FromStr for EventType {
             "commandfailed" => Ok(EventType::CommandFailed),
 
             _ => Err(format!("Unknown event type: {}", s)),
+        }
+    }
+}
+
+impl EventType {
+    /// Get the snake_case string representation.
+    pub fn as_str(&self) -> &str {
+        match self {
+            // Workflow events
+            EventType::WorkflowExecutionStarted => "workflow_execution_started",
+            EventType::WorkflowExecutionCompleted => "workflow_execution_completed",
+            EventType::WorkflowExecutionFailed => "workflow_execution_failed",
+            EventType::WorkflowExecutionTimedOut => "workflow_execution_timed_out",
+            EventType::WorkflowExecutionCanceled => "workflow_execution_canceled",
+
+            // Activity events
+            EventType::ActivityTaskScheduled => "activity_task_scheduled",
+            EventType::ActivityTaskStarted => "activity_task_started",
+            EventType::ActivityTaskCompleted => "activity_task_completed",
+            EventType::ActivityTaskFailed => "activity_task_failed",
+            EventType::ActivityTaskTimedOut => "activity_task_timed_out",
+            EventType::ActivityTaskCanceled => "activity_task_canceled",
+
+            // Timer events
+            EventType::TimerCreated => "timer_created",
+            EventType::TimerFired => "timer_fired",
+            EventType::TimerCanceled => "timer_canceled",
+
+            // Signal events
+            EventType::SignalReceived => "signal_received",
+
+            // Marker events
+            EventType::MarkerRecorded => "marker_recorded",
+
+            // Snapshot events
+            EventType::SnapshotCreated => "snapshot_created",
+
+            // Command events
+            EventType::CommandIssued => "command_issued",
+            EventType::CommandCompleted => "command_completed",
+            EventType::CommandFailed => "command_failed",
         }
     }
 }

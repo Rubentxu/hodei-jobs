@@ -363,7 +363,8 @@ mod tests {
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-4".to_string());
 
-        // Add 5 events
+        // Add 5 events and track their IDs
+        let mut event_ids = Vec::new();
         let mut expected_id = store.get_current_event_id(&saga_id).await.unwrap();
         for i in 0..5 {
             let event = HistoryEvent::builder()
@@ -372,21 +373,41 @@ mod tests {
                 .category(EventCategory::Activity)
                 .payload(json!({"num": i}))
                 .build();
-            store
+            let event_id = store
                 .append_event(&saga_id, expected_id, &event)
                 .await
                 .unwrap();
-            expected_id = store.get_current_event_id(&saga_id).await.unwrap();
+            event_ids.push(event_id);
+            expected_id = event_id + 1;
         }
 
-        // Get from event 2
-        let history = store.get_history_from(&saga_id, 2).await.unwrap();
-        // Should have events with id > 2
-        assert!(history.iter().all(|e| e.event_id.0 > 2));
+        // Verify we have exactly 5 events
+        let full_history = store.get_history(&saga_id).await.unwrap();
+        assert_eq!(full_history.len(), 5);
 
-        // Get from event 5 (beyond last)
-        let history = store.get_history_from(&saga_id, 5).await.unwrap();
-        assert_eq!(history.len(), 0);
+        // Get from event 2 - should return events after the second event
+        let from_event_id = event_ids[2]; // Third event's ID
+        let history = store
+            .get_history_from(&saga_id, from_event_id)
+            .await
+            .unwrap();
+        // Should have events with id > from_event_id (i.e., last 2 events)
+        assert_eq!(
+            history.len(),
+            2,
+            "Expected 2 events after {}",
+            from_event_id
+        );
+        assert!(history.iter().all(|e| e.event_id.0 > from_event_id));
+
+        // Get from last event ID (beyond last)
+        let last_id = event_ids[4];
+        let history = store.get_history_from(&saga_id, last_id).await.unwrap();
+        assert_eq!(
+            history.len(),
+            0,
+            "No events should exist after last event ID"
+        );
     }
 
     #[tokio::test]

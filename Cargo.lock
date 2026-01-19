@@ -4531,6 +4531,25 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "sha2",
+ "thiserror 2.0.17",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "saga-engine-pg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "parking_lot",
+ "saga-engine-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
  "thiserror 2.0.17",
  "tokio",
  "uuid",
@@ -4928,6 +4947,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+ "sha2-asm",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

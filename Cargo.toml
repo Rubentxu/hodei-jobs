@@ -16,6 +16,7 @@ members = [
     "proto",
     "crates/saga-engine/core",
     "crates/saga-engine/testing",
+    "crates/saga-engine/pg",
 ]
 
 [workspace.package]

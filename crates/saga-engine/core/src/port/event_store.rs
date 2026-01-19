@@ -64,6 +64,12 @@ impl<E> EventStoreError<E> {
     }
 }
 
+impl<E> From<E> for EventStoreError<E> {
+    fn from(err: E) -> Self {
+        EventStoreError::Backend(err)
+    }
+}
+
 /// Trait for event storage operations.
 ///
 /// The EventStore is responsible for persisting and retrieving events
