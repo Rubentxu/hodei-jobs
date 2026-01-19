@@ -15,11 +15,24 @@
 //! - Injects services (`WorkerProvisioning`, `WorkerRegistry`, `EventBus`) into `SagaContext`
 //! - Lets saga steps (`CreateInfrastructureStep`, `RegisterWorkerStep`) perform real work
 //! - Provides automatic compensation via saga steps on failure
+//!
+//! ## EPIC-94: Saga Engine v4.0 Migration
+//!
+//! This module also provides the adapter layer for migrating to saga-engine v4.0:
+//! - [`port`]: SagaPort trait abstraction for saga execution
+//! - [`adapters`]: LegacySagaAdapter and SagaEngineV4Adapter implementations
+//! - [`adapters::factory`]: Factory for creating adapters
 
 pub mod dispatcher_saga;
 pub mod provisioning_saga;
 pub mod recovery_saga;
 pub mod timeout_checker;
+
+/// Port abstraction layer for saga execution (EPIC-94)
+pub mod port;
+
+/// Adapter layer for saga migration (EPIC-94)
+pub mod adapters;
 
 pub use dispatcher_saga::{
     DynExecutionSagaDispatcher, DynExecutionSagaDispatcherBuilder,

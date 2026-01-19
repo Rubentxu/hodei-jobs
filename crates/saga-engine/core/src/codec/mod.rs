@@ -32,8 +32,6 @@
 use super::event::{CURRENT_EVENT_VERSION, HistoryEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::error::Error as StdError;
-use std::fmt;
 
 /// Error type for codec operations.
 #[derive(Debug, thiserror::Error)]
@@ -535,7 +533,7 @@ impl PostcardEventWrapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{EventCategory, EventType, HistoryEvent, SagaId};
+    use crate::event::{EventCategory, EventId, EventType, HistoryEvent, SagaId};
     use serde_json::json;
 
     #[test]
@@ -543,6 +541,7 @@ mod tests {
         let codec = JsonCodec::new();
 
         let original = HistoryEvent::new(
+            EventId(0),
             SagaId("test-saga".to_string()),
             EventType::WorkflowExecutionStarted,
             EventCategory::Workflow,
@@ -564,6 +563,7 @@ mod tests {
         let codec = BincodeCodec::new();
 
         let original = HistoryEvent::new(
+            EventId(0),
             SagaId("test-saga".to_string()),
             EventType::ActivityTaskCompleted,
             EventCategory::Activity,
@@ -583,6 +583,7 @@ mod tests {
         let codec = PostcardCodec::new();
 
         let original = HistoryEvent::new(
+            EventId(0),
             SagaId("test-saga".to_string()),
             EventType::TimerFired,
             EventCategory::Timer,
@@ -600,6 +601,7 @@ mod tests {
     #[test]
     fn test_bincode_is_smaller_than_json() {
         let original = HistoryEvent::new(
+            EventId(0),
             SagaId("test-saga".to_string()),
             EventType::WorkflowExecutionStarted,
             EventCategory::Workflow,

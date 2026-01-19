@@ -41,8 +41,6 @@
 //! - **Production**: `PostgresReplayer` for PostgreSQL-backed event stores
 
 use super::super::event::{HistoryEvent, SagaId};
-use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -263,7 +261,6 @@ pub trait HistoryReplayer<T>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{HistoryEvent, SagaId, reset_event_id_generator};
 
     #[tokio::test]
     async fn test_replay_config_defaults() {

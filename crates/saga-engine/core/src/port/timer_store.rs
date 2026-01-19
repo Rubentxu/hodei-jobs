@@ -4,11 +4,8 @@
 //! timers that survive process restarts.
 
 use super::super::event::SagaId;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::Debug;
-use std::hash::Hash;
 use std::time::Duration;
 
 /// Errors from timer store operations.

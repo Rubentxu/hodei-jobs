@@ -3,8 +3,7 @@
 //! This module defines the [`TaskQueue`] trait for distributing
 //! work to workers using durable pull consumers.
 
-use super::super::event::SagaId;
-use async_trait::async_trait;
+use crate::event::SagaId;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::time::Duration;

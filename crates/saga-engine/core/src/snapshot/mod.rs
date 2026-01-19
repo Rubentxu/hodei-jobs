@@ -340,17 +340,18 @@ impl<S: EventStore> SnapshotManager<S> {
     ///
     /// Note: This requires loading all snapshots, which may be expensive.
     /// For more efficient counting, consider adding a dedicated method to EventStore.
-    pub async fn snapshot_count(&self, _saga_id: &SagaId) -> Result<u32, SnapshotError<S::Error>> {
-        // This is a simplified implementation
-        // In a real implementation, you might want to add a count method to EventStore
-        Ok(0)
+    pub async fn snapshot_count(&self, saga_id: &SagaId) -> Result<u64, SnapshotError<S::Error>> {
+        self.event_store
+            .snapshot_count(saga_id)
+            .await
+            .map_err(SnapshotError::from)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{EventCategory, EventType, HistoryEvent, SagaId};
+    use crate::event::{HistoryEvent, SagaId};
     use crate::port::event_store::EventStore;
     use async_trait::async_trait;
     use serde_json::json;
@@ -370,6 +371,15 @@ mod tests {
             _saga_id: &SagaId,
             _expected_next_event_id: u64,
             _event: &HistoryEvent,
+        ) -> Result<u64, EventStoreError<Self::Error>> {
+            Ok(0)
+        }
+
+        async fn append_events(
+            &self,
+            _saga_id: &SagaId,
+            _expected_next_event_id: u64,
+            _events: &[HistoryEvent],
         ) -> Result<u64, EventStoreError<Self::Error>> {
             Ok(0)
         }
@@ -411,6 +421,11 @@ mod tests {
 
         async fn saga_exists(&self, _saga_id: &SagaId) -> Result<bool, Self::Error> {
             Ok(false)
+        }
+
+        async fn snapshot_count(&self, _saga_id: &SagaId) -> Result<u64, Self::Error> {
+            let guard = self.snapshots.lock().unwrap();
+            Ok(guard.len() as u64)
         }
     }
 

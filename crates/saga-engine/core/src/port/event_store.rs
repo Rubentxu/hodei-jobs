@@ -3,8 +3,7 @@
 //! This module defines the [`EventStore`] trait that backends must implement
 //! to provide event storage capabilities for the saga engine.
 
-use super::super::event::{EventId, HistoryEvent, SagaId};
-use async_trait::async_trait;
+use super::super::event::{HistoryEvent, SagaId};
 use std::fmt::Debug;
 
 /// Errors that can occur when operating on the event store.
@@ -227,6 +226,17 @@ pub trait EventStore: Send + Sync {
     ///
     /// `true` if the saga has any events.
     async fn saga_exists(&self, saga_id: &SagaId) -> Result<bool, Self::Error>;
+
+    /// Get the number of snapshots for a saga.
+    ///
+    /// # Arguments
+    ///
+    /// * `saga_id` - The saga to check.
+    ///
+    /// # Returns
+    ///
+    /// The number of snapshots.
+    async fn snapshot_count(&self, saga_id: &SagaId) -> Result<u64, Self::Error>;
 }
 
 #[cfg(test)]

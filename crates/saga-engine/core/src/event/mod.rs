@@ -850,12 +850,14 @@ impl HistoryEvent {
     /// * `category` - The category of the event.
     /// * `attributes` - The event payload.
     pub fn new(
+        event_id: EventId,
         saga_id: SagaId,
         event_type: EventType,
         category: EventCategory,
         attributes: Value,
     ) -> Self {
         Self::builder()
+            .event_id(event_id)
             .saga_id(saga_id)
             .event_type(event_type)
             .category(category)
@@ -872,6 +874,7 @@ impl HistoryEvent {
 /// Builder for constructing HistoryEvent.
 #[derive(Debug, Default)]
 pub struct HistoryEventBuilder {
+    event_id: Option<EventId>,
     saga_id: Option<SagaId>,
     event_type: Option<EventType>,
     category: Option<EventCategory>,
@@ -887,6 +890,12 @@ impl HistoryEventBuilder {
     /// Create a new builder.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the event ID.
+    pub fn event_id(mut self, event_id: EventId) -> Self {
+        self.event_id = Some(event_id);
+        self
     }
 
     /// Set the saga ID.
@@ -949,14 +958,12 @@ impl HistoryEventBuilder {
     ///
     /// Panics if required fields are not set.
     pub fn build(self) -> HistoryEvent {
+        let event_id = self.event_id.expect("event_id is required");
         let saga_id = self.saga_id.expect("saga_id is required");
         let event_type = self.event_type.expect("event_type is required");
         let attributes = self.attributes.expect("attributes is required");
 
         let category = self.category.unwrap_or_else(|| event_type.category());
-
-        // Get next event ID (monotonic counter per saga)
-        let event_id = EventId(next_event_id());
 
         HistoryEvent {
             event_id,
@@ -977,17 +984,3 @@ impl HistoryEventBuilder {
 
 /// Current event schema version.
 pub const CURRENT_EVENT_VERSION: u32 = 1;
-
-static EVENT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn next_event_id() -> u64 {
-    EVENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-}
-
-/// Reset the event ID generator.
-///
-/// This is primarily for testing purposes to ensure consistent event IDs
-/// across test runs. Not thread-safe - only use in single-threaded contexts.
-pub fn reset_event_id_generator() {
-    EVENT_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
-}

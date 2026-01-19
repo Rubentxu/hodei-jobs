@@ -4,7 +4,6 @@
 //! workers about saga events. It uses lightweight Pub/Sub for efficiency.
 
 use super::super::event::SagaId;
-use async_trait::async_trait;
 use futures::stream::Stream;
 use std::fmt::Debug;
 use std::pin::Pin;

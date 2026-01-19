@@ -37,6 +37,7 @@ use std::collections::HashMap;
 ///     let saga_id = SagaId("test-saga".to_string());
 ///
 ///     let event = HistoryEvent::new(
+///         EventId(0),
 ///         saga_id.clone(),
 ///         EventType::WorkflowExecutionStarted,
 ///         EventCategory::Workflow,
@@ -243,6 +244,11 @@ impl EventStore for InMemoryEventStore {
         let events = self.events.read();
         Ok(events.contains_key(saga_id))
     }
+
+    async fn snapshot_count(&self, saga_id: &SagaId) -> Result<u64, Self::Error> {
+        let snapshots = self.snapshots.read();
+        Ok(snapshots.get(saga_id).map(|s| s.len()).unwrap_or(0) as u64)
+    }
 }
 
 /// Error type for InMemoryEventStore operations.
@@ -268,16 +274,16 @@ impl From<String> for InMemoryEventStoreError {
 mod tests {
     use super::*;
     use saga_engine_core::codec::JsonCodec;
-    use saga_engine_core::event::{EventCategory, EventType, reset_event_id_generator};
+    use saga_engine_core::event::{EventCategory, EventId, EventType};
     use serde_json::json;
 
     #[tokio::test]
     async fn test_append_and_get_single_event() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-1".to_string());
 
         let event = HistoryEvent::new(
+            EventId(0),
             saga_id.clone(),
             EventType::WorkflowExecutionStarted,
             EventCategory::Workflow,
@@ -294,15 +300,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_multiple_events() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-2".to_string());
 
         let initial_id = store.get_current_event_id(&saga_id).await.unwrap();
         assert_eq!(initial_id, 0);
 
-        // Append first event
         let event1 = HistoryEvent::builder()
+            .event_id(EventId(0))
             .saga_id(saga_id.clone())
             .event_type(EventType::WorkflowExecutionStarted)
             .category(EventCategory::Workflow)
@@ -316,6 +321,7 @@ mod tests {
 
         // Append second event
         let event2 = HistoryEvent::builder()
+            .event_id(EventId(1))
             .saga_id(saga_id.clone())
             .event_type(EventType::ActivityTaskScheduled)
             .category(EventCategory::Activity)
@@ -335,11 +341,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_optimistic_locking_conflict() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-3".to_string());
 
         let event = HistoryEvent::new(
+            EventId(0),
             saga_id.clone(),
             EventType::WorkflowExecutionStarted,
             EventCategory::Workflow,
@@ -359,7 +365,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_history_from() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-4".to_string());
 
@@ -368,6 +373,7 @@ mod tests {
         let mut expected_id = store.get_current_event_id(&saga_id).await.unwrap();
         for i in 0..5 {
             let event = HistoryEvent::builder()
+                .event_id(EventId(i))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskScheduled)
                 .category(EventCategory::Activity)
@@ -412,7 +418,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_operations() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-5".to_string());
 
@@ -427,17 +432,29 @@ mod tests {
         let (event_id, snapshot_state) = latest.unwrap();
         assert_eq!(event_id, 10);
         assert_eq!(snapshot_state, state);
+
+        // Test snapshot count
+        let count = store.snapshot_count(&saga_id).await.unwrap();
+        assert_eq!(count, 1);
+
+        // Save another snapshot
+        store
+            .save_snapshot(&saga_id, 15, b"new state")
+            .await
+            .unwrap();
+        let count = store.snapshot_count(&saga_id).await.unwrap();
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
     async fn test_saga_exists() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-6".to_string());
 
         assert!(!store.saga_exists(&saga_id).await.unwrap());
 
         let event = HistoryEvent::new(
+            EventId(0),
             saga_id.clone(),
             EventType::WorkflowExecutionStarted,
             EventCategory::Workflow,
@@ -450,7 +467,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_saga() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("nonexistent".to_string());
 
@@ -459,34 +475,39 @@ mod tests {
 
         let current_id = store.get_current_event_id(&saga_id).await.unwrap();
         assert_eq!(current_id, 0);
+
+        let snapshot_count = store.snapshot_count(&saga_id).await.unwrap();
+        assert_eq!(snapshot_count, 0);
     }
 
     #[tokio::test]
     async fn test_clear_store() {
-        reset_event_id_generator();
         let store = InMemoryEventStore::new();
         let saga_id = SagaId("test-saga-7".to_string());
 
         let event = HistoryEvent::new(
+            EventId(0),
             saga_id.clone(),
             EventType::WorkflowExecutionStarted,
             EventCategory::Workflow,
             json!({}),
         );
         store.append_event(&saga_id, 0, &event).await.unwrap();
+        store.save_snapshot(&saga_id, 0, b"state").await.unwrap();
 
         assert_eq!(store.saga_count(), 1);
         assert_eq!(store.event_count(), 1);
+        assert_eq!(store.snapshot_count(&saga_id).await.unwrap(), 1);
 
         store.clear();
 
         assert_eq!(store.saga_count(), 0);
         assert_eq!(store.event_count(), 0);
+        assert_eq!(store.snapshot_count(&saga_id).await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn test_concurrent_appends() {
-        reset_event_id_generator();
         use std::sync::Arc;
         use tokio::sync::Barrier;
 
@@ -505,6 +526,7 @@ mod tests {
                 barrier.wait().await;
 
                 let event = HistoryEvent::builder()
+                    .event_id(EventId(0))
                     .saga_id(saga_id.clone())
                     .event_type(EventType::ActivityTaskScheduled)
                     .category(EventCategory::Activity)
