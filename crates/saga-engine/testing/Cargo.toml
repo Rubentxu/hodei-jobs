@@ -1,28 +1,31 @@
 [package]
 name = "saga-engine-testing"
 description = "Testing utilities for saga-engine - InMemory implementations and test harness"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
-license = "MIT"
-authors = ["Hodei Team Platform"]
+license.workspace = true
+authors.workspace = true
 
 [dependencies]
 # Core saga engine
 saga-engine-core = { path = "../core" }
 
 # Async runtime
-tokio = { version = "1", features = ["sync", "macros", "time", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "macros", "time", "rt-multi-thread"] }
 
 # Serialization
-serde_json = "1"
+serde_json = { workspace = true }
 
 # Async traits
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # Error handling
-thiserror = "2"
+thiserror = { workspace = true }
 
 # Utilities
-parking_lot = "0.12"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
+parking_lot = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

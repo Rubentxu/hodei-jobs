@@ -1,10 +1,10 @@
 [package]
 name = "saga-engine-core"
 description = "Core saga engine library with zero infrastructure dependencies - Event Sourcing, Workflows, and Activities"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
-license = "MIT"
-authors = ["Hodei Team Platform"]
+license.workspace = true
+authors.workspace = true
 
 [features]
 default = ["json-codec", "bincode-codec"]
@@ -13,30 +13,30 @@ bincode-codec = ["bincode"]
 
 [dependencies]
 # Async runtime
-async-trait = "0.1"
-tokio = { version = "1", features = ["sync", "macros"] }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros"] }
 
 # Serialization
-serde = { version = "1", features = ["derive", "rc"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { version = "1", optional = true, features = ["preserve_order"] }
 bincode = { version = "1", optional = true }
 
 # Time and IDs
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Error handling
-thiserror = "2"
-anyhow = "1"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
 
 # Utilities
-futures = "0.3"
-parking_lot = "0.12"
+futures = { workspace = true }
+parking_lot = { workspace = true }
 
 # Cryptography for snapshot checksums
-sha2 = { version = "0.10", features = ["asm"] }
+sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 serde_json = "1"
 assert_matches = "1"

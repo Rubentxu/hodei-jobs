@@ -1,38 +1,38 @@
 [package]
 name = "saga-engine-nats"
-description = "NATS backend for saga-engine - SignalDispatcher and TaskQueue using NATS Core & JetStream"
-version = "0.1.0"
+description = "NATS backend for saga-engine - SignalDispatcher and TaskQueue using NATS Core"
+version.workspace = true
 edition = "2024"
-license = "MIT"
-authors = ["Hodei Team Platform"]
+license.workspace = true
+authors.workspace = true
 
 [dependencies]
 # Core saga engine
 saga-engine-core = { path = "../core" }
 
 # Async trait for trait implementations
-async-trait = "0.1"
+async-trait = { workspace = true }
 
-# NATS client - async-nats is the maintained async client
+# NATS client - async-nats
 async-nats = "0.34"
 
 # Async runtime
-tokio = { version = "1", features = ["sync", "macros", "time", "fs"] }
+tokio = { workspace = true, features = ["sync", "macros", "time", "fs"] }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 # Error handling
-thiserror = "2"
+thiserror = { workspace = true }
 
 # Time utilities
-chrono = { version = "0.4" }
+chrono = { workspace = true }
 
 # Utilities
-futures = "0.3"
-tokio-stream = "0.1"
-async-stream = "0.3"
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
