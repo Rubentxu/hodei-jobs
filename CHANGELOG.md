@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **EPIC-93: Event Sourcing Base - Saga Engine v4.0**
+  - `HistoryEvent` struct con todos los campos necesarios para event sourcing
+  - `EventType` enum completo (~30 tipos) para Workflow, Activity, Timer, Signal, Marker, Snapshot, Command
+  - `EventCategory` enum para filtrado eficiente de eventos
+  - `EventStore` trait port con optimistic locking y Conflict error handling
+  - `EventCodec` trait para abstracción de serialización (JSON, Bincode)
+  - `SnapshotManager` para snapshots automáticos con verificación SHA-256
+  - `InMemoryEventStore` implementación thread-safe para testing
+  - `InMemoryTimerStore` implementación para testing
+  - `PostgresEventStore` backend con ACID transactions y schema automático
+  - Crate `saga-engine-core` con cero dependencias de infraestructura
+  - Crate `saga-engine-testing` con utilities para tests
+  - Crate `saga-engine-pg` con PostgreSQL backend
+
+## [v0.69.1] - 2026-01-19
+
+### Added
+
 - **EPIC-43: Pure EDA & Saga Orchestration - Sprint 1: Transactional Outbox**
   - `JobRepositoryTx` trait: Transaction-aware job repository operations
     - `save_with_tx()`, `find_by_id_with_tx()`, `update_with_tx()`, `update_status_with_tx()`
