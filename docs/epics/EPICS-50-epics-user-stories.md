@@ -29,6 +29,7 @@
 | **Épica 62: Type Erasure Safety Tests** | ✅ **COMPLETADO** | 3/3 historias | **P0** |
 | **Épica 63: Hybrid Command Outbox Relay (LISTEN/NOTIFY + Polling)** | 🆕 **NUEVA** | 0/8 historias | **P1** |
 | **Épica 64: Unified Hybrid Outbox Architecture** | 🆕 **NUEVA** | 0/8 historias | **P1** |
+| **Épica 93: Event Sourcing Base - Saga Engine v4.0** | 🚧 **EN PROGRESO** | 8/11 historias (73%) | **P0** |
 
 ---
 
@@ -68,6 +69,7 @@
 16. [Apéndice A: Priorización General](#apéndice-a-priorización-general)
 17. [Apéndice B: Dependencias entre Épicas](#apéndice-b-dependencias-entre-épicas)
 18. [Apéndice C: Plan de Implementación](#apéndice-c-plan-de-implementación)
+19. [**Épica 93: Event Sourcing Base - Saga Engine v4.0**](#épica-93-event-sourcing-base---historyevent--eventstore) 🚧
 
 ---
 
@@ -1922,7 +1924,79 @@ async fn test_full_saga_with_erased_command_bus() {
 
 ---
 
+## Épica 93: Event Sourcing Base - Saga Engine v4.0 🚧
+
+**Estado:** 🚧 EN PROGRESO (8/11 historias completadas)  
+**Prioridad:** P0 - CRÍTICA  
+**Versión:** v0.70.0  
+**Documentación:** `docs/epics/EPIC-93-SAGA-ENGINE-V4-EVENT-SOURCING.md`
+
+### Descripción
+
+Implementar la base de Event Sourcing para el Saga Engine v4.0 con stack PostgreSQL + NATS. Esta épica establece los fundamentos para durable execution con historial de eventos inmutable.
+
+### User Stories Completadas
+
+| US | Descripción | Estado |
+|----|-------------|--------|
+| US-93.1 | HistoryEvent struct | ✅ |
+| US-93.2 | EventType enum completo | ✅ |
+| US-93.3 | EventCategory para filtrado | ✅ |
+| US-93.4 | EventStore port trait | ✅ |
+| US-93.5 | EventCodec trait | ✅ |
+| US-93.6 | InMemoryEventStore + InMemoryTimerStore | ✅ |
+| US-93.7 | SnapshotManager | ✅ |
+| US-93.8 | PostgresEventStore Backend | ✅ |
+| US-93.9 | SignalDispatcher (NATS Core) | ⏳ Pendiente |
+| US-93.10 | TaskQueue (NATS JetStream) | ⏳ Pendiente |
+| US-93.11 | TimerStore (PostgreSQL) | ⏳ Pendiente |
+
+### Próximos Pasos
+
+1. **US-93.9**: Implementar SignalDispatcher trait y NatsSignalDispatcher
+2. **US-93.10**: Implementar TaskQueue trait y NatsTaskQueue
+3. **US-93.11**: Implementar TimerStore trait y PostgresTimerStore
+
+### Dependencias
+
+- Dependenciado por: EPIC-94 (Workflow/Activity), EPIC-95 (Durable Timers)
+- Dependencias externas: PostgreSQL (sqlx), NATS (nats-rs)
+
+---
+
 ## Changelog
+
+### v3.2.0 (2026-01-19)
+
+**Completado:**
+- ✅ EPIC-93 Core (8/11 User Stories - 73%)
+  - US-93.1: HistoryEvent struct con todos los campos necesarios
+  - US-93.2: EventType enum completo (~30 tipos)
+  - US-93.3: EventCategory para filtrado eficiente
+  - US-93.4: EventStore trait con optimistic locking
+  - US-93.5: EventCodec trait (JsonCodec, BincodeCodec)
+  - US-93.6: InMemoryEventStore + InMemoryTimerStore para testing
+  - US-93.7: SnapshotManager con SHA-256 checksums
+  - US-93.8: PostgresEventStore con ACID transactions
+
+**Archivos Creados:**
+- `crates/saga-engine/core/src/event/mod.rs`
+- `crates/saga-engine/core/src/codec/mod.rs`
+- `crates/saga-engine/core/src/port/event_store.rs`
+- `crates/saga-engine/core/src/snapshot/mod.rs`
+- `crates/saga-engine/testing/src/memory_event_store.rs`
+- `crates/saga-engine/testing/src/memory_timer_store.rs`
+- `crates/saga-engine/pg/src/event_store.rs`
+- `crates/saga-engine/pg/Cargo.toml`
+- `crates/saga-engine/core/Cargo.toml`
+- `crates/saga-engine/testing/Cargo.toml`
+
+**Pendiente:**
+- ⏳ US-93.9: SignalDispatcher (NATS Core Pub/Sub)
+- ⏳ US-93.10: TaskQueue (NATS JetStream Pull)
+- ⏳ US-93.11: TimerStore (PostgreSQL)
+
+---
 
 ### v3.1.0 (2026-01-08) - TYPE ERASURE SAFETY
 
