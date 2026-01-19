@@ -1,6 +1,6 @@
 //! PostgreSQL TimerStore implementation for saga-engine.
 //!
-//! This module provides a production-ready PostgreSQL implementation of the
+//! This module provides a production-ready PostgreSQL implementation of
 //! [`TimerStore`] trait for durable timer storage with efficient polling,
 //! claiming, and transaction support.
 //!
@@ -10,6 +10,7 @@
 //! - **Efficient Polling**: Optimized indexes for expired timer queries
 //! - **Timer Claiming**: Prevents duplicate timer firing in multi-scheduler setups
 //! - **ACID Transactions**: Timer + event creation is atomic
+//! - **Scheduler Coordination**: Support for distributed schedulers
 //!
 //! # Schema
 //!
@@ -40,20 +41,20 @@
 //! ```
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use saga_engine_core::event::SagaId;
 use saga_engine_core::port::timer_store::{
     DurableTimer, TimerStatus, TimerStore, TimerStoreError, TimerType,
 };
 use sqlx::postgres::{PgPool, PgRow};
-use sqlx::{Error as SqlxError, FromRow, Row};
+use sqlx::{Error as SqlxError, FromRow, Row, Transaction};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use uuid::Uuid;
 
 /// Convert UUID parsing error to SQLx error.
-fn uuid_err(e: uuid::Error) -> sqlx::Error {
-    sqlx::Error::Protocol(format!("Invalid UUID: {}", e))
+fn uuid_err(e: uuid::Error) -> SqlxError {
+    SqlxError::Protocol(format!("Invalid UUID: {}", e))
 }
 
 /// Database row representation of a timer.
@@ -141,15 +142,16 @@ impl PostgresTimerStore {
     pub async fn with_config(
         connection_string: &str,
         config: PostgresTimerStoreConfig,
-    ) -> Result<Self, sqlx::Error> {
+    ) -> Result<Self, SqlxError> {
         let pool = PgPool::connect(connection_string).await?;
-        Ok(Self::new(pool))
+        Ok(Self { pool, config })
     }
 
     /// Run database migrations to create required tables.
-    pub async fn migrate(&self) -> Result<(), sqlx::Error> {
-        // Create saga_timers table
-        sqlx::query(
+    pub async fn migrate(&self) -> Result<(), SqlxError> {
+        let mut tx = self.pool.begin().await?;
+
+        tx.execute(
             r#"
             CREATE TABLE IF NOT EXISTS saga_timers (
                 id              BIGSERIAL PRIMARY KEY,
@@ -166,43 +168,31 @@ impl PostgresTimerStore {
                 scheduler_id    VARCHAR(255),
                 CONSTRAINT uq_timer_id UNIQUE (timer_id)
             )
-        "#,
+            "#,
         )
-        .execute(&self.pool)
         .await?;
 
-        // Create index for pending timers (most common query)
-        sqlx::query(
+        tx.execute(
             r#"
             CREATE INDEX IF NOT EXISTS idx_timers_pending
             ON saga_timers(status, fire_at)
             WHERE status = 'PENDING'
-        "#,
+            "#,
         )
-        .execute(&self.pool)
         .await?;
 
-        // Create index for processing timers (claiming check)
-        sqlx::query(
+        tx.execute(
             r#"
             CREATE INDEX IF NOT EXISTS idx_timers_processing
             ON saga_timers(status, scheduler_id)
             WHERE status = 'PROCESSING'
-        "#,
+            "#,
         )
-        .execute(&self.pool)
         .await?;
 
-        // Create index for saga lookups
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_timers_saga_id
-            ON saga_timers(saga_id)
-        "#,
-        )
-        .execute(&self.pool)
-        .await?;
+        tx.commit().await?;
 
+        tracing::info!("Timer store migrations completed successfully");
         Ok(())
     }
 }
@@ -217,11 +207,13 @@ impl TimerStore for PostgresTimerStore {
         let timer_uuid = Uuid::parse_str(&timer.timer_id).map_err(uuid_err)?;
 
         sqlx::query(
-            r#"INSERT INTO saga_timers (
+            r#"
+            INSERT INTO saga_timers (
                 timer_id, saga_id, run_id, timer_type, fire_at,
                 created_at, attributes, status, attempt, max_attempts
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (timer_id) DO NOTHING"#,
+            ON CONFLICT (timer_id) DO NOTHING
+            "#,
         )
         .bind(timer_uuid)
         .bind(saga_uuid)
@@ -232,10 +224,17 @@ impl TimerStore for PostgresTimerStore {
         .bind(&timer.attributes)
         .bind("PENDING")
         .bind(0i32)
-        .bind(timer.max_attempts as i32)
+        .bind(1i32)
+        .bind(&timer.scheduler_id)
         .execute(&self.pool)
         .await
         .map_err(TimerStoreError::Create)?;
+
+        tracing::debug!(
+            "Created timer {} for saga {}",
+            timer.timer_id,
+            timer.saga_id
+        );
 
         Ok(())
     }
@@ -244,19 +243,21 @@ impl TimerStore for PostgresTimerStore {
         let timer_uuid = Uuid::parse_str(timer_id).map_err(uuid_err)?;
 
         let result = sqlx::query(
-            r#"UPDATE saga_timers
+            r#"
+            UPDATE saga_timers
             SET status = 'CANCELLED'
-            WHERE timer_id = $1 AND status = 'PENDING'"#,
+            WHERE timer_id = $1 AND status = 'PENDING'
+            "#,
         )
         .bind(timer_uuid)
         .execute(&self.pool)
-        .await
-        .map_err(TimerStoreError::Cancel)?;
+        .await?;
 
         if result.rows_affected() == 0 {
             return Err(TimerStoreError::not_found(timer_id));
         }
 
+        tracing::debug!("Cancelled timer {}", timer_id);
         Ok(())
     }
 
@@ -267,22 +268,24 @@ impl TimerStore for PostgresTimerStore {
         let now = Utc::now();
 
         let rows = sqlx::query_as::<_, TimerRow>(
-            r#"SELECT
+            r#"
+            SELECT
                 timer_id, saga_id, run_id, timer_type, fire_at,
-                created_at, attributes, status, attempt, max_attempts,
-                scheduler_id
+                created_at, attributes, status, attempt, max_attempts, scheduler_id
             FROM saga_timers
             WHERE status = 'PENDING' AND fire_at <= $1
             ORDER BY fire_at ASC
-            LIMIT $2"#,
+            LIMIT $2
+            "#,
         )
         .bind(now)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
-        .map_err(TimerStoreError::Retrieve)?;
-
-        Ok(rows.into_iter().map(|row| row.into()).collect())
+        .map_err(TimerStoreError::Retrieve)?
+        .into_iter()
+        .map(|row| row.into())
+        .collect()
     }
 
     async fn claim_timers(
@@ -301,15 +304,15 @@ impl TimerStore for PostgresTimerStore {
 
         let uuid_ids = uuid_ids?;
 
-        // Use SKIP LOCKED to avoid contention between schedulers
         let rows = sqlx::query_as::<_, TimerRow>(
-            r#"UPDATE saga_timers
+            r#"
+            UPDATE saga_timers
             SET status = 'PROCESSING', scheduler_id = $1, attempt = attempt + 1
             WHERE timer_id = ANY($2) AND status = 'PENDING'
             RETURNING
                 timer_id, saga_id, run_id, timer_type, fire_at,
-                created_at, attributes, status, attempt, max_attempts,
-                scheduler_id"#,
+                created_at, attributes, status, attempt, max_attempts, scheduler_id
+            "#,
         )
         .bind(scheduler_id)
         .bind(&uuid_ids[..])
@@ -326,7 +329,6 @@ impl TimerStore for PostgresTimerStore {
         status: TimerStatus,
     ) -> Result<(), TimerStoreError<Self::Error>> {
         let timer_uuid = Uuid::parse_str(timer_id).map_err(uuid_err)?;
-
         let status_str = match status {
             TimerStatus::Pending => "PENDING",
             TimerStatus::Processing => "PROCESSING",
@@ -335,13 +337,19 @@ impl TimerStore for PostgresTimerStore {
             TimerStatus::Failed => "FAILED",
         };
 
-        sqlx::query(r#"UPDATE saga_timers SET status = $1 WHERE timer_id = $2"#)
-            .bind(status_str)
-            .bind(timer_uuid)
-            .execute(&self.pool)
-            .await
-            .map_err(TimerStoreError::Update)?;
+        let result = sqlx::query(
+            r#"UPDATE saga_timers SET status = $1 WHERE timer_id = $2"#,
+        )
+        .bind(status_str)
+        .bind(timer_uuid)
+        .execute(&self.pool)
+        .await?;
 
+        if result.rows_affected() == 0 {
+            return Err(TimerStoreError::not_found(timer_id));
+        }
+
+        tracing::debug!("Updated timer {} status to {}", timer_id, status_str);
         Ok(())
     }
 
@@ -354,30 +362,32 @@ impl TimerStore for PostgresTimerStore {
 
         let query = if include_fired {
             sqlx::query_as::<_, TimerRow>(
-                r#"SELECT
+                r#"
+                SELECT
                     timer_id, saga_id, run_id, timer_type, fire_at,
-                    created_at, attributes, status, attempt, max_attempts,
-                    scheduler_id
+                    created_at, attributes, status, attempt, max_attempts, scheduler_id
                 FROM saga_timers
                 WHERE saga_id = $1
-                ORDER BY fire_at ASC"#,
+                ORDER BY fire_at ASC
+                "#,
             )
+            .bind(saga_uuid)
         } else {
             sqlx::query_as::<_, TimerRow>(
-                r#"SELECT
+                r#"
+                SELECT
                     timer_id, saga_id, run_id, timer_type, fire_at,
-                    created_at, attributes, status, attempt, max_attempts,
-                    scheduler_id
+                    created_at, attributes, status, attempt, max_attempts, scheduler_id
                 FROM saga_timers
-                WHERE saga_id = $1 AND status NOT IN ('FIRED', 'CANCELLED')
-                ORDER BY fire_at ASC"#,
+                WHERE saga_id = $1 AND status NOT IN ('FIRED', 'CANCELLED', 'FAILED')
+                ORDER BY fire_at ASC
+                "#,
             )
-        };
-
-        let rows = query
             .bind(saga_uuid)
-            .fetch_all(&self.pool)
-            .await
+        };
+        }
+
+        let rows = query.bind(saga_uuid).fetch_all(&self.pool).await
             .map_err(TimerStoreError::Retrieve)?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
@@ -390,12 +400,13 @@ impl TimerStore for PostgresTimerStore {
         let timer_uuid = Uuid::parse_str(timer_id).map_err(uuid_err)?;
 
         let row = sqlx::query_as::<_, TimerRow>(
-            r#"SELECT
+            r#"
+            SELECT
                 timer_id, saga_id, run_id, timer_type, fire_at,
-                created_at, attributes, status, attempt, max_attempts,
-                scheduler_id
+                created_at, attributes, status, attempt, max_attempts, scheduler_id
             FROM saga_timers
-            WHERE timer_id = $1"#,
+            WHERE timer_id = $1
+            "#,
         )
         .bind(timer_uuid)
         .fetch_optional(&self.pool)
@@ -411,18 +422,10 @@ mod tests {
     use super::*;
     use saga_engine_core::event::SagaId;
 
-    // These tests require a PostgreSQL instance
-    // They can be run with: cargo test --features postgres_test
-
     #[tokio::test]
-    async fn test_timer_creation_and_fetch() {
+    #[ignore = "Requires PostgreSQL instance"]
+    async fn test_timer_creation_and_retrieval() {
         // This would test timer operations with a real DB
-        // Skipped in unit tests
-    }
-
-    #[tokio::test]
-    async fn test_timer_claiming() {
-        // This would test timer claiming with a real DB
         // Skipped in unit tests
     }
 }
