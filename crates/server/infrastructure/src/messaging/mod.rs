@@ -7,9 +7,11 @@
 //! - Saga consumers for event-driven saga execution
 //! - Hybrid outbox components (LISTEN/NOTIFY + polling) for EPIC-64
 //! - Command consumers for saga commands (EPIC-89)
+//! - Command Dead Letter Queue (DLQ) for failed command processing (EPIC-89 Sprint 4)
 
 pub mod cancellation_saga_consumer;
 pub mod cleanup_saga_consumer;
+pub mod command_dlq;
 pub mod event_archiver;
 pub mod event_deduplication;
 pub mod event_dlq;
@@ -36,6 +38,10 @@ pub use cancellation_saga_consumer::{
 pub use cleanup_saga_consumer::{
     CleanupSagaConsumer, CleanupSagaConsumerBuilder, CleanupSagaConsumerConfig,
     CleanupSagaTriggerResult,
+};
+pub use command_dlq::{
+    CommandDlq, CommandDlqConfig, CommandDlqEntry, CommandDlqError, CommandDlqMetrics,
+    CommandDlqMetricsSnapshot, CommandDlqOperationResult,
 };
 pub use event_archiver::{EventArchiver, EventArchiverConfig};
 pub use event_deduplication::{

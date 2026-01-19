@@ -39,6 +39,7 @@ use hodei_server_domain::shared_kernel::WorkerId;
 use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_infrastructure::messaging::cancellation_saga_consumer::CancellationSagaConsumer;
 use hodei_server_infrastructure::messaging::cleanup_saga_consumer::CleanupSagaConsumer;
+use hodei_server_infrastructure::messaging::command_dlq;
 use hodei_server_infrastructure::messaging::execution_saga_consumer::ExecutionSagaConsumer;
 use hodei_server_infrastructure::messaging::hybrid::create_command_relay;
 use hodei_server_infrastructure::messaging::nats::NatsEventBus;
@@ -870,15 +871,26 @@ pub async fn start_saga_command_consumers_service(
     pool: sqlx::PgPool,
     provisioning: Arc<dyn hodei_server_domain::workers::WorkerProvisioning + Send + Sync>,
 ) -> anyhow::Result<()> {
-    info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 3)...");
+    info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 4)...");
+
+    // Initialize DLQ configuration for Sprint 4
+    let dlq_config = Some(command_dlq::CommandDlqConfig {
+        stream_prefix: "HODEI".to_string(),
+        dlq_subject: "hodei.commands.dlq".to_string(),
+        max_retries: 3,
+        retention_days: 7,
+        enabled: true,
+        retry_delay_ms: 1000,
+    });
 
     saga_command_consumers::start_saga_command_consumers(
         nats_client.as_ref().clone(),
         pool,
         provisioning,
+        dlq_config,
     )
     .await?;
 
-    info!("✅ Saga Command Consumers started (Sprint 3)");
+    info!("✅ Saga Command Consumers started (Sprint 4)");
     Ok(())
 }

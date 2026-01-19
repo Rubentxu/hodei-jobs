@@ -164,6 +164,7 @@ pub mod bus;
 pub mod erased;
 pub mod error;
 pub mod handler;
+pub mod idempotency;
 pub mod jobs;
 pub mod middleware;
 pub mod outbox;
@@ -175,6 +176,7 @@ pub use erased::{
 };
 pub use error::{CommandError, CommandResult};
 pub use handler::HandlerBox;
+pub use idempotency::{IdempotencyChecker, InMemoryIdempotencyChecker};
 pub use jobs::{
     MarkJobFailedCommand, MarkJobFailedError, MarkJobFailedHandler,
     ResumeFromManualInterventionCommand, ResumeFromManualInterventionError,
