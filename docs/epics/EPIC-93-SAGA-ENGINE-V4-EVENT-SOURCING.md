@@ -679,13 +679,13 @@ CREATE INDEX idx_saga_timers_ready
 | ✅ | US-93.6 | InMemoryEventStore + InMemoryTimerStore |
 | ✅ | US-93.7 | SnapshotManager |
 | ✅ | US-93.8 | PostgresEventStore Backend |
+| ✅ | US-93.11 | PostgresTimerStore (PostgreSQL) |
 | ⏳ | US-93.9 | SignalDispatcher (NATS Core) |
 | ⏳ | US-93.10 | TaskQueue (NATS JetStream Pull) |
-| ⏳ | US-93.11 | TimerStore (PostgreSQL) |
 
 ---
 
-**Progreso del EPIC**: 8/11 User Stories completadas (73%)
+**Progreso del EPIC**: 9/11 User Stories completadas (82%)
 
 ---
 
