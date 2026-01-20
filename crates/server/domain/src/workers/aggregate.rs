@@ -826,6 +826,11 @@ impl Worker {
         self.last_heartbeat
     }
 
+    /// Returns the last heartbeat as an Option (for compatibility)
+    pub fn last_heartbeat_at(&self) -> Option<DateTime<Utc>> {
+        Some(self.last_heartbeat)
+    }
+
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at
     }

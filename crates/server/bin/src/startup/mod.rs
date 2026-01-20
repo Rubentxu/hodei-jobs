@@ -334,18 +334,16 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
     info!("✓ ProviderConfigRepository initialized");
 
-    // Step 8: Initialize recovery saga coordinator with OutboxCommandBus (CRITICAL FIX)
-    let (recovery_command_bus, _) = services_init::create_command_bus(pool.clone());
+    // Step 8: Initialize recovery saga coordinator (CRITICAL FIX)
     let recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator> = Arc::new(
         DynRecoverySagaCoordinator::builder()
             .with_orchestrator(saga_orchestrator.clone())
-            .with_command_bus(recovery_command_bus) // ✅ OutboxCommandBus for persistence
             .with_worker_registry(worker_registry.clone())
             .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
             .build()
             .expect("Failed to build recovery saga coordinator"),
     );
-    info!("✓ RecoverySagaCoordinator initialized with OutboxCommandBus");
+    info!("✓ RecoverySagaCoordinator initialized");
 
     // Step 9: Initialize WorkerLifecycleManager with empty providers map
     // The providers will be registered during provider initialization

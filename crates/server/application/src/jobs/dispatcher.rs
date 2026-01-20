@@ -477,7 +477,13 @@ impl JobDispatcher {
         // assigns jobs without sending RUN_JOB, leaving jobs stuck in ASSIGNED state.
         if let Some(ref dispatcher) = self.execution_saga_dispatcher {
             info!(job_id = %job.id, worker_id = %worker_id, "🚀 JobDispatcher: Starting ExecutionSaga");
-            match dispatcher.execute_execution_saga(&job.id, worker_id).await {
+            let worker = self
+                .worker_registry
+                .get(worker_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get worker {}: {}", worker_id, e))?
+                .ok_or_else(|| anyhow::anyhow!("Worker {} not found", worker_id))?;
+            match dispatcher.dispatch(job, &worker).await {
                 Ok(result) => {
                     info!(job_id = %job.id, saga_status = ?result, "✅ JobDispatcher: ExecutionSaga completed");
                     Ok(())
@@ -542,8 +548,8 @@ impl JobDispatcher {
                 .execute_provisioning_saga(&provider_id, &spec, Some(job.id.clone()))
                 .await
             {
-                Ok((worker_id, result)) => {
-                    info!(job_id = %job.id, worker_id = %worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
+                Ok(result) => {
+                    info!(job_id = %job.id, worker_id = %result.worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
                     Ok(())
                 }
                 Err(e) => Err(anyhow::anyhow!("Provisioning saga failed: {}", e)),

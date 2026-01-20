@@ -639,6 +639,9 @@ impl WorkflowDefinition for ExecutionWorkflow {
     const TYPE_ID: &'static str = "execution";
     const VERSION: u32 = 1;
 
+    type Input = ExecutionWorkflowInput;
+    type Output = ExecutionWorkflowOutput;
+
     fn steps(&self) -> &[Box<dyn DynWorkflowStep>] {
         &self.steps
     }

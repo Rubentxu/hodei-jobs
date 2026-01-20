@@ -68,8 +68,18 @@ impl SagaOnlyJobDispatcher {
             return Err(DispatchError::JobMismatch);
         }
 
+        let worker = self
+            .worker_registry
+            .get(worker_id)
+            .await
+            .map_err(|e| {
+                DispatchError::SagaFailed(format!("Failed to get worker {}: {}", worker_id, e))
+            })?
+            .ok_or_else(|| DispatchError::SagaFailed(format!("Worker {} not found", worker_id)))?;
+
         self.execution_saga_dispatcher
-            .execute_execution_saga(job_id, worker_id)
+            .as_ref()
+            .dispatch(&job, &worker)
             .await
             .map_err(|e| DispatchError::SagaFailed(e.to_string()))?;
 

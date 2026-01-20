@@ -660,6 +660,9 @@ impl WorkflowDefinition for ProvisioningWorkflow {
     const TYPE_ID: &'static str = "provisioning";
     const VERSION: u32 = 1;
 
+    type Input = ProvisioningWorkflowInput;
+    type Output = ProvisioningWorkflowOutput;
+
     fn steps(&self) -> &[Box<dyn DynWorkflowStep>] {
         &self.steps
     }

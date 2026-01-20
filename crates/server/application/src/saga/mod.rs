@@ -1,68 +1,78 @@
 //! Saga Orchestration - Application Layer
 //!
 //! Provides saga-based orchestration for job execution and worker management.
-//! This module integrates the domain saga patterns with application services.
+//! This module integrates domain saga patterns with application services.
 //!
-//! ## Architecture (EPIC-SAGA-ENGINE-PRODUCTION-READINESS)
+//! ## Architecture
 //!
-//! The saga infrastructure follows the production-ready patterns from the EPIC:
+//! The saga infrastructure follows production-ready patterns:
 //! - **DynProvisioningSagaCoordinator**: Preferred implementation that injects
 //!   services into `SagaContext` for use by saga steps
 //! - **CreateInfrastructureStep**: Performs real worker provisioning during saga execution
-//! - **InMemorySagaOrchestrator / PostgresSagaOrchestrator**: Handles compensation loops
-//!
-//! The `DynProvisioningSagaCoordinator` is the canonical implementation that:
-//! - Injects services (`WorkerProvisioning`, `WorkerRegistry`, `EventBus`) into `SagaContext`
-//! - Lets saga steps (`CreateInfrastructureStep`, `RegisterWorkerStep`) perform real work
-//! - Provides automatic compensation via saga steps on failure
+//! - **PostgresSagaOrchestrator**: Handles compensation loops
 //!
 //! ## EPIC-94: Saga Engine v4.0 Migration
 //!
-//! This module also provides the adapter layer for migrating to saga-engine v4.0:
+//! This module provides an adapter layer for migrating to saga-engine v4.0:
 //! - [`port`]: SagaPort trait abstraction for saga execution
-//! - [`adapters`]: LegacySagaAdapter and SagaEngineV4Adapter implementations
-//! - [`adapters::factory`]: Factory for creating adapters
+//! - [`adapters`]: SagaEngineV4Adapter implementation
+//!
+//! ## Workflow Implementations (EPIC-94)
+//!
+//! Provides workflow definitions for saga-engine v4.0 migration,
+//! implementing WorkflowDefinition trait for each saga type.
+//!
+//! ## Port Abstraction (EPIC-94)
+//!
+//! Port abstraction layer for saga execution.
+//!
+//! ## Adapter Layer (EPIC-94)
+//!
+//! Adapter layer for saga migration.
+//!
+//! ## Bridge Layer (EPIC-94)
+//!
+//! Bridge layer for CommandBus to Activity migration.
+//!
+//! ## Feature Flags (EPIC-94)
+//!
+//! Feature flags for controlling saga migration.
+//!
+//! ## Compatibility Test (EPIC-94)
+//!
+//! Test suite for verifying saga compatibility.
+
+pub mod workflows;
+
+pub mod port;
+
+pub mod adapters;
+
+pub mod bridge;
+
+pub mod ports;
+
+pub mod feature_flags;
+
+pub mod compatibility_test;
 
 pub mod dispatcher_saga;
 pub mod provisioning_saga;
 pub mod recovery_saga;
 pub mod timeout_checker;
 
-/// Workflow implementations for saga-engine v4.0 (EPIC-94)
-pub mod workflows;
+pub mod sync_executor;
 
-/// Port abstraction layer for saga execution (EPIC-94)
-pub mod port;
+pub use port::types::{SagaExecutionId, SagaPortConfig, SagaPortResult, WorkflowState};
 
-/// Adapter layer for saga migration (EPIC-94)
-pub mod adapters;
-
-/// Bridge layer for CommandBus to Activity migration (EPIC-94)
-pub mod bridge;
-
-/// Legacy migration support for saga-engine v4.0 (EPIC-94)
-pub mod legacy;
-
-/// Adapter ports for legacy infrastructure integration (EPIC-94)
-pub mod ports;
-
-/// Compatibility test suite for saga migration (EPIC-94)
-pub mod compatibility_test;
-pub use dispatcher_saga::{
-    DynExecutionSagaDispatcher, DynExecutionSagaDispatcherBuilder,
-    DynExecutionSagaDispatcherBuilderError, ExecutionSagaDispatcher, ExecutionSagaDispatcherConfig,
-};
-
+pub use dispatcher_saga::{DynExecutionSagaDispatcher, ExecutionSagaDispatcherConfig};
 pub use provisioning_saga::{
-    DynProvisioningSagaCoordinator, DynProvisioningSagaCoordinatorBuilder,
-    DynProvisioningSagaCoordinatorBuilderError, ProvisioningSagaCoordinatorConfig,
+    DynProvisioningSagaCoordinator, ProvisioningSagaCoordinatorConfig, ProvisioningSagaError,
 };
-
 pub use recovery_saga::{
-    DynRecoverySagaCoordinator, DynRecoverySagaCoordinatorBuilder,
-    DynRecoverySagaCoordinatorBuilderError, RecoverySagaCoordinator, RecoverySagaCoordinatorConfig,
+    DynRecoverySagaCoordinator, RecoverySagaCoordinatorConfig, RecoverySagaError,
 };
-
 pub use timeout_checker::{
-    TimeoutCheckResult, TimeoutChecker, TimeoutCheckerBuilder, TimeoutCheckerConfig,
+    DynTimeoutChecker, DynTimeoutCheckerBuilder, TimeoutCheckResult, TimeoutChecker,
+    TimeoutCheckerConfig, TimeoutCheckerDynInterface,
 };

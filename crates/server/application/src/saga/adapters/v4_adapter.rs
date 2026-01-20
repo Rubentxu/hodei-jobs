@@ -3,7 +3,8 @@
 //! Adapter that uses the saga-engine v4.0 library for saga execution.
 
 use async_trait::async_trait;
-use saga_engine_core::workflow::WorkflowDefinition;
+use saga_engine_core::workflow::{WorkflowDefinition, WorkflowState};
+use serde::Serialize;
 use std::fmt::Debug;
 use std::io;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use tracing::debug;
 
 use crate::saga::port::SagaPort;
-use crate::saga::port::types::{SagaExecutionId, WorkflowState};
+use crate::saga::port::types::SagaExecutionId;
 
 /// Configuration for the saga-engine v4.0 adapter
 #[derive(Debug, Clone, Default)]
@@ -123,7 +124,7 @@ where
 
     async fn start_workflow(
         &self,
-        input: serde_json::Value,
+        input: W::Input,
         idempotency_key: Option<String>,
     ) -> Result<SagaExecutionId, Self::Error> {
         debug!(
@@ -131,7 +132,18 @@ where
             W::TYPE_ID
         );
 
-        let result = self.runtime.start_workflow(input, idempotency_key).await?;
+        // Serialize the type-safe input to JSON for the runtime
+        let json_input = serde_json::to_value(&input).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Failed to serialize input: {}", e),
+            )
+        })?;
+
+        let result = self
+            .runtime
+            .start_workflow(json_input, idempotency_key)
+            .await?;
         Ok(result.execution_id)
     }
 
@@ -189,13 +201,42 @@ where
         &self,
         execution_id: &SagaExecutionId,
         signal: String,
-        payload: serde_json::Value,
+        payload: W::Output,
     ) -> Result<(), Self::Error> {
         debug!(execution_id = %execution_id, "Sending signal to workflow");
+        let json_payload = serde_json::to_value(&payload).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Failed to serialize payload: {}", e),
+            )
+        })?;
         self.runtime
-            .send_signal(execution_id, signal, payload)
+            .send_signal(execution_id, signal, json_payload)
             .await?;
         Ok(())
+    }
+
+    async fn wait_for_completion(
+        &self,
+        execution_id: &SagaExecutionId,
+        timeout: Duration,
+    ) -> Result<WorkflowState, Self::Error> {
+        let start = std::time::Instant::now();
+        let poll_interval = Duration::from_millis(100);
+
+        while start.elapsed() < timeout {
+            match self.get_workflow_state(execution_id).await? {
+                WorkflowState::Running { .. } => {
+                    tokio::time::sleep(poll_interval).await;
+                }
+                state => return Ok(state),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("Workflow did not complete within timeout: {}", execution_id),
+        ))
     }
 }
 

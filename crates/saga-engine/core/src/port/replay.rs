@@ -44,6 +44,24 @@ use super::super::event::{HistoryEvent, SagaId};
 use std::fmt::Debug;
 use std::time::Duration;
 
+/// Trait for states that can be reconstructed from history events.
+///
+/// This trait must be implemented by any state type that wants to be
+/// managed by a [`HistoryReplayer`].
+pub trait Applicator: Sized {
+    /// Apply a single history event to the current state.
+    ///
+    /// # Errors
+    /// Returns an error if the event cannot be applied to the current state.
+    fn apply(&mut self, event: &HistoryEvent) -> Result<(), String>;
+
+    /// Reconstruct the state from a serialized snapshot.
+    ///
+    /// # Errors
+    /// Returns an error if the snapshot data is invalid or cannot be deserialized.
+    fn from_snapshot(data: &[u8]) -> Result<Self, String>;
+}
+
 /// Result of replaying events onto state.
 #[derive(Debug, Clone)]
 pub struct ReplayResult<T> {
@@ -90,7 +108,7 @@ pub enum ReplayError<E> {
     Deserialization(String),
 
     #[error("Event application failed: {0}")]
-    Apply(E),
+    Apply(String),
 
     #[error("Invalid event sequence: expected {expected}, got {actual}")]
     InvalidSequence { expected: u64, actual: u64 },

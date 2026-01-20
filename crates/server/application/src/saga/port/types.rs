@@ -1,4 +1,9 @@
 //! Common types for the Saga Port abstraction layer.
+//!
+//! This module re-exports types from saga-engine-core and provides
+//! additional application-specific types.
+
+pub use saga_engine_core::workflow::WorkflowState;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -36,94 +41,6 @@ impl fmt::Display for SagaExecutionId {
     }
 }
 
-/// Represents the possible states of a workflow execution.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum WorkflowState {
-    /// Workflow is currently executing
-    Running {
-        /// Current step being executed
-        current_step: Option<u32>,
-        /// Elapsed time since start
-        elapsed: Option<std::time::Duration>,
-    },
-
-    /// Workflow completed successfully
-    Completed {
-        /// The output produced by the workflow
-        output: serde_json::Value,
-        /// Total number of steps executed
-        steps_executed: u32,
-        /// Total duration
-        duration: std::time::Duration,
-    },
-
-    /// Workflow failed during execution
-    Failed {
-        /// Error message describing the failure
-        error_message: String,
-        /// Step where the failure occurred
-        failed_step: Option<u32>,
-        /// Total number of steps executed before failure
-        steps_executed: u32,
-        /// Number of compensations executed
-        compensations_executed: u32,
-    },
-
-    /// Workflow was compensated (rolled back) after partial execution
-    Compensated {
-        /// Error that triggered compensation
-        error_message: String,
-        /// Step where the failure occurred
-        failed_step: Option<u32>,
-        /// Number of steps executed before compensation
-        steps_executed: u32,
-        /// Number of compensations executed
-        compensations_executed: u32,
-    },
-
-    /// Workflow was cancelled by user or system
-    Cancelled {
-        /// Reason for cancellation
-        reason: String,
-        /// Number of steps executed before cancellation
-        steps_executed: u32,
-    },
-
-    /// Workflow is currently compensating (rolling back)
-    Compensating {
-        /// Error that triggered compensation
-        error_message: String,
-        /// Current compensation step
-        current_step: u32,
-    },
-}
-
-impl WorkflowState {
-    /// Check if the workflow is in a terminal state
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            WorkflowState::Completed { .. }
-                | WorkflowState::Failed { .. }
-                | WorkflowState::Compensated { .. }
-                | WorkflowState::Cancelled { .. }
-        )
-    }
-
-    /// Check if the workflow completed successfully
-    pub fn is_success(&self) -> bool {
-        matches!(self, WorkflowState::Completed { .. })
-    }
-
-    /// Check if the workflow failed
-    pub fn is_failed(&self) -> bool {
-        matches!(
-            self,
-            WorkflowState::Failed { .. } | WorkflowState::Compensated { .. }
-        )
-    }
-}
-
 /// Result of a saga port operation that includes metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SagaPortResult {
@@ -135,21 +52,6 @@ pub struct SagaPortResult {
     pub started_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the operation completed
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-impl SagaPortResult {
-    /// Create a new result for a running workflow
-    pub fn new(execution_id: SagaExecutionId) -> Self {
-        Self {
-            execution_id,
-            state: WorkflowState::Running {
-                current_step: None,
-                elapsed: None,
-            },
-            started_at: chrono::Utc::now(),
-            completed_at: None,
-        }
-    }
 }
 
 /// Configuration for saga port operations

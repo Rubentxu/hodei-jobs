@@ -667,8 +667,10 @@ pub async fn start_background_tasks(
     let (timeout_stop_tx, _) = tokio::sync::broadcast::channel(1);
 
     // Start DynTimeoutChecker
-    let timeout_checker =
-        DynTimeoutChecker::new(job_repository.clone(), saga_orchestrator.clone(), None);
+    let timeout_checker = DynTimeoutChecker::builder()
+        .with_job_repository(job_repository.clone())
+        .build()
+        .expect("Failed to build timeout checker");
 
     tokio::spawn(async move {
         timeout_checker.run().await;

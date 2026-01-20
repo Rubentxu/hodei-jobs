@@ -4,16 +4,17 @@
 //! [`HistoryReplayer`] trait for reconstructing saga state from event history.
 
 use async_trait::async_trait;
-use saga_engine_core::event::{EventId, HistoryEvent, SagaId};
-use saga_engine_core::port::replay::{HistoryReplayer, ReplayConfig, ReplayError, ReplayResult};
+use saga_engine_core::event::{HistoryEvent, SagaId};
+use saga_engine_core::port::EventStore;
+use saga_engine_core::port::replay::{
+    Applicator, HistoryReplayer, ReplayConfig, ReplayError, ReplayResult,
+};
 use sqlx::postgres::PgPool;
 use std::fmt::Debug;
 use std::sync::Arc;
+use tracing::{debug, error, instrument};
 
 /// PostgreSQL-backed HistoryReplayer.
-///
-/// This implementation uses PostgreSQL to store and retrieve event history
-/// for durable execution state reconstruction.
 pub struct PostgresReplayer<E = sqlx::Error>
 where
     E: Debug + Send + Sync + 'static,
@@ -21,9 +22,7 @@ where
     /// Database pool for PostgreSQL connections.
     pool: Arc<PgPool>,
     /// Event store for retrieving event history.
-    event_store: Arc<dyn saga_engine_core::port::EventStore<Error = E> + Send + Sync>,
-    /// Replay configuration.
-    config: ReplayConfig,
+    event_store: Arc<dyn EventStore<Error = E> + Send + Sync>,
 }
 
 impl<E> std::fmt::Debug for PostgresReplayer<E>
@@ -33,7 +32,6 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostgresReplayer")
             .field("pool", &self.pool)
-            .field("config", &self.config)
             .finish_non_exhaustive()
     }
 }
@@ -43,65 +41,11 @@ where
     E: Debug + Send + Sync + 'static,
 {
     /// Create a new PostgresReplayer.
-    ///
-    /// # Arguments
-    ///
-    /// * `pool` - The PostgreSQL connection pool.
-    /// * `event_store` - The event store to retrieve events from.
-    ///
-    /// # Returns
-    ///
-    /// A new PostgresReplayer instance with default configuration.
     pub fn new(
         pool: Arc<PgPool>,
-        event_store: Arc<dyn saga_engine_core::port::EventStore<Error = E> + Send + Sync>,
+        event_store: Arc<dyn EventStore<Error = E> + Send + Sync>,
     ) -> Self {
-        Self::with_config(pool, event_store, ReplayConfig::default())
-    }
-
-    /// Create a new PostgresReplayer with custom configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `pool` - The PostgreSQL connection pool.
-    /// * `event_store` - The event store to retrieve events from.
-    /// * `config` - Replay configuration options.
-    ///
-    /// # Returns
-    ///
-    /// A new PostgresReplayer instance with the specified configuration.
-    pub fn with_config(
-        pool: Arc<PgPool>,
-        event_store: Arc<dyn saga_engine_core::port::EventStore<Error = E> + Send + Sync>,
-        config: ReplayConfig,
-    ) -> Self {
-        Self {
-            pool,
-            event_store,
-            config,
-        }
-    }
-
-    /// Get the database pool.
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
-    }
-
-    /// Get the event store.
-    pub fn event_store(
-        &self,
-    ) -> &Arc<dyn saga_engine_core::port::EventStore<Error = E> + Send + Sync> {
-        &self.event_store
-    }
-
-    /// Get the replay configuration.
-    pub fn config(&self) -> &ReplayConfig {
-        &self.config
-    }
-
-    /// Set the replay configuration.
-    pub fn set_config(&mut self, config: ReplayConfig) {
-        self.config = config;
+        Self { pool, event_store }
     }
 }
 
@@ -109,29 +53,26 @@ where
 impl<E, T> HistoryReplayer<T> for PostgresReplayer<E>
 where
     E: Debug + Send + Sync + 'static,
-    T: Default + Clone + Send + Sync + 'static,
+    T: Default + Clone + Send + Sync + 'static + Applicator,
 {
     type Error = E;
 
+    #[instrument(skip(self, state, events, config))]
     async fn replay(
         &self,
-        state: T,
+        mut state: T,
         events: &[HistoryEvent],
         config: Option<ReplayConfig>,
     ) -> Result<ReplayResult<T>, ReplayError<Self::Error>> {
         let start = std::time::Instant::now();
         let config = config.unwrap_or_default();
 
-        // Validate event sequence if configured
-        if config.max_events > 0 && events.len() > config.max_events {
-            return Err(ReplayError::too_many(config.max_events));
-        }
-
-        // Replay events in order
         let mut last_event_id = 0u64;
+        let mut events_replayed = 0;
+
         for event in events {
-            // Validate event order
-            if event.event_id.0 <= last_event_id {
+            // Validate sequence
+            if event.event_id.0 <= last_event_id && events_replayed > 0 {
                 return Err(ReplayError::invalid_sequence(
                     last_event_id + 1,
                     event.event_id.0,
@@ -139,12 +80,18 @@ where
             }
             last_event_id = event.event_id.0;
 
-            // Note: In a real implementation, you would apply the event to state here
-            // For now, we just track the events without modifying the state
-            let _event_type = &event.event_type;
-            let _attributes = &event.attributes;
+            // Apply event to state
+            state.apply(event).map_err(|e| {
+                error!("Failed to apply event {}: {}", event.event_id, e);
+                ReplayError::Apply(e)
+            })?;
 
-            // Check timeout
+            events_replayed += 1;
+
+            // Check limits
+            if config.max_events > 0 && events_replayed >= config.max_events {
+                break;
+            }
             if start.elapsed() > config.timeout {
                 return Err(ReplayError::Timeout);
             }
@@ -152,31 +99,29 @@ where
 
         Ok(ReplayResult {
             state,
-            events_replayed: events.len(),
+            events_replayed,
             replay_duration: start.elapsed(),
             last_event_id,
         })
     }
 
+    #[instrument(skip(self, config))]
     async fn replay_from_event_id(
         &self,
         saga_id: &SagaId,
         from_event_id: u64,
         config: Option<ReplayConfig>,
     ) -> Result<ReplayResult<T>, ReplayError<Self::Error>> {
-        let config = config.unwrap_or_default();
-
-        // Get events from the specified event ID
         let events = self
             .event_store
             .get_history_from(saga_id, from_event_id)
             .await
             .map_err(ReplayError::Storage)?;
 
-        // Replay the events
-        self.replay(T::default(), &events, Some(config)).await
+        self.replay(T::default(), &events, config).await
     }
 
+    #[instrument(skip(self, config))]
     async fn get_current_state(
         &self,
         saga_id: &SagaId,
@@ -184,33 +129,33 @@ where
     ) -> Result<ReplayResult<T>, ReplayError<Self::Error>> {
         let config = config.unwrap_or_default();
 
-        // Get latest snapshot if enabled
-        let (state, from_event_id) = if self.config.use_snapshots {
-            if let Some((snapshot_event_id, snapshot_state)) = self
+        let mut state = T::default();
+        let mut from_event_id = 0u64;
+
+        // Try to load latest snapshot
+        if config.use_snapshots {
+            if let Some((snapshot_id, snapshot_data)) = self
                 .event_store
                 .get_latest_snapshot(saga_id)
                 .await
                 .map_err(ReplayError::Storage)?
             {
-                // Deserialize snapshot state
-                // Note: In a real implementation, you would deserialize the snapshot here
-                let _snapshot_data = snapshot_state;
-                (T::default(), snapshot_event_id)
-            } else {
-                (T::default(), 0)
+                debug!("Found snapshot at event {}", snapshot_id);
+                state = T::from_snapshot(&snapshot_data).map_err(|e| {
+                    error!("Failed to deserialize snapshot: {}", e);
+                    ReplayError::Deserialization(e)
+                })?;
+                from_event_id = snapshot_id;
             }
-        } else {
-            (T::default(), 0)
-        };
+        }
 
-        // Get events from snapshot point
+        // Fetch remaining events
         let events = self
             .event_store
             .get_history_from(saga_id, from_event_id)
             .await
             .map_err(ReplayError::Storage)?;
 
-        // Replay events onto state
         self.replay(state, &events, Some(config)).await
     }
 
@@ -219,23 +164,19 @@ where
         events: &[HistoryEvent],
         allow_gaps: bool,
     ) -> Result<usize, ReplayError<Self::Error>> {
-        let mut invalid_count = 0usize;
-        let mut last_event_id = 0u64;
-
-        for event in events {
-            // Check for gaps if not allowed
-            if !allow_gaps && event.event_id.0 != last_event_id + 1 {
-                invalid_count += 1;
+        let mut last_id = 0u64;
+        let mut invalid = 0;
+        for (i, event) in events.iter().enumerate() {
+            if i > 0 {
+                if !allow_gaps && event.event_id.0 != last_id + 1 {
+                    invalid += 1;
+                }
+                if event.event_id.0 <= last_id {
+                    invalid += 1;
+                }
             }
-
-            // Check for duplicates or backwards movement
-            if event.event_id.0 <= last_event_id {
-                invalid_count += 1;
-            }
-
-            last_event_id = event.event_id.0;
+            last_id = event.event_id.0;
         }
-
-        Ok(invalid_count)
+        Ok(invalid)
     }
 }

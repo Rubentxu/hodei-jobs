@@ -713,28 +713,43 @@ mod tests {
         }
     }
 
+    /// Mock RecoverySagaCoordinatorTrait implementation for tests
+    struct MockRecoverySagaCoordinator;
+
+    impl MockRecoverySagaCoordinator {
+        fn new() -> Self {
+            Self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::saga::recovery_saga::RecoverySagaCoordinatorTrait for MockRecoverySagaCoordinator {
+        async fn execute_recovery_saga(
+            &self,
+            _job_id: JobId,
+            _failed_worker_id: WorkerId,
+            _reason: String,
+        ) -> std::result::Result<
+            crate::saga::recovery_saga::RecoverySagaResult,
+            crate::saga::recovery_saga::RecoverySagaError,
+        > {
+            use crate::saga::recovery_saga::RecoverySagaResult;
+
+            Ok(RecoverySagaResult {
+                saga_id: SagaId::new().to_string(),
+                old_worker_id: WorkerId::new(),
+                new_worker_id: WorkerId::new(),
+                job_id: JobId::new(),
+                duration: std::time::Duration::from_millis(10),
+                completed_at: chrono::Utc::now(),
+            })
+        }
+    }
+
     /// Create a mock DynRecoverySagaCoordinator for tests
-    fn create_mock_recovery_coordinator(
-        registry: Arc<dyn WorkerRegistryTx + Send + Sync>,
-        event_bus: Arc<dyn EventBus + Send + Sync>,
-    ) -> Arc<DynRecoverySagaCoordinator> {
-        use crate::saga::recovery_saga::RecoverySagaCoordinatorConfig;
-        use hodei_server_domain::command::{DynCommandBus, InMemoryErasedCommandBus};
-
-        let orchestrator: Arc<dyn SagaOrchestrator<Error = DomainError> + Send + Sync> =
-            Arc::new(MockSagaOrchestrator);
-        let saga_config = RecoverySagaCoordinatorConfig::default();
-        let command_bus: DynCommandBus = Arc::new(InMemoryErasedCommandBus::new());
-
+    fn create_mock_recovery_coordinator() -> Arc<DynRecoverySagaCoordinator> {
         Arc::new(DynRecoverySagaCoordinator::new(
-            orchestrator,
-            command_bus,
-            registry,
-            event_bus,
-            None,
-            None,
-            Some(saga_config),
-            None,
+            MockRecoverySagaCoordinator::new(),
         ))
     }
 
@@ -824,8 +839,7 @@ mod tests {
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
         let outbox = Arc::new(MockOutboxRepository);
-        let recovery_coordinator =
-            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
+        let recovery_coordinator = create_mock_recovery_coordinator();
 
         let _orchestrator = JobOrchestrator::new(
             registry,
@@ -845,8 +859,7 @@ mod tests {
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
-        let recovery_coordinator =
-            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
+        let recovery_coordinator = create_mock_recovery_coordinator();
 
         let orchestrator = JobOrchestrator::new(
             registry,
@@ -877,8 +890,7 @@ mod tests {
         let job_repo = Arc::new(MockJobRepository::new());
         let job_queue = Arc::new(MockJobQueue::new());
         let event_bus: Arc<dyn EventBus> = Arc::new(MockEventBus);
-        let recovery_coordinator =
-            create_mock_recovery_coordinator(registry.clone(), event_bus.clone());
+        let recovery_coordinator = create_mock_recovery_coordinator();
 
         let orchestrator = JobOrchestrator::new(
             registry,

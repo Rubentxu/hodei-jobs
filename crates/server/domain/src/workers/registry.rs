@@ -126,6 +126,11 @@ pub trait WorkerRegistry: Send + Sync {
     /// Obtener worker asociado a un job específico
     async fn get_by_job_id(&self, job_id: &JobId) -> Result<Option<Worker>>;
 
+    /// Alias for get_by_job_id (for compatibility)
+    async fn find_by_job(&self, job_id: &JobId) -> Result<Option<Worker>> {
+        self.get_by_job_id(job_id).await
+    }
+
     /// Obtener todos los workers que coinciden con el filtro
     async fn find(&self, filter: &WorkerFilter) -> Result<Vec<Worker>>;
 

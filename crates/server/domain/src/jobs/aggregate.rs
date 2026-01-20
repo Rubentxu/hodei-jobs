@@ -818,6 +818,15 @@ impl Job {
     }
 
     // Getters
+    pub fn id(&self) -> &JobId {
+        &self.id
+    }
+    pub fn name(&self) -> &String {
+        &self.name
+    }
+    pub fn spec(&self) -> &JobSpec {
+        &self.spec
+    }
     pub fn state(&self) -> &JobState {
         &self.state
     }
@@ -1097,6 +1106,16 @@ impl Job {
         if let Some(started_at) = self.started_at {
             let elapsed = Utc::now().signed_duration_since(started_at);
             elapsed.num_milliseconds() as u64 > self.spec.timeout_ms
+        } else {
+            false
+        }
+    }
+
+    /// Verifica si el job ha excedido el timeout especificado
+    pub fn is_timed_out(&self, timeout: Duration) -> bool {
+        if let Some(started_at) = self.started_at {
+            let elapsed = Utc::now().signed_duration_since(started_at);
+            elapsed.to_std().unwrap_or(Duration::ZERO) > timeout
         } else {
             false
         }

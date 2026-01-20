@@ -95,9 +95,9 @@ impl WorkerLifecycleFacade {
                 .execute_provisioning_saga(provider_id, &spec, None)
                 .await
             {
-                Ok((worker_id, _)) => {
-                    info!(%provider_id, %worker_id, "Worker provisioned via saga");
-                    return Ok(worker_id);
+                Ok(result) => {
+                    info!(%provider_id, worker_id = %result.worker_id, "Worker provisioned via saga");
+                    return Ok(result.worker_id);
                 }
                 Err(e) => {
                     return Err(
@@ -119,8 +119,9 @@ impl WorkerLifecycleFacade {
     pub async fn recover_worker(&self, job_id: &JobId, failed_worker_id: &WorkerId) -> Result<()> {
         if let Some(ref coordinator) = self.recovery_coordinator {
             info!(%job_id, %failed_worker_id, "Recovering worker via saga");
+            let reason = format!("Worker {} failed", failed_worker_id);
             match coordinator
-                .execute_recovery_saga(job_id, failed_worker_id)
+                .execute_recovery_saga(job_id.clone(), failed_worker_id.clone(), reason)
                 .await
             {
                 Ok(_) => {
