@@ -19,11 +19,12 @@
 //! ## Usage
 //!
 //! ```rust
-//! use saga_engine_core::event::{HistoryEvent, EventType, EventCategory, SagaId};
+//! use saga_engine_core::event::{HistoryEvent, EventType, EventCategory, SagaId, EventId};
 //! use saga_engine_core::codec::{JsonCodec, EventCodec};
 //!
 //! let codec = JsonCodec::new();
 //! let event = HistoryEvent::new(
+//!     EventId(1),
 //!     SagaId("test-saga-id".to_string()),
 //!     EventType::WorkflowExecutionStarted,
 //!     EventCategory::Workflow,

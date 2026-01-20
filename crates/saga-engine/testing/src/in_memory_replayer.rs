@@ -193,13 +193,11 @@ impl HistoryReplayer<TestState> for InMemoryReplayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use saga_engine_core::event::{EventCategory, EventType, reset_event_id_generator};
+    use saga_engine_core::event::{EventCategory, EventId, EventType};
     use serde_json::json;
 
     #[tokio::test]
     async fn test_in_memory_replayer_basic() {
-        reset_event_id_generator();
-
         let replayer = InMemoryReplayer::new();
         let saga_id = SagaId("test-saga".to_string());
 
@@ -207,12 +205,14 @@ mod tests {
 
         let events = vec![
             HistoryEvent::builder()
+                .event_id(EventId(0))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskScheduled)
                 .category(EventCategory::Activity)
                 .payload(json!({"step": 1}))
                 .build(),
             HistoryEvent::builder()
+                .event_id(EventId(1))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskCompleted)
                 .category(EventCategory::Activity)
@@ -229,17 +229,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_replay_invalid_sequence() {
-        reset_event_id_generator();
-
         let replayer = InMemoryReplayer::new();
         let saga_id = SagaId("test-saga".to_string());
         let state = TestState::new(saga_id.clone());
 
-        // Reset again to ensure clean state before creating events with custom IDs
-        reset_event_id_generator();
-
         // Create events with IDs that are NOT sequential (0, 2 instead of 0, 1)
         let mut event1 = HistoryEvent::builder()
+            .event_id(EventId(0))
             .saga_id(saga_id.clone())
             .event_type(EventType::ActivityTaskScheduled)
             .category(EventCategory::Activity)
@@ -247,6 +243,7 @@ mod tests {
             .build();
 
         let mut event2 = HistoryEvent::builder()
+            .event_id(EventId(2))
             .saga_id(saga_id.clone())
             .event_type(EventType::ActivityTaskCompleted)
             .category(EventCategory::Activity)
@@ -254,7 +251,6 @@ mod tests {
             .build();
 
         // Manually set event IDs to create invalid sequence
-        use saga_engine_core::event::EventId;
         event1.event_id = EventId(0);
         event2.event_id = EventId(2); // Skip 1 - invalid sequence
 
@@ -267,19 +263,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_sequence_valid() {
-        reset_event_id_generator();
-
         let replayer = InMemoryReplayer::new();
         let saga_id = SagaId("test-saga".to_string());
 
         let events = vec![
             HistoryEvent::builder()
+                .event_id(EventId(0))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskScheduled)
                 .category(EventCategory::Activity)
                 .payload(json!({}))
                 .build(),
             HistoryEvent::builder()
+                .event_id(EventId(1))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskCompleted)
                 .category(EventCategory::Activity)
@@ -293,16 +289,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_sequence_invalid() {
-        reset_event_id_generator();
-
         let replayer = InMemoryReplayer::new();
         let saga_id = SagaId("test-saga".to_string());
 
-        // Reset again to ensure clean state before creating events with custom IDs
-        reset_event_id_generator();
-
         // Create events with IDs that are NOT sequential (0, 2 instead of 0, 1)
         let mut event1 = HistoryEvent::builder()
+            .event_id(EventId(0))
             .saga_id(saga_id.clone())
             .event_type(EventType::ActivityTaskScheduled)
             .category(EventCategory::Activity)
@@ -310,6 +302,7 @@ mod tests {
             .build();
 
         let mut event2 = HistoryEvent::builder()
+            .event_id(EventId(2))
             .saga_id(saga_id.clone())
             .event_type(EventType::ActivityTaskCompleted)
             .category(EventCategory::Activity)
@@ -317,7 +310,6 @@ mod tests {
             .build();
 
         // Manually set event IDs to create invalid sequence
-        use saga_engine_core::event::EventId;
         event1.event_id = EventId(0);
         event2.event_id = EventId(2); // Skip 1 - invalid sequence
 
@@ -329,26 +321,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_replay_max_events_limit() {
-        reset_event_id_generator();
-
         let replayer = InMemoryReplayer::new();
         let saga_id = SagaId("test-saga".to_string());
         let state = TestState::new(saga_id.clone());
 
         let events = vec![
             HistoryEvent::builder()
+                .event_id(EventId(0))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskScheduled)
                 .category(EventCategory::Activity)
                 .payload(json!({}))
                 .build(),
             HistoryEvent::builder()
+                .event_id(EventId(1))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskCompleted)
                 .category(EventCategory::Activity)
                 .payload(json!({}))
                 .build(),
             HistoryEvent::builder()
+                .event_id(EventId(2))
                 .saga_id(saga_id.clone())
                 .event_type(EventType::ActivityTaskScheduled)
                 .category(EventCategory::Activity)
@@ -369,8 +362,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_current_state() {
-        reset_event_id_generator();
-
         let replayer = InMemoryReplayer::new();
         let saga_id = SagaId("test-saga".to_string());
 

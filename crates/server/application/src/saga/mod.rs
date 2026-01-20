@@ -34,6 +34,14 @@ pub mod port;
 /// Adapter layer for saga migration (EPIC-94)
 pub mod adapters;
 
+/// Bridge layer for CommandBus to Activity migration (EPIC-94)
+pub mod bridge;
+
+/// Legacy migration support for saga-engine v4.0 (EPIC-94)
+pub mod legacy;
+
+/// Adapter ports for legacy infrastructure integration (EPIC-94)
+pub mod ports;
 pub use dispatcher_saga::{
     DynExecutionSagaDispatcher, DynExecutionSagaDispatcherBuilder,
     DynExecutionSagaDispatcherBuilderError, ExecutionSagaDispatcher, ExecutionSagaDispatcherConfig,
