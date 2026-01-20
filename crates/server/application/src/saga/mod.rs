@@ -28,6 +28,9 @@ pub mod provisioning_saga;
 pub mod recovery_saga;
 pub mod timeout_checker;
 
+/// Workflow implementations for saga-engine v4.0 (EPIC-94)
+pub mod workflows;
+
 /// Port abstraction layer for saga execution (EPIC-94)
 pub mod port;
 

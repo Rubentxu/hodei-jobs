@@ -14,6 +14,7 @@
 //! - [`codec`]: [`EventCodec`] trait for serialization
 //! - [`port`]: Ports for infrastructure adapters (EventStore, SignalDispatcher, TaskQueue, TimerStore)
 //! - [`snapshot`]: [`SnapshotManager`] for efficient event replay
+//! - [`workflow`]: [`WorkflowDefinition`], [`WorkflowStep`], [`Activity`] for saga execution
 //! - [`error`]: Domain errors
 //!
 //! ## Usage
@@ -21,6 +22,7 @@
 //! ```rust
 //! use saga_engine_core::event::{HistoryEvent, EventType, EventCategory, SagaId, EventId};
 //! use saga_engine_core::codec::{JsonCodec, EventCodec};
+//! use saga_engine_core::workflow::{WorkflowDefinition, Activity, WorkflowStep};
 //!
 //! let codec = JsonCodec::new();
 //! let event = HistoryEvent::new(
@@ -36,11 +38,14 @@
 //! ```
 
 pub mod codec;
+pub mod error;
 pub mod event;
 pub mod port;
 pub mod snapshot;
+pub mod workflow;
 
 pub use codec::{BincodeCodec, CodecError, EventCodec, JsonCodec};
+pub use error::{Error, Result};
 pub use event::{CURRENT_EVENT_VERSION, EventCategory, EventId, EventType, HistoryEvent, SagaId};
 pub use port::{
     ConsumerConfig, DurableTimer, HistoryReplayer, ReplayConfig, ReplayError, ReplayResult,
@@ -50,4 +55,10 @@ pub use port::{
 };
 pub use snapshot::{
     Snapshot, SnapshotChecksum, SnapshotConfig, SnapshotError, SnapshotManager, SnapshotResult,
+};
+pub use workflow::{
+    Activity, DynWorkflowStep, InputValidationError, RetryPolicy, StepCompensationError, StepError,
+    StepErrorKind, StepResult, WorkflowConfig, WorkflowContext, WorkflowDefinition,
+    WorkflowExecutionError, WorkflowExecutionErrorKind, WorkflowExecutor, WorkflowInput,
+    WorkflowResult, WorkflowStep, WorkflowTypeId,
 };
