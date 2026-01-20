@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-console-web"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "assert_matches",
  "async-stream",
@@ -1892,7 +1892,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-jobs-cli"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-application"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-bin"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "async-nats 0.35.1",
@@ -1970,7 +1970,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-domain"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-infrastructure"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-server-interface"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2081,7 +2081,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-shared"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-application"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-bin"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "hodei-jobs",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-domain"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "async-trait",
  "hodei-jobs",
@@ -2137,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "hodei-worker-infrastructure"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4591,7 +4591,7 @@ checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
 name = "saga-engine-core"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -4611,7 +4611,7 @@ dependencies = [
 
 [[package]]
 name = "saga-engine-nats"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "async-nats 0.45.0",
  "async-stream",
@@ -4630,7 +4630,7 @@ dependencies = [
 
 [[package]]
 name = "saga-engine-pg"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4649,7 +4649,7 @@ dependencies = [
 
 [[package]]
 name = "saga-engine-testing"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "async-trait",
  "chrono",
