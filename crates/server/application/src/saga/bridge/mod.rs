@@ -8,12 +8,10 @@ pub mod job_state_machine;
 pub mod worker_lifecycle;
 
 pub use command_bus::{
-    Activity, ActivityInput, ActivityOutput, CommandBusActivityConfig, CommandBusActivityError,
+    CommandBusActivity, CommandBusActivityConfig, CommandBusActivityError,
     CommandBusActivityRegistry,
 };
-pub use domain_events::{
-    BridgeError, DomainEventBridgeConfig, SignalDispatcher, SignalNotification,
-};
+pub use domain_events::{BridgeError, DomainEventBridgeConfig, SignalDispatcher};
 pub use job_state_machine::{
     AssignJobInput, AssignJobOutput, CancelJobInput, CancelJobOutput, CompleteJobInput,
     CompleteJobOutput, CreateJobInput, FailJobInput, JobStateMachineError, JobStateTransitionInput,

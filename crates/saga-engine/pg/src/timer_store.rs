@@ -19,6 +19,7 @@
 //!     id              BIGSERIAL PRIMARY KEY,
 //!     timer_id        UUID NOT NULL,
 //!     saga_id         UUID NOT NULL,
+//!     saga_id_hash    INT NOT NULL,
 //!     run_id          UUID NOT NULL,
 //!     timer_type      VARCHAR(50) NOT NULL,
 //!     fire_at         TIMESTAMPTZ NOT NULL,
@@ -31,13 +32,15 @@
 //!     CONSTRAINT uq_timer_id UNIQUE (timer_id)
 //! );
 //!
-//! CREATE INDEX idx_timers_pending ON saga_timers(status, fire_at)
+//! CREATE INDEX idx_timers_pending ON saga_timers(status, fire_at, saga_id_hash)
 //!     WHERE status = 'PENDING';
 //!
 //! CREATE INDEX idx_timers_processing ON saga_timers(status, scheduler_id)
 //!     WHERE status = 'PROCESSING';
 //!
 //! CREATE INDEX idx_timers_saga_id ON saga_timers(saga_id);
+//!
+//! CREATE INDEX idx_timers_hash ON saga_timers(saga_id_hash);
 //! ```
 
 use async_trait::async_trait;
@@ -62,6 +65,7 @@ fn uuid_err(e: uuid::Error) -> SqlxError {
 struct TimerRow {
     timer_id: Uuid,
     saga_id: Uuid,
+    saga_id_hash: i32,
     run_id: Uuid,
     timer_type: String,
     fire_at: DateTime<Utc>,
@@ -89,6 +93,16 @@ impl From<TimerRow> for DurableTimer {
             max_attempts: row.max_attempts as u32,
         }
     }
+}
+
+/// Calculate a hash for saga ID for sharding purposes.
+fn calculate_saga_id_hash(saga_id: &Uuid) -> i32 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    saga_id.hash(&mut hasher);
+    hasher.finish() as i32
 }
 
 /// PostgreSQL TimerStore configuration.
@@ -157,6 +171,7 @@ impl PostgresTimerStore {
                 id              BIGSERIAL PRIMARY KEY,
                 timer_id        UUID NOT NULL,
                 saga_id         UUID NOT NULL,
+                saga_id_hash    INT NOT NULL,
                 run_id          UUID NOT NULL,
                 timer_type      VARCHAR(50) NOT NULL,
                 fire_at         TIMESTAMPTZ NOT NULL,
@@ -176,7 +191,7 @@ impl PostgresTimerStore {
         sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_timers_pending
-            ON saga_timers(status, fire_at)
+            ON saga_timers(status, fire_at, saga_id_hash)
             WHERE status = 'PENDING'
             "#,
         )
@@ -188,6 +203,24 @@ impl PostgresTimerStore {
             CREATE INDEX IF NOT EXISTS idx_timers_processing
             ON saga_timers(status, scheduler_id)
             WHERE status = 'PROCESSING'
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_timers_saga_id
+            ON saga_timers(saga_id)
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_timers_hash
+            ON saga_timers(saga_id_hash)
             "#,
         )
         .execute(&mut *tx)
@@ -209,17 +242,21 @@ impl TimerStore for PostgresTimerStore {
         let run_uuid = Uuid::parse_str(&timer.run_id).map_err(uuid_err)?;
         let timer_uuid = Uuid::parse_str(&timer.timer_id).map_err(uuid_err)?;
 
+        // Calculate saga_id_hash for sharding
+        let saga_id_hash = calculate_saga_id_hash(&saga_uuid);
+
         sqlx::query(
             r#"
             INSERT INTO saga_timers (
-                timer_id, saga_id, run_id, timer_type, fire_at,
+                timer_id, saga_id, saga_id_hash, run_id, timer_type, fire_at,
                 created_at, attributes, status, attempt, max_attempts
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (timer_id) DO NOTHING
             "#,
         )
         .bind(timer_uuid)
         .bind(saga_uuid)
+        .bind(saga_id_hash)
         .bind(run_uuid)
         .bind(timer.timer_type.as_str())
         .bind(timer.fire_at)
@@ -272,7 +309,7 @@ impl TimerStore for PostgresTimerStore {
         let rows = sqlx::query_as::<_, TimerRow>(
             r#"
             SELECT
-                timer_id, saga_id, run_id, timer_type, fire_at,
+                timer_id, saga_id, saga_id_hash, run_id, timer_type, fire_at,
                 created_at, attributes, status, attempt, max_attempts, scheduler_id
             FROM saga_timers
             WHERE status = 'PENDING' AND fire_at <= $1
@@ -311,7 +348,7 @@ impl TimerStore for PostgresTimerStore {
             SET status = 'PROCESSING', scheduler_id = $1, attempt = attempt + 1
             WHERE timer_id = ANY($2) AND status = 'PENDING'
             RETURNING
-                timer_id, saga_id, run_id, timer_type, fire_at,
+                timer_id, saga_id, saga_id_hash, run_id, timer_type, fire_at,
                 created_at, attributes, status, attempt, max_attempts, scheduler_id
             "#,
         )

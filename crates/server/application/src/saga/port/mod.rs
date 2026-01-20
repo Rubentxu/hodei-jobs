@@ -4,7 +4,8 @@
 //! enabling decoupling between the application layer and saga implementation.
 
 use async_trait::async_trait;
-use hodei_server_domain::saga::{Saga, SagaContext, SagaExecutionResult, SagaId, SagaType};
+use hodei_server_domain::saga::{SagaContext, SagaExecutionResult, SagaId, SagaType};
+use saga_engine_core::workflow::WorkflowDefinition;
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -14,16 +15,19 @@ pub mod types;
 ///
 /// This port provides a simplified interface for saga execution that can be
 /// implemented by both the legacy saga orchestrator and saga-engine v4.0.
+///
+/// # Generic Parameter
+///
+/// - `W`: The workflow definition type that this port handles
 #[async_trait]
-pub trait SagaPort: Send + Sync {
+pub trait SagaPort<W: WorkflowDefinition>: Send + Sync {
     /// Error type for saga port operations
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Start a new workflow execution.
     async fn start_workflow(
         &self,
-        saga_type: SagaType,
-        input: (),
+        input: serde_json::Value,
         idempotency_key: Option<String>,
     ) -> Result<types::SagaExecutionId, Self::Error>;
 
@@ -31,7 +35,7 @@ pub trait SagaPort: Send + Sync {
     async fn get_workflow_state(
         &self,
         execution_id: &types::SagaExecutionId,
-    ) -> Result<types::WorkflowState<()>, Self::Error>;
+    ) -> Result<types::WorkflowState, Self::Error>;
 
     /// Cancel a running workflow.
     async fn cancel_workflow(
@@ -39,11 +43,19 @@ pub trait SagaPort: Send + Sync {
         execution_id: &types::SagaExecutionId,
         reason: String,
     ) -> Result<(), Self::Error>;
+
+    /// Send a signal to a workflow (for workflows that support signals).
+    async fn send_signal(
+        &self,
+        execution_id: &types::SagaExecutionId,
+        signal: String,
+        payload: serde_json::Value,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Extension trait for SagaPort with convenience methods
 #[async_trait]
-pub trait SagaPortExt: SagaPort {
+pub trait SagaPortExt<W: WorkflowDefinition>: SagaPort<W> {
     /// Check if a workflow is currently running
     async fn is_running(&self, execution_id: &types::SagaExecutionId) -> Result<bool, Self::Error> {
         let state = self.get_workflow_state(execution_id).await?;

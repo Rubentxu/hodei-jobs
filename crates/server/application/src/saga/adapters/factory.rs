@@ -7,6 +7,7 @@ use tracing::debug;
 
 use hodei_server_domain::DomainError;
 use hodei_server_domain::saga::{SagaOrchestrator as DomainSagaOrchestrator, SagaType};
+use saga_engine_core::workflow::WorkflowDefinition;
 
 use super::legacy_adapter::LegacySagaAdapter;
 use super::v4_adapter::{SagaEngineV4Adapter, SagaEngineV4Config, WorkflowRuntime};
@@ -84,7 +85,7 @@ impl<R: WorkflowRuntime + Send + Sync + 'static> SagaAdapterFactory<R> {
     }
 
     /// Create a legacy adapter for saga execution
-    pub fn create_legacy_adapter(&self) -> LegacySagaAdapter {
+    pub fn create_legacy_adapter<W: WorkflowDefinition>(&self) -> LegacySagaAdapter<W> {
         let orchestrator = self
             .orchestrator
             .as_ref()
@@ -95,7 +96,9 @@ impl<R: WorkflowRuntime + Send + Sync + 'static> SagaAdapterFactory<R> {
     }
 
     /// Create a saga-engine v4.0 adapter for saga execution
-    pub fn create_v4_adapter(&self) -> SagaEngineV4Adapter<R> {
+    pub fn create_v4_adapter<W: WorkflowDefinition + Send + 'static>(
+        &self,
+    ) -> SagaEngineV4Adapter<R, W> {
         let runtime = self
             .v4_runtime
             .as_ref()
@@ -106,15 +109,15 @@ impl<R: WorkflowRuntime + Send + Sync + 'static> SagaAdapterFactory<R> {
     }
 
     /// Create an adapter based on the configured type
-    pub fn create_adapter(
+    pub fn create_adapter<W: WorkflowDefinition + Send + 'static>(
         &self,
         adapter_type: Option<SagaAdapterType>,
-    ) -> Box<dyn SagaPort<Error = std::io::Error> + Send + Sync> {
+    ) -> Box<dyn SagaPort<W, Error = std::io::Error> + Send + Sync> {
         let adapter_type = adapter_type.unwrap_or(self.default_adapter_type);
 
         match adapter_type {
-            SagaAdapterType::Legacy => Box::new(self.create_legacy_adapter()),
-            SagaAdapterType::V4 => Box::new(self.create_v4_adapter()),
+            SagaAdapterType::Legacy => Box::new(self.create_legacy_adapter::<W>()),
+            SagaAdapterType::V4 => Box::new(self.create_v4_adapter::<W>()),
         }
     }
 
@@ -197,6 +200,7 @@ mod tests {
     use super::*;
     use crate::saga::adapters::v4_adapter::InMemoryWorkflowRuntime;
     use hodei_server_domain::saga::{Saga, SagaOrchestrator as DomainSagaOrchestrator};
+    use saga_engine_core::workflow::{DynWorkflowStep, WorkflowConfig, WorkflowDefinition};
 
     struct TestSaga;
 
@@ -274,7 +278,20 @@ mod tests {
             .with_orchestrator(orchestrator)
             .build();
 
-        let _adapter = factory.create_legacy_adapter();
+        // Use a concrete workflow type
+        struct TestWorkflow;
+        impl WorkflowDefinition for TestWorkflow {
+            const TYPE_ID: &'static str = "test";
+            const VERSION: u32 = 1;
+            fn steps(&self) -> &[Box<dyn DynWorkflowStep>] {
+                &[]
+            }
+            fn configuration(&self) -> WorkflowConfig {
+                WorkflowConfig::default()
+            }
+        }
+
+        let _adapter = factory.create_legacy_adapter::<TestWorkflow>();
     }
 
     #[test]

@@ -3,13 +3,12 @@
 //! Adapter that uses the saga-engine v4.0 library for saga execution.
 
 use async_trait::async_trait;
+use saga_engine_core::workflow::WorkflowDefinition;
 use std::fmt::Debug;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
-
-use hodei_server_domain::saga::SagaType;
 
 use crate::saga::port::SagaPort;
 use crate::saga::port::types::{SagaExecutionId, WorkflowState};
@@ -31,7 +30,7 @@ pub struct SagaEngineV4Config {
 #[derive(Debug, Clone)]
 pub struct WorkflowStartResult {
     /// The execution ID
-    pub execution_id: String,
+    pub execution_id: SagaExecutionId,
     /// Current state
     pub state: WorkflowExecutionState,
     /// Timestamp when started
@@ -59,72 +58,89 @@ pub trait WorkflowRuntime: Send + Sync + Debug {
     /// Start a new workflow
     async fn start_workflow(
         &self,
-        input: Vec<u8>,
+        input: serde_json::Value,
         idempotency_key: Option<String>,
     ) -> Result<WorkflowStartResult, io::Error>;
 
     /// Get workflow status
     async fn get_workflow_status(
         &self,
-        execution_id: &str,
+        execution_id: &SagaExecutionId,
     ) -> Result<Option<WorkflowExecutionState>, io::Error>;
 
     /// Cancel a workflow
-    async fn cancel_workflow(&self, execution_id: &str, reason: String) -> Result<(), io::Error>;
+    async fn cancel_workflow(
+        &self,
+        execution_id: &SagaExecutionId,
+        reason: String,
+    ) -> Result<(), io::Error>;
 
     /// Send a signal to a workflow
     async fn send_signal(
         &self,
-        execution_id: &str,
-        signal_type: &str,
-        payload: Vec<u8>,
+        execution_id: &SagaExecutionId,
+        signal: String,
+        payload: serde_json::Value,
     ) -> Result<(), io::Error>;
 }
 
 /// Adapter that uses saga-engine v4.0 library for saga execution.
-pub struct SagaEngineV4Adapter<R: WorkflowRuntime + Send + Sync + 'static> {
+pub struct SagaEngineV4Adapter<R, W>
+where
+    R: WorkflowRuntime + Send + Sync + 'static,
+    W: WorkflowDefinition + Send + 'static,
+{
     /// The workflow runtime
     runtime: Arc<R>,
     /// Configuration
     config: SagaEngineV4Config,
+    /// Marker for workflow type
+    _phantom: std::marker::PhantomData<W>,
 }
 
-impl<R: WorkflowRuntime + Send + Sync + 'static> SagaEngineV4Adapter<R> {
+impl<R, W> SagaEngineV4Adapter<R, W>
+where
+    R: WorkflowRuntime + Send + Sync + 'static,
+    W: WorkflowDefinition + Send + 'static,
+{
     /// Create a new SagaEngineV4Adapter with runtime
     pub fn new(runtime: Arc<R>, config: Option<SagaEngineV4Config>) -> Self {
         Self {
             runtime,
             config: config.unwrap_or_default(),
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
 #[async_trait]
-impl<R: WorkflowRuntime + Send + Sync + 'static> SagaPort for SagaEngineV4Adapter<R> {
+impl<R, W> SagaPort<W> for SagaEngineV4Adapter<R, W>
+where
+    R: WorkflowRuntime + Send + Sync + 'static,
+    W: WorkflowDefinition + Send + 'static,
+{
     type Error = io::Error;
 
     async fn start_workflow(
         &self,
-        _saga_type: SagaType,
-        _input: (),
-        _idempotency_key: Option<String>,
+        input: serde_json::Value,
+        idempotency_key: Option<String>,
     ) -> Result<SagaExecutionId, Self::Error> {
-        debug!("Starting workflow via SagaEngineV4Adapter");
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "SagaEngineV4Adapter requires saga-specific implementation",
-        ))
+        debug!(
+            "Starting workflow via SagaEngineV4Adapter for workflow type {}",
+            W::TYPE_ID
+        );
+
+        let result = self.runtime.start_workflow(input, idempotency_key).await?;
+        Ok(result.execution_id)
     }
 
     async fn get_workflow_state(
         &self,
         execution_id: &SagaExecutionId,
-    ) -> Result<WorkflowState<()>, Self::Error> {
+    ) -> Result<WorkflowState, Self::Error> {
         debug!(execution_id = %execution_id, "Getting workflow state");
-        let status = self
-            .runtime
-            .get_workflow_status(execution_id.as_str())
-            .await?;
+        let status = self.runtime.get_workflow_status(execution_id).await?;
 
         match status {
             Some(WorkflowExecutionState::Running) => Ok(WorkflowState::Running {
@@ -132,7 +148,7 @@ impl<R: WorkflowRuntime + Send + Sync + 'static> SagaPort for SagaEngineV4Adapte
                 elapsed: None,
             }),
             Some(WorkflowExecutionState::Completed) => Ok(WorkflowState::Completed {
-                output: (),
+                output: serde_json::json!({}),
                 steps_executed: 0,
                 duration: Duration::ZERO,
             }),
@@ -165,8 +181,19 @@ impl<R: WorkflowRuntime + Send + Sync + 'static> SagaPort for SagaEngineV4Adapte
         reason: String,
     ) -> Result<(), Self::Error> {
         debug!(execution_id = %execution_id, reason = %reason, "Cancelling workflow");
+        self.runtime.cancel_workflow(execution_id, reason).await?;
+        Ok(())
+    }
+
+    async fn send_signal(
+        &self,
+        execution_id: &SagaExecutionId,
+        signal: String,
+        payload: serde_json::Value,
+    ) -> Result<(), Self::Error> {
+        debug!(execution_id = %execution_id, "Sending signal to workflow");
         self.runtime
-            .cancel_workflow(execution_id.as_str(), reason)
+            .send_signal(execution_id, signal, payload)
             .await?;
         Ok(())
     }
@@ -182,12 +209,13 @@ pub struct InMemoryWorkflowRuntime {
 impl WorkflowRuntime for InMemoryWorkflowRuntime {
     async fn start_workflow(
         &self,
-        _input: Vec<u8>,
+        _input: serde_json::Value,
         _idempotency_key: Option<String>,
     ) -> Result<WorkflowStartResult, io::Error> {
         let id = uuid::Uuid::new_v4().to_string();
+        let execution_id = SagaExecutionId::from_string(&id);
         let result = WorkflowStartResult {
-            execution_id: id.clone(),
+            execution_id,
             state: WorkflowExecutionState::Running,
             started_at: chrono::Utc::now(),
         };
@@ -201,15 +229,21 @@ impl WorkflowRuntime for InMemoryWorkflowRuntime {
 
     async fn get_workflow_status(
         &self,
-        execution_id: &str,
+        execution_id: &SagaExecutionId,
     ) -> Result<Option<WorkflowExecutionState>, io::Error> {
         let workflows = self.workflows.lock().unwrap();
-        Ok(workflows.get(execution_id).map(|r| r.state.clone()))
+        Ok(workflows
+            .get(execution_id.as_str())
+            .map(|r| r.state.clone()))
     }
 
-    async fn cancel_workflow(&self, execution_id: &str, reason: String) -> Result<(), io::Error> {
+    async fn cancel_workflow(
+        &self,
+        execution_id: &SagaExecutionId,
+        reason: String,
+    ) -> Result<(), io::Error> {
         let mut workflows = self.workflows.lock().unwrap();
-        if let Some(result) = workflows.get_mut(execution_id) {
+        if let Some(result) = workflows.get_mut(execution_id.as_str()) {
             result.state = WorkflowExecutionState::Cancelled { reason };
         }
         Ok(())
@@ -217,9 +251,9 @@ impl WorkflowRuntime for InMemoryWorkflowRuntime {
 
     async fn send_signal(
         &self,
-        _execution_id: &str,
-        _signal_type: &str,
-        _payload: Vec<u8>,
+        _execution_id: &SagaExecutionId,
+        _signal: String,
+        _payload: serde_json::Value,
     ) -> Result<(), io::Error> {
         Ok(())
     }
@@ -232,15 +266,21 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_runtime_start_workflow() {
         let runtime = InMemoryWorkflowRuntime::default();
-        let result = runtime.start_workflow(vec![1, 2, 3], None).await.unwrap();
-        assert!(!result.execution_id.is_empty());
+        let result = runtime
+            .start_workflow(serde_json::json!({"test": true}), None)
+            .await
+            .unwrap();
+        assert!(!result.execution_id.as_str().is_empty());
         assert_eq!(result.state, WorkflowExecutionState::Running);
     }
 
     #[tokio::test]
     async fn test_in_memory_runtime_cancel_workflow() {
         let runtime = InMemoryWorkflowRuntime::default();
-        let start_result = runtime.start_workflow(vec![], None).await.unwrap();
+        let start_result = runtime
+            .start_workflow(serde_json::json!({}), None)
+            .await
+            .unwrap();
         runtime
             .cancel_workflow(&start_result.execution_id, "Test".to_string())
             .await

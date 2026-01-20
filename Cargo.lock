@@ -4637,6 +4637,7 @@ dependencies = [
  "chrono",
  "parking_lot",
  "saga-engine-core",
+ "saga-engine-testing",
  "serde",
  "serde_json",
  "sha2",

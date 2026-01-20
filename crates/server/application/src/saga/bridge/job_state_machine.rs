@@ -6,7 +6,9 @@
 //!
 
 use async_trait::async_trait;
+use saga_engine_core::workflow::Activity;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -196,8 +198,15 @@ pub enum JobStateMachineError {
     CompletionFailed,
 }
 
+#[derive(Clone)]
 pub struct CreateJobActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for CreateJobActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateJobActivity").finish()
+    }
 }
 
 impl CreateJobActivity {
@@ -207,18 +216,12 @@ impl CreateJobActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for CreateJobActivity {
+impl Activity for CreateJobActivity {
+    const TYPE_ID: &'static str = "job-create";
+
     type Input = CreateJobInput;
     type Output = CreateJobOutput;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "create-job"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let job_id = JobId::new();
@@ -233,8 +236,15 @@ impl crate::saga::bridge::command_bus::Activity for CreateJobActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct TransitionJobStateActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for TransitionJobStateActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransitionJobStateActivity").finish()
+    }
 }
 
 impl TransitionJobStateActivity {
@@ -244,18 +254,12 @@ impl TransitionJobStateActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for TransitionJobStateActivity {
+impl Activity for TransitionJobStateActivity {
+    const TYPE_ID: &'static str = "job-transition-state";
+
     type Input = JobStateTransitionInput;
     type Output = JobStateTransitionOutput;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "transition-job-state"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let target_state = input.target_state.clone();
@@ -289,8 +293,15 @@ impl crate::saga::bridge::command_bus::Activity for TransitionJobStateActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct AssignJobActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for AssignJobActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssignJobActivity").finish()
+    }
 }
 
 impl AssignJobActivity {
@@ -300,18 +311,12 @@ impl AssignJobActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for AssignJobActivity {
+impl Activity for AssignJobActivity {
+    const TYPE_ID: &'static str = "job-assign";
+
     type Input = AssignJobInput;
     type Output = AssignJobOutput;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "assign-job"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let worker_id = input.worker_id.clone();
@@ -342,8 +347,15 @@ impl crate::saga::bridge::command_bus::Activity for AssignJobActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct StartJobActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for StartJobActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartJobActivity").finish()
+    }
 }
 
 impl StartJobActivity {
@@ -353,18 +365,12 @@ impl StartJobActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for StartJobActivity {
+impl Activity for StartJobActivity {
+    const TYPE_ID: &'static str = "job-start";
+
     type Input = JobId;
     type Output = JobState;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "start-job"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, job_id: Self::Input) -> Result<Self::Output, Self::Error> {
         let job = self
@@ -387,8 +393,15 @@ impl crate::saga::bridge::command_bus::Activity for StartJobActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct CompleteJobActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for CompleteJobActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteJobActivity").finish()
+    }
 }
 
 impl CompleteJobActivity {
@@ -398,18 +411,12 @@ impl CompleteJobActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for CompleteJobActivity {
+impl Activity for CompleteJobActivity {
+    const TYPE_ID: &'static str = "job-complete";
+
     type Input = CompleteJobInput;
     type Output = CompleteJobOutput;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "complete-job"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let job = self
@@ -437,8 +444,15 @@ impl crate::saga::bridge::command_bus::Activity for CompleteJobActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct FailJobActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for FailJobActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailJobActivity").finish()
+    }
 }
 
 impl FailJobActivity {
@@ -448,18 +462,12 @@ impl FailJobActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for FailJobActivity {
+impl Activity for FailJobActivity {
+    const TYPE_ID: &'static str = "job-fail";
+
     type Input = FailJobInput;
     type Output = FailJobOutput;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "fail-job"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let job = self
@@ -487,8 +495,15 @@ impl crate::saga::bridge::command_bus::Activity for FailJobActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct CancelJobActivity {
     repository: Arc<dyn JobRepository + Send + Sync>,
+}
+
+impl Debug for CancelJobActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelJobActivity").finish()
+    }
 }
 
 impl CancelJobActivity {
@@ -498,18 +513,12 @@ impl CancelJobActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for CancelJobActivity {
+impl Activity for CancelJobActivity {
+    const TYPE_ID: &'static str = "job-cancel";
+
     type Input = CancelJobInput;
     type Output = CancelJobOutput;
     type Error = JobStateMachineError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "cancel-job"
-    }
-
-    fn task_queue(&self) -> Option<&str> {
-        Some("job-management")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let job = self

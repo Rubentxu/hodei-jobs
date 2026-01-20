@@ -3,7 +3,9 @@
 //!
 
 use async_trait::async_trait;
+use saga_engine_core::workflow::Activity;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -68,8 +70,15 @@ pub enum WorkerLifecycleError {
     TerminationFailed,
 }
 
+#[derive(Clone)]
 pub struct ProvisionWorkerActivity {
     provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+}
+
+impl Debug for ProvisionWorkerActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProvisionWorkerActivity").finish()
+    }
 }
 
 impl ProvisionWorkerActivity {
@@ -79,17 +88,12 @@ impl ProvisionWorkerActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for ProvisionWorkerActivity {
+impl Activity for ProvisionWorkerActivity {
+    const TYPE_ID: &'static str = "worker-provision";
+
     type Input = WorkerLifecycleInput;
     type Output = WorkerLifecycleOutput;
     type Error = WorkerLifecycleError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "provision-worker"
-    }
-    fn task_queue(&self) -> Option<&str> {
-        Some("worker-provisioning")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         let provider_id = input.provider_id.clone();
@@ -124,8 +128,15 @@ impl crate::saga::bridge::command_bus::Activity for ProvisionWorkerActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct RegisterWorkerActivity {
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl Debug for RegisterWorkerActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterWorkerActivity").finish()
+    }
 }
 
 impl RegisterWorkerActivity {
@@ -135,17 +146,12 @@ impl RegisterWorkerActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for RegisterWorkerActivity {
+impl Activity for RegisterWorkerActivity {
+    const TYPE_ID: &'static str = "worker-register";
+
     type Input = RegisterWorkerInput;
     type Output = RegisterWorkerOutput;
     type Error = WorkerLifecycleError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "register-worker"
-    }
-    fn task_queue(&self) -> Option<&str> {
-        Some("worker-registration")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         self.registry
@@ -183,8 +189,15 @@ pub struct RegisterWorkerOutput {
     pub registered_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone)]
 pub struct SetWorkerReadyActivity {
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl Debug for SetWorkerReadyActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetWorkerReadyActivity").finish()
+    }
 }
 
 impl SetWorkerReadyActivity {
@@ -194,17 +207,12 @@ impl SetWorkerReadyActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for SetWorkerReadyActivity {
+impl Activity for SetWorkerReadyActivity {
+    const TYPE_ID: &'static str = "worker-set-ready";
+
     type Input = WorkerId;
     type Output = WorkerState;
     type Error = WorkerLifecycleError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "set-worker-ready"
-    }
-    fn task_queue(&self) -> Option<&str> {
-        Some("worker-state")
-    }
 
     async fn execute(&self, worker_id: Self::Input) -> Result<Self::Output, Self::Error> {
         self.registry
@@ -215,8 +223,15 @@ impl crate::saga::bridge::command_bus::Activity for SetWorkerReadyActivity {
     }
 }
 
+#[derive(Clone)]
 pub struct SetWorkerBusyActivity {
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl Debug for SetWorkerBusyActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetWorkerBusyActivity").finish()
+    }
 }
 
 impl SetWorkerBusyActivity {
@@ -226,17 +241,12 @@ impl SetWorkerBusyActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for SetWorkerBusyActivity {
+impl Activity for SetWorkerBusyActivity {
+    const TYPE_ID: &'static str = "worker-set-busy";
+
     type Input = BusyWorkerInput;
     type Output = WorkerState;
     type Error = WorkerLifecycleError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "set-worker-busy"
-    }
-    fn task_queue(&self) -> Option<&str> {
-        Some("worker-state")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         self.registry
@@ -253,9 +263,16 @@ pub struct BusyWorkerInput {
     pub job_id: JobId,
 }
 
+#[derive(Clone)]
 pub struct TerminateWorkerActivity {
     provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
+}
+
+impl Debug for TerminateWorkerActivity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminateWorkerActivity").finish()
+    }
 }
 
 impl TerminateWorkerActivity {
@@ -271,17 +288,12 @@ impl TerminateWorkerActivity {
 }
 
 #[async_trait]
-impl crate::saga::bridge::command_bus::Activity for TerminateWorkerActivity {
+impl Activity for TerminateWorkerActivity {
+    const TYPE_ID: &'static str = "worker-terminate";
+
     type Input = TerminateWorkerInput;
     type Output = TerminateWorkerOutput;
     type Error = WorkerLifecycleError;
-
-    fn activity_type_id(&self) -> &'static str {
-        "terminate-worker"
-    }
-    fn task_queue(&self) -> Option<&str> {
-        Some("worker-termination")
-    }
 
     async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
         self.registry

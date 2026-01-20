@@ -38,7 +38,7 @@ impl fmt::Display for SagaExecutionId {
 
 /// Represents the possible states of a workflow execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum WorkflowState<Output> {
+pub enum WorkflowState {
     /// Workflow is currently executing
     Running {
         /// Current step being executed
@@ -50,7 +50,7 @@ pub enum WorkflowState<Output> {
     /// Workflow completed successfully
     Completed {
         /// The output produced by the workflow
-        output: Output,
+        output: serde_json::Value,
         /// Total number of steps executed
         steps_executed: u32,
         /// Total duration
@@ -98,7 +98,7 @@ pub enum WorkflowState<Output> {
     },
 }
 
-impl<Output> WorkflowState<Output> {
+impl WorkflowState {
     /// Check if the workflow is in a terminal state
     pub fn is_terminal(&self) -> bool {
         matches!(
@@ -126,18 +126,18 @@ impl<Output> WorkflowState<Output> {
 
 /// Result of a saga port operation that includes metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SagaPortResult<Output> {
+pub struct SagaPortResult {
     /// The execution ID
     pub execution_id: SagaExecutionId,
     /// The final state
-    pub state: WorkflowState<Output>,
+    pub state: WorkflowState,
     /// Timestamp when the operation started
     pub started_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the operation completed
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl<Output> SagaPortResult<Output> {
+impl SagaPortResult {
     /// Create a new result for a running workflow
     pub fn new(execution_id: SagaExecutionId) -> Self {
         Self {
