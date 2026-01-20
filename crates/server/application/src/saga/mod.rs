@@ -45,6 +45,9 @@ pub mod legacy;
 
 /// Adapter ports for legacy infrastructure integration (EPIC-94)
 pub mod ports;
+
+/// Compatibility test suite for saga migration (EPIC-94)
+pub mod compatibility_test;
 pub use dispatcher_saga::{
     DynExecutionSagaDispatcher, DynExecutionSagaDispatcherBuilder,
     DynExecutionSagaDispatcherBuilderError, ExecutionSagaDispatcher, ExecutionSagaDispatcherConfig,

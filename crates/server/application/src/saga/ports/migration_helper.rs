@@ -232,32 +232,51 @@ pub struct SagaTypeRegistry {
 }
 
 impl SagaTypeRegistry {
+    /// Creates a new empty saga type registry.
     pub fn new() -> Self {
         Self {
             types: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+}
 
+/// Trait for saga type registry operations.
+///
+/// This trait defines the interface for registering and querying saga types
+/// across different implementations (in-memory, PostgreSQL, etc.).
+#[async_trait::async_trait]
+pub trait SagaTypeRegistryTrait: Send + Sync {
     /// Register a saga type
-    pub async fn register(&self, saga_type: SagaTypeInfo) {
+    async fn register(&self, saga_type: SagaTypeInfo);
+
+    /// Get saga type info by name
+    async fn get(&self, name: &str) -> Option<SagaTypeInfo>;
+
+    /// Get all registered saga types
+    async fn get_all(&self) -> Vec<SagaTypeInfo>;
+
+    /// Check if a saga type is registered
+    async fn is_registered(&self, name: &str) -> bool;
+}
+
+#[async_trait::async_trait]
+impl SagaTypeRegistryTrait for SagaTypeRegistry {
+    async fn register(&self, saga_type: SagaTypeInfo) {
         let mut types = self.types.write().await;
         types.insert(saga_type.name.clone(), saga_type);
     }
 
-    /// Get saga type info
-    pub async fn get(&self, name: &str) -> Option<SagaTypeInfo> {
+    async fn get(&self, name: &str) -> Option<SagaTypeInfo> {
         let types = self.types.read().await;
         types.get(name).cloned()
     }
 
-    /// Get all registered types
-    pub async fn get_all(&self) -> Vec<SagaTypeInfo> {
+    async fn get_all(&self) -> Vec<SagaTypeInfo> {
         let types = self.types.read().await;
         types.values().cloned().collect()
     }
 
-    /// Check if a saga type is registered
-    pub async fn is_registered(&self, name: &str) -> bool {
+    async fn is_registered(&self, name: &str) -> bool {
         let types = self.types.read().await;
         types.contains_key(name)
     }
