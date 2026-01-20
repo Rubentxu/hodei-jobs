@@ -24,7 +24,11 @@ pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
 use backoff::{ExponentialBackoff, future::retry};
 use dashmap::DashMap;
-use hodei_server_application::saga::recovery_saga::DynRecoverySagaCoordinator;
+use hodei_server_application::saga::recovery_saga::{
+    DynRecoverySagaCoordinator, RecoverySagaCoordinator,
+};
+use hodei_server_application::saga::sync_executor::SyncWorkflowExecutor;
+use hodei_server_application::saga::workflows::recovery::RecoveryWorkflow;
 use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
 };
@@ -334,15 +338,12 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
     info!("✓ ProviderConfigRepository initialized");
 
-    // Step 8: Initialize recovery saga coordinator (CRITICAL FIX)
-    let recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator> = Arc::new(
-        DynRecoverySagaCoordinator::builder()
-            .with_orchestrator(saga_orchestrator.clone())
-            .with_worker_registry(worker_registry.clone())
-            .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
-            .build()
-            .expect("Failed to build recovery saga coordinator"),
-    );
+    // Step 8: Initialize recovery saga coordinator
+    let recovery_workflow = RecoveryWorkflow::default();
+    let executor = Arc::new(SyncWorkflowExecutor::new(recovery_workflow));
+    let recovery_coordinator = RecoverySagaCoordinator::new(executor);
+    let recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator> =
+        Arc::new(DynRecoverySagaCoordinator::new(recovery_coordinator));
     info!("✓ RecoverySagaCoordinator initialized");
 
     // Step 9: Initialize WorkerLifecycleManager with empty providers map

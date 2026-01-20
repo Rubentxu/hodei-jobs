@@ -2,7 +2,6 @@
 //! # Timeout Checker
 //!
 //! Detects and handles job timeouts using saga-engine v4.0 workflows.
-//! This module replaces the legacy timeout_checker module.
 
 use crate::saga::sync_executor::SyncWorkflowExecutor;
 use crate::saga::workflows::timeout::TimeoutWorkflow;
@@ -128,118 +127,5 @@ impl std::fmt::Debug for TimeoutChecker {
         f.debug_struct("TimeoutChecker")
             .field("config", &self.config)
             .finish()
-    }
-}
-
-/// Newtype for dynamic timeout checker (erased type)
-#[derive(Clone)]
-pub struct DynTimeoutChecker(pub Arc<dyn TimeoutCheckerDynInterface>);
-
-/// Dyn-compatible trait for timeout checker
-pub trait TimeoutCheckerDynInterface: Send + Sync {
-    fn check_job(
-        &self,
-        job_id: &JobId,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<TimeoutCheckResult, TimeoutCheckerError>>
-                + Send
-                + Sync,
-        >,
-    >;
-    fn run(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync>>;
-}
-
-impl TimeoutCheckerDynInterface for Arc<TimeoutChecker> {
-    fn check_job(
-        &self,
-        job_id: &JobId,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<TimeoutCheckResult, TimeoutCheckerError>>
-                + Send
-                + Sync,
-        >,
-    > {
-        let job_id = job_id.clone();
-        let this = self.clone();
-        Box::pin(async move { this.check_job(&job_id).await })
-    }
-
-    fn run(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync>> {
-        let this = self.clone();
-        Box::pin(async move { this.run().await })
-    }
-}
-
-impl DynTimeoutChecker {
-    pub fn new<T: TimeoutCheckerDynInterface + 'static>(checker: T) -> Self {
-        Self(Arc::new(checker))
-    }
-
-    pub fn builder() -> DynTimeoutCheckerBuilder {
-        DynTimeoutCheckerBuilder::new()
-    }
-
-    pub async fn check_job(
-        &self,
-        job_id: &JobId,
-    ) -> Result<TimeoutCheckResult, TimeoutCheckerError> {
-        self.0.check_job(job_id).await
-    }
-
-    pub async fn run(&self) {
-        self.0.run().await
-    }
-}
-
-impl std::fmt::Debug for DynTimeoutChecker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DynTimeoutChecker").finish()
-    }
-}
-
-/// Builder for DynTimeoutChecker
-pub struct DynTimeoutCheckerBuilder {
-    job_repository: Option<Arc<dyn JobRepository + Send + Sync>>,
-    config: Option<TimeoutCheckerConfig>,
-}
-
-impl DynTimeoutCheckerBuilder {
-    pub fn new() -> Self {
-        Self {
-            job_repository: None,
-            config: None,
-        }
-    }
-
-    pub fn with_job_repository(
-        mut self,
-        job_repository: Arc<dyn JobRepository + Send + Sync>,
-    ) -> Self {
-        self.job_repository = Some(job_repository);
-        self
-    }
-
-    pub fn with_config(mut self, config: TimeoutCheckerConfig) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    pub fn build(self) -> Result<DynTimeoutChecker, String> {
-        let executor: Arc<SyncWorkflowExecutor<TimeoutWorkflow>> =
-            Arc::new(SyncWorkflowExecutor::new(TimeoutWorkflow::default()));
-        let checker = TimeoutChecker::new(
-            executor,
-            self.job_repository.ok_or("job_repository is required")?,
-            self.config,
-        );
-        Ok(DynTimeoutChecker::new(Arc::new(checker)))
-    }
-}
-
-impl From<TimeoutChecker> for DynTimeoutChecker {
-    fn from(checker: TimeoutChecker) -> Self {
-        Self::new(Arc::new(checker))
     }
 }

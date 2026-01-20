@@ -1,46 +1,24 @@
 //! Saga Orchestration - Application Layer
 //!
 //! Provides saga-based orchestration for job execution and worker management.
-//! This module integrates domain saga patterns with application services.
+//! This module integrates domain saga patterns with saga-engine v4.0.
 //!
 //! ## Architecture
 //!
-//! The saga infrastructure follows production-ready patterns:
-//! - **DynProvisioningSagaCoordinator**: Preferred implementation that injects
-//!   services into `SagaContext` for use by saga steps
-//! - **CreateInfrastructureStep**: Performs real worker provisioning during saga execution
-//! - **PostgresSagaOrchestrator**: Handles compensation loops
+//! The saga infrastructure uses saga-engine v4.0 for durable execution:
+//! - **SagaPort<W>**: Type-safe port abstraction for workflow execution
+//! - **Workflow Definitions**: Recovery, Timeout, Cancellation, Cleanup, Execution, Provisioning
+//! - **Durable Execution**: Powered by saga-engine v4.0 with EventStore and TaskQueue
 //!
-//! ## EPIC-94: Saga Engine v4.0 Migration
+//! ## Workflow Implementations
 //!
-//! This module provides an adapter layer for migrating to saga-engine v4.0:
-//! - [`port`]: SagaPort trait abstraction for saga execution
-//! - [`adapters`]: SagaEngineV4Adapter implementation
-//!
-//! ## Workflow Implementations (EPIC-94)
-//!
-//! Provides workflow definitions for saga-engine v4.0 migration,
-//! implementing WorkflowDefinition trait for each saga type.
-//!
-//! ## Port Abstraction (EPIC-94)
-//!
-//! Port abstraction layer for saga execution.
-//!
-//! ## Adapter Layer (EPIC-94)
-//!
-//! Adapter layer for saga migration.
-//!
-//! ## Bridge Layer (EPIC-94)
-//!
-//! Bridge layer for CommandBus to Activity migration.
-//!
-//! ## Feature Flags (EPIC-94)
-//!
-//! Feature flags for controlling saga migration.
-//!
-//! ## Compatibility Test (EPIC-94)
-//!
-//! Test suite for verifying saga compatibility.
+//! Provides workflow definitions implementing WorkflowDefinition trait:
+//! - Recovery: Worker failure recovery workflow
+//! - Timeout: Job timeout handling workflow
+//! - Cancellation: Graceful cancellation workflow
+//! - Cleanup: Audit log cleanup workflow
+//! - Execution: Job execution workflow
+//! - Provisioning: Worker provisioning workflow
 
 pub mod workflows;
 
@@ -51,10 +29,6 @@ pub mod adapters;
 pub mod bridge;
 
 pub mod ports;
-
-pub mod feature_flags;
-
-pub mod compatibility_test;
 
 pub mod dispatcher_saga;
 pub mod provisioning_saga;
@@ -70,9 +44,9 @@ pub use provisioning_saga::{
     DynProvisioningSagaCoordinator, ProvisioningSagaCoordinatorConfig, ProvisioningSagaError,
 };
 pub use recovery_saga::{
-    DynRecoverySagaCoordinator, RecoverySagaCoordinatorConfig, RecoverySagaError,
+    DynRecoverySagaCoordinator, RecoverySagaCoordinator, RecoverySagaCoordinatorConfig,
+    RecoverySagaError,
 };
 pub use timeout_checker::{
-    DynTimeoutChecker, DynTimeoutCheckerBuilder, TimeoutCheckResult, TimeoutChecker,
-    TimeoutCheckerConfig, TimeoutCheckerDynInterface,
+    TimeoutCheckResult, TimeoutChecker, TimeoutCheckerConfig, TimeoutCheckerError,
 };

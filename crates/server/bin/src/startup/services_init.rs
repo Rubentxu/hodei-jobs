@@ -19,7 +19,9 @@ use hodei_server_application::jobs::create::CreateJobUseCase;
 use hodei_server_application::jobs::dispatcher::JobDispatcher;
 use hodei_server_application::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_application::providers::ProviderRegistry;
-use hodei_server_application::saga::timeout_checker::DynTimeoutChecker;
+use hodei_server_application::saga::sync_executor::SyncWorkflowExecutor;
+use hodei_server_application::saga::timeout_checker::TimeoutChecker;
+use hodei_server_application::saga::workflows::timeout::TimeoutWorkflow;
 use hodei_server_application::scheduling::SchedulerConfig;
 use hodei_server_application::workers::lifecycle::WorkerLifecycleManager;
 use hodei_server_application::workers::provisioning::WorkerProvisioningService;
@@ -666,16 +668,15 @@ pub async fn start_background_tasks(
 
     let (timeout_stop_tx, _) = tokio::sync::broadcast::channel(1);
 
-    // Start DynTimeoutChecker
-    let timeout_checker = DynTimeoutChecker::builder()
-        .with_job_repository(job_repository.clone())
-        .build()
-        .expect("Failed to build timeout checker");
+    // Start TimeoutChecker
+    let timeout_workflow = TimeoutWorkflow::default();
+    let timeout_executor = Arc::new(SyncWorkflowExecutor::new(timeout_workflow));
+    let timeout_checker = TimeoutChecker::new(timeout_executor, job_repository.clone(), None);
 
     tokio::spawn(async move {
         timeout_checker.run().await;
     });
-    info!("✅ DynTimeoutChecker started");
+    info!("✅ TimeoutChecker started");
 
     BackgroundTasksShutdownHandle {
         timeout_checker_stop: timeout_stop_tx,

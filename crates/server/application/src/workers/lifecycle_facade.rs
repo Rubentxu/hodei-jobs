@@ -121,6 +121,7 @@ impl WorkerLifecycleFacade {
             info!(%job_id, %failed_worker_id, "Recovering worker via saga");
             let reason = format!("Worker {} failed", failed_worker_id);
             match coordinator
+                .as_ref()
                 .execute_recovery_saga(job_id.clone(), failed_worker_id.clone(), reason)
                 .await
             {
