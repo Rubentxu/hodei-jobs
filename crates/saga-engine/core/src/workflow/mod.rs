@@ -4,8 +4,12 @@
 //! Core traits for defining workflows, steps, and activities in saga-engine.
 //! Provides type-safe abstractions for durable workflow execution.
 //!
+//! ## Modules
+//!
+//! - [`durable`]: [`DurableWorkflow`] trait for Workflow-as-Code pattern
 
 use async_trait::async_trait;
+pub mod durable;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -263,6 +267,66 @@ impl WorkflowContext {
     /// Get total duration so far
     pub fn duration_so_far(&self) -> chrono::Duration {
         chrono::Utc::now().signed_duration_since(self.started_at)
+    }
+
+    /// Execute an activity in a durable manner.
+    ///
+    /// This method:
+    /// 1. Checks if activity was already completed (replay case)
+    /// 2. If not completed, publishes task to queue and returns Err(WorkflowPaused)
+    /// 3. When task completes, engine will replay and continue
+    ///
+    /// # Arguments
+    ///
+    /// * `activity_type` - The activity type ID
+    /// * `activity_id` - Unique ID for this activity execution
+    /// * `input` - The activity input (serializable)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(output)` - Activity completed successfully
+    /// * `Err(ExecuteActivityError::Paused)` - Activity scheduled, workflow should pause
+    /// * `Err(ExecuteActivityError::Failed)` - Activity failed permanently
+    ///
+    /// # Note
+    ///
+    /// This method requires the workflow engine to be set up. In tests,
+    /// the `WorkflowTestHarness` handles this automatically.
+    pub async fn execute_activity<A: Activity>(
+        &mut self,
+        _activity: &A,
+        _input: A::Input,
+    ) -> Result<A::Output, durable::ExecuteActivityError<A::Error>> {
+        use durable::{ExecuteActivityError, WorkflowPaused};
+
+        let activity_id = self.next_activity_id(A::TYPE_ID);
+
+        // Check if already completed (replay case)
+        if let Some(output) = self.step_outputs.get(&activity_id) {
+            let parsed: A::Output = serde_json::from_value(output.clone())
+                .map_err(|e| ExecuteActivityError::serialization(e.to_string()))?;
+            return Ok(parsed);
+        }
+
+        // Record that we're waiting for this activity
+        self.metadata
+            .tags
+            .insert("waiting_activity".to_string(), A::TYPE_ID.to_string());
+
+        // Return pause signal - engine will handle persistence and task scheduling
+        Err(ExecuteActivityError::paused(WorkflowPaused {
+            activity_type: A::TYPE_ID,
+            execution_id: self.execution_id.clone(),
+            activity_id,
+        }))
+    }
+
+    /// Get next activity ID for tracking
+    fn next_activity_id(&self, activity_type: &'static str) -> String {
+        format!(
+            "{}-{}-{}",
+            self.execution_id.0, activity_type, self.metadata.tasks_executed
+        )
     }
 }
 
@@ -1109,47 +1173,7 @@ mod tests {
     }
 }
 
-/// Test helpers
-pub mod test_helpers {
-    use super::*;
-
-    #[derive(Debug, Default)]
-    pub struct TestActivity;
-
-    #[async_trait::async_trait]
-    impl Activity for TestActivity {
-        const TYPE_ID: &'static str = "test-activity";
-
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-        type Error = std::io::Error;
-
-        async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
-            Ok(input)
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct TestStep;
-
-    #[async_trait::async_trait]
-    impl WorkflowStep for TestStep {
-        const TYPE_ID: &'static str = "test-step";
-
-        async fn execute(
-            &self,
-            _context: &mut WorkflowContext,
-            input: serde_json::Value,
-        ) -> Result<StepResult, StepError> {
-            Ok(StepResult::Output(input))
-        }
-
-        async fn compensate(
-            &self,
-            _context: &mut WorkflowContext,
-            _output: serde_json::Value,
-        ) -> Result<(), StepCompensationError> {
-            Ok(())
-        }
-    }
-}
+// Re-export durable module items for easier access
+pub use durable::{
+    ActivityOptions, DurableWorkflow, DurableWorkflowState, ExecuteActivityError, WorkflowPaused,
+};

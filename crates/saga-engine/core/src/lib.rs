@@ -37,14 +37,25 @@
 //! let decoded = codec.decode(&encoded).unwrap();
 //! ```
 
+pub mod activity_registry;
 pub mod codec;
+pub mod determinism_enforcer;
 pub mod error;
 pub mod event;
 pub mod port;
+pub mod saga_engine;
 pub mod snapshot;
+pub mod worker;
 pub mod workflow;
 
+pub use activity_registry::{
+    ActivityContext, ActivityError, ActivityRegistry, ActivityResult, ActivityTypeId,
+};
 pub use codec::{BincodeCodec, CodecError, EventCodec, JsonCodec};
+pub use determinism_enforcer::{
+    DeterminismConfig, DeterminismEnforcer, DeterminismError, DeterminismReport,
+    DeterminismViolation, ViolationKind,
+};
 pub use error::{Error, Result};
 pub use event::{CURRENT_EVENT_VERSION, EventCategory, EventId, EventType, HistoryEvent, SagaId};
 pub use port::{
@@ -53,12 +64,17 @@ pub use port::{
     Task, TaskId, TaskMessage, TaskQueue, TaskQueueError, TimerStatus, TimerStore, TimerStoreError,
     TimerType,
 };
+pub use saga_engine::{
+    SagaEngine, SagaEngineConfig, SagaEngineError, SagaExecutionResult, WorkflowTask,
+};
 pub use snapshot::{
     Snapshot, SnapshotChecksum, SnapshotConfig, SnapshotError, SnapshotManager, SnapshotResult,
 };
+pub use worker::{TaskHandler, TaskProcessingResult, Worker, WorkerConfig, WorkerError};
 pub use workflow::{
-    Activity, DynWorkflowStep, InputValidationError, RetryPolicy, StepCompensationError, StepError,
-    StepErrorKind, StepResult, WorkflowConfig, WorkflowContext, WorkflowDefinition,
-    WorkflowExecutionError, WorkflowExecutionErrorKind, WorkflowExecutor, WorkflowInput,
-    WorkflowResult, WorkflowStep, WorkflowTypeId,
+    Activity, ActivityOptions, DurableWorkflow, DurableWorkflowState, DynWorkflowStep,
+    ExecuteActivityError, InputValidationError, StepCompensationError, StepError, StepErrorKind,
+    StepResult, WorkflowConfig, WorkflowContext, WorkflowDefinition, WorkflowExecutionError,
+    WorkflowExecutionErrorKind, WorkflowExecutor, WorkflowInput, WorkflowPaused, WorkflowResult,
+    WorkflowStep, WorkflowTypeId,
 };
