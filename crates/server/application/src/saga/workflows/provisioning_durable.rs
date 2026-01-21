@@ -29,7 +29,7 @@ use crate::workers::provisioning::{MockProvisioningService, WorkerProvisioningSe
 // =============================================================================
 
 /// Default configuration values for provisioning workflows
-mod provisioning_config_defaults {
+pub mod provisioning_config_defaults {
     use super::WorkflowConfig;
 
     /// Create the default configuration for provisioning workflows
@@ -450,6 +450,7 @@ impl ProvisioningWorkflow {
     /// let workflow = ProvisioningWorkflow::with_service_and_config(service, config);
     /// # }
     /// ```
+    #[must_use]
     pub fn with_service_and_config(
         provisioning_service: Arc<dyn WorkerProvisioningService>,
         config: WorkflowConfig,
@@ -479,6 +480,7 @@ impl ProvisioningWorkflow {
     /// let workflow = ProvisioningWorkflow::new(service);
     /// # }
     /// ```
+    #[must_use]
     pub fn new(provisioning_service: Arc<dyn WorkerProvisioningService>) -> Self {
         Self::with_service_and_config(provisioning_service, default_provisioning_config())
     }
@@ -770,5 +772,37 @@ mod tests {
 
         assert_eq!(workflow.config().task_queue, "provisioning");
         assert_eq!(workflow.config().default_timeout_secs, 300);
+    }
+
+    #[tokio::test]
+    async fn test_default_workflow_is_usable_in_tests() {
+        // Verify that the workflow with mocks is actually usable
+        let workflow = ProvisioningWorkflow::default();
+
+        // Verify config is valid
+        assert!(workflow.config().default_timeout_secs > 0);
+        assert!(!workflow.config().task_queue.is_empty());
+
+        // Verify we can create input
+        let input = ProvisioningInput::new(
+            WorkerSpecData {
+                image: "test:latest".to_string(),
+                resources: ResourceData {
+                    cpu_cores: 1.0,
+                    memory_bytes: 1024 * 1024,
+                    disk_bytes: 1024 * 1024,
+                },
+                env: vec![],
+                labels: vec![],
+                server_address: "http://localhost:50051".to_string(),
+                max_lifetime_seconds: 3600,
+            },
+            "test-provider".to_string(),
+            None,
+        );
+
+        // Verify idempotency key generation works
+        let key = input.idempotency_key();
+        assert!(key.starts_with("provisioning:test-provider:"));
     }
 }
