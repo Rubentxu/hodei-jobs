@@ -161,7 +161,7 @@ impl<E> ReplayError<E> {
 #[async_trait::async_trait]
 pub trait HistoryReplayer<T>: Send + Sync {
     /// The error type for this implementation.
-    type Error: Debug + Send + Sync + 'static;
+    type Error: std::fmt::Display + Debug + Send + Sync + 'static;
 
     /// Replay events onto the given state.
     ///

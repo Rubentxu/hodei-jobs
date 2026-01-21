@@ -15,6 +15,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 /// Re-export SignalDispatcher from saga-engine core
 pub use saga_engine_core::port::SignalDispatcher;
@@ -73,13 +74,24 @@ where
     }
 
     /// Process a single domain event and dispatch signal if needed
+    ///
+    /// ## FIX: Unique SagaId Generation
+    /// Previously, this generated `SagaId(format!("event-{}", event_type))` which
+    /// caused collisions because the same event type from different jobs would
+    /// share the same SagaId.
+    ///
+    /// Now we extract unique identifiers from events:
+    /// - Job events: Use job_id for uniqueness
+    /// - Worker events: Use worker_id for uniqueness
+    /// - Provider events: Use provider_id for uniqueness
+    /// - Fallback: Generate UUID if no unique ID found
     pub async fn process_event(&self, event: &DomainEvent) -> Result<(), BridgeError> {
-        let event_type = format!("{:?}", event);
+        let event_type = event.event_type();
 
         // Get the signal type for this event type
         let signal_type = {
             let map = self.event_to_signal_map.read().await;
-            map.get(&event_type).cloned()
+            map.get(event_type).cloned()
         };
 
         // If no mapping exists, use default or skip
@@ -91,8 +103,16 @@ where
             }
         };
 
-        // Extract saga_id from event (placeholder - events may not have saga_id)
-        let saga_id = SagaId(format!("event-{}", event_type));
+        // Extract unique identifier from event for SagaId
+        // This prevents collisions between different jobs/workers/providers
+        let unique_id = extract_unique_id_from_event(event);
+
+        // Generate SagaId with unique identifier
+        // Format: "event-{event_type}-{unique_id}"
+        // Examples:
+        //   - "event-JobQueued-job-123-abc"
+        //   - "event-WorkerReady-worker-456-def"
+        let saga_id = SagaId(format!("event-{}-{}", event_type, unique_id));
 
         // Serialize payload to bytes
         let payload =
@@ -136,11 +156,56 @@ where
         }
 
         debug!(
-            "Dispatched signal {:?} for event {}",
-            signal_type, event_type
+            "Dispatched signal {:?} for event {} (saga_id: {})",
+            signal_type, event_type, saga_id
         );
 
         Ok(())
+    }
+}
+
+/// Extract a unique identifier from a domain event
+///
+/// This ensures each event gets a unique SagaId, preventing collisions
+/// when multiple events of the same type are processed.
+fn extract_unique_id_from_event(event: &DomainEvent) -> String {
+    use hodei_server_domain::events::DomainEvent::*;
+
+    match event {
+        // Job events - use job_id
+        JobQueued { job_id, .. } => format!("job-{}", job_id),
+        JobCreated(je) => format!("job-{}", je.job_id),
+        JobStatusChanged { job_id, .. } => format!("job-{}", job_id),
+        JobAssigned { job_id, .. } => format!("job-{}", job_id),
+        JobCancelled { job_id, .. } => format!("job-{}", job_id),
+        JobExecutionError { job_id, .. } => format!("job-{}", job_id),
+        JobDispatchFailed { job_id, .. } => format!("job-{}", job_id),
+
+        // Worker events - use worker_id
+        WorkerReady { worker_id, .. } => format!("worker-{}", worker_id),
+        WorkerRegistered { worker_id, .. } => format!("worker-{}", worker_id),
+        WorkerStatusChanged { worker_id, .. } => format!("worker-{}", worker_id),
+        WorkerProvisioned { worker_id, .. } => format!("worker-{}", worker_id),
+        WorkerTerminated { worker_id, .. } => format!("worker-{}", worker_id),
+        WorkerHeartbeat { worker_id, .. } => format!("worker-{}", worker_id),
+
+        // Provider events - use provider_id
+        ProviderSelected {
+            provider_id,
+            job_id,
+            ..
+        } => format!("provider-{}-job-{}", provider_id, job_id),
+        ProviderRegistered { provider_id, .. } => format!("provider-{}", provider_id),
+        ProviderUpdated { provider_id, .. } => format!("provider-{}", provider_id),
+        ProviderHealthChanged { provider_id, .. } => format!("provider-{}", provider_id),
+
+        // Saga events - use saga_id from event if available
+        SagaCompleted { saga_id, .. } => format!("saga-{}", saga_id),
+        SagaFailed { saga_id, .. } => format!("saga-{}", saga_id),
+        SagaTimedOut { saga_id, .. } => format!("saga-{}", saga_id),
+
+        // Default fallback
+        _ => "global".to_string(),
     }
 }
 

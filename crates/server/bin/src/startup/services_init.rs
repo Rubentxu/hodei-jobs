@@ -42,7 +42,6 @@ use hodei_server_domain::workers::registry::WorkerRegistry;
 use hodei_server_infrastructure::messaging::cancellation_saga_consumer::CancellationSagaConsumer;
 use hodei_server_infrastructure::messaging::cleanup_saga_consumer::CleanupSagaConsumer;
 use hodei_server_infrastructure::messaging::command_dlq;
-use hodei_server_infrastructure::messaging::execution_saga_consumer::ExecutionSagaConsumer;
 use hodei_server_infrastructure::messaging::hybrid::command_relay::CommandRelay;
 use hodei_server_infrastructure::messaging::hybrid::create_command_relay;
 use hodei_server_infrastructure::messaging::nats::NatsEventBus;
@@ -214,6 +213,7 @@ pub async fn start_job_coordinator(
             + Sync,
     >,
     server_address: String,
+    app_state: Arc<super::AppState>,
 ) -> CoordinatorShutdownHandle {
     info!("Initializing job coordinator for reactive job processing...");
 
@@ -264,6 +264,9 @@ pub async fn start_job_coordinator(
     > = Arc::new(grpc_command_sender);
     info!("✓ GrpcWorkerCommandSender initialized");
 
+    // EPIC-94-C: Get workflow coordinator from AppState
+    let provisioning_workflow_coordinator = app_state.provisioning_workflow_coordinator.clone();
+
     // Create JobDispatcher with real provisioning_service
     let job_dispatcher = Arc::new(JobDispatcher::new(
         job_queue.clone(),
@@ -277,8 +280,9 @@ pub async fn start_job_coordinator(
         Some(provisioning_service), // Now we have real provisioning!
         None,                       // execution_saga_dispatcher (optional)
         None,                       // provisioning_saga_coordinator (optional)
+        provisioning_workflow_coordinator, // EPIC-94-C: v4.0 DurableWorkflow coordinator
     ));
-    info!("✓ JobDispatcher initialized with provisioning service");
+    info!("✓ JobDispatcher initialized with provisioning service and v4.0 workflow coordinator");
 
     // EPIC-32: Initialize WorkerMonitor for reactive worker tracking
     let worker_monitor = WorkerMonitor::new(worker_registry.clone(), event_bus.clone());
@@ -518,97 +522,6 @@ pub async fn start_nats_outbox_relay(
 
     info!("✅ NATS Outbox Relay started");
     Ok(shutdown_tx)
-}
-
-/// Shutdown handle for ExecutionSagaConsumer
-pub struct ExecutionSagaConsumerShutdownHandle {
-    pub stop_tx: tokio::sync::broadcast::Sender<()>,
-}
-
-/// Start ExecutionSagaConsumer for reactive saga triggering
-///
-/// This consumer listens to JobQueued and WorkerReady events from NATS
-/// and triggers execution sagas reactively.
-///
-/// GAP-006 FIX: Now creates OutboxCommandBus and injects SagaServices
-/// to enable saga steps to dispatch commands via the transactional outbox.
-pub async fn start_execution_saga_consumer(
-    nats_event_bus: &NatsEventBus,
-    saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
-    pool: sqlx::PgPool,
-) -> Result<ExecutionSagaConsumerShutdownHandle, anyhow::Error> {
-    info!("📦 Starting ExecutionSagaConsumer for reactive saga triggering...");
-
-    let job_repository = Arc::new(PostgresJobRepository::new(pool.clone()));
-    let worker_registry = Arc::new(PostgresWorkerRegistry::new(pool.clone()));
-    let outbox_repository: Arc<dyn hodei_server_domain::outbox::OutboxRepository + Send + Sync> =
-        Arc::new(PostgresOutboxRepository::new(pool.clone()));
-
-    // GAP-006 FIX: Create OutboxCommandBus for transactional command persistence
-    // We need to get a reference to the inner bus BEFORE wrapping it with OutboxCommandBus
-    let (inner_command_bus, command_outbox_repo) = create_command_bus_with_inner(pool);
-
-    // Use the NatsEventBus as the event bus
-    let event_bus: Arc<dyn hodei_server_domain::event_bus::EventBus + Send + Sync> =
-        Arc::new(nats_event_bus.clone());
-
-    // Create WorkerCommandSender for JobExecutorImpl
-    // Note: We need to create this from the WorkerAgentService which is passed in
-    // For now, we'll create a placeholder and the actual wiring happens in start_job_coordinator
-    let grpc_command_sender = GrpcWorkerCommandSender::new(WorkerAgentServiceImpl::new());
-    let worker_command_sender: Arc<
-        dyn hodei_server_application::workers::commands::WorkerCommandSender,
-    > = Arc::new(grpc_command_sender);
-
-    // Create JobExecutorImpl for executing jobs via gRPC
-    let job_executor: Arc<
-        dyn hodei_server_domain::saga::commands::execution::JobExecutor + Send + Sync,
-    > = Arc::new(JobExecutorImpl::new(
-        job_repository.clone(),
-        worker_command_sender,
-        outbox_repository.clone(),
-    ));
-
-    // Register execution command handlers WITH JobExecutor
-    // This enables ExecuteJobHandler to send RUN_JOB to workers
-    // Note: We pass None for command_outbox_repo since it's a different type
-    register_execution_command_handlers_with_executor(
-        &inner_command_bus,
-        job_repository.clone(),
-        worker_registry.clone(),
-        Some(job_executor),
-        None, // command_outbox_repo is PostgresCommandOutboxRepository, not OutboxRepository
-    )
-    .await;
-
-    let (stop_tx, _stop_rx) = tokio::sync::broadcast::channel(1);
-
-    // Wrap the inner bus with outbox support for transactional command persistence
-    let command_bus: Arc<dyn hodei_server_domain::command::ErasedCommandBus + Send + Sync> =
-        Arc::new(hodei_server_domain::command::OutboxCommandBus::new(
-            command_outbox_repo,
-            inner_command_bus,
-        ));
-
-    let consumer = ExecutionSagaConsumer::new(
-        nats_event_bus.client().clone(),
-        nats_event_bus.jetstream().clone(),
-        saga_orchestrator,
-        job_repository,
-        worker_registry,
-        event_bus,
-        command_bus,
-        None,
-    );
-
-    tokio::spawn(async move {
-        if let Err(e) = consumer.start().await {
-            error!("❌ ExecutionSagaConsumer error: {}", e);
-        }
-    });
-
-    info!("✅ ExecutionSagaConsumer started (with JobExecutorImpl for RUN_JOB dispatch)");
-    Ok(ExecutionSagaConsumerShutdownHandle { stop_tx })
 }
 
 /// Create a command bus with transactional outbox support

@@ -11,6 +11,7 @@
 //! See unit tests for complete usage examples.
 
 use crate::providers::ProviderRegistry;
+use crate::saga::provisioning_workflow_coordinator::ProvisioningWorkflowCoordinator;
 use crate::scheduling::smart_scheduler::SchedulerConfig;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -43,6 +44,9 @@ pub struct JobControllerBuilder {
 
     // EPIC-32: Reactive system dependencies
     pool: Option<PgPool>,
+
+    // EPIC-94-C: v4.0 Provisioning workflow coordinator
+    provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
 }
 
 impl std::fmt::Debug for JobControllerBuilder {
@@ -138,6 +142,15 @@ impl JobControllerBuilder {
         self
     }
 
+    /// Set the provisioning workflow coordinator (EPIC-94-C v4.0)
+    pub fn with_provisioning_workflow_coordinator(
+        mut self,
+        provisioning_workflow_coordinator: Arc<dyn ProvisioningWorkflowCoordinator>,
+    ) -> Self {
+        self.provisioning_workflow_coordinator = Some(provisioning_workflow_coordinator);
+        self
+    }
+
     /// Build the JobController
     ///
     /// # Errors
@@ -198,6 +211,7 @@ impl JobControllerBuilder {
             self.provisioning_service,
             None, // execution_saga_dispatcher - can be set via builder
             None, // provisioning_saga_coordinator - can be set via builder
+            self.provisioning_workflow_coordinator, // EPIC-94-C: v4.0 workflow coordinator
             self.pool.clone().unwrap_or_else(||
                 // For tests, create a lazy pool that won't actually connect
                 PgPool::connect_lazy("postgresql://localhost/hodei_test").expect("Failed to create test pool")

@@ -1365,7 +1365,7 @@ mod tests {
         let supervisor_handle = tokio::spawn(supervisor.run());
 
         // Register multiple workers
-        for i in 0..5 {
+        for _ in 0..5 {
             let worker_id = create_test_worker_id();
             handle
                 .register(

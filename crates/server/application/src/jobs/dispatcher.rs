@@ -10,13 +10,16 @@
 //! ## Responsabilidades Delegadas
 //! - Filtrado de workers → SchedulingService
 //! - Selección de providers → ProviderRegistry / SchedulingService
-//! - Provisioning → WorkerProvisioningService
+//! - Provisioning → WorkerProvisioningService / ProvisioningWorkflowCoordinator (v4.0)
 //! - Ejecución de saga → ExecutionSagaDispatcher
 
 use crate::jobs::resource_allocator::ResourceAllocator;
 use crate::providers::ProviderRegistry;
 use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
 use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
+use crate::saga::provisioning_workflow_coordinator::{
+    DynProvisioningWorkflowCoordinator, ProvisioningWorkflowCoordinator,
+};
 use crate::scheduling::smart_scheduler::SchedulingService;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -66,7 +69,11 @@ pub struct JobDispatcher {
     /// Required for saga-based job dispatch (the legacy path has been removed)
     execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
     /// EPIC-30: Saga coordinator for provisioning saga (US-30.2)
+    /// Legacy coordinator - being replaced by provisioning_workflow_coordinator (v4.0)
     provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+    /// EPIC-94-C: Provisioning workflow coordinator (v4.0 DurableWorkflow)
+    /// New coordinator using Workflow-as-Code pattern
+    provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     /// GAP-GO-04: Resource allocator for provider metrics calculations
     resource_allocator: ResourceAllocator,
 }
@@ -89,6 +96,7 @@ impl JobDispatcher {
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     ) -> Self {
         // Create ResourceAllocator for provider metrics
         let resource_allocator = ResourceAllocator::new(None);
@@ -108,6 +116,7 @@ impl JobDispatcher {
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
             provisioning_saga_coordinator,
+            provisioning_workflow_coordinator,
             resource_allocator,
         }
     }
@@ -129,6 +138,7 @@ impl JobDispatcher {
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     ) -> Self {
         // Create ResourceAllocator for provider metrics
         let resource_allocator = ResourceAllocator::new(None);
@@ -148,6 +158,7 @@ impl JobDispatcher {
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
             provisioning_saga_coordinator,
+            provisioning_workflow_coordinator,
             resource_allocator,
         }
     }
@@ -512,13 +523,58 @@ impl JobDispatcher {
 
     /// Trigger worker provisioning when no workers are available
     ///
-    /// Uses saga-based provisioning when coordinator is available,
-    /// otherwise falls back to legacy provisioning.
+    /// EPIC-94-C v4.0: Prioritizes DurableWorkflow-based provisioning over legacy saga.
+    /// 1. First tries ProvisioningWorkflowCoordinator (v4.0 Workflow-as-Code)
+    /// 2. Falls back to ProvisioningSagaCoordinator (legacy Step-list pattern)
+    /// 3. Last resort: direct WorkerProvisioningService
     #[instrument(skip(self), fields(job_id = %job.id), ret)]
     async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
-        // Use saga-based provisioning (always enabled when coordinator is present)
+        // EPIC-94-C: Prioritize DurableWorkflow-based provisioning (v4.0)
+        if let Some(ref coordinator) = self.provisioning_workflow_coordinator {
+            info!(job_id = %job.id, "🚀 JobDispatcher: Using v4.0 DurableWorkflow provisioning");
+
+            // Get enabled providers
+            let providers = self.provider_registry.list_enabled_providers().await?;
+            if providers.is_empty() {
+                warn!("⚠️ JobDispatcher: No providers available for provisioning");
+                return Ok(());
+            }
+
+            // Select best provider using scheduler with job preferences
+            let provider_id = self
+                .select_provider_for_provisioning(job, &providers)
+                .await?;
+
+            // Get spec from provisioning service
+            let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
+                DomainError::InfrastructureError {
+                    message: "No provisioning service available".to_string(),
+                }
+            })?;
+            let spec = provisioning
+                .default_worker_spec(&provider_id)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
+
+            // Execute workflow-based provisioning (v4.0)
+            match coordinator
+                .provision_worker(&provider_id, &spec, Some(job.id.clone()))
+                .await
+            {
+                Ok(result) => {
+                    info!(job_id = %job.id, worker_id = %result.worker_id, workflow_status = ?result, "✅ JobDispatcher: v4.0 Workflow provisioning completed");
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: v4.0 Workflow failed, falling back to legacy saga");
+                    // Fall through to legacy saga
+                }
+            }
+        }
+
+        // Fallback to legacy saga-based provisioning (v3.x Step-list pattern)
         if let Some(ref coordinator) = self.provisioning_saga_coordinator {
-            info!(job_id = %job.id, "🚀 JobDispatcher: Using saga-based provisioning");
+            info!(job_id = %job.id, "🚀 JobDispatcher: Using legacy saga-based provisioning");
 
             // Get enabled providers
             let providers = self.provider_registry.list_enabled_providers().await?;
@@ -549,19 +605,18 @@ impl JobDispatcher {
                 .await
             {
                 Ok(result) => {
-                    info!(job_id = %job.id, worker_id = %result.worker_id, saga_status = ?result, "✅ JobDispatcher: Saga provisioning completed");
-                    Ok(())
+                    info!(job_id = %job.id, worker_id = %result.worker_id, saga_status = ?result, "✅ JobDispatcher: Legacy saga provisioning completed");
+                    return Ok(());
                 }
-                Err(e) => Err(anyhow::anyhow!("Provisioning saga failed: {}", e)),
+                Err(e) => {
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: Legacy saga provisioning failed, will try fallback");
+                    // Continue to fallback
+                }
             }
-        } else {
-            // No coordinator configured - use legacy provisioning
-            let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
-                DomainError::InfrastructureError {
-                    message: "No provisioning service available".to_string(),
-                }
-            })?;
+        }
 
+        // Final fallback: direct WorkerProvisioningService (no saga/workflow coordination)
+        if let Some(provisioning) = self.provisioning_service.as_ref() {
             // Get enabled providers
             let providers = self.provider_registry.list_enabled_providers().await?;
 
@@ -594,6 +649,8 @@ impl JobDispatcher {
                 }
                 Err(e) => anyhow::bail!("Failed to provision worker: {}", e),
             }
+        } else {
+            Err(anyhow::anyhow!("No provisioning service available"))
         }
     }
 

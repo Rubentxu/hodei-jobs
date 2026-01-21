@@ -2,7 +2,7 @@
 name = "saga-engine-testing"
 description = "Testing utilities for saga-engine - InMemory implementations and test harness"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
@@ -26,6 +26,9 @@ thiserror = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 chrono = { workspace = true, features = ["serde"] }
+
+# Testing
+assert_matches = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

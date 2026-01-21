@@ -3,12 +3,14 @@
 
 pub mod execution;
 mod provisioning;
+pub mod saga_engine_commands; // EPIC-94-C.6: Command handlers for v4.0 workflows
 
 pub use execution::{
     JobExecutorImpl, register_execution_command_handlers,
     register_execution_command_handlers_with_executor,
 };
 pub use provisioning::register_provisioning_command_handlers;
+pub use saga_engine_commands::*; // EPIC-94-C.6: Export v4.0 command handlers
 
 use hodei_server_domain::command::CommandBus;
 use std::sync::Arc;

@@ -13,6 +13,9 @@ use crate::jobs::coordinator::JobCoordinator;
 use crate::providers::ProviderRegistry;
 use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
 use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
+use crate::saga::provisioning_workflow_coordinator::{
+    DynProvisioningWorkflowCoordinator, ProvisioningWorkflowCoordinator,
+};
 use crate::scheduling::smart_scheduler::SchedulerConfig;
 use crate::workers::commands::WorkerCommandSender;
 use crate::workers::provisioning::WorkerProvisioningService;
@@ -56,6 +59,7 @@ impl JobController {
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
         execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
         provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
         _pool: PgPool,
     ) -> Self {
         info!("Initializing JobController with specialized components");
@@ -73,6 +77,7 @@ impl JobController {
             provisioning_service.clone(),
             execution_saga_dispatcher,
             provisioning_saga_coordinator,
+            provisioning_workflow_coordinator, // EPIC-94-C: v4.0 workflow coordinator
         ));
 
         let worker_monitor = Arc::new(crate::jobs::worker_monitor::WorkerMonitor::new(

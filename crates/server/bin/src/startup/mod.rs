@@ -15,19 +15,23 @@ pub use grpc_server::{GrpcServerConfig, start_grpc_server};
 pub use providers_init::{ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer};
 pub use services_init::{
     GrpcServices, initialize_grpc_services, start_background_tasks, start_command_relay,
-    start_execution_command_consumers_service, start_execution_saga_consumer,
-    start_job_coordinator, start_nats_outbox_relay, start_reactive_saga_processor,
-    start_saga_command_consumers_service, start_saga_consumers, start_saga_poller,
-    start_worker_ephemeral_terminating_consumer,
+    start_execution_command_consumers_service, start_job_coordinator, start_nats_outbox_relay,
+    start_reactive_saga_processor, start_saga_command_consumers_service, start_saga_consumers,
+    start_saga_poller, start_worker_ephemeral_terminating_consumer,
 };
 pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
 use backoff::{ExponentialBackoff, future::retry};
 use dashmap::DashMap;
+use hodei_server_application::saga::provisioning_workflow_coordinator::{
+    DynProvisioningWorkflowCoordinator, ProvisioningWorkflowCoordinator,
+    SagaEngineProvisioningCoordinator,
+};
 use hodei_server_application::saga::recovery_saga::{
     DynRecoverySagaCoordinator, RecoverySagaCoordinator,
 };
 use hodei_server_application::saga::sync_executor::SyncWorkflowExecutor;
+use hodei_server_application::saga::workflows::provisioning_durable::ProvisioningWorkflow;
 use hodei_server_application::saga::workflows::recovery::RecoveryWorkflow;
 use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
@@ -48,6 +52,11 @@ use hodei_server_infrastructure::persistence::postgres::{
     PostgresJobRepository, PostgresProviderConfigRepository, PostgresWorkerBootstrapTokenStore,
     PostgresWorkerRegistry,
 };
+use saga_engine_core::saga_engine::SagaEngine;
+use saga_engine_core::saga_engine::SagaEngineConfig;
+use saga_engine_nats::NatsTaskQueue;
+use saga_engine_pg::PostgresEventStore;
+use saga_engine_pg::PostgresTimerStore;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -87,6 +96,8 @@ pub struct AppState {
     pub provider_init_result: Option<ProvidersInitResult>,
     /// gRPC services container (for sharing between coordinator and server)
     pub grpc_services: Option<Arc<GrpcServices>>,
+    /// Provisioning workflow coordinator (v4.0 DurableWorkflow)
+    pub provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
 }
 
 impl AppState {
@@ -109,6 +120,7 @@ impl AppState {
         worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
         provider_init_result: Option<ProvidersInitResult>,
         grpc_services: Option<Arc<GrpcServices>>,
+        provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     ) -> Self {
         Self {
             pool,
@@ -123,6 +135,7 @@ impl AppState {
             worker_provisioning,
             provider_init_result,
             grpc_services,
+            provisioning_workflow_coordinator,
         }
     }
 
@@ -346,6 +359,65 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         Arc::new(DynRecoverySagaCoordinator::new(recovery_coordinator));
     info!("✓ RecoverySagaCoordinator initialized");
 
+    // Step 8b: Initialize provisioning workflow coordinator (v4.0 DurableWorkflow)
+    // Using SagaEngineProvisioningCoordinator with real infrastructure
+    // This provides:
+    // - Persistent workflow state (Postgres EventStore)
+    // - Async activity execution (NATS TaskQueue)
+    // - Timer support for timeouts
+    info!("Initializing SagaEngine for v4.0 ProvisioningWorkflow...");
+
+    // Create SagaEngine configuration
+    let saga_config = SagaEngineConfig::new()
+        .with_max_events_before_snapshot(100)
+        .with_activity_timeout(Duration::from_secs(300));
+
+    // Create EventStore (Postgres)
+    let event_store: Arc<PostgresEventStore> = Arc::new(PostgresEventStore::new(pool.clone()));
+    info!("✓ PgEventStore initialized for workflow persistence");
+
+    // Create TaskQueue (NATS)
+    let task_queue_config = saga_engine_nats::NatsTaskQueueConfig {
+        nats_url: config
+            .nats_urls
+            .split(',')
+            .next()
+            .unwrap_or("nats://localhost:4222")
+            .to_string(),
+        stream_name: "SAGA_TASKS".to_string(),
+        subject_prefix: "saga.tasks".to_string(),
+        retention: None,
+    };
+    let task_queue: Arc<NatsTaskQueue> = Arc::new(NatsTaskQueue::new(task_queue_config).await?);
+    info!("✓ NatsTaskQueue initialized for activity dispatch");
+
+    // Create TimerStore (Postgres)
+    let timer_store: Arc<PostgresTimerStore> = Arc::new(PostgresTimerStore::new(pool.clone()));
+    info!("✓ PgTimerStore initialized for workflow timers");
+
+    // Create SagaEngine
+    let saga_engine: Arc<SagaEngine<PostgresEventStore, NatsTaskQueue, PostgresTimerStore>> =
+        Arc::new(SagaEngine::new(
+            saga_config,
+            event_store.clone(),
+            task_queue.clone(),
+            timer_store.clone(),
+        ));
+    info!("✓ SagaEngine initialized for v4.0 workflows");
+
+    // Create the ProvisioningWorkflow instance
+    let provisioning_workflow = ProvisioningWorkflow::default();
+
+    // Create the SagaEngine-based coordinator
+    let provisioning_workflow_coordinator: Arc<dyn ProvisioningWorkflowCoordinator> =
+        Arc::new(SagaEngineProvisioningCoordinator::new(
+            saga_engine.clone(),
+            provisioning_workflow,
+            Some(Duration::from_secs(300)),
+            Some(worker_registry.clone()),
+        ));
+    info!("✓ SagaEngineProvisioningCoordinator initialized (v4.0 - durable execution)");
+
     // Step 9: Initialize WorkerLifecycleManager with empty providers map
     // The providers will be registered during provider initialization
     let providers_map: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
@@ -447,6 +519,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         worker_provisioning,
         Some(provider_init_result),
         None, // grpc_services will be initialized later as Arc
+        Some(provisioning_workflow_coordinator), // v4.0 ProvisioningWorkflowCoordinator
     ))
 }
 

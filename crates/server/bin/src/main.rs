@@ -91,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         grpc_services.worker_agent_service.clone(),
         app_state.saga_orchestrator.clone(),
         config.server_address,
+        Arc::new(app_state.clone()), // EPIC-94-C: Pass AppState for v4.0 workflow coordinator
     )
     .await;
 
@@ -112,15 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_state.pool.clone(),
     )
     .await;
-
-    // ✅ Start ExecutionSagaConsumer for reactive job execution
-    let _execution_saga_consumer_handle = startup::start_execution_saga_consumer(
-        &app_state.nats_event_bus,
-        saga_orchestrator.clone(),
-        app_state.pool.clone(),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to start ExecutionSagaConsumer: {}", e))?;
 
     // ✅ Start WorkerEphemeralTerminatingConsumer for reactive worker cleanup
     let _worker_ephemeral_consumer_handle = startup::start_worker_ephemeral_terminating_consumer(

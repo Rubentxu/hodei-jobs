@@ -14,6 +14,11 @@ hodei-server-interface = { path = "../interface" }
 hodei-shared = { path = "../../shared" }
 hodei-jobs = { workspace = true }
 
+# Saga Engine v4.0 dependencies
+saga-engine-core = { path = "../../saga-engine/core" }
+saga-engine-pg = { path = "../../saga-engine/pg" }
+saga-engine-nats = { path = "../../saga-engine/nats" }
+
 # Async & Runtime
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }

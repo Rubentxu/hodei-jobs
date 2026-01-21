@@ -17,7 +17,7 @@ use tracing::{debug, error, instrument};
 /// PostgreSQL-backed HistoryReplayer.
 pub struct PostgresReplayer<E = sqlx::Error>
 where
-    E: Debug + Send + Sync + 'static,
+    E: std::fmt::Display + Debug + Send + Sync + 'static,
 {
     /// Database pool for PostgreSQL connections.
     pool: Arc<PgPool>,
@@ -27,7 +27,7 @@ where
 
 impl<E> std::fmt::Debug for PostgresReplayer<E>
 where
-    E: Debug + Send + Sync + 'static,
+    E: std::fmt::Display + Debug + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostgresReplayer")
@@ -38,7 +38,7 @@ where
 
 impl<E> PostgresReplayer<E>
 where
-    E: Debug + Send + Sync + 'static,
+    E: std::fmt::Display + Debug + Send + Sync + 'static,
 {
     /// Create a new PostgresReplayer.
     pub fn new(
@@ -52,7 +52,7 @@ where
 #[async_trait]
 impl<E, T> HistoryReplayer<T> for PostgresReplayer<E>
 where
-    E: Debug + Send + Sync + 'static,
+    E: std::fmt::Display + Debug + Send + Sync + 'static,
     T: Default + Clone + Send + Sync + 'static + Applicator,
 {
     type Error = E;

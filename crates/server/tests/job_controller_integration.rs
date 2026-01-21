@@ -209,6 +209,7 @@ async fn job_controller_dispatches_run_job_to_connected_worker() {
         None,
         None,
         None,
+        None, // EPIC-94-C: provisioning_workflow_coordinator
         pool,
         false,
     );

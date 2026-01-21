@@ -90,7 +90,7 @@ impl<E> From<E> for EventStoreError<E> {
 #[async_trait::async_trait]
 pub trait EventStore: Send + Sync {
     /// The error type for this implementation.
-    type Error: Debug + Send + Sync + 'static;
+    type Error: std::fmt::Display + Debug + Send + Sync + 'static;
 
     /// Append a single event to the saga history.
     ///

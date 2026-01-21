@@ -14,6 +14,8 @@ lifecycle-management = []
 hodei-server-domain = { path = "../domain" }
 hodei-shared = { path = "../../shared" }
 saga-engine-core = { path = "../../saga-engine/core" }
+saga-engine-nats = { path = "../../saga-engine/nats" }
+saga-engine-pg = { path = "../../saga-engine/pg" }
 
 # Async runtime
 tokio = { workspace = true }

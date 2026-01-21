@@ -256,18 +256,17 @@ dependencies = [
 
 [[package]]
 name = "async-nats"
-version = "0.45.0"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86dde77d8a733a9dbaf865a9eb65c72e09c88f3d14d3dd0d2aecf511920ee4fe"
+checksum = "fd3bdd6ea595b2ea504500a3566071beb81125fc15d40a6f6bffa43575f64152"
 dependencies = [
  "base64",
  "bytes",
- "futures-util",
+ "futures",
  "memchr",
  "nkeys",
  "nuid",
  "once_cell",
- "pin-project",
  "portable-atomic",
  "rand 0.8.5",
  "regex",
@@ -283,9 +282,7 @@ dependencies = [
  "time 0.3.45",
  "tokio",
  "tokio-rustls",
- "tokio-stream",
  "tokio-util",
- "tokio-websockets",
  "tracing",
  "tryhard",
  "url",
@@ -1924,6 +1921,8 @@ dependencies = [
  "hodei-server-domain",
  "hodei-shared",
  "saga-engine-core",
+ "saga-engine-nats",
+ "saga-engine-pg",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1953,6 +1952,9 @@ dependencies = [
  "hodei-server-infrastructure",
  "hodei-server-interface",
  "hodei-shared",
+ "saga-engine-core",
+ "saga-engine-nats",
+ "saga-engine-pg",
  "serde",
  "serde_json",
  "sha2",
@@ -4617,7 +4619,7 @@ name = "saga-engine-nats"
 version = "0.81.0"
 dependencies = [
  "anyhow",
- "async-nats 0.45.0",
+ "async-nats 0.37.0",
  "async-stream",
  "async-trait",
  "chrono",
@@ -4656,6 +4658,7 @@ dependencies = [
 name = "saga-engine-testing"
 version = "0.81.0"
 dependencies = [
+ "assert_matches",
  "async-trait",
  "chrono",
  "parking_lot",
@@ -5805,27 +5808,6 @@ dependencies = [
  "pin-project-lite",
  "slab",
  "tokio",
-]
-
-[[package]]
-name = "tokio-websockets"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f591660438b3038dd04d16c938271c79e7e06260ad2ea2885a4861bfb238605d"
-dependencies = [
- "base64",
- "bytes",
- "futures-core",
- "futures-sink",
- "http",
- "httparse",
- "rand 0.8.5",
- "ring 0.17.14",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "webpki-roots 0.26.11",
 ]
 
 [[package]]

@@ -72,72 +72,70 @@ pub trait WorkerProvisioningService: Send + Sync {
     async fn validate_spec(&self, spec: &WorkerSpec) -> Result<()>;
 }
 
+/// Mock implementation for testing
+pub struct MockProvisioningService {
+    provisions: Arc<Mutex<Vec<(ProviderId, WorkerSpec)>>>,
+    available_providers: Vec<ProviderId>,
+}
+
+impl MockProvisioningService {
+    pub fn new(available_providers: Vec<ProviderId>) -> Self {
+        Self {
+            provisions: Arc::new(Mutex::new(Vec::new())),
+            available_providers,
+        }
+    }
+}
+
+#[async_trait]
+impl WorkerProvisioningService for MockProvisioningService {
+    async fn provision_worker(
+        &self,
+        provider_id: &ProviderId,
+        spec: WorkerSpec,
+        _job_id: JobId,
+    ) -> Result<ProvisioningResult> {
+        self.provisions
+            .lock()
+            .await
+            .push((provider_id.clone(), spec.clone()));
+        Ok(ProvisioningResult::new(
+            spec.worker_id,
+            uuid::Uuid::new_v4().to_string(),
+            provider_id.clone(),
+        ))
+    }
+
+    async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
+        Ok(self.available_providers.contains(provider_id))
+    }
+
+    async fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
+        Some(WorkerSpec::new(
+            "hodei-jobs-worker:latest".to_string(),
+            "http://localhost:50051".to_string(),
+        ))
+    }
+
+    async fn list_providers(&self) -> Result<Vec<ProviderId>> {
+        Ok(self.available_providers.clone())
+    }
+
+    async fn get_provider_config(
+        &self,
+        _provider_id: &ProviderId,
+    ) -> Result<Option<ProviderConfig>> {
+        Ok(None)
+    }
+
+    async fn validate_spec(&self, _spec: &WorkerSpec) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    /// Mock implementation for testing
-    struct MockProvisioningService {
-        provisions: Arc<Mutex<Vec<(ProviderId, WorkerSpec)>>>,
-        available_providers: Vec<ProviderId>,
-    }
-
-    impl MockProvisioningService {
-        fn new(available_providers: Vec<ProviderId>) -> Self {
-            Self {
-                provisions: Arc::new(Mutex::new(Vec::new())),
-                available_providers,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl WorkerProvisioningService for MockProvisioningService {
-        async fn provision_worker(
-            &self,
-            provider_id: &ProviderId,
-            spec: WorkerSpec,
-            _job_id: JobId,
-        ) -> Result<ProvisioningResult> {
-            self.provisions
-                .lock()
-                .await
-                .push((provider_id.clone(), spec.clone()));
-            Ok(ProvisioningResult::new(
-                spec.worker_id,
-                uuid::Uuid::new_v4().to_string(),
-                provider_id.clone(),
-            ))
-        }
-
-        async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
-            Ok(self.available_providers.contains(provider_id))
-        }
-
-        async fn default_worker_spec(&self, _provider_id: &ProviderId) -> Option<WorkerSpec> {
-            Some(WorkerSpec::new(
-                "hodei-jobs-worker:latest".to_string(),
-                "http://localhost:50051".to_string(),
-            ))
-        }
-
-        async fn list_providers(&self) -> Result<Vec<ProviderId>> {
-            Ok(self.available_providers.clone())
-        }
-
-        async fn get_provider_config(
-            &self,
-            _provider_id: &ProviderId,
-        ) -> Result<Option<ProviderConfig>> {
-            Ok(None)
-        }
-
-        async fn validate_spec(&self, _spec: &WorkerSpec) -> Result<()> {
-            Ok(())
-        }
-    }
 
     #[tokio::test]
     async fn test_provision_worker_returns_result() {

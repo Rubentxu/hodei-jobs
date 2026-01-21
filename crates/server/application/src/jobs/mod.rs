@@ -10,6 +10,7 @@ pub mod coordinator;
 pub mod create;
 pub mod dispatch_failure_handler;
 pub mod dispatcher;
+pub mod event_handlers; // EPIC-94-C.5: Event handlers for v4.0 workflows
 pub mod event_router;
 pub mod event_subscriber;
 pub mod fail_job;
@@ -33,6 +34,7 @@ pub use coordinator::*;
 pub use create::*;
 pub use dispatch_failure_handler::*;
 pub use dispatcher::*;
+pub use event_handlers::*; // EPIC-94-C.5: Export event handlers
 pub use event_router::*;
 pub use fail_job::*;
 pub use job_assignment_service::*;

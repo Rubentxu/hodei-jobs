@@ -3,7 +3,6 @@ pub mod cleanup_saga_consumer;
 pub mod command_dlq;
 pub mod consumer_utils;
 pub mod execution_command_consumers;
-pub mod execution_saga_consumer;
 pub mod hybrid;
 pub mod nats;
 pub mod nats_outbox_relay;
