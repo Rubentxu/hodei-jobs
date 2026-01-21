@@ -100,11 +100,6 @@ impl NatsTaskQueueInnerError {
     pub fn new(e: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Operation(format!("{}", e))
     }
-
-    /// Convert Box<dyn Error + Send + Sync> to a sized error type
-    fn from_boxed(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        Self::Operation(format!("{}", e))
-    }
 }
 
 impl NatsTaskQueue {
@@ -412,7 +407,6 @@ impl TaskQueue for NatsTaskQueue {
     async fn terminate(&self, message_id: &str) -> Result<(), TaskQueueError<Self::Error>> {
         let mut registry = self.message_registry.write().await;
         if let Some(message) = registry.remove(message_id) {
-            let error_clone = Arc::new(message.clone());
             message
                 .ack_with(async_nats::jetstream::message::AckKind::Term)
                 .await

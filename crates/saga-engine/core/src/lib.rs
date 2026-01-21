@@ -43,6 +43,7 @@ pub mod determinism_enforcer;
 pub mod error;
 pub mod event;
 pub mod port;
+pub mod relay;
 pub mod saga_engine;
 pub mod snapshot;
 pub mod worker;
@@ -59,10 +60,15 @@ pub use determinism_enforcer::{
 pub use error::{Error, Result};
 pub use event::{CURRENT_EVENT_VERSION, EventCategory, EventId, EventType, HistoryEvent, SagaId};
 pub use port::{
-    ConsumerConfig, DurableTimer, HistoryReplayer, ReplayConfig, ReplayError, ReplayResult,
-    SignalDispatcher, SignalDispatcherError, SignalNotification, SignalSubscription, SignalType,
-    Task, TaskId, TaskMessage, TaskQueue, TaskQueueError, TimerStatus, TimerStore, TimerStoreError,
-    TimerType,
+    Command, CommandBus, CommandBusConfig, CommandBusError, CommandHandler, CommandResult,
+    ConsumerConfig, DomainEvent, DurableTimer, EventBus, EventBusConfig, EventBusError,
+    EventHandler, EventHandlerAny, HistoryReplayer, OutboxConfig, OutboxMessage, OutboxRepository,
+    OutboxStatus, ReplayConfig, ReplayError, ReplayResult, SignalDispatcher, SignalDispatcherError,
+    SignalNotification, SignalSubscription, SignalType, Subscription, SubscriptionId, Task, TaskId,
+    TaskMessage, TaskQueue, TaskQueueError, TimerStatus, TimerStore, TimerStoreError, TimerType,
+};
+pub use relay::{
+    OutboxPublisher, OutboxRelay, OutboxRelayConfig, OutboxRelayMetrics, ProcessResult, RelayError,
 };
 pub use saga_engine::{
     SagaEngine, SagaEngineConfig, SagaEngineError, SagaExecutionResult, WorkflowTask,

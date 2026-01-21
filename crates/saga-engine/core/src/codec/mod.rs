@@ -233,7 +233,7 @@ impl EventWrapper {
             ));
         }
 
-        use super::event::{EventCategory, EventId, EventType, SagaId};
+        use super::event::{EventId, SagaId};
 
         let event_type = self.event_type.parse().map_err(|_| {
             CodecError::parse_error(format!("Unknown event type: {}", self.event_type))

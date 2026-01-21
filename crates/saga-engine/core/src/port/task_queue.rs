@@ -11,19 +11,19 @@ use std::time::Duration;
 /// Errors from task queue operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TaskQueueError<E> {
-    #[error("Task publish failed: {0}")]
+    #[error("Task publish failed: {0:?}")]
     Publish(E),
 
-    #[error("Consumer creation failed: {0}")]
+    #[error("Consumer creation failed: {0:?}")]
     ConsumerCreation(E),
 
-    #[error("Task fetch failed: {0}")]
+    #[error("Task fetch failed: {0:?}")]
     Fetch(E),
 
-    #[error("Task acknowledgment failed: {0}")]
+    #[error("Task acknowledgment failed: {0:?}")]
     Ack(E),
 
-    #[error("Task negative acknowledgment failed: {0}")]
+    #[error("Task negative acknowledgment failed: {0:?}")]
     Nak(E),
 }
 

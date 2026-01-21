@@ -4,15 +4,16 @@
 //! workflow and activity tasks.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 
+use crate::activity_registry::ActivityRegistry;
 use crate::port::{ConsumerConfig, TaskMessage, TaskQueue, TimerStore};
-use crate::saga_engine::SagaEngine;
+use crate::saga_engine::{SagaEngine, WorkflowTask};
+use crate::workflow::registry::WorkflowRegistry;
 
 /// Worker configuration.
 #[derive(Debug, Clone)]
@@ -106,6 +107,10 @@ where
     config: WorkerConfig,
     /// The saga engine for task processing.
     saga_engine: Arc<SagaEngine<E, Q, T>>,
+    /// Registry for activities.
+    activity_registry: Arc<ActivityRegistry>,
+    /// Registry for workflows.
+    workflow_registry: Arc<WorkflowRegistry>,
     /// Flag to control worker shutdown.
     running: Arc<AtomicBool>,
     /// Consumer configuration.
@@ -133,7 +138,12 @@ where
     T: TimerStore + 'static,
 {
     /// Create a new worker.
-    pub fn new(config: WorkerConfig, saga_engine: Arc<SagaEngine<E, Q, T>>) -> Self {
+    pub fn new(
+        config: WorkerConfig,
+        saga_engine: Arc<SagaEngine<E, Q, T>>,
+        activity_registry: Arc<ActivityRegistry>,
+        workflow_registry: Arc<WorkflowRegistry>,
+    ) -> Self {
         let consumer_config = ConsumerConfig {
             name: config.consumer_name.clone(),
             queue_group: config.queue_group.clone(),
@@ -146,6 +156,8 @@ where
         Self {
             config,
             saga_engine,
+            activity_registry,
+            workflow_registry,
             running: Arc::new(AtomicBool::new(true)),
             consumer_config,
         }
@@ -190,21 +202,143 @@ where
     /// Process a single task message.
     async fn process_message(&self, message: &TaskMessage) {
         let task_type = &message.task.task_type;
+        let task = &message.task;
 
-        match task_type.as_str() {
-            "workflow-execute" => {
-                // For now, acknowledge workflow tasks
-                let _ = self.task_queue().ack(&message.message_id).await;
+        let result = if task_type == "workflow-execute" {
+            self.handle_workflow_task(task).await
+        } else {
+            self.handle_activity_task(task).await
+        };
+
+        match result {
+            Ok(_) => {
+                if let Err(e) = self.task_queue().ack(&message.message_id).await {
+                    tracing::error!("Failed to ack message {}: {:?}", message.message_id, e);
+                }
             }
-            "activity" => {
-                // Activity tasks are acknowledged after processing
-                let _ = self.task_queue().ack(&message.message_id).await;
-            }
-            _ => {
-                // Unknown task type, terminate
-                let _ = self.task_queue().terminate(&message.message_id).await;
+            Err(e) => {
+                tracing::error!("Failed to process task {}: {:?}", task.task_id, e);
+                // Nak logic (simple for now)
+                let _ = self.task_queue().nak(&message.message_id, None).await;
             }
         }
+    }
+
+    async fn handle_workflow_task(
+        &self,
+        task: &crate::port::task_queue::Task,
+    ) -> Result<(), WorkerError> {
+        // Deserialize internal workflow task (clone payload to avoid lifetime issues)
+        let payload = task.payload.clone();
+        let inner_task: WorkflowTask = serde_json::from_slice(&payload).map_err(|e| {
+            WorkerError::TaskFailed(format!("Invalid workflow task payload: {}", e))
+        })?;
+
+        // Lookup workflow
+        let workflow = self
+            .workflow_registry
+            .get_workflow(&inner_task.workflow_type)
+            .ok_or_else(|| {
+                WorkerError::TaskFailed(format!(
+                    "Workflow type not found: {}",
+                    inner_task.workflow_type
+                ))
+            })?;
+
+        // Resume the workflow
+        self.saga_engine
+            .resume_workflow_dyn(workflow.as_ref(), inner_task.saga_id)
+            .await
+            .map_err(|e| WorkerError::TaskFailed(format!("Saga execution failed: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    async fn handle_activity_task(
+        &self,
+        task: &crate::port::task_queue::Task,
+    ) -> Result<(), WorkerError> {
+        // Lookup activity
+        let activity = self
+            .activity_registry
+            .get_activity(&task.task_type)
+            .ok_or_else(|| {
+                WorkerError::TaskNotFound(format!("Activity type not found: {}", task.task_type))
+            })?;
+
+        // Inner payload is `WorkflowTask` struct?
+        // In `resume_workflow` (Step 155), I created `WorkflowTask` where payload is `paused.input`.
+        // Wait, `WorkflowTask` struct fields: `saga_id`, `workflow_type`, `event_id`, `payload`.
+        // I re-wrapped the activity input inside `WorkflowTask`'s payload.
+        // So `task.payload` -> `WorkflowTask` -> `inner.payload` (Activity Input).
+
+        // Deserialize internal wrapper (clone payload to avoid lifetime issues)
+        let payload = task.payload.clone();
+        let inner_task: WorkflowTask = serde_json::from_slice(&payload)
+            .map_err(|e| WorkerError::TaskFailed(format!("Invalid activity wrapper: {}", e)))?;
+
+        let input_value: serde_json::Value = serde_json::from_slice(&inner_task.payload)
+            .map_err(|e| WorkerError::TaskFailed(format!("Invalid activity input: {}", e)))?;
+
+        // Execute Activity
+        let result = activity.execute_dyn(input_value).await;
+
+        // Handle Result: we need to append event to history and WAKE UP workflow.
+        // How to wake up?
+        // Enqueue generic "workflow-execute" task for the saga?
+        // Yes.
+        // BUT `SagaEngine` should handle "Activity Completion" logic to be consistent (persistence + scheduling).
+        //
+        // I'll call `self.saga_engine.record_activity_completion(...)` or similar.
+        // Since that method doesn't exist yet, I'll inline the logic here or call a future method.
+        // Inline logic for now:
+        // 1. Append Event (Completed/Failed).
+        // 2. Schedule "workflow-execute" task.
+
+        // I will assume `SagaEngine` has `record_activity_result` method.
+        /*
+        self.saga_engine.record_activity_result(
+             &inner_task.saga_id,
+             &inner_task.workflow_type,
+             result
+        ).await...
+        */
+
+        // Since I can't change SagaEngine in this tool call, I will implement a placeholder or raw logic.
+        // I'll use `record_activity_result` and then implement it in SagaEngine.
+
+        // Wait, `SagaEngine` logic needs `workflow_type` to schedule the next task?
+        // Yes, `WorkflowTask` needs `workflow_type`.
+        // We have it in `inner_task.workflow_type`.
+
+        // So:
+        /*
+        let completion_event = match result {
+             Ok(out) => HistoryEvent::builder().event_type(EventType::ActivityTaskCompleted)...,
+             Err(e) => HistoryEvent::builder().event_type(EventType::ActivityTaskFailed)...
+        };
+        store.append...
+
+        let resume_task = WorkflowTask { ... };
+        queue.publish(resume_task...);
+        */
+
+        // This logic is better placed in `SagaEngine`.
+        // I'll call `self.saga_engine.complete_activity_task`.
+
+        let output = match result {
+            Ok(v) => Ok(v),
+            Err(e) => Err(e.to_string()),
+        };
+
+        self.saga_engine
+            .complete_activity_task(inner_task.saga_id, inner_task.workflow_type, output)
+            .await
+            .map_err(|e| {
+                WorkerError::TaskFailed(format!("Failed to complete activity: {:?}", e))
+            })?;
+
+        Ok(())
     }
 
     /// Signal the worker to stop.

@@ -21,7 +21,9 @@
 /// }
 /// ```
 use super::event::{CURRENT_EVENT_VERSION, SagaId};
-use super::port::event_store::{EventStore, EventStoreError};
+use super::port::event_store::EventStore;
+#[cfg(test)]
+use super::port::event_store::EventStoreError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

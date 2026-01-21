@@ -130,6 +130,8 @@ pub struct WorkflowPaused {
     pub execution_id: SagaId,
     /// The activity ID for tracking.
     pub activity_id: String,
+    /// The input for the activity.
+    pub input: serde_json::Value,
 }
 
 impl std::fmt::Display for WorkflowPaused {
@@ -237,6 +239,38 @@ where
     pub fn as_failed(&self) -> Option<&E> {
         match &self.inner {
             ExecuteActivityErrorInner::Failed(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// Get the paused info if this is a Paused variant.
+    pub fn as_paused(&self) -> Option<&WorkflowPaused> {
+        match &self.inner {
+            ExecuteActivityErrorInner::Paused(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Get the ok value if this is an Ok variant.
+    pub fn as_ok(&self) -> Option<&serde_json::Value> {
+        match &self.inner {
+            ExecuteActivityErrorInner::Ok(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Get the timeout if this is a Timeout variant.
+    pub fn as_timeout(&self) -> Option<&std::time::Duration> {
+        match &self.inner {
+            ExecuteActivityErrorInner::Timeout(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Get the serialization error if this is a Serialization variant.
+    pub fn as_serialization(&self) -> Option<&String> {
+        match &self.inner {
+            ExecuteActivityErrorInner::Serialization(e) => Some(e),
             _ => None,
         }
     }
@@ -380,6 +414,7 @@ mod tests {
             activity_type: "test-activity",
             execution_id: SagaId("test-123".to_string()),
             activity_id: "act-456".to_string(),
+            input: serde_json::json!({}),
         };
         let display = format!("{}", paused);
         assert!(display.contains("test-activity"));
@@ -398,6 +433,7 @@ mod tests {
                 activity_type: "test",
                 execution_id: SagaId("test".to_string()),
                 activity_id: "act".to_string(),
+                input: serde_json::json!({}),
             });
         assert!(paused.is_paused());
         assert!(!paused.is_failed());

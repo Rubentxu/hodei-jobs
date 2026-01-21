@@ -69,7 +69,7 @@ impl NatsSignalDispatcher {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl SignalDispatcher for NatsSignalDispatcher {
     type Error = Box<dyn std::error::Error + Send + Sync>;
 

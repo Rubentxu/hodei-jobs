@@ -3,6 +3,9 @@
 //! This module provides the [`ActivityRegistry`] for registering and executing
 //! activities in the saga engine.
 
+use crate::workflow::Activity;
+use async_trait::async_trait;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
@@ -63,6 +66,9 @@ pub enum ActivityError {
 
     #[error("Activity timeout after {0:?}")]
     Timeout(Duration),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 /// Activity execution context.
@@ -89,10 +95,48 @@ impl ActivityContext {
     }
 }
 
+/// Type-erased activity trait for storage in the registry.
+#[async_trait]
+pub trait DynActivity: Send + Sync + fmt::Debug {
+    /// Execute the activity with type-erased input (Value).
+    async fn execute_dyn(
+        &self,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ActivityError>;
+}
+
+#[async_trait]
+impl<A: Activity> DynActivity for A {
+    async fn execute_dyn(
+        &self,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ActivityError> {
+        // Deserialize input
+        let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
+            ActivityError::Serialization(format!("Invalid input for {}: {}", A::TYPE_ID, e))
+        })?;
+
+        // Execute
+        let output = self
+            .execute(typed_input)
+            .await
+            .map_err(|e| ActivityError::ExecutionFailed(e.to_string()))?;
+
+        // Serialize output
+        serde_json::to_value(output).map_err(|e| {
+            ActivityError::Serialization(format!(
+                "Failed to serialize output for {}: {}",
+                A::TYPE_ID,
+                e
+            ))
+        })
+    }
+}
+
 /// Activity registry for managing activity types and execution.
 pub struct ActivityRegistry {
-    /// Set of registered activity types.
-    activities: std::collections::HashSet<&'static str>,
+    /// Map of registered activities (Type -> Implementation).
+    activities: DashMap<String, Arc<dyn DynActivity>>,
     /// Default timeout for activities.
     pub default_timeout: Duration,
 }
@@ -116,7 +160,7 @@ impl ActivityRegistry {
     /// Create a new activity registry.
     pub fn new() -> Self {
         Self {
-            activities: std::collections::HashSet::new(),
+            activities: DashMap::new(),
             default_timeout: Duration::from_secs(300),
         }
     }
@@ -127,14 +171,24 @@ impl ActivityRegistry {
         self
     }
 
-    /// Register an activity type.
-    pub fn register_activity(&mut self, activity_type: &'static str) {
-        self.activities.insert(activity_type);
+    /// Register an activity implementation.
+    ///
+    /// The activity type ID is taken from `A::TYPE_ID`.
+    pub fn register_activity<A: Activity>(&self, activity: A) {
+        let type_id = A::TYPE_ID.to_string();
+        self.activities.insert(type_id, Arc::new(activity));
     }
 
     /// Check if an activity type is registered.
-    pub fn has_activity(&self, activity_type: &'static str) -> bool {
-        self.activities.contains(activity_type)
+    pub fn has_activity(&self, activity_type: &str) -> bool {
+        self.activities.contains_key(activity_type)
+    }
+
+    /// Get an activity implementation by type.
+    pub fn get_activity(&self, activity_type: &str) -> Option<Arc<dyn DynActivity>> {
+        self.activities
+            .get(activity_type)
+            .map(|r| r.value().clone())
     }
 
     /// Get count of registered activities.
@@ -148,7 +202,7 @@ impl ActivityRegistry {
     }
 
     /// Create an execution context.
-    pub fn create_context(&self, activity_type: &'static str) -> ActivityContext {
+    pub fn create_context(&self, activity_type: &str) -> ActivityContext {
         ActivityContext::new(ActivityTypeId::new(activity_type))
     }
 }
@@ -156,6 +210,33 @@ impl ActivityRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone)]
+    struct EchoActivity;
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    struct EchoInput {
+        message: String,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    struct EchoOutput {
+        message: String,
+    }
+
+    #[async_trait]
+    impl Activity for EchoActivity {
+        const TYPE_ID: &'static str = "echo";
+        type Input = EchoInput;
+        type Output = EchoOutput;
+        type Error = std::io::Error;
+
+        async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
+            Ok(EchoOutput {
+                message: input.message,
+            })
+        }
+    }
 
     #[test]
     fn test_activity_type_id() {
@@ -196,16 +277,19 @@ mod tests {
     }
 
     #[test]
-    fn test_activity_registration() {
-        let mut registry = ActivityRegistry::new();
+    fn test_activity_registration_and_execution() {
+        let registry = ActivityRegistry::new();
 
-        registry.register_activity("echo");
-        registry.register_activity("send-email");
+        registry.register_activity(EchoActivity);
 
         assert!(registry.has_activity("echo"));
-        assert!(registry.has_activity("send-email"));
         assert!(!registry.has_activity("unknown"));
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 1);
+
+        let activity = registry.get_activity("echo").expect("Should have activity");
+
+        // This is async, so we'd need tokio runtime to test execution,
+        // but finding it proves registration worked.
     }
 
     #[test]

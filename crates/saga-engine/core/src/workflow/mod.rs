@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 pub mod durable;
+pub mod registry;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -92,6 +93,16 @@ pub struct WorkflowContext {
     pub cancellation: Option<CancellationState>,
     /// Execution metadata for observability
     pub metadata: WorkflowMetadata,
+    /// Pending activity execution (if paused)
+    pub pending_activity: Option<PendingActivity>,
+}
+
+/// Details of an activity validation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingActivity {
+    pub activity_type: String,
+    pub activity_id: String,
+    pub input: serde_json::Value,
 }
 
 /// State tracking for workflow cancellation
@@ -193,6 +204,7 @@ impl WorkflowContext {
             pending_signals: std::collections::HashMap::new(),
             cancellation: None,
             metadata: WorkflowMetadata::default(),
+            pending_activity: None,
         }
     }
 
@@ -300,11 +312,13 @@ impl WorkflowContext {
         use durable::{ExecuteActivityError, WorkflowPaused};
 
         let activity_id = self.next_activity_id(A::TYPE_ID);
+        let step_key = format!("step_{}", self.current_step_index);
 
         // Check if already completed (replay case)
-        if let Some(output) = self.step_outputs.get(&activity_id) {
+        if let Some(output) = self.step_outputs.get(&step_key) {
             let parsed: A::Output = serde_json::from_value(output.clone())
                 .map_err(|e| ExecuteActivityError::serialization(e.to_string()))?;
+            self.advance_step();
             return Ok(parsed);
         }
 
@@ -313,11 +327,20 @@ impl WorkflowContext {
             .tags
             .insert("waiting_activity".to_string(), A::TYPE_ID.to_string());
 
+        // Store pending activity state
+        self.pending_activity = Some(PendingActivity {
+            activity_type: A::TYPE_ID.to_string(),
+            activity_id: activity_id.clone(),
+            input: serde_json::to_value(_input.clone()).unwrap_or(serde_json::Value::Null),
+        });
+
         // Return pause signal - engine will handle persistence and task scheduling
         Err(ExecuteActivityError::paused(WorkflowPaused {
             activity_type: A::TYPE_ID,
             execution_id: self.execution_id.clone(),
             activity_id,
+            input: serde_json::to_value(_input.clone())
+                .map_err(|e| ExecuteActivityError::serialization(e.to_string()))?,
         }))
     }
 
@@ -868,6 +891,7 @@ where
     }
 
     /// Execute a single step with retry logic
+    #[allow(dead_code)]
     async fn execute_step(
         &self,
         context: &mut WorkflowContext,
@@ -920,6 +944,7 @@ where
     }
 
     /// Calculate retry delay with exponential backoff and jitter
+    #[allow(dead_code)]
     fn calculate_retry_delay(&self, attempt: u32) -> u64 {
         let config = self.workflow.configuration();
         let base_delay = config.retry_base_delay_ms;

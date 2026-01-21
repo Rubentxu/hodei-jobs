@@ -43,6 +43,7 @@ rand = { workspace = true }
 
 # Tracing for observability
 tracing = { workspace = true }
+dashmap.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

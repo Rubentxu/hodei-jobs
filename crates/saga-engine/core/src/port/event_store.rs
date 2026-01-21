@@ -33,7 +33,7 @@ pub enum EventStoreError<E> {
     },
 
     /// Backend-specific error.
-    #[error("Backend error: {0}")]
+    #[error("Backend error: {0:?}")]
     Backend(E),
 
     /// Codec/serialization error.

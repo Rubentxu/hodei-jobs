@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
-use crate::event::{EventCategory, EventId, EventType, HistoryEvent, SagaId};
-use crate::workflow::{WorkflowContext, WorkflowTypeId};
+use crate::event::{EventId, EventType, HistoryEvent, SagaId};
+use crate::port::Task;
+use crate::workflow::{DurableWorkflow, WorkflowContext, WorkflowTypeId};
 
 /// Configuration for the SagaEngine.
 #[derive(Debug, Clone)]
@@ -89,7 +90,7 @@ pub enum SagaExecutionResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowTask {
     pub saga_id: SagaId,
-    pub workflow_type: &'static str,
+    pub workflow_type: String,
     pub event_id: u64,
     pub payload: Vec<u8>,
 }
@@ -246,6 +247,396 @@ where
                 }),
             })),
         }
+    }
+
+    /// Start a new workflow execution.
+    pub async fn start_workflow<W: DurableWorkflow>(
+        &self,
+        workflow_id: SagaId,
+        input: W::Input,
+    ) -> Result<SagaId, SagaEngineError> {
+        // 1. Serialize input
+        let input_payload = serde_json::to_value(input)
+            .map_err(|e| SagaEngineError::Serialization(e.to_string()))?;
+
+        // 2. Create WorkflowExecutionStarted event
+        let event = HistoryEvent::builder()
+            .event_id(EventId(1))
+            .event_type(EventType::WorkflowExecutionStarted)
+            .saga_id(workflow_id.clone())
+            .payload(serde_json::json!({
+                "input": input_payload,
+                "workflow_type": W::TYPE_ID
+            }))
+            .build();
+
+        // 3. Persist event
+        self.event_store
+            .append_events(&workflow_id, 0, &[event])
+            .await
+            .map_err(|e| {
+                SagaEngineError::InvalidState(format!("Failed to persist start event: {:?}", e))
+            })?;
+
+        // 4. Schedule first workflow task
+        let task_payload = serde_json::to_vec(&WorkflowTask {
+            saga_id: workflow_id.clone(),
+            workflow_type: W::TYPE_ID.to_string(),
+            event_id: 1,
+            payload: vec![],
+        })
+        .map_err(|e| SagaEngineError::Serialization(e.to_string()))?;
+
+        let task = Task::new(
+            "workflow-execute".to_string(),
+            workflow_id.clone(),
+            uuid::Uuid::new_v4().to_string(),
+            task_payload,
+        )
+        .with_queue(self.config.workflow_task_queue.clone());
+
+        self.task_queue
+            .publish(&task, &self.config.workflow_task_queue)
+            .await
+            .map_err(|e| {
+                SagaEngineError::InvalidState(format!("Failed to schedule start task: {:?}", e))
+            })?;
+
+        Ok(workflow_id)
+    }
+
+    /// Resume a workflow to process a task or replay.
+    pub async fn resume_workflow<W: DurableWorkflow>(
+        &self,
+        workflow: &W,
+        saga_id: SagaId,
+    ) -> Result<SagaExecutionResult, SagaEngineError> {
+        // 1. Fetch history
+        let history = self.event_store.get_history(&saga_id).await.map_err(|e| {
+            SagaEngineError::InvalidState(format!("Failed to fetch history: {:?}", e))
+        })?;
+
+        if history.is_empty() {
+            return Err(SagaEngineError::WorkflowNotFound(saga_id));
+        }
+
+        // 2. Reconstruct context
+        let mut context = self.reconstruct_context(&history, W::TYPE_ID).await?;
+        let current_version = history.len() as u64;
+
+        // 3. Extract input from start event
+        let start_event = history
+            .first()
+            .ok_or(SagaEngineError::InvalidState("Empty history".into()))?;
+        let input_value =
+            start_event
+                .attributes
+                .get("input")
+                .ok_or(SagaEngineError::InvalidState(
+                    "Missing input in start event".into(),
+                ))?;
+
+        // Deserialize input
+        let input: W::Input = serde_json::from_value(input_value.clone()).map_err(|e| {
+            SagaEngineError::Serialization(format!("Invalid workflow input: {}", e))
+        })?;
+
+        // 4. Run workflow
+        context.current_step_index = 0;
+        let result = workflow.run(&mut context, input).await;
+
+        // Handle the result
+        match result {
+            Ok(output) => {
+                // Workflow Completed
+                let serialized_output = serde_json::to_value(&output)
+                    .map_err(|e| SagaEngineError::Serialization(e.to_string()))?;
+
+                let event = HistoryEvent::builder()
+                    .event_id(EventId(current_version + 1))
+                    .event_type(EventType::WorkflowExecutionCompleted)
+                    .saga_id(saga_id.clone())
+                    .payload(serde_json::json!({ "output": serialized_output }))
+                    .build();
+
+                self.event_store
+                    .append_events(&saga_id, current_version, &[event])
+                    .await
+                    .map_err(|e| {
+                        SagaEngineError::InvalidState(format!("Failed to complete workflow: {}", e))
+                    })?;
+
+                Ok(SagaExecutionResult::Completed {
+                    output: serialized_output,
+                    event_count: current_version + 1,
+                })
+            }
+            Err(e) => {
+                // Check if paused via context
+                if let Some(paused) = context.pending_activity.take() {
+                    // Workflow Paused - Schedule Activity
+                    let event = HistoryEvent::builder()
+                        .event_id(EventId(current_version + 1))
+                        .event_type(EventType::ActivityTaskScheduled)
+                        .saga_id(saga_id.clone())
+                        .payload(serde_json::json!({
+                            "activity_type": paused.activity_type,
+                            "activity_id": paused.activity_id,
+                            "input": paused.input,
+                        }))
+                        .build();
+
+                    self.event_store
+                        .append_events(&saga_id, current_version, &[event])
+                        .await
+                        .map_err(|e| {
+                            SagaEngineError::InvalidState(format!(
+                                "Failed to persist pause event: {}",
+                                e
+                            ))
+                        })?;
+
+                    let task_payload = serde_json::to_vec(&WorkflowTask {
+                        saga_id: saga_id.clone(),
+                        workflow_type: W::TYPE_ID.to_string(),
+                        event_id: current_version + 1,
+                        payload: serde_json::to_vec(&paused.input)
+                            .map_err(|e| SagaEngineError::Serialization(e.to_string()))?,
+                    })
+                    .map_err(|e| SagaEngineError::Serialization(e.to_string()))?;
+
+                    let task = Task::new(
+                        paused.activity_type.clone(),
+                        saga_id.clone(),
+                        paused.activity_id.clone(),
+                        task_payload,
+                    )
+                    .with_queue(self.config.workflow_task_queue.clone());
+
+                    self.task_queue
+                        .publish(&task, &self.config.workflow_task_queue)
+                        .await
+                        .map_err(|e| {
+                            SagaEngineError::InvalidState(format!(
+                                "Failed to schedule activity task: {}",
+                                e
+                            ))
+                        })?;
+
+                    Ok(SagaExecutionResult::Running {
+                        state: serde_json::json!({
+                            "status": "paused",
+                            "waiting_for": paused.activity_type
+                        }),
+                    })
+                } else {
+                    // Actual failure
+                    let event = HistoryEvent::builder()
+                        .event_id(EventId(current_version + 1))
+                        .event_type(EventType::WorkflowExecutionFailed)
+                        .saga_id(saga_id.clone())
+                        .payload(serde_json::json!({ "error": e.to_string() }))
+                        .build();
+
+                    self.event_store
+                        .append_events(&saga_id, current_version, &[event])
+                        .await
+                        .map_err(|e| {
+                            SagaEngineError::InvalidState(format!("Failed to fail workflow: {}", e))
+                        })?;
+
+                    Ok(SagaExecutionResult::Failed {
+                        error: e.to_string(),
+                        event_count: current_version + 1,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Dynamic resume logic to support DynDurableWorkflow trait objects
+    pub async fn resume_workflow_dyn(
+        &self,
+        workflow: &dyn crate::workflow::registry::DynDurableWorkflow,
+        saga_id: SagaId,
+    ) -> Result<SagaExecutionResult, SagaEngineError> {
+        // 1. Fetch history
+        let history = self.event_store.get_history(&saga_id).await.map_err(|e| {
+            SagaEngineError::InvalidState(format!("Failed to fetch history: {:?}", e))
+        })?;
+
+        if history.is_empty() {
+            return Err(SagaEngineError::WorkflowNotFound(saga_id));
+        }
+
+        // 2. Extract workflow type from history
+        let start_event = history
+            .first()
+            .ok_or(SagaEngineError::InvalidState("Empty history".into()))?;
+        let workflow_type_str = start_event
+            .attributes
+            .get("workflow_type")
+            .and_then(|s| s.as_str())
+            .ok_or(SagaEngineError::InvalidState(
+                "Missing workflow_type".into(),
+            ))?;
+
+        // 3. Reconstruct context
+        let mut context = self
+            .reconstruct_context(&history, workflow_type_str)
+            .await?;
+        let current_version = history.len() as u64;
+
+        // 4. Extract input
+        let input_value = start_event
+            .attributes
+            .get("input")
+            .ok_or(SagaEngineError::InvalidState(
+                "Missing input in start event".into(),
+            ))?
+            .clone();
+
+        // 5. Run workflow
+        context.current_step_index = 0;
+        let result = workflow.run_dyn(&mut context, input_value).await;
+
+        // 6. Handle result
+        match result {
+            Ok(output) => {
+                let serialized_output = output;
+                let event = HistoryEvent::builder()
+                    .event_id(EventId(current_version + 1))
+                    .event_type(EventType::WorkflowExecutionCompleted)
+                    .saga_id(saga_id.clone())
+                    .payload(serde_json::json!({ "output": serialized_output }))
+                    .build();
+
+                self.event_store
+                    .append_events(&saga_id, current_version, &[event])
+                    .await
+                    .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+                Ok(SagaExecutionResult::Completed {
+                    output: serialized_output,
+                    event_count: current_version + 1,
+                })
+            }
+            Err(e) => {
+                if let Some(paused) = context.pending_activity.take() {
+                    let event = HistoryEvent::builder()
+                        .event_id(EventId(current_version + 1))
+                        .event_type(EventType::ActivityTaskScheduled)
+                        .saga_id(saga_id.clone())
+                        .payload(serde_json::json!({
+                            "activity_type": paused.activity_type,
+                            "activity_id": paused.activity_id,
+                            "input": paused.input,
+                        }))
+                        .build();
+
+                    self.event_store
+                        .append_events(&saga_id, current_version, &[event])
+                        .await
+                        .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+                    let task_payload = serde_json::to_vec(&WorkflowTask {
+                        saga_id: saga_id.clone(),
+                        workflow_type: workflow_type_str.to_string(),
+                        event_id: current_version + 1,
+                        payload: serde_json::to_vec(&paused.input).unwrap(),
+                    })
+                    .unwrap();
+
+                    let task = Task::new(
+                        paused.activity_type.clone(),
+                        saga_id.clone(),
+                        paused.activity_id.clone(),
+                        task_payload,
+                    )
+                    .with_queue(self.config.workflow_task_queue.clone());
+                    self.task_queue
+                        .publish(&task, &self.config.workflow_task_queue)
+                        .await
+                        .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+
+                    Ok(SagaExecutionResult::Running {
+                        state: serde_json::json!({ "status": "paused", "waiting_for": paused.activity_type }),
+                    })
+                } else {
+                    let event = HistoryEvent::builder()
+                        .event_id(EventId(current_version + 1))
+                        .event_type(EventType::WorkflowExecutionFailed)
+                        .saga_id(saga_id.clone())
+                        .payload(serde_json::json!({ "error": e.to_string() }))
+                        .build();
+                    self.event_store
+                        .append_events(&saga_id, current_version, &[event])
+                        .await
+                        .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+                    Ok(SagaExecutionResult::Failed {
+                        error: e.to_string(),
+                        event_count: current_version + 1,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Complete an activity task and resume workflow.
+    pub async fn complete_activity_task(
+        &self,
+        saga_id: SagaId,
+        workflow_type: String,
+        result: Result<serde_json::Value, String>,
+    ) -> Result<(), SagaEngineError> {
+        let history = self
+            .event_store
+            .get_history(&saga_id)
+            .await
+            .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+        let current_version = history.len() as u64;
+
+        let event = match &result {
+            Ok(output) => HistoryEvent::builder()
+                .event_id(EventId(current_version + 1))
+                .event_type(EventType::ActivityTaskCompleted)
+                .saga_id(saga_id.clone())
+                .payload(serde_json::json!({ "output": output }))
+                .build(),
+            Err(e) => HistoryEvent::builder()
+                .event_id(EventId(current_version + 1))
+                .event_type(EventType::ActivityTaskFailed)
+                .saga_id(saga_id.clone())
+                .payload(serde_json::json!({ "error": e }))
+                .build(),
+        };
+
+        self.event_store
+            .append_events(&saga_id, current_version, &[event])
+            .await
+            .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+
+        let task_payload = serde_json::to_vec(&WorkflowTask {
+            saga_id: saga_id.clone(),
+            workflow_type: workflow_type,
+            event_id: current_version + 1,
+            payload: vec![],
+        })
+        .map_err(|e| SagaEngineError::Serialization(e.to_string()))?;
+
+        // Schedule workflow task
+        let task = Task::new(
+            "workflow-execute".to_string(),
+            saga_id.clone(),
+            uuid::Uuid::new_v4().to_string(),
+            task_payload,
+        )
+        .with_queue(self.config.workflow_task_queue.clone());
+
+        self.task_queue
+            .publish(&task, &self.config.workflow_task_queue)
+            .await
+            .map_err(|e| SagaEngineError::InvalidState(format!("{:?}", e)))?;
+
+        Ok(())
     }
 }
 
