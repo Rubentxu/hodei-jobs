@@ -14,6 +14,7 @@ saga-engine-core = { path = "../core" }
 tokio = { workspace = true, features = ["sync", "macros", "time", "rt-multi-thread"] }
 
 # Serialization
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 # Async traits
