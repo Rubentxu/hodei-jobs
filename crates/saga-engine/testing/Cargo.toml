@@ -6,6 +6,17 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+test-postgres = [
+    "dep:testcontainers",
+    "dep:sqlx",
+]
+test-nats = [
+    "dep:testcontainers",
+    "dep:async-nats",
+]
+
 [dependencies]
 # Core saga engine
 saga-engine-core = { path = "../core" }
@@ -30,6 +41,11 @@ chrono = { workspace = true, features = ["serde"] }
 
 # Testing
 assert_matches = { workspace = true }
+
+# Testcontainers (optional features)
+testcontainers = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
+async-nats = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

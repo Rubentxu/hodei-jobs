@@ -1,0 +1,175 @@
+groups:
+  - name: saga_engine_workflows
+    rules:
+      # High Workflow Failure Rate
+      - alert: SagaEngineHighWorkflowFailureRate
+        expr: |
+          (
+            sum by (workflow_type) (rate(saga_workflow_failed_total[5m]))
+            /
+            sum by (workflow_type) (rate(saga_workflow_started_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High workflow failure rate for {{ $labels.workflow_type }}"
+          description: "Workflow {{ $labels.workflow_type }} has a failure rate of {{ $value | humanizePercentage }} over the last 5 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/saga-engine/workflow-failures"
+
+      # Very High Workflow Failure Rate (Critical)
+      - alert: SagaEngineVeryHighWorkflowFailureRate
+        expr: |
+          (
+            sum by (workflow_type) (rate(saga_workflow_failed_total[2m]))
+            /
+            sum by (workflow_type) (rate(saga_workflow_started_total[2m]))
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Critical workflow failure rate for {{ $labels.workflow_type }}"
+          description: "Workflow {{ $labels.workflow_type }} has a critical failure rate of {{ $value | humanizePercentage }} over the last 2 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/saga-engine/critical-workflow-failures"
+
+      # Workflow Duration High (p95)
+      - alert: SagaEngineWorkflowDurationHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le, workflow_type) (rate(saga_workflow_duration_seconds_bucket[5m]))) > 300
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High workflow duration (p95) for {{ $labels.workflow_type }}"
+          description: "Workflow {{ $labels.workflow_type }} p95 duration is {{ $value | humanizeDuration }}"
+
+      # Workflow Duration Critical
+      - alert: SagaEngineWorkflowDurationCritical
+        expr: |
+          histogram_quantile(0.95, sum by (le, workflow_type) (rate(saga_workflow_duration_seconds_bucket[5m]))) > 600
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Critical workflow duration (p95) for {{ $labels.workflow_type }}"
+          description: "Workflow {{ $labels.workflow_type }} p95 duration is {{ $value | humanizeDuration }}"
+
+      # Workflow Active Count High
+      - alert: SagaEngineHighActiveWorkflows
+        expr: sum by (workflow_type) (saga_workflow_active) > 500
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High number of active workflows for {{ $labels.workflow_type }}"
+          description: "{{ $value }} workflows of type {{ $labels.workflow_type }} are currently active"
+
+      # Workflow Active Count Critical
+      - alert: SagaEngineCriticalActiveWorkflows
+        expr: sum by (workflow_type) (saga_workflow_active) > 1000
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Critical number of active workflows for {{ $labels.workflow_type }}"
+          description: "{{ $value }} workflows of type {{ $labels.workflow_type }} are currently active - possible deadlock"
+
+  - name: saga_engine_activities
+    rules:
+      # High Activity Failure Rate
+      - alert: SagaEngineHighActivityFailureRate
+        expr: |
+          (
+            sum by (activity_type) (rate(saga_activity_failed_total[5m]))
+            /
+            sum by (activity_type) (rate(saga_activity_started_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High activity failure rate for {{ $labels.activity_type }}"
+          description: "Activity {{ $labels.activity_type }} has a failure rate of {{ $value | humanizePercentage }}"
+
+      # Activity Duration High (p95)
+      - alert: SagaEngineActivityDurationHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le, activity_type) (rate(saga_activity_duration_seconds_bucket[5m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High activity duration (p95) for {{ $labels.activity_type }}"
+          description: "Activity {{ $labels.activity_type }} p95 duration is {{ $value | humanizeDuration }}"
+
+      # Activity Failure Spike
+      - alert: SagaEngineActivityFailureSpike
+        expr: sum by (activity_type) (rate(saga_activity_failed_total[1m])) > 10
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Activity failure spike for {{ $labels.activity_type }}"
+          description: "{{ $value }} failures/minute detected for {{ $labels.activity_type }}"
+
+  - name: saga_engine_replay
+    rules:
+      # Replay Duration High
+      - alert: SagaEngineReplayDurationHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(saga_replay_duration_seconds_bucket[5m]))) > 10
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High replay duration (p95)"
+          description: "Replay p95 duration is {{ $value | humanizeDuration }}"
+
+      # High Replay Event Count
+      - alert: SagaEngineHighReplayEventCount
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(saga_replay_events_bucket[5m]))) > 100
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High replay event count"
+          description: "Replay is processing more than 100 events (p95)"
+
+  - name: saga_engine_snapshots
+    rules:
+      # Snapshot Frequency High
+      - alert: SagaEngineHighSnapshotFrequency
+        expr: |
+          sum by (workflow_type) (rate(saga_snapshot_taken_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: info
+          team: platform
+        annotations:
+          summary: "High snapshot frequency for {{ $labels.workflow_type }}"
+          description: "Snapshots taken at {{ $value | humanizeRate }}/second for {{ $labels.workflow_type }}"
+
+      # Snapshot Size Large
+      - alert: SagaEngineLargeSnapshotSize
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(saga_snapshot_size_bytes_bucket[5m]))) > 10485760
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Large snapshot size detected"
+          description: "Snapshot p95 size is {{ $value | humanizeBytes }}"
