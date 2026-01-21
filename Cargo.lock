@@ -4615,6 +4615,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "saga-engine-metrics"
+version = "0.82.0"
+dependencies = [
+ "prometheus",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "saga-engine-nats"
 version = "0.82.0"
 dependencies = [
