@@ -19,6 +19,8 @@ pub mod cancellation;
 pub mod circuit_breaker;
 pub mod cleanup;
 pub mod commands;
+pub mod context_factory; // Factory for creating contexts with feature flags
+pub mod context_v2; // Refactored SagaContext (SOLID/DDD compliant)
 pub mod engine_config;
 pub mod errors;
 pub mod event_handlers;
@@ -29,11 +31,11 @@ pub mod orchestrator;
 pub mod provisioning;
 pub mod recovery;
 pub mod repository;
-pub mod retry_policy; // EPIC-46 GAP-25: RetryPolicy with exponential backoff
+pub mod retry_policy;
 pub mod stuck_detector;
 pub mod timeout;
-pub mod timeout_config; // EPIC-85: Configurable saga timeouts
-pub mod types; // EPIC-85 US-05: Circuit Breaker for Saga Consumers // LRU cache with TTL for saga state
+pub mod timeout_config;
+pub mod types;
 
 // Re-exports from types module
 pub use types::{
