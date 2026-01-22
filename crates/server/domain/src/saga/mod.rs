@@ -29,6 +29,7 @@ pub mod event_sourcing;
 pub mod execution;
 pub mod metrics;
 pub mod orchestrator;
+pub mod production_integration; // Production integration examples
 pub mod provisioning;
 pub mod recovery;
 pub mod repository;

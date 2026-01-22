@@ -180,6 +180,24 @@ impl ServerConfig {
 }
 
 // =============================================================================
+// Migration Config Implementation
+// =============================================================================
+
+/// Implement MigrationConfig trait for ServerConfig
+///
+/// This allows ServerConfig to be used with the saga context migration module
+/// for gradual rollout of SagaContext V2.
+impl hodei_server_domain::saga::context_migration::MigrationConfig for ServerConfig {
+    fn should_use_saga_v2(&self, saga_id: &str) -> bool {
+        self.should_use_saga_v2(saga_id)
+    }
+
+    fn v2_percentage(&self) -> u8 {
+        self.saga_v2_percentage
+    }
+}
+
+// =============================================================================
 // Feature Flags Tests
 // =============================================================================
 
