@@ -1698,8 +1698,10 @@ mod tests {
     }
 }
 
-// Blanket implementation of WorkerProvider trait combining all ISP traits
-// This allows KubernetesProvider to be used as dyn WorkerProvider
+// Blanket implementation of deprecated WorkerProvider trait for backward compatibility
+// This allows KubernetesProvider to be used as dyn WorkerProvider in existing code
+// DEBT-001: This will be removed once all consumers are migrated to ISP traits
+#[allow(deprecated)]
 #[async_trait]
 impl WorkerProvider for KubernetesProvider {}
 
