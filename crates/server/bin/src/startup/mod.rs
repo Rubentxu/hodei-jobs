@@ -25,6 +25,7 @@ pub use shutdown::{GracefulShutdown, ShutdownConfig, start_signal_handler};
 
 use backoff::{ExponentialBackoff, future::retry};
 use dashmap::DashMap;
+use hodei_server_application::providers::capability_registry::CapabilityRegistry;
 use hodei_server_application::saga::provisioning_workflow_coordinator::{
     DynProvisioningWorkflowCoordinator, ProvisioningWorkflowCoordinator,
     SagaEngineProvisioningCoordinator,
@@ -108,6 +109,8 @@ pub struct AppState {
     pub provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     /// v4.0 workers shutdown handles (for graceful shutdown)
     pub v4_worker_shutdown_handles: Option<V4WorkerShutdownHandles>,
+    /// Capability-based provider registry (DEBT-001 Fase 2)
+    pub capability_registry: Arc<CapabilityRegistry>,
 }
 
 impl AppState {
@@ -134,6 +137,7 @@ impl AppState {
         grpc_services: Option<Arc<GrpcServices>>,
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
         v4_worker_shutdown_handles: Option<V4WorkerShutdownHandles>,
+        capability_registry: Arc<CapabilityRegistry>,
     ) -> Self {
         Self {
             pool,
@@ -150,6 +154,7 @@ impl AppState {
             grpc_services,
             provisioning_workflow_coordinator,
             v4_worker_shutdown_handles,
+            capability_registry,
         }
     }
 
@@ -521,7 +526,11 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         ));
     info!("✓ SagaEngineProvisioningCoordinator initialized (v4.0 - durable execution)");
 
-    // Step 11: Initialize WorkerLifecycleManager with providers map
+    // Step 12: Initialize CapabilityRegistry (DEBT-001 Fase 2)
+    let capability_registry = Arc::new(CapabilityRegistry::new());
+    info!("✓ CapabilityRegistry initialized (DEBT-001 Fase 2)");
+
+    // Step 13: Initialize WorkerLifecycleManager with providers map
     let lifecycle_manager = WorkerLifecycleManagerBuilder::new()
         .with_registry(worker_registry.clone())
         .with_providers(providers_map.clone())
@@ -532,7 +541,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     let lifecycle_manager = Arc::new(lifecycle_manager);
     info!("✓ WorkerLifecycleManager initialized");
 
-    // Step 12: Initialize providers and register them in lifecycle manager
+    // Step 14: Initialize providers and register them in lifecycle manager
     let provider_init_config = ProvidersInitConfig::default();
     let initializer = ProvidersInitializer::new(
         provider_config_repository.clone(),
@@ -540,6 +549,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         provider_init_config,
     )
     .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
+    .with_capability_registry(capability_registry.clone()) // DEBT-001 Fase 2: Wire capability registry
     .with_lifecycle_manager(lifecycle_manager.clone());
 
     let provider_init_result = initializer
@@ -595,6 +605,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         None, // grpc_services will be initialized later as Arc
         Some(provisioning_workflow_coordinator), // v4.0 ProvisioningWorkflowCoordinator
         Some(v4_shutdown_handles), // v4.0 workers shutdown handles
+        capability_registry, // DEBT-001 Fase 2: Capability-based provider registry
     ))
 }
 

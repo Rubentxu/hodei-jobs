@@ -28,6 +28,7 @@
 //! The system fails fast if NO providers are available at startup.
 
 use hodei_server_application::providers::bootstrap::ProviderBootstrap;
+use hodei_server_application::providers::capability_registry::CapabilityRegistry;
 use hodei_server_application::providers::registry::ProviderRegistry;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::DomainEvent;
@@ -168,6 +169,8 @@ pub struct ProvidersInitializer {
     repository: Arc<dyn ProviderConfigRepository>,
     /// Provider registry for runtime management (configuration)
     registry: Arc<ProviderRegistry>,
+    /// Capability-based provider registry for capability-based access (DEBT-001 Fase 2)
+    capability_registry: Option<Arc<CapabilityRegistry>>,
     /// Event bus for domain events
     event_bus: Option<Arc<dyn EventBus>>,
     /// Configuration for initialization
@@ -186,6 +189,7 @@ impl ProvidersInitializer {
         Self {
             repository,
             registry,
+            capability_registry: None,
             event_bus: None,
             config,
             lifecycle_manager: None,
@@ -195,6 +199,19 @@ impl ProvidersInitializer {
     /// Set the event bus for domain events
     pub fn with_event_bus(mut self, event_bus: Arc<dyn EventBus>) -> Self {
         self.event_bus = Some(event_bus);
+        self
+    }
+
+    /// Set the capability-based provider registry (DEBT-001 Fase 2)
+    ///
+    /// This registry stores providers by their specific capabilities
+    /// (WorkerLifecycle, WorkerHealth, WorkerLogs, etc.) instead of the
+    /// deprecated combined WorkerProvider trait.
+    pub fn with_capability_registry(
+        mut self,
+        capability_registry: Arc<CapabilityRegistry>,
+    ) -> Self {
+        self.capability_registry = Some(capability_registry);
         self
     }
 
@@ -324,6 +341,49 @@ impl ProvidersInitializer {
                 lifecycle.register_provider(provider.clone()).await;
                 debug!("Registered provider {} in lifecycle manager", provider_id);
             }
+        }
+
+        // Step 5.5: Register all successfully initialized providers in capability registry (DEBT-001 Fase 2)
+        if let Some(ref capability_registry) = self.capability_registry {
+            for (provider_id, provider) in &initialized_providers {
+                // Register the provider with all its capabilities individually
+                // Since provider implements WorkerProvider (deprecated), it has all capability traits
+                use hodei_server_domain::workers::provider_api::{
+                    WorkerCost, WorkerEligibility, WorkerHealth, WorkerLifecycle, WorkerLogs,
+                    WorkerMetrics,
+                };
+
+                // Cast to each capability trait and register
+                capability_registry.register_lifecycle(
+                    provider_id.clone(),
+                    provider.clone() as Arc<dyn WorkerLifecycle>,
+                );
+                capability_registry.register_health(
+                    provider_id.clone(),
+                    provider.clone() as Arc<dyn WorkerHealth>,
+                );
+                capability_registry
+                    .register_logs(provider_id.clone(), provider.clone() as Arc<dyn WorkerLogs>);
+                capability_registry
+                    .register_cost(provider_id.clone(), provider.clone() as Arc<dyn WorkerCost>);
+                capability_registry.register_eligibility(
+                    provider_id.clone(),
+                    provider.clone() as Arc<dyn WorkerEligibility>,
+                );
+                capability_registry.register_metrics(
+                    provider_id.clone(),
+                    provider.clone() as Arc<dyn WorkerMetrics>,
+                );
+
+                debug!(
+                    "Registered provider {} in capability registry with all capabilities",
+                    provider_id
+                );
+            }
+            info!(
+                "Registered {} providers in capability registry",
+                initialized_providers.len()
+            );
         }
 
         // Calculate duration
