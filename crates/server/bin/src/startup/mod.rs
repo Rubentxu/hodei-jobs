@@ -96,11 +96,10 @@ pub struct AppState {
     /// Worker lifecycle manager for provisioning and recovery
     pub lifecycle_manager: Arc<WorkerLifecycleManager>,
     /// Worker provisioning for saga commands (EPIC-89 Sprint 3)
-    pub worker_provisioning: Arc<
-        dyn hodei_server_application::workers::provisioning::WorkerProvisioningService
-            + Send
-            + Sync,
-    >,
+    /// Using concrete type to allow both WorkerProvisioningService (app layer)
+    /// and WorkerProvisioning (domain layer) trait usage
+    pub worker_provisioning:
+        Arc<hodei_server_application::workers::provisioning_impl::DefaultWorkerProvisioningService>,
     /// Provider initialization result
     pub provider_init_result: Option<ProvidersInitResult>,
     /// gRPC services container (for sharing between coordinator and server)
@@ -129,9 +128,7 @@ impl AppState {
         >,
         lifecycle_manager: Arc<WorkerLifecycleManager>,
         worker_provisioning: Arc<
-            dyn hodei_server_application::workers::provisioning::WorkerProvisioningService
-                + Send
-                + Sync,
+            hodei_server_application::workers::provisioning_impl::DefaultWorkerProvisioningService,
         >,
         provider_init_result: Option<ProvidersInitResult>,
         grpc_services: Option<Arc<GrpcServices>>,
@@ -419,11 +416,9 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         ),
     );
 
-    let worker_provisioning: Arc<
-        dyn hodei_server_application::workers::provisioning::WorkerProvisioningService
-            + Send
-            + Sync,
-    > = Arc::new(DefaultWorkerProvisioningService::new(
+    // Use concrete type instead of trait object to allow dual trait usage
+    // (WorkerProvisioningService for application layer, WorkerProvisioning for domain/saga layer)
+    let worker_provisioning = Arc::new(DefaultWorkerProvisioningService::new(
         worker_registry.clone(),
         token_store.clone(),
         providers_map.clone(),

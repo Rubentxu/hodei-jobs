@@ -255,14 +255,15 @@ pub async fn start_job_coordinator(
     let provisioning_config =
         ProvisioningConfig::new(worker_server_address).with_default_image(default_image);
     let providers_map = lifecycle_manager.providers_map();
-    let provisioning_service: Arc<dyn WorkerProvisioningService> =
-        Arc::new(DefaultWorkerProvisioningService::new(
-            worker_registry.clone(),
-            token_store.clone(),
-            providers_map,
-            provider_registry.clone(), // Pass provider registry to get default_image
-            provisioning_config,
-        ));
+    // Use concrete type instead of trait object to allow dual trait usage
+    // (WorkerProvisioningService for application layer, WorkerProvisioning for domain/saga layer)
+    let provisioning_service = Arc::new(DefaultWorkerProvisioningService::new(
+        worker_registry.clone(),
+        token_store.clone(),
+        providers_map,
+        provider_registry.clone(), // Pass provider registry to get default_image
+        provisioning_config,
+    ));
     info!("✓ WorkerProvisioningService initialized");
 
     // Create scheduler config
@@ -608,9 +609,8 @@ pub async fn start_background_tasks(
     pool: sqlx::PgPool,
     saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
     worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
-    worker_provisioning: Arc<
-        dyn hodei_server_application::workers::provisioning::WorkerProvisioningService,
-    >,
+    // Use concrete type to allow both WorkerProvisioningService and WorkerProvisioning trait usage
+    worker_provisioning: Arc<DefaultWorkerProvisioningService>,
 ) -> BackgroundTasksShutdownHandle {
     info!("⏰ Starting background tasks...");
 
@@ -822,18 +822,13 @@ pub async fn start_execution_command_consumers_service(
 /// - Recovery Saga: CheckConnectivityCommand, TransferJobCommand, MarkJobForRecoveryCommand,
 ///                  ProvisionNewWorkerCommand, DestroyOldWorkerCommand
 /// - Provisioning Saga: CreateWorkerCommand, DestroyWorkerCommand, UnregisterWorkerCommand
-pub async fn start_saga_command_consumers_service<P>(
+pub async fn start_saga_command_consumers_service(
     nats_client: Arc<async_nats::Client>,
     pool: sqlx::PgPool,
-    provisioning: Arc<P>,
-) -> anyhow::Result<()>
-where
-    P: hodei_server_application::workers::provisioning::WorkerProvisioningService
-        + hodei_server_domain::workers::WorkerProvisioning
-        + Send
-        + Sync
-        + 'static,
-{
+    // Use concrete type since it needs to implement both WorkerProvisioningService (app layer)
+    // and WorkerProvisioning (domain layer)
+    provisioning: Arc<DefaultWorkerProvisioningService>,
+) -> anyhow::Result<()> {
     info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 4)...");
 
     // Initialize DLQ configuration for Sprint 4
@@ -850,7 +845,7 @@ where
     // DefaultWorkerProvisioningService implements both traits
     let provisioning_domain: Arc<
         dyn hodei_server_domain::workers::WorkerProvisioning + Send + Sync,
-    > = provisioning as _;
+    > = provisioning.clone();
     saga_command_consumers::start_saga_command_consumers(
         nats_client.as_ref().clone(),
         pool,
