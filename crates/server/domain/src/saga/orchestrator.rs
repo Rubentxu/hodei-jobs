@@ -12,7 +12,7 @@ use super::{
     SagaState, SagaType, TimeoutSaga,
 };
 use crate::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
-use crate::transaction::{PgTransaction, TransactionError, TransactionProvider};
+use crate::transaction::TransactionProvider;
 use crate::workers::WorkerSpec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

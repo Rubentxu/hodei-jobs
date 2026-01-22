@@ -4,9 +4,8 @@
 // These commands encapsulate the intent to execute, track, and complete jobs.
 
 use crate::command::{Command, CommandHandler, CommandMetadataDefault, CommandTargetType};
-use crate::event_bus::EventBus;
 use crate::jobs::JobRepository;
-use crate::shared_kernel::{DomainError, JobId, JobState, WorkerId, WorkerState};
+use crate::shared_kernel::{JobId, JobState, WorkerId, WorkerState};
 use crate::workers::{WorkerFilter, WorkerRegistry};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

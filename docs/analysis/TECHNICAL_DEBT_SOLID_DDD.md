@@ -193,54 +193,53 @@ struct MonitoringService {
 
 ---
 
-### DEBT-002: WorkerProvisioningService con Múltiples Responsabilidades
+### DEBT-002: WorkerProvisioningService con Múltiples Responsabilidades ✅ **RESUELTO**
 
 **Archivo**: `crates/server/application/src/workers/provisioning.rs`
 
-**Descripción**:
-El trait `WorkerProvisioningService` mezcla:
-- Operaciones de aprovisionamiento (`provision_worker`, `destroy_worker`)
-- Consultas (`list_providers`, `default_worker_spec`)
-- Configuración (`get_provider_config`)
-- Validación (`validate_spec`)
+**Estado**: ✅ **RESUELTO** - Los traits ya están segregados según ISP
 
-**Problema**:
+**Descripción Original**:
+El trait `WorkerProvisioningService` mezclaba múltiples responsabilidades.
+
+**Solución Implementada**:
+
+Los traits ya están segregados en el archivo `provisioning.rs`:
+
+1. **WorkerProvisioner** - Operaciones de aprovisionamiento:
 ```rust
-// Cliente que solo necesita listar providers debe conocer aprovisionamiento
-struct ProviderCatalog {
-    provisioning: Arc<dyn WorkerProvisioningService>, // <- Demasiado grande
-}
-```
-
-**Propuesta de Refactorización**:
-
-```rust
-// ===== SOLUCIÓN: Segregación por Rol =====
-
-// 1. Rol: Aprovisionamiento (para sagas)
 #[async_trait]
 pub trait WorkerProvisioner: Send + Sync {
     async fn provision_worker(&self, provider_id: &ProviderId, spec: WorkerSpec, job_id: JobId) 
-        -> Result<WorkerProvisioningResult>;
+        -> Result<ProvisioningResult>;
     async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()>;
     async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()>;
 }
+```
 
-// 2. Rol: Consulta de providers (para UI/API)
+2. **WorkerProviderQuery** - Consultas de proveedores:
+```rust
 #[async_trait]
-pub trait ProviderCatalog: Send + Sync {
+pub trait WorkerProviderQuery: Send + Sync {
     async fn list_providers(&self) -> Result<Vec<ProviderId>>;
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool>;
     async fn default_worker_spec(&self, provider_id: &ProviderId) -> Option<WorkerSpec>;
+    async fn get_provider_config(&self, provider_id: &ProviderId) -> Result<Option<ProviderConfig>>;
 }
+```
 
-// 3. Rol: Configuración (para admin)
+3. **WorkerSpecValidator** - Validación de especificaciones:
+```rust
 #[async_trait]
-pub trait ProviderConfigurator: Send + Sync {
-    async fn get_provider_config(&self, provider_id: &ProviderId) 
-        -> Result<Option<ProviderConfig>>;
+pub trait WorkerSpecValidator: Send + Sync {
     async fn validate_spec(&self, spec: &WorkerSpec) -> Result<()>;
+    async fn validate_provider(&self, provider_id: &ProviderId) -> Result<()>;
 }
+```
+
+**Archivos**:
+- ✅ `crates/server/application/src/workers/provisioning.rs` - Traits segregados
+- ✅ `crates/server/application/src/workers/provisioning_impl.rs` - Implementación
 
 // 4. Implementación compuesta (para backward compatibility)
 pub struct DefaultWorkerProvisioningService {

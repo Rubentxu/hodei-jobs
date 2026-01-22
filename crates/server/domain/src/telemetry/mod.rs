@@ -523,7 +523,7 @@ impl HistogramStats {
         for (i, &count) in self.buckets.iter().enumerate() {
             cumulative += count;
             if cumulative >= target {
-                return (i as u64 * 100);
+                return i as u64 * 100;
             }
         }
         self.max
