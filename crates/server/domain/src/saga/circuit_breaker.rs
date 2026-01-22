@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
+use tokio::time::sleep;
 use tracing::{info, warn};
 
 /// Circuit breaker state

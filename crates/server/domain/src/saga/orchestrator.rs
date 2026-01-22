@@ -924,10 +924,12 @@ impl Drop for DropGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TransactionError;
     use crate::saga::{
         SagaContext, SagaError, SagaResult, SagaStep, SagaStepData, SagaStepId, SagaStepState,
         SagaType,
     };
+    use crate::transaction::PgTransaction;
     use chrono::Utc;
 
     // Test saga implementation - uses Rc<RefCell> to allow cloning
