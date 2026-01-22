@@ -35,7 +35,7 @@ pub mod provisioning_saga;
 pub mod provisioning_workflow_coordinator;
 pub mod recovery_saga;
 pub mod timeout_checker;
-pub mod v4_workers; // EPIC-94-C: v4.0 Activity Workers for NATS task consumption
+pub mod workflow_engine; // saga-engine v4.0: Workflow orchestration engine with NATS activity consumers
 
 pub mod sync_durable_executor;
 pub mod sync_executor;
@@ -53,4 +53,4 @@ pub use recovery_saga::{
 pub use timeout_checker::{
     TimeoutCheckResult, TimeoutChecker, TimeoutCheckerConfig, TimeoutCheckerError,
 };
-pub use v4_workers::*; // Export v4 worker types
+pub use workflow_engine::*; // Export workflow engine types

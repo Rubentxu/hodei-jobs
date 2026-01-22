@@ -34,8 +34,9 @@ use hodei_server_application::saga::recovery_saga::{
     DynRecoverySagaCoordinator, RecoverySagaCoordinator,
 };
 use hodei_server_application::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
-use hodei_server_application::saga::v4_workers::{
-    V4WorkerConfig, V4WorkerShutdownHandles, initialize_v4_workers, start_v4_workers,
+use hodei_server_application::saga::workflow_engine::{
+    WorkflowEngineConfig, WorkflowEngineShutdownHandles, initialize_workflow_engine,
+    start_workflow_engine,
 };
 use hodei_server_application::saga::workflows::provisioning_durable::ProvisioningWorkflow;
 use hodei_server_application::saga::workflows::recovery_durable::RecoveryWorkflow;
@@ -96,20 +97,18 @@ pub struct AppState {
     >,
     /// Worker lifecycle manager for provisioning and recovery
     pub lifecycle_manager: Arc<WorkerLifecycleManager>,
-    /// Worker provisioning for saga commands (EPIC-89 Sprint 3)
-    /// Using concrete type to allow both WorkerProvisioningService (app layer)
-    /// and WorkerProvisioning (domain layer) trait usage
+    /// Worker provisioning service
     pub worker_provisioning:
         Arc<hodei_server_application::workers::provisioning_impl::DefaultWorkerProvisioningService>,
     /// Provider initialization result
     pub provider_init_result: Option<ProvidersInitResult>,
     /// gRPC services container (for sharing between coordinator and server)
     pub grpc_services: Option<Arc<GrpcServices>>,
-    /// Provisioning workflow coordinator (v4.0 DurableWorkflow)
+    /// Provisioning workflow coordinator (saga-engine v4.0 DurableWorkflow)
     pub provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
-    /// v4.0 workers shutdown handles (for graceful shutdown)
-    pub v4_worker_shutdown_handles: Option<V4WorkerShutdownHandles>,
-    /// Capability-based provider registry (DEBT-001 Fase 2)
+    /// Workflow engine shutdown handles (for graceful shutdown)
+    pub workflow_engine_shutdown_handles: Option<WorkflowEngineShutdownHandles>,
+    /// Capability-based provider registry
     pub capability_registry: Arc<CapabilityRegistry>,
 }
 
@@ -136,7 +135,7 @@ impl AppState {
         provider_init_result: Option<ProvidersInitResult>,
         grpc_services: Option<Arc<GrpcServices>>,
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
-        v4_worker_shutdown_handles: Option<V4WorkerShutdownHandles>,
+        workflow_engine_shutdown_handles: Option<WorkflowEngineShutdownHandles>,
         capability_registry: Arc<CapabilityRegistry>,
     ) -> Self {
         Self {
@@ -153,7 +152,7 @@ impl AppState {
             provider_init_result,
             grpc_services,
             provisioning_workflow_coordinator,
-            v4_worker_shutdown_handles,
+            workflow_engine_shutdown_handles,
             capability_registry,
         }
     }
@@ -454,9 +453,12 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         .with_max_events_before_snapshot(100)
         .with_activity_timeout(Duration::from_secs(300));
 
-    // Create EventStore (Postgres)
+    // Create EventStore (Postgres) and run migrations (idempotent)
     let event_store: Arc<PostgresEventStore> = Arc::new(PostgresEventStore::new(pool.clone()));
-    info!("✓ PgEventStore initialized for workflow persistence");
+    event_store.migrate().await?;
+    info!(
+        "✓ PgEventStore initialized and migrations applied (saga_events, saga_snapshots, saga_timers)"
+    );
 
     // Create TaskQueue (NATS)
     let task_queue_config = saga_engine_nats::NatsTaskQueueConfig {
@@ -473,9 +475,10 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     let task_queue: Arc<NatsTaskQueue> = Arc::new(NatsTaskQueue::new(task_queue_config).await?);
     info!("✓ NatsTaskQueue initialized for activity dispatch");
 
-    // Create TimerStore (Postgres)
+    // Create TimerStore (Postgres) and run migrations (idempotent)
     let timer_store: Arc<PostgresTimerStore> = Arc::new(PostgresTimerStore::new(pool.clone()));
-    info!("✓ PgTimerStore initialized for workflow timers");
+    timer_store.migrate().await?;
+    info!("✓ PgTimerStore initialized and migrations applied (saga_timers)");
 
     // Create SagaEngine
     let saga_engine: Arc<SagaEngine<PostgresEventStore, NatsTaskQueue, PostgresTimerStore>> =
@@ -487,9 +490,9 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         ));
     info!("✓ SagaEngine initialized for v4.0 workflows");
 
-    // EPIC-94-D: Initialize and start v4.0 workers for activity processing
-    // Without these workers, workflows dispatch activities to NATS but no one executes them
-    let v4_config = V4WorkerConfig {
+    // EPIC-94-D: Initialize and start workflow engine v4.0 for activity processing
+    // Without this engine, workflows dispatch activities to NATS but no one executes them
+    let wf_config = WorkflowEngineConfig {
         provisioning_worker_enabled: true,
         execution_worker_enabled: true,
         max_concurrent: 10,
@@ -500,18 +503,18 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     // Create CommandBus for execution activities
     let (command_bus, _) = services_init::create_command_bus(pool.clone());
 
-    // Initialize v4 workers with SagaEngine, CommandBus, and provisioning service
-    let v4_init_result = initialize_v4_workers(
+    // Initialize workflow engine with SagaEngine, CommandBus, and provisioning service
+    let wf_init_result = initialize_workflow_engine(
         saga_engine.clone(),
-        v4_config,
+        wf_config,
         Some(command_bus.clone()),
         Some(worker_provisioning.clone()),
     )
     .await;
 
-    // Start v4 workers in background tasks
-    let v4_shutdown_handles = start_v4_workers(v4_init_result).await;
-    info!("✓ v4.0 workers started (provisioning + execution workers)");
+    // Start workflow engine consumers in background tasks
+    let wf_shutdown_handles = start_workflow_engine(wf_init_result).await;
+    info!("✓ Workflow engine v4.0 started (provisioning + execution consumers)");
 
     // Create the ProvisioningWorkflow instance
     let provisioning_workflow = ProvisioningWorkflow::default();
@@ -604,7 +607,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         Some(provider_init_result),
         None, // grpc_services will be initialized later as Arc
         Some(provisioning_workflow_coordinator), // v4.0 ProvisioningWorkflowCoordinator
-        Some(v4_shutdown_handles), // v4.0 workers shutdown handles
+        Some(wf_shutdown_handles), // v4.0 workflow engine shutdown handles
         capability_registry, // DEBT-001 Fase 2: Capability-based provider registry
     ))
 }

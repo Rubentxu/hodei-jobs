@@ -157,8 +157,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for shutdown signal
     info!("Server running. Waiting for shutdown signal (SIGTERM/SIGINT)...");
 
-    // EPIC-94-D: Extract v4 worker handles before passing app_state to gRPC server
-    let v4_shutdown_handles = app_state.v4_worker_shutdown_handles.clone();
+    // Extract workflow engine handles before passing app_state to gRPC server
+    let workflow_shutdown_handles = app_state.workflow_engine_shutdown_handles.clone();
 
     // Start the gRPC server with shutdown integration
     tokio::select! {
@@ -180,11 +180,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Shutting down gracefully...");
 
-    // EPIC-94-D: Shutdown v4.0 workers
-    if let Some(handles) = v4_shutdown_handles {
-        info!("Shutting down v4.0 workers...");
+    // Shutdown workflow engine
+    if let Some(handles) = workflow_shutdown_handles {
+        info!("Shutting down workflow engine...");
         handles.shutdown_all().await;
-        info!("✓ v4.0 workers shut down");
+        info!("✓ Workflow engine shut down");
     }
 
     Ok(())
