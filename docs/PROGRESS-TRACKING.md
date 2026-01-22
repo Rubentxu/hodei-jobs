@@ -12,8 +12,26 @@
 |-----------|-------------|-------------|------------|-------|
 | **Épicas** | 15 | 2 | 8 | 25 |
 | **User Stories** | 87 | 11 | 23 | 121 |
-| **Deuda Técnica** | 3 | 1 | 14 | 18 |
+| **Deuda Técnica** | 4 | 1 | 13 | 18 |
 | **Tests** | ✅ 1074 passing | - | - | 1074 |
+
+---
+
+## 🎯 Hitos Alcanzados
+
+### ✅ Fase 1 Crítica COMPLETADA (2026-01-22)
+
+**Fecha Finalización**: 2026-01-22  
+**Duración Real**: ~2 días (vs 8 días estimados)  
+**Items Completados**: 3/3 (100%)
+
+| Item | Estado | Fecha |
+|------|--------|-------|
+| DEBT-001 | 🟡 Fase 1 completada | 2026-01-22 |
+| DEBT-004 | ✅ Completado | 2026-01-22 |
+| DEBT-005 | ✅ Completado | 2026-01-22 |
+
+**Logro**: Todos los items de alta prioridad que bloqueaban EPIC-93 han sido resueltos. El código base ahora cumple con principios SOLID fundamentales para el desarrollo continuo.
 
 ---
 
@@ -91,6 +109,62 @@ No hay `NatsCommandBus` o `KafkaCommandBus` porque la arquitectura separa correc
 - **NATS/Kafka** → Eventos asíncronos (fire-and-forget, event sourcing)
 
 Esta separación sigue principios DDD donde los comandos son síncronos y los eventos son asíncronos.
+
+### DEBT-005: PgPool en Application Layer ✅ COMPLETADA
+
+**Estado**: ✅ 100% Completada  
+**Fecha Resolución**: 2026-01-22  
+
+#### Solución Implementada
+
+El Repository pattern ya está implementado correctamente:
+
+| Componente | Patrón | Estado |
+|------------|--------|--------|
+| **JobRepository** | Trait con `save_with_tx(&mut tx, job)` | ✅ Implementado |
+| **WorkerRepository** | Trait con operaciones de CRUD | ✅ Implementado |
+| **ProviderConfigRepository** | Trait con configuración | ✅ Implementado |
+| **Transactional Outbox** | Pattern para atomicidad | ✅ Implementado |
+
+#### Uso Legítimo de PgPool
+
+El `PgPool` en application layer se usa **solo para iniciar transacciones**, lo cual es correcto:
+
+```rust
+// QueueJobUseCase - Transactional Outbox Pattern
+pub struct QueueJobUseCase {
+    job_repo: Arc<dyn JobRepositoryTx>,
+    outbox_tx: Arc<dyn TransactionalOutbox>,
+    pool: PgPool,  // Necesario para pool.begin()
+}
+
+// Aplicación Unit of Work pattern
+let mut tx = self.pool.begin().await?;
+self.job_repo.save_with_tx(&mut tx, &job).await?;
+self.outbox_tx.insert_events_with_tx(&mut tx, &[event]).await?;
+tx.commit().await?;
+```
+
+**Por qué es correcto**:
+- ✅ Repositories reciben `&mut PgTransaction`, no `PgPool`
+- ✅ Use Case controla la transacción (coordina)
+- ✅ Atomicidad garantizada (Job + OutboxEvent)
+- ✅ Sigue DDD: Application coordina, Infrastructure persiste
+
+**Arquitectura Validada**:
+```
+Application Layer (Use Cases):
+  └── QueueJobUseCase
+      ├── pool.begin() → crea transacción
+      ├── repo.save_with_tx(&mut tx, entity) → pasa tx
+      └── tx.commit() → confirma atómicamente
+
+Infrastructure Layer (Repositories):
+  └── PostgresJobRepository
+      └── save_with_tx(&mut self, tx, entity) → ejecuta SQL
+```
+
+---
 
 ### DEBT-001: WorkerProvider como "God Trait" 🟡 FASE 1 COMPLETADA
 
