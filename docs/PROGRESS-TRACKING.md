@@ -12,7 +12,7 @@
 |-----------|-------------|-------------|------------|-------|
 | **Épicas** | 15 | 2 | 8 | 25 |
 | **User Stories** | 87 | 11 | 23 | 121 |
-| **Deuda Técnica** | 2 | 1 | 15 | 18 |
+| **Deuda Técnica** | 3 | 1 | 14 | 18 |
 | **Tests** | ✅ 1074 passing | - | - | 1074 |
 
 ---
@@ -66,9 +66,31 @@
 
 **Documentación**: [EPIC-83-refactorizacion-calidad.md](./epics/EPIC-83-refactorizacion-calidad.md)
 
----
+### DEBT-004: CommandBus Concretos en Dominio ✅ COMPLETADA
 
-## 🔧 Deuda Técnica - Progreso
+**Estado**: ✅ 100% Completada  
+**Fecha Resolución**: 2026-01-22  
+
+#### Solución Implementada
+
+El CommandBus trait ya existía en el domain layer con múltiples implementaciones:
+
+| Implementación | Ubicación | Propósito |
+|----------------|-----------|-----------|
+| **CommandBus trait** | `domain/src/command/mod.rs` | Contrato en dominio |
+| **InMemoryCommandBus** | `domain/src/command/bus.rs` | In-memory con registry e idempotency |
+| **PostgresCommandBus** | `saga-engine/pg/src/command_bus.rs` | PostgreSQL-backed transaccional |
+| **OutboxCommandBus** | `domain/src/command/outbox.rs` | Outbox pattern para consistencia eventual |
+| **LoggingCommandBus** | `domain/src/command/middleware/mod.rs` | Middleware para logging |
+| **RetryCommandBus** | `domain/src/command/middleware/mod.rs` | Middleware para reintentos |
+| **TelemetryCommandBus** | `domain/src/command/middleware/mod.rs` | Middleware para telemetría |
+
+**Nota Arquitectónica**:
+No hay `NatsCommandBus` o `KafkaCommandBus` porque la arquitectura separa correctamente:
+- **CommandBus** → Comandos síncronos (request-response)
+- **NATS/Kafka** → Eventos asíncronos (fire-and-forget, event sourcing)
+
+Esta separación sigue principios DDD donde los comandos son síncronos y los eventos son asíncronos.
 
 ### DEBT-001: WorkerProvider como "God Trait" 🟡 FASE 1 COMPLETADA
 
@@ -168,7 +190,7 @@
 
 | Prioridad | Pendientes | En Progreso | Completadas |
 |-----------|------------|-------------|-------------|
-| 🔴 Alta | 3 | 1 | 2 |
+| 🔴 Alta | 2 | 1 | 3 |
 | 🟡 Media | 10 | 0 | 0 |
 | 🟢 Baja | 4 | 0 | 0 |
 
