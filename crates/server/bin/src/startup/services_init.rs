@@ -282,7 +282,8 @@ pub async fn start_job_coordinator(
     info!("✓ CommandBus created for ExecutionSagaDispatcher");
 
     // Create CommandBusJobExecutionPort wrapping the command bus
-    let execution_port = CommandBusJobExecutionPort::new(Some(command_bus.clone()));
+    // DEBT-006: CommandBus is now required (not Option) for compile-time guarantees
+    let execution_port = CommandBusJobExecutionPort::new(command_bus.clone());
 
     // Create ExecutionWorkflow with the port
     let execution_workflow = ExecutionWorkflow::new(Arc::new(execution_port));

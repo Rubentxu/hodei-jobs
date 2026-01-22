@@ -94,7 +94,8 @@ pub async fn initialize_v4_workers(
     let workflow_registry = Arc::new(WorkflowRegistry::new());
 
     // Create execution port if command_bus is provided
-    let execution_port = command_bus.map(|bus| CommandBusJobExecutionPort::new(Some(bus)));
+    // DEBT-006: CommandBusJobExecutionPort now requires CommandBus (not Optional)
+    let execution_port = command_bus.map(|bus| CommandBusJobExecutionPort::new(bus));
 
     // Register provisioning activities
     if config.provisioning_worker_enabled {
@@ -267,9 +268,13 @@ fn register_execution_activities_real(
 
 /// Register all execution workflow activities (mock implementation for testing)
 fn register_execution_activities_mock(registry: &Arc<ActivityRegistry>) {
-    // Create a mock port using CommandBusJobExecutionPort with None command_bus
-    // This will return errors for all operations but satisfies the type system
-    let mock_port = CommandBusJobExecutionPort::new(None);
+    // DEBT-006: Create a mock port using InMemoryCommandBus for testing
+    // This provides a real CommandBus that returns errors for unregistered commands
+    use hodei_server_domain::command::erased::InMemoryErasedCommandBus;
+
+    let mock_command_bus: DynCommandBus = Arc::new(InMemoryErasedCommandBus::new());
+    let mock_port = CommandBusJobExecutionPort::new(mock_command_bus);
+
     registry.register_activity(ValidateJobActivity::new(Arc::new(mock_port.clone())));
     registry.register_activity(DispatchJobActivity::new(Arc::new(mock_port.clone())));
     registry.register_activity(CollectResultActivity::new(Arc::new(mock_port)));

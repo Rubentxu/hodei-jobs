@@ -243,6 +243,14 @@ pub enum JobExecutionCommandError {
 /// to existing command handlers, maintaining backward compatibility while
 /// leveraging the new durable workflow pattern.
 ///
+/// ## Design Decision
+///
+/// The CommandBus is **required** (not Option) because:
+/// 1. Compile-time guarantees prevent missing dependencies
+/// 2. Builder/DI pattern ensures all dependencies are present at construction
+/// 3. Eliminates runtime None-checking throughout the implementation
+/// 4. Makes the contract explicit - a JobExecutionPort MUST have a CommandBus
+///
 /// ## Usage
 ///
 /// ```rust,ignore
@@ -253,8 +261,8 @@ pub enum JobExecutionCommandError {
 /// ```
 #[derive(Clone)]
 pub struct CommandBusJobExecutionPort {
-    /// CommandBus for dispatching commands
-    command_bus: Option<DynCommandBus>,
+    /// CommandBus for dispatching commands (required - not optional)
+    command_bus: DynCommandBus,
 }
 
 impl Debug for CommandBusJobExecutionPort {
@@ -266,9 +274,23 @@ impl Debug for CommandBusJobExecutionPort {
 }
 
 impl CommandBusJobExecutionPort {
-    /// Create a new CommandBusJobExecutionPort
-    pub fn new(command_bus: Option<DynCommandBus>) -> Self {
+    /// Create a new CommandBusJobExecutionPort with required CommandBus
+    ///
+    /// # Arguments
+    /// * `command_bus` - The CommandBus instance (required)
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let port = CommandBusJobExecutionPort::new(command_bus);
+    /// ```
+    pub fn new(command_bus: DynCommandBus) -> Self {
         Self { command_bus }
+    }
+
+    /// Get a reference to the underlying CommandBus
+    pub fn command_bus(&self) -> &DynCommandBus {
+        &self.command_bus
     }
 }
 
@@ -276,15 +298,10 @@ impl CommandBusJobExecutionPort {
 impl JobExecutionPort for CommandBusJobExecutionPort {
     /// Validate a job exists and is in correct state
     async fn validate_job(&self, job_id: &str) -> Result<bool, String> {
-        // Return error if no command_bus available
-        let command_bus = self.command_bus.as_ref().ok_or_else(|| {
-            "CommandBus not available - JobExecutionPort not properly initialized".to_string()
-        })?;
-
         let saga_id = format!("validate-{}", Uuid::new_v4());
         let command = ValidateJobCommand::new(job_id.to_string(), saga_id);
 
-        match dispatch_erased(command_bus, command).await {
+        match dispatch_erased(&self.command_bus, command).await {
             Ok(result) => {
                 if result.is_valid {
                     Ok(true)
@@ -307,15 +324,10 @@ impl JobExecutionPort for CommandBusJobExecutionPort {
         _arguments: &[String],
         _timeout_secs: u64,
     ) -> Result<JobResultData, String> {
-        // Return error if no command_bus available
-        let command_bus = self.command_bus.as_ref().ok_or_else(|| {
-            "CommandBus not available - JobExecutionPort not properly initialized".to_string()
-        })?;
-
         let saga_id = format!("execute-{}", Uuid::new_v4());
         let command = ExecuteJobCommand::new(job_id.to_string(), worker_id.to_string(), saga_id);
 
-        match dispatch_erased(command_bus, command).await {
+        match dispatch_erased(&self.command_bus, command).await {
             Ok(result) => {
                 if result.dispatched {
                     Ok(JobResultData::Success)
