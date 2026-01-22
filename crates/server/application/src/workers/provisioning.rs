@@ -70,6 +70,12 @@ pub trait WorkerProvisioningService: Send + Sync {
 
     /// Validate a worker specification
     async fn validate_spec(&self, spec: &WorkerSpec) -> Result<()>;
+
+    /// Terminate a running worker
+    async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()>;
+
+    /// Destroy a worker's infrastructure
+    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()>;
 }
 
 /// Mock implementation for testing
@@ -129,6 +135,14 @@ impl WorkerProvisioningService for MockProvisioningService {
     }
 
     async fn validate_spec(&self, _spec: &WorkerSpec) -> Result<()> {
+        Ok(())
+    }
+
+    async fn terminate_worker(&self, _worker_id: &WorkerId, _reason: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn destroy_worker(&self, _worker_id: &WorkerId) -> Result<()> {
         Ok(())
     }
 }
@@ -251,6 +265,11 @@ impl hodei_server_domain::workers::WorkerProvisioning for MockWorkerProvisioning
     }
 
     async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+        self.destroyed.lock().await.push(worker_id.clone());
+        Ok(())
+    }
+
+    async fn terminate_worker(&self, worker_id: &WorkerId, _reason: &str) -> Result<()> {
         self.destroyed.lock().await.push(worker_id.clone());
         Ok(())
     }

@@ -7,11 +7,13 @@
 //! Provides graceful shutdown coordination via shutdown module.
 
 mod grpc_server;
+mod nats_init;
 mod providers_init;
 mod services_init;
 mod shutdown;
 
 pub use grpc_server::{GrpcServerConfig, start_grpc_server};
+pub use nats_init::{REQUIRED_STREAMS, initialize_nats_streams};
 pub use providers_init::{ProvidersInitConfig, ProvidersInitResult, ProvidersInitializer};
 pub use services_init::{
     GrpcServices, initialize_grpc_services, start_background_tasks, start_command_relay,
@@ -30,9 +32,12 @@ use hodei_server_application::saga::provisioning_workflow_coordinator::{
 use hodei_server_application::saga::recovery_saga::{
     DynRecoverySagaCoordinator, RecoverySagaCoordinator,
 };
-use hodei_server_application::saga::sync_executor::SyncWorkflowExecutor;
+use hodei_server_application::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
+use hodei_server_application::saga::v4_workers::{
+    V4WorkerConfig, V4WorkerShutdownHandles, initialize_v4_workers, start_v4_workers,
+};
 use hodei_server_application::saga::workflows::provisioning_durable::ProvisioningWorkflow;
-use hodei_server_application::saga::workflows::recovery::RecoveryWorkflow;
+use hodei_server_application::saga::workflows::recovery_durable::RecoveryWorkflow;
 use hodei_server_application::workers::lifecycle::{
     WorkerLifecycleManager, WorkerLifecycleManagerBuilder,
 };
@@ -91,13 +96,19 @@ pub struct AppState {
     /// Worker lifecycle manager for provisioning and recovery
     pub lifecycle_manager: Arc<WorkerLifecycleManager>,
     /// Worker provisioning for saga commands (EPIC-89 Sprint 3)
-    pub worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+    pub worker_provisioning: Arc<
+        dyn hodei_server_application::workers::provisioning::WorkerProvisioningService
+            + Send
+            + Sync,
+    >,
     /// Provider initialization result
     pub provider_init_result: Option<ProvidersInitResult>,
     /// gRPC services container (for sharing between coordinator and server)
     pub grpc_services: Option<Arc<GrpcServices>>,
     /// Provisioning workflow coordinator (v4.0 DurableWorkflow)
     pub provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
+    /// v4.0 workers shutdown handles (for graceful shutdown)
+    pub v4_worker_shutdown_handles: Option<V4WorkerShutdownHandles>,
 }
 
 impl AppState {
@@ -117,10 +128,15 @@ impl AppState {
                 + Sync,
         >,
         lifecycle_manager: Arc<WorkerLifecycleManager>,
-        worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+        worker_provisioning: Arc<
+            dyn hodei_server_application::workers::provisioning::WorkerProvisioningService
+                + Send
+                + Sync,
+        >,
         provider_init_result: Option<ProvidersInitResult>,
         grpc_services: Option<Arc<GrpcServices>>,
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
+        v4_worker_shutdown_handles: Option<V4WorkerShutdownHandles>,
     ) -> Self {
         Self {
             pool,
@@ -136,6 +152,7 @@ impl AppState {
             provider_init_result,
             grpc_services,
             provisioning_workflow_coordinator,
+            v4_worker_shutdown_handles,
         }
     }
 
@@ -214,11 +231,41 @@ impl StartupConfig {
                 .unwrap_or_else(|_| "1".to_string())
                 == "1",
             rust_log: env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
-            server_address: env::var("HODEI_SERVER_ADDRESS")
-                .or_else(|_| env::var("HODEI_GRPC_ADDRESS"))
-                .unwrap_or_else(|_| format!("http://127.0.0.1:{}", grpc_port)),
+            server_address: Self::ensure_http_prefix(
+                env::var("HODEI_SERVER_ADDRESS")
+                    .or_else(|_| env::var("HODEI_GRPC_ADDRESS"))
+                    .unwrap_or_else(|_| format!("http://127.0.0.1:{}", grpc_port)),
+            ),
             ..Self::default()
         })
+    }
+
+    /// Ensure the address has http:// prefix for worker connectivity
+    fn ensure_http_prefix(addr: String) -> String {
+        if addr.starts_with("http://") || addr.starts_with("https://") {
+            addr
+        } else {
+            format!("http://{}", addr)
+        }
+    }
+
+    /// Get the server address for workers to connect to.
+    /// In development mode (telepresence), workers need a routeable address.
+    /// Uses HODEI_GRPC_ADDRESS env var, or falls back to telepresence service DNS.
+    pub fn get_worker_server_address(&self) -> String {
+        // Priority: HODEI_GRPC_ADDRESS > auto-generated for telepresence > server_address
+        if let Ok(url) = std::env::var("HODEI_GRPC_ADDRESS") {
+            Self::ensure_http_prefix(url)
+        } else if self.kubernetes_enabled && self.dev_mode {
+            // In telepresence, use the service DNS that gets intercepted
+            // Configure via HODEI_K8S_SERVICE_NAME (default: hodei-server.hodei-jobs.svc.cluster.local)
+            let service_name = std::env::var("HODEI_K8S_SERVICE_NAME")
+                .unwrap_or_else(|_| "hodei-server.hodei-jobs.svc.cluster.local".to_string());
+            let port = self.grpc_addr.port();
+            format!("http://{}:{}", service_name, port)
+        } else {
+            self.server_address.clone()
+        }
     }
 
     pub fn database_url(&self) -> anyhow::Result<String> {
@@ -316,6 +363,11 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     .map_err(|e| anyhow::anyhow!("Failed to connect to NATS after retries: {}", e))?;
     info!("✓ NATS connected");
 
+    // Step 3b: Initialize NATS JetStream streams (idempotent)
+    // This ensures all required streams exist before starting consumers
+    initialize_nats_streams(nats_event_bus.client()).await?;
+    info!("✓ NATS streams initialized");
+
     // Step 4: Initialize repositories and stores
     let worker_registry: Arc<PostgresWorkerRegistry> =
         Arc::new(PostgresWorkerRegistry::new(pool.clone()));
@@ -351,9 +403,39 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     > = Arc::new(PostgresProviderConfigRepository::new(pool.clone()));
     info!("✓ ProviderConfigRepository initialized");
 
-    // Step 8: Initialize recovery saga coordinator
-    let recovery_workflow = RecoveryWorkflow::default();
-    let executor = Arc::new(SyncWorkflowExecutor::new(recovery_workflow));
+    // Step 8: Initialize providers map (needed for WorkerProvisioning)
+    let providers_map: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
+
+    // Step 9: Initialize WorkerProvisioning (needed for recovery workflow)
+    let default_image = std::env::var("HODEI_WORKER_IMAGE")
+        .unwrap_or_else(|_| "localhost:31500/hodei-jobs-worker:latest".to_string());
+    let provisioning_config =
+        ProvisioningConfig::new(config.server_address.clone()).with_default_image(default_image);
+
+    // Create ProviderRegistry from provider_config_repository
+    let provider_registry = Arc::new(
+        hodei_server_application::providers::registry::ProviderRegistry::new(
+            provider_config_repository.clone(),
+        ),
+    );
+
+    let worker_provisioning: Arc<
+        dyn hodei_server_application::workers::provisioning::WorkerProvisioningService
+            + Send
+            + Sync,
+    > = Arc::new(DefaultWorkerProvisioningService::new(
+        worker_registry.clone(),
+        token_store.clone(),
+        providers_map.clone(),
+        provider_registry.clone(),
+        provisioning_config,
+    ));
+    info!("✓ WorkerProvisioningService initialized");
+
+    // Step 10: Initialize recovery saga coordinator
+    let recovery_workflow =
+        RecoveryWorkflow::new(worker_registry.clone(), worker_provisioning.clone());
+    let executor = Arc::new(SyncDurableWorkflowExecutor::new(recovery_workflow));
     let recovery_coordinator = RecoverySagaCoordinator::new(executor);
     let recovery_saga_coordinator: Arc<DynRecoverySagaCoordinator> =
         Arc::new(DynRecoverySagaCoordinator::new(recovery_coordinator));
@@ -405,6 +487,32 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         ));
     info!("✓ SagaEngine initialized for v4.0 workflows");
 
+    // EPIC-94-D: Initialize and start v4.0 workers for activity processing
+    // Without these workers, workflows dispatch activities to NATS but no one executes them
+    let v4_config = V4WorkerConfig {
+        provisioning_worker_enabled: true,
+        execution_worker_enabled: true,
+        max_concurrent: 10,
+        poll_interval_ms: 100,
+        shutdown_timeout_secs: 30,
+    };
+
+    // Create CommandBus for execution activities
+    let (command_bus, _) = services_init::create_command_bus(pool.clone());
+
+    // Initialize v4 workers with SagaEngine, CommandBus, and provisioning service
+    let v4_init_result = initialize_v4_workers(
+        saga_engine.clone(),
+        v4_config,
+        Some(command_bus.clone()),
+        Some(worker_provisioning.clone()),
+    )
+    .await;
+
+    // Start v4 workers in background tasks
+    let v4_shutdown_handles = start_v4_workers(v4_init_result).await;
+    info!("✓ v4.0 workers started (provisioning + execution workers)");
+
     // Create the ProvisioningWorkflow instance
     let provisioning_workflow = ProvisioningWorkflow::default();
 
@@ -418,9 +526,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         ));
     info!("✓ SagaEngineProvisioningCoordinator initialized (v4.0 - durable execution)");
 
-    // Step 9: Initialize WorkerLifecycleManager with empty providers map
-    // The providers will be registered during provider initialization
-    let providers_map: Arc<DashMap<ProviderId, Arc<dyn WorkerProvider>>> = Arc::new(DashMap::new());
+    // Step 11: Initialize WorkerLifecycleManager with providers map
     let lifecycle_manager = WorkerLifecycleManagerBuilder::new()
         .with_registry(worker_registry.clone())
         .with_providers(providers_map.clone())
@@ -429,18 +535,13 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         .with_recovery_saga_coordinator(recovery_saga_coordinator.clone())
         .build();
     let lifecycle_manager = Arc::new(lifecycle_manager);
-    info!("✓ WorkerLifecycleManager initialized with empty providers map");
+    info!("✓ WorkerLifecycleManager initialized");
 
-    // Step 10: Initialize providers and register them in lifecycle manager
-    let registry = Arc::new(
-        hodei_server_application::providers::registry::ProviderRegistry::new(
-            provider_config_repository.clone(),
-        ),
-    );
+    // Step 12: Initialize providers and register them in lifecycle manager
     let provider_init_config = ProvidersInitConfig::default();
     let initializer = ProvidersInitializer::new(
         provider_config_repository.clone(),
-        registry,
+        provider_registry.clone(),
         provider_init_config,
     )
     .with_event_bus(Arc::new(nats_event_bus.clone()) as Arc<dyn EventBus>)
@@ -464,29 +565,6 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     lifecycle_manager.start_event_monitoring().await;
     info!("✓ WorkerLifecycleManager event monitoring started (reactive cleanup enabled)");
 
-    // EPIC-89: Initialize WorkerProvisioning for saga command consumers (Sprint 3)
-    let default_image = std::env::var("HODEI_WORKER_IMAGE")
-        .unwrap_or_else(|_| "localhost:31500/hodei-jobs-worker:latest".to_string());
-    let provisioning_config =
-        ProvisioningConfig::new(config.server_address.clone()).with_default_image(default_image);
-
-    // Create ProviderRegistry from provider_config_repository
-    let provider_registry = Arc::new(
-        hodei_server_application::providers::registry::ProviderRegistry::new(
-            provider_config_repository.clone(),
-        ),
-    );
-
-    let worker_provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
-        Arc::new(DefaultWorkerProvisioningService::new(
-            worker_registry.clone(),
-            token_store.clone(),
-            providers_map.clone(),
-            provider_registry.clone(),
-            provisioning_config,
-        ));
-    info!("✓ WorkerProvisioningService initialized for saga commands");
-
     // EPIC-88: Start Execution Command Consumers
     services_init::start_execution_command_consumers_service(
         Arc::new(nats_event_bus.client().clone()),
@@ -496,6 +574,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     info!("✓ Execution Command Consumers started");
 
     // EPIC-89: Start Saga Command Consumers (Sprint 3 - including provisioning commands)
+    // DefaultWorkerProvisioningService implements both traits, so generic inference works
     services_init::start_saga_command_consumers_service(
         Arc::new(nats_event_bus.client().clone()),
         pool.clone(),
@@ -520,6 +599,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         Some(provider_init_result),
         None, // grpc_services will be initialized later as Arc
         Some(provisioning_workflow_coordinator), // v4.0 ProvisioningWorkflowCoordinator
+        Some(v4_shutdown_handles), // v4.0 workers shutdown handles
     ))
 }
 

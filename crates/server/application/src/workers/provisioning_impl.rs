@@ -299,33 +299,9 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         }
         Ok(())
     }
-}
 
-/// Implementation of domain trait WorkerProvisioning for saga steps.
-///
-/// This allows the DefaultWorkerProvisioningService to be used directly
-/// in saga steps like CreateInfrastructureStep.
-#[async_trait]
-impl WorkerProvisioning for DefaultWorkerProvisioningService {
-    async fn provision_worker(
-        &self,
-        provider_id: &ProviderId,
-        spec: WorkerSpec,
-        job_id: JobId,
-    ) -> Result<WorkerProvisioningResult> {
-        // Delegate to WorkerProvisioningService implementation
-        let result =
-            WorkerProvisioningService::provision_worker(self, provider_id, spec, job_id.clone())
-                .await?;
-        Ok(WorkerProvisioningResult {
-            worker_id: result.worker_id,
-            provider_id: result.provider_id,
-            job_id,
-        })
-    }
-
-    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
-        info!("Destroying worker {} (saga compensation)", worker_id);
+    async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()> {
+        info!("Terminating worker {} (reason: {})", worker_id, reason);
 
         // Get worker info to find the provider and handle
         let worker = self.registry.find_by_id(worker_id).await?.ok_or_else(|| {
@@ -361,9 +337,46 @@ impl WorkerProvisioning for DefaultWorkerProvisioningService {
         Ok(())
     }
 
+    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+        <Self as WorkerProvisioningService>::terminate_worker(self, worker_id, "saga compensation")
+            .await
+    }
+}
+
+/// Implementation of domain trait WorkerProvisioning for saga steps.
+///
+/// This allows the DefaultWorkerProvisioningService to be used directly
+/// in saga steps like CreateInfrastructureStep.
+#[async_trait]
+impl WorkerProvisioning for DefaultWorkerProvisioningService {
+    async fn provision_worker(
+        &self,
+        provider_id: &ProviderId,
+        spec: WorkerSpec,
+        job_id: JobId,
+    ) -> Result<WorkerProvisioningResult> {
+        // Delegate to WorkerProvisioningService implementation
+        let result =
+            WorkerProvisioningService::provision_worker(self, provider_id, spec, job_id.clone())
+                .await?;
+        Ok(WorkerProvisioningResult {
+            worker_id: result.worker_id,
+            provider_id: result.provider_id,
+            job_id,
+        })
+    }
+
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
         // Delegate to WorkerProvisioningService implementation
         WorkerProvisioningService::is_provider_available(self, provider_id).await
+    }
+
+    async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()> {
+        <Self as WorkerProvisioningService>::terminate_worker(self, worker_id, reason).await
+    }
+
+    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+        <Self as WorkerProvisioningService>::destroy_worker(self, worker_id).await
     }
 }
 

@@ -13,6 +13,8 @@ use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::{WorkerProvisioning, WorkerRegistry, WorkerSpec};
 use hodei_shared::states::WorkerState;
 
+use crate::workers::provisioning::WorkerProvisioningService;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerLifecycleInput {
     pub spec: WorkerSpec,
@@ -265,7 +267,7 @@ pub struct BusyWorkerInput {
 
 #[derive(Clone)]
 pub struct TerminateWorkerActivity {
-    provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+    provisioning: Arc<dyn WorkerProvisioningService + Send + Sync>,
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
@@ -277,7 +279,7 @@ impl Debug for TerminateWorkerActivity {
 
 impl TerminateWorkerActivity {
     pub fn new(
-        provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+        provisioning: Arc<dyn WorkerProvisioningService + Send + Sync>,
         registry: Arc<dyn WorkerRegistry + Send + Sync>,
     ) -> Self {
         Self {

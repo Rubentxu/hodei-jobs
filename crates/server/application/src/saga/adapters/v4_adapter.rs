@@ -3,7 +3,7 @@
 //! Adapter that uses the saga-engine v4.0 library for saga execution.
 
 use async_trait::async_trait;
-use saga_engine_core::workflow::{WorkflowDefinition, WorkflowState};
+use saga_engine_core::workflow::{DurableWorkflow, WorkflowState};
 use serde::Serialize;
 use std::fmt::Debug;
 use std::io;
@@ -89,7 +89,7 @@ pub trait WorkflowRuntime: Send + Sync + Debug {
 pub struct SagaEngineV4Adapter<R, W>
 where
     R: WorkflowRuntime + Send + Sync + 'static,
-    W: WorkflowDefinition + Send + 'static,
+    W: DurableWorkflow + Send + 'static,
 {
     /// The workflow runtime
     runtime: Arc<R>,
@@ -102,7 +102,7 @@ where
 impl<R, W> SagaEngineV4Adapter<R, W>
 where
     R: WorkflowRuntime + Send + Sync + 'static,
-    W: WorkflowDefinition + Send + 'static,
+    W: DurableWorkflow + Send + 'static,
 {
     /// Create a new SagaEngineV4Adapter with runtime
     pub fn new(runtime: Arc<R>, config: Option<SagaEngineV4Config>) -> Self {
@@ -118,7 +118,7 @@ where
 impl<R, W> SagaPort<W> for SagaEngineV4Adapter<R, W>
 where
     R: WorkflowRuntime + Send + Sync + 'static,
-    W: WorkflowDefinition + Send + 'static,
+    W: DurableWorkflow + Send + 'static,
 {
     type Error = io::Error;
 

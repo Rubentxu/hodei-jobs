@@ -16,7 +16,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use hodei_server_domain::shared_kernel::{JobId, ProviderId, WorkerId};
-use hodei_server_domain::workers::{WorkerProvisioning, WorkerRegistry};
+use hodei_server_domain::workers::WorkerRegistry;
 use hodei_shared::states::WorkerState;
 
 use saga_engine_core::workflow::{
@@ -25,6 +25,7 @@ use saga_engine_core::workflow::{
 };
 
 use crate::saga::bridge::worker_lifecycle::TerminateWorkerActivity;
+use crate::workers::provisioning::WorkerProvisioningService;
 
 // =============================================================================
 // Input/Output Types
@@ -192,19 +193,19 @@ pub struct ProvisionReplacementOutput {
 /// Activity for provisioning replacement worker
 pub struct ProvisionReplacementActivity {
     /// Using underscore to indicate Debug is manually implemented
-    _provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+    _provisioning: Arc<dyn WorkerProvisioningService + Send + Sync>,
 }
 
 impl std::fmt::Debug for ProvisionReplacementActivity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProvisionReplacementActivity")
-            .field("_provisioning", &"<dyn WorkerProvisioning>")
+            .field("_provisioning", &"<dyn WorkerProvisioningService>")
             .finish()
     }
 }
 
 impl ProvisionReplacementActivity {
-    pub fn new(provisioning: Arc<dyn WorkerProvisioning + Send + Sync>) -> Self {
+    pub fn new(provisioning: Arc<dyn WorkerProvisioningService + Send + Sync>) -> Self {
         Self {
             _provisioning: provisioning,
         }
@@ -348,7 +349,7 @@ impl RecoveryWorkflow {
     /// Create a new RecoveryWorkflow
     pub fn new(
         registry: Arc<dyn WorkerRegistry + Send + Sync>,
-        provisioning: Arc<dyn WorkerProvisioning + Send + Sync>,
+        provisioning: Arc<dyn WorkerProvisioningService + Send + Sync>,
     ) -> Self {
         Self {
             check_connectivity_activity: CheckConnectivityActivity::new(registry.clone()),

@@ -27,8 +27,8 @@ use tracing::{debug, error, info, warn};
 use crate::saga::provisioning_workflow_coordinator::{
     ProvisioningWorkflowCoordinator, ProvisioningWorkflowError, ProvisioningWorkflowResult,
 };
-use crate::saga::workflows::JobResultData;
 use crate::saga::workflows::execution_durable::ExecutionWorkflowInput;
+use crate::saga::workflows::execution_durable::JobResultData;
 
 // =============================================================================
 // Provision Worker Command

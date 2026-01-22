@@ -5,16 +5,16 @@
 //!
 //! # Type Safety
 //!
-//! The port is generic over `W: WorkflowDefinition`, which provides compile-time
+//! The port is generic over `W: DurableWorkflow`, which provides compile-time
 //! type safety for inputs and outputs. This eliminates runtime serialization
 //! errors and provides better developer experience.
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use saga_engine_core::workflow::WorkflowDefinition;
+//! use saga_engine_core::workflow::DurableWorkflow;
 //! use hodei_server_application::saga::port::SagaPort;
-//! use hodei_server_application::saga::workflows::recovery::RecoveryWorkflow;
+//! use hodei_server_application::saga::workflows::recovery_durable::RecoveryWorkflow;
 //!
 //! // Type-safe access to workflow input/output
 //! async fn start_recovery(port: &impl SagaPort<RecoveryWorkflow>) {
@@ -24,7 +24,7 @@
 //! ```
 
 use async_trait::async_trait;
-use saga_engine_core::workflow::{WorkflowDefinition, WorkflowState};
+use saga_engine_core::workflow::{DurableWorkflow, WorkflowState};
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -38,11 +38,11 @@ pub mod types;
 ///
 /// # Generic Parameter
 ///
-/// - `W`: The workflow definition type that this port handles. This provides
+/// - `W`: The durable workflow type that this port handles. This provides
 ///   type-safe access to `W::Input` and `W::Output`.
 ///
 #[async_trait]
-pub trait SagaPort<W: WorkflowDefinition>: Send + Sync {
+pub trait SagaPort<W: DurableWorkflow>: Send + Sync {
     /// Error type for saga port operations
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -102,7 +102,7 @@ pub trait SagaPort<W: WorkflowDefinition>: Send + Sync {
 
 /// Extension trait for SagaPort with convenience methods
 #[async_trait]
-pub trait SagaPortExt<W: WorkflowDefinition>: SagaPort<W> {
+pub trait SagaPortExt<W: DurableWorkflow>: SagaPort<W> {
     /// Check if a workflow is currently running
     async fn is_running(&self, execution_id: &types::SagaExecutionId) -> Result<bool, Self::Error> {
         let state = self.get_workflow_state(execution_id).await?;

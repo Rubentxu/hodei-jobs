@@ -82,6 +82,14 @@ mod tests {
             Ok(())
         }
 
+        async fn terminate_worker(
+            &self,
+            _worker_id: &WorkerId,
+            _reason: &str,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         async fn is_provider_available(
             &self,
             _provider_id: &ProviderId,

@@ -1,15 +1,21 @@
 //!
 //! # Execution Saga Dispatcher
 //!
-//! Coordinates job execution using saga-engine v4.0 workflows.
+//! Coordinates job execution using saga-engine v4.0 DurableWorkflow.
 //! This module replaces the legacy dispatcher_saga module.
 
-use crate::saga::sync_executor::SyncWorkflowExecutor;
+use crate::saga::bridge::job_execution_port::CommandBusJobExecutionPort;
+use crate::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
+use crate::saga::workflows::execution_durable::ExecutionWorkflow;
 use async_trait::async_trait;
 use hodei_server_domain::jobs::Job;
 use hodei_server_domain::workers::{Worker, WorkerRegistry};
+use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
+
+/// Concrete type for ExecutionWorkflow with CommandBusJobExecutionPort
+type RealExecutionWorkflow = ExecutionWorkflow<CommandBusJobExecutionPort>;
 
 /// Configuration for execution saga
 #[derive(Debug, Clone)]
@@ -46,16 +52,16 @@ pub struct ExecutionSagaResult {
     pub assigned_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Dispatcher for execution workflow
+/// Dispatcher for execution workflow (v4.0 DurableWorkflow)
 #[derive(Clone)]
 pub struct ExecutionSagaDispatcher {
-    executor: Arc<SyncWorkflowExecutor<super::workflows::execution::ExecutionWorkflow>>,
+    executor: Arc<SyncDurableWorkflowExecutor<RealExecutionWorkflow>>,
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
 impl ExecutionSagaDispatcher {
     pub fn new(
-        executor: Arc<SyncWorkflowExecutor<super::workflows::execution::ExecutionWorkflow>>,
+        executor: Arc<SyncDurableWorkflowExecutor<RealExecutionWorkflow>>,
         registry: Arc<dyn WorkerRegistry + Send + Sync>,
     ) -> Self {
         Self { executor, registry }
@@ -92,7 +98,7 @@ impl ExecutionSagaDispatcherTrait for ExecutionSagaDispatcher {
         let command = command_vec.first().cloned().unwrap_or_default();
         let arguments = command_vec.get(1..).map(|s| s.to_vec()).unwrap_or_default();
 
-        let input = super::workflows::execution::ExecutionWorkflowInput::new(
+        let input = super::workflows::execution_durable::ExecutionWorkflowInput::new(
             job.id.to_string(),
             worker.id().to_string(),
             command,
@@ -102,11 +108,12 @@ impl ExecutionSagaDispatcherTrait for ExecutionSagaDispatcher {
         let result = self
             .executor
             .execute(
-                serde_json::to_value(&input)
-                    .map_err(|e| ExecutionSagaDispatcherError::SagaFailed(e.to_string()))?,
+                serde_json::to_value(&input).map_err(|e: serde_json::Error| {
+                    ExecutionSagaDispatcherError::SagaFailed(e.to_string())
+                })?,
             )
             .await
-            .map_err(|e| ExecutionSagaDispatcherError::SagaFailed(e.to_string()))?;
+            .map_err(|e: String| ExecutionSagaDispatcherError::SagaFailed(e))?;
 
         match result {
             saga_engine_core::workflow::WorkflowResult::Completed { .. } => {

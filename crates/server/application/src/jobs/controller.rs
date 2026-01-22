@@ -12,7 +12,6 @@
 use crate::jobs::coordinator::JobCoordinator;
 use crate::providers::ProviderRegistry;
 use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
-use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
 use crate::saga::provisioning_workflow_coordinator::{
     DynProvisioningWorkflowCoordinator, ProvisioningWorkflowCoordinator,
 };
@@ -57,8 +56,9 @@ impl JobController {
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
-        execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
-        provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        execution_saga_dispatcher: Option<
+            Arc<dyn crate::saga::dispatcher_saga::ExecutionSagaDispatcherTrait>,
+        >,
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
         _pool: PgPool,
     ) -> Self {
@@ -76,7 +76,6 @@ impl JobController {
             outbox_repository, // Mandatory outbox repository
             provisioning_service.clone(),
             execution_saga_dispatcher,
-            provisioning_saga_coordinator,
             provisioning_workflow_coordinator, // EPIC-94-C: v4.0 workflow coordinator
         ));
 

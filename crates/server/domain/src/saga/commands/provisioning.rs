@@ -362,6 +362,10 @@ mod tests {
             Ok(())
         }
 
+        async fn terminate_worker(&self, _worker_id: &WorkerId, _reason: &str) -> Result<()> {
+            Ok(())
+        }
+
         async fn is_provider_available(&self, _provider_id: &ProviderId) -> Result<bool> {
             Ok(true)
         }

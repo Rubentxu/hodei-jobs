@@ -22,6 +22,7 @@ use saga_engine_nats::NatsTaskQueue;
 use saga_engine_pg::{PostgresEventStore, PostgresTimerStore};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::saga::bridge::CommandBusJobExecutionPort;
@@ -180,7 +181,7 @@ pub async fn start_v4_workers(result: V4WorkerInitResult) -> V4WorkerShutdownHan
                 error!("Provisioning worker failed: {:?}", e);
             }
         });
-        handles.provisioning_worker = Some(handle);
+        *handles.provisioning_worker.lock().await = Some(handle);
         info!("✓ Provisioning worker started");
     }
 
@@ -190,7 +191,7 @@ pub async fn start_v4_workers(result: V4WorkerInitResult) -> V4WorkerShutdownHan
                 error!("Execution worker failed: {:?}", e);
             }
         });
-        handles.execution_worker = Some(handle);
+        *handles.execution_worker.lock().await = Some(handle);
         info!("✓ Execution worker started");
     }
 
@@ -198,21 +199,30 @@ pub async fn start_v4_workers(result: V4WorkerInitResult) -> V4WorkerShutdownHan
 }
 
 /// Shutdown handles for v4.0 workers
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
 pub struct V4WorkerShutdownHandles {
-    pub provisioning_worker: Option<tokio::task::JoinHandle<()>>,
-    pub execution_worker: Option<tokio::task::JoinHandle<()>>,
+    pub provisioning_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub execution_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+impl Default for V4WorkerShutdownHandles {
+    fn default() -> Self {
+        Self {
+            provisioning_worker: Arc::new(Mutex::new(None)),
+            execution_worker: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl V4WorkerShutdownHandles {
     /// Wait for all workers to shutdown
-    pub async fn shutdown_all(self) {
-        if let Some(handle) = self.provisioning_worker {
+    pub async fn shutdown_all(&self) {
+        if let Some(handle) = self.provisioning_worker.lock().await.take() {
             let _ = handle.await;
             debug!("Provisioning worker shut down");
         }
 
-        if let Some(handle) = self.execution_worker {
+        if let Some(handle) = self.execution_worker.lock().await.take() {
             let _ = handle.await;
             debug!("Execution worker shut down");
         }

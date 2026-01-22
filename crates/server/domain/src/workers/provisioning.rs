@@ -103,6 +103,21 @@ pub trait WorkerProvisioning: Send + Sync {
     /// * `Err(DomainError)` - If destruction fails, compensation may be incomplete
     async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()>;
 
+    /// Terminates a worker with a reason.
+    ///
+    /// This is used by v4 workflows (cancellation, timeout, cleanup) to
+    /// gracefully terminate workers and report the reason for termination.
+    /// Similar to `destroy_worker` but includes a reason parameter for logging.
+    ///
+    /// # Arguments
+    /// * `worker_id` - The ID of the worker to terminate
+    /// * `reason` - The reason for termination (for logging/auditing)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Worker terminated successfully
+    /// * `Err(DomainError)` - If termination fails
+    async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()>;
+
     /// Checks if a provider is available for worker provisioning.
     ///
     /// This can be used by saga steps to validate provider availability
@@ -171,6 +186,11 @@ mod tests {
         }
 
         async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+            self.destroyed.lock().await.push(worker_id.clone());
+            Ok(())
+        }
+
+        async fn terminate_worker(&self, worker_id: &WorkerId, _reason: &str) -> Result<()> {
             self.destroyed.lock().await.push(worker_id.clone());
             Ok(())
         }

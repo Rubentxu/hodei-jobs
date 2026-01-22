@@ -3,8 +3,8 @@
 //!
 //! Detects and handles job timeouts using saga-engine v4.0 workflows.
 
-use crate::saga::sync_executor::SyncWorkflowExecutor;
-use crate::saga::workflows::timeout::TimeoutWorkflow;
+use crate::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
+use crate::saga::workflows::timeout_durable::TimeoutDurableWorkflow;
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::shared_kernel::JobId;
 use std::sync::Arc;
@@ -48,14 +48,14 @@ pub struct TimeoutCheckResult {
 /// Timeout checker service
 #[derive(Clone)]
 pub struct TimeoutChecker {
-    executor: Arc<SyncWorkflowExecutor<TimeoutWorkflow>>,
+    executor: Arc<SyncDurableWorkflowExecutor<TimeoutDurableWorkflow>>,
     job_repository: Arc<dyn JobRepository + Send + Sync>,
     config: TimeoutCheckerConfig,
 }
 
 impl TimeoutChecker {
     pub fn new(
-        executor: Arc<SyncWorkflowExecutor<TimeoutWorkflow>>,
+        executor: Arc<SyncDurableWorkflowExecutor<TimeoutDurableWorkflow>>,
         job_repository: Arc<dyn JobRepository + Send + Sync>,
         config: Option<TimeoutCheckerConfig>,
     ) -> Self {
@@ -87,9 +87,10 @@ impl TimeoutChecker {
         let mut workflow_executed = false;
 
         if has_timed_out {
-            let input = super::workflows::timeout::TimeoutWorkflowInput::new(
+            let input = super::workflows::timeout_durable::TimeoutWorkflowInput::new(
                 job_id.clone(),
                 self.config.default_job_timeout,
+                self.config.default_job_timeout * 2, // max_duration is 2x expected
                 "job-timeout",
             );
 

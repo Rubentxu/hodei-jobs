@@ -11,6 +11,8 @@ use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
+use super::StartupConfig;
+
 use hodei_server_application::command::execution::JobExecutorImpl;
 use hodei_server_application::command::execution::register_execution_command_handlers_with_executor;
 use hodei_server_application::jobs::cancel::CancelJobUseCase;
@@ -19,9 +21,14 @@ use hodei_server_application::jobs::create::CreateJobUseCase;
 use hodei_server_application::jobs::dispatcher::JobDispatcher;
 use hodei_server_application::jobs::worker_monitor::WorkerMonitor;
 use hodei_server_application::providers::ProviderRegistry;
-use hodei_server_application::saga::sync_executor::SyncWorkflowExecutor;
+use hodei_server_application::saga::bridge::CommandBusJobExecutionPort;
+use hodei_server_application::saga::dispatcher_saga::{
+    DynExecutionSagaDispatcher, ExecutionSagaDispatcher,
+};
+use hodei_server_application::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
 use hodei_server_application::saga::timeout_checker::TimeoutChecker;
-use hodei_server_application::saga::workflows::timeout::TimeoutWorkflow;
+use hodei_server_application::saga::workflows::execution_durable::ExecutionWorkflow;
+use hodei_server_application::saga::workflows::timeout_durable::TimeoutDurableWorkflow;
 use hodei_server_application::scheduling::SchedulerConfig;
 use hodei_server_application::workers::lifecycle::WorkerLifecycleManager;
 use hodei_server_application::workers::provisioning::WorkerProvisioningService;
@@ -212,7 +219,7 @@ pub async fn start_job_coordinator(
             > + Send
             + Sync,
     >,
-    server_address: String,
+    config: StartupConfig,
     app_state: Arc<super::AppState>,
 ) -> CoordinatorShutdownHandle {
     info!("Initializing job coordinator for reactive job processing...");
@@ -241,8 +248,12 @@ pub async fn start_job_coordinator(
         .unwrap_or_else(|_| "localhost:31500/hodei-jobs-worker:latest".to_string());
     info!("🎯 Using worker image: {}", default_image);
 
+    // Get the worker server address (uses telepresence DNS in dev mode)
+    let worker_server_address = config.get_worker_server_address();
+    info!("🌐 Worker server address: {}", worker_server_address);
+
     let provisioning_config =
-        ProvisioningConfig::new(server_address).with_default_image(default_image);
+        ProvisioningConfig::new(worker_server_address).with_default_image(default_image);
     let providers_map = lifecycle_manager.providers_map();
     let provisioning_service: Arc<dyn WorkerProvisioningService> =
         Arc::new(DefaultWorkerProvisioningService::new(
@@ -264,10 +275,34 @@ pub async fn start_job_coordinator(
     > = Arc::new(grpc_command_sender);
     info!("✓ GrpcWorkerCommandSender initialized");
 
+    // EPIC-94-C: Create ExecutionSagaDispatcher for v4.0 DurableWorkflow
+    // This uses the CommandBus for real command handling
+    let (command_bus, _) = create_command_bus(pool.clone());
+    info!("✓ CommandBus created for ExecutionSagaDispatcher");
+
+    // Create CommandBusJobExecutionPort wrapping the command bus
+    let execution_port = CommandBusJobExecutionPort::new(Some(command_bus.clone()));
+
+    // Create ExecutionWorkflow with the port
+    let execution_workflow = ExecutionWorkflow::new(Arc::new(execution_port));
+
+    // Create SyncDurableWorkflowExecutor for the execution workflow
+    let execution_executor = Arc::new(SyncDurableWorkflowExecutor::new(execution_workflow));
+
+    // Create the ExecutionSagaDispatcher
+    let execution_saga_dispatcher: Arc<
+        dyn hodei_server_application::saga::dispatcher_saga::ExecutionSagaDispatcherTrait
+            + Send
+            + Sync,
+    > = Arc::new(DynExecutionSagaDispatcher::new(
+        ExecutionSagaDispatcher::new(execution_executor, worker_registry.clone()),
+    ));
+    info!("✓ ExecutionSagaDispatcher initialized (v4.0 DurableWorkflow)");
+
     // EPIC-94-C: Get workflow coordinator from AppState
     let provisioning_workflow_coordinator = app_state.provisioning_workflow_coordinator.clone();
 
-    // Create JobDispatcher with real provisioning_service
+    // Create JobDispatcher with ExecutionSagaDispatcher (v4.0)
     let job_dispatcher = Arc::new(JobDispatcher::new(
         job_queue.clone(),
         job_repository.clone(),
@@ -277,12 +312,11 @@ pub async fn start_job_coordinator(
         worker_command_sender,
         event_bus.clone(),
         outbox_repository.clone(),
-        Some(provisioning_service), // Now we have real provisioning!
-        None,                       // execution_saga_dispatcher (optional)
-        None,                       // provisioning_saga_coordinator (optional)
+        Some(provisioning_service),      // Now we have real provisioning!
+        Some(execution_saga_dispatcher), // v4.0 ExecutionSagaDispatcher
         provisioning_workflow_coordinator, // EPIC-94-C: v4.0 DurableWorkflow coordinator
     ));
-    info!("✓ JobDispatcher initialized with provisioning service and v4.0 workflow coordinator");
+    info!("✓ JobDispatcher initialized with v4.0 ExecutionSagaDispatcher");
 
     // EPIC-32: Initialize WorkerMonitor for reactive worker tracking
     let worker_monitor = WorkerMonitor::new(worker_registry.clone(), event_bus.clone());
@@ -573,6 +607,10 @@ pub fn create_command_bus_with_inner(
 pub async fn start_background_tasks(
     pool: sqlx::PgPool,
     saga_orchestrator: Arc<PostgresSagaOrchestrator<PostgresSagaRepository>>,
+    worker_registry: Arc<dyn hodei_server_domain::workers::registry::WorkerRegistry>,
+    worker_provisioning: Arc<
+        dyn hodei_server_application::workers::provisioning::WorkerProvisioningService,
+    >,
 ) -> BackgroundTasksShutdownHandle {
     info!("⏰ Starting background tasks...");
 
@@ -581,9 +619,9 @@ pub async fn start_background_tasks(
 
     let (timeout_stop_tx, _) = tokio::sync::broadcast::channel(1);
 
-    // Start TimeoutChecker
-    let timeout_workflow = TimeoutWorkflow::default();
-    let timeout_executor = Arc::new(SyncWorkflowExecutor::new(timeout_workflow));
+    // Start TimeoutChecker with v4.0 DurableWorkflow
+    let timeout_workflow = TimeoutDurableWorkflow::new(worker_registry, worker_provisioning);
+    let timeout_executor = Arc::new(SyncDurableWorkflowExecutor::new(timeout_workflow));
     let timeout_checker = TimeoutChecker::new(timeout_executor, job_repository.clone(), None);
 
     tokio::spawn(async move {
@@ -784,27 +822,39 @@ pub async fn start_execution_command_consumers_service(
 /// - Recovery Saga: CheckConnectivityCommand, TransferJobCommand, MarkJobForRecoveryCommand,
 ///                  ProvisionNewWorkerCommand, DestroyOldWorkerCommand
 /// - Provisioning Saga: CreateWorkerCommand, DestroyWorkerCommand, UnregisterWorkerCommand
-pub async fn start_saga_command_consumers_service(
+pub async fn start_saga_command_consumers_service<P>(
     nats_client: Arc<async_nats::Client>,
     pool: sqlx::PgPool,
-    provisioning: Arc<dyn hodei_server_domain::workers::WorkerProvisioning + Send + Sync>,
-) -> anyhow::Result<()> {
+    provisioning: Arc<P>,
+) -> anyhow::Result<()>
+where
+    P: hodei_server_application::workers::provisioning::WorkerProvisioningService
+        + hodei_server_domain::workers::WorkerProvisioning
+        + Send
+        + Sync
+        + 'static,
+{
     info!("🚀 Starting Saga Command Consumers (EPIC-89 Sprint 4)...");
 
     // Initialize DLQ configuration for Sprint 4
     let dlq_config = Some(command_dlq::CommandDlqConfig {
         stream_prefix: "HODEI".to_string(),
-        dlq_subject: "hodei.commands.dlq".to_string(),
+        dlq_subject: "hodei.dlq.commands.>".to_string(),
         max_retries: 3,
         retention_days: 7,
         enabled: true,
         retry_delay_ms: 1000,
     });
 
+    // Cast to WorkerProvisioning trait object for the infrastructure layer
+    // DefaultWorkerProvisioningService implements both traits
+    let provisioning_domain: Arc<
+        dyn hodei_server_domain::workers::WorkerProvisioning + Send + Sync,
+    > = provisioning as _;
     saga_command_consumers::start_saga_command_consumers(
         nats_client.as_ref().clone(),
         pool,
-        provisioning,
+        provisioning_domain,
         dlq_config,
     )
     .await?;

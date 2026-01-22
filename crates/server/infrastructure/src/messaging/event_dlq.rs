@@ -31,7 +31,7 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 pub struct EventDlqConfig {
     /// Stream prefix for DLQ streams
     pub stream_prefix: String,
-    /// Subject for DLQ events
+    /// Subject for DLQ events (using separate hierarchy to avoid stream overlap)
     pub dlq_subject: String,
     /// Maximum retry attempts before DLQ
     pub max_retries: u32,
@@ -45,7 +45,7 @@ impl Default for EventDlqConfig {
     fn default() -> Self {
         Self {
             stream_prefix: "HODEI".to_string(),
-            dlq_subject: "dlq.events".to_string(),
+            dlq_subject: "hodei.dlq.events.>".to_string(),
             max_retries: DEFAULT_MAX_RETRIES,
             retention_days: 7,
             enabled: true,

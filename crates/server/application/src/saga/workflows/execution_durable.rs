@@ -4,12 +4,9 @@
 //! This module provides the [`ExecutionWorkflow`] implementation using the
 //! [`DurableWorkflow`] trait for the Workflow-as-Code pattern.
 //!
-//! This is a migration from the legacy [`super::execution::ExecutionWorkflow`]
-//! which used the step-list pattern (`WorkflowDefinition`).
-//!
 //! ## Key Changes from v3
 //!
-//! - Uses `JobExecutionPort` trait for all operations (from execution.rs)
+//! - Uses `JobExecutionPort` trait for all operations
 //! - Activities delegate to the port for real command bus integration
 //! - No more simulated behavior - all operations use real handlers
 //!
@@ -22,8 +19,59 @@ use thiserror::Error;
 
 use saga_engine_core::workflow::{Activity, DurableWorkflow, WorkflowContext};
 
-use super::execution::{CollectedResult, JobExecutionPort, JobResultData};
 use crate::saga::port::types::WorkflowState;
+
+// =============================================================================
+// Job Execution Port & Types
+// =============================================================================
+
+/// Port trait for job execution operations
+/// This allows the workflow to use real command handlers
+#[async_trait]
+pub trait JobExecutionPort: Send + Sync {
+    /// Validate that a job can be executed
+    async fn validate_job(&self, job_id: &str) -> Result<bool, String>;
+
+    /// Dispatch a job to a worker
+    async fn dispatch_job(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        command: &str,
+        arguments: &[String],
+        timeout_secs: u64,
+    ) -> Result<JobResultData, String>;
+
+    /// Collect the result of a job execution
+    async fn collect_result(
+        &self,
+        job_id: &str,
+        timeout_secs: u64,
+    ) -> Result<CollectedResult, String>;
+
+    /// Cancel a running job
+    async fn cancel_job(&self, job_id: &str) -> Result<(), String>;
+}
+
+/// Result collected from job execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectedResult {
+    pub job_id: String,
+    pub worker_id: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub result: JobResultData,
+}
+
+/// Job result data
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum JobResultData {
+    Success,
+    Failed { exit_code: i32 },
+    Timeout,
+    Cancelled,
+    Error { message: String },
+}
 
 // =============================================================================
 // Input/Output Types
@@ -437,7 +485,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::execution::{CollectedResult, JobExecutionPort, JobResultData};
     use super::*;
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -455,7 +502,7 @@ mod tests {
         async fn dispatch_job(
             &self,
             job_id: &str,
-            worker_id: &str,
+            _worker_id: &str,
             _command: &str,
             _arguments: &[String],
             _timeout_secs: u64,

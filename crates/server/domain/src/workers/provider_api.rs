@@ -494,7 +494,7 @@ impl<T: AsRef<str>> StateMapper<T> for DockerStateMapper {
         let _s: &str = match state {
             WorkerState::Creating | WorkerState::Busy => "created",
             WorkerState::Ready => "running",
-            WorkerState::Terminated => "exited",
+            WorkerState::Terminated | WorkerState::Destroyed => "exited",
         };
         unimplemented!("from_worker_state returns owned type, use explicit conversion")
     }
@@ -549,7 +549,7 @@ impl StateMapper<String> for KubernetesStateMapper {
         match state {
             WorkerState::Creating | WorkerState::Busy => "Pending".to_string(),
             WorkerState::Ready => "Running".to_string(),
-            WorkerState::Terminated => "Succeeded".to_string(),
+            WorkerState::Terminated | WorkerState::Destroyed => "Succeeded".to_string(),
         }
     }
 }
@@ -589,7 +589,7 @@ impl StateMapper<String> for FirecrackerStateMapper {
         match state {
             WorkerState::Creating | WorkerState::Busy => "Creating".to_string(),
             WorkerState::Ready => "Running".to_string(),
-            WorkerState::Terminated => "Stopped".to_string(),
+            WorkerState::Terminated | WorkerState::Destroyed => "Stopped".to_string(),
         }
     }
 }

@@ -210,7 +210,6 @@ impl JobControllerBuilder {
             outbox_repository,
             self.provisioning_service,
             None, // execution_saga_dispatcher - can be set via builder
-            None, // provisioning_saga_coordinator - can be set via builder
             self.provisioning_workflow_coordinator, // EPIC-94-C: v4.0 workflow coordinator
             self.pool.clone().unwrap_or_else(||
                 // For tests, create a lazy pool that won't actually connect

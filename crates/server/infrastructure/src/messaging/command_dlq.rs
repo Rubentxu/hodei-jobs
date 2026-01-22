@@ -25,8 +25,8 @@ use tracing::{debug, error, info};
 /// Maximum number of retry attempts before moving to DLQ
 const DEFAULT_MAX_RETRIES: u32 = 3;
 
-/// Default DLQ subject for commands
-const DEFAULT_DLQ_SUBJECT: &str = "hodei.commands.dlq";
+/// Default DLQ subject for commands (using separate hierarchy to avoid stream overlap)
+const DEFAULT_DLQ_SUBJECT: &str = "hodei.dlq.commands.>";
 
 /// Configuration for Command DLQ behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]

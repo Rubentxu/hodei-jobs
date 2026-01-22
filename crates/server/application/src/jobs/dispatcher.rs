@@ -5,18 +5,15 @@
 //!
 //! ## Responsabilidades Core (2)
 //! 1. **Orquestación del dispatch** - `dispatch_once`:Coordina el ciclo completo
-//! 2. **Asignación de jobs via Saga** - `assign_and_dispatch`:Ejecuta ExecutionSaga
 //!
 //! ## Responsabilidades Delegadas
 //! - Filtrado de workers → SchedulingService
 //! - Selección de providers → ProviderRegistry / SchedulingService
 //! - Provisioning → WorkerProvisioningService / ProvisioningWorkflowCoordinator (v4.0)
-//! - Ejecución de saga → ExecutionSagaDispatcher
 
 use crate::jobs::resource_allocator::ResourceAllocator;
 use crate::providers::ProviderRegistry;
-use crate::saga::dispatcher_saga::DynExecutionSagaDispatcher;
-use crate::saga::provisioning_saga::DynProvisioningSagaCoordinator;
+use crate::saga::dispatcher_saga::{DynExecutionSagaDispatcher, ExecutionSagaDispatcherTrait};
 use crate::saga::provisioning_workflow_coordinator::{
     DynProvisioningWorkflowCoordinator, ProvisioningWorkflowCoordinator,
 };
@@ -65,12 +62,10 @@ pub struct JobDispatcher {
     recently_provisioned: Arc<tokio::sync::Mutex<HashMap<Uuid, Instant>>>,
     /// EPIC-28: Time window to skip re-provisioning for same job
     provisioning_cooldown: Duration,
-    /// EPIC-29: Saga orchestrator for execution saga coordination
-    /// Required for saga-based job dispatch (the legacy path has been removed)
-    execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
-    /// EPIC-30: Saga coordinator for provisioning saga (US-30.2)
-    /// Legacy coordinator - being replaced by provisioning_workflow_coordinator (v4.0)
-    provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+    /// EPIC-94-C: Execution saga dispatcher (v4.0 DurableWorkflow)
+    /// Coordinates job execution using saga-engine workflows
+    execution_saga_dispatcher:
+        Option<Arc<dyn crate::saga::dispatcher_saga::ExecutionSagaDispatcherTrait>>,
     /// EPIC-94-C: Provisioning workflow coordinator (v4.0 DurableWorkflow)
     /// New coordinator using Workflow-as-Code pattern
     provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
@@ -80,10 +75,6 @@ pub struct JobDispatcher {
 
 impl JobDispatcher {
     /// Create a new JobDispatcher
-    ///
-    /// # Note
-    /// The `execution_saga_dispatcher` parameter is now required for job dispatch.
-    /// Without it, jobs cannot be dispatched to workers (the legacy path has been removed).
     pub fn new(
         job_queue: Arc<dyn JobQueue>,
         job_repository: Arc<dyn JobRepository>,
@@ -94,8 +85,9 @@ impl JobDispatcher {
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
-        execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
-        provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        execution_saga_dispatcher: Option<
+            Arc<dyn crate::saga::dispatcher_saga::ExecutionSagaDispatcherTrait>,
+        >,
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     ) -> Self {
         // Create ResourceAllocator for provider metrics
@@ -115,17 +107,12 @@ impl JobDispatcher {
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
-            provisioning_saga_coordinator,
             provisioning_workflow_coordinator,
             resource_allocator,
         }
     }
 
     /// Create a JobDispatcher with outbox repository
-    ///
-    /// # Note
-    /// The `execution_saga_dispatcher` parameter is now required for job dispatch.
-    /// Without it, jobs cannot be dispatched to workers (the legacy path has been removed).
     pub fn with_outbox_repository(
         job_queue: Arc<dyn JobQueue>,
         job_repository: Arc<dyn JobRepository>,
@@ -136,8 +123,9 @@ impl JobDispatcher {
         event_bus: Arc<dyn EventBus>,
         outbox_repository: Arc<dyn OutboxRepository + Send + Sync>,
         provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
-        execution_saga_dispatcher: Option<Arc<DynExecutionSagaDispatcher>>,
-        provisioning_saga_coordinator: Option<Arc<DynProvisioningSagaCoordinator>>,
+        execution_saga_dispatcher: Option<
+            Arc<dyn crate::saga::dispatcher_saga::ExecutionSagaDispatcherTrait>,
+        >,
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
     ) -> Self {
         // Create ResourceAllocator for provider metrics
@@ -157,7 +145,6 @@ impl JobDispatcher {
             recently_provisioned: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             provisioning_cooldown: Duration::from_secs(30), // 30 seconds cooldown
             execution_saga_dispatcher,
-            provisioning_saga_coordinator,
             provisioning_workflow_coordinator,
             resource_allocator,
         }
@@ -523,13 +510,12 @@ impl JobDispatcher {
 
     /// Trigger worker provisioning when no workers are available
     ///
-    /// EPIC-94-C v4.0: Prioritizes DurableWorkflow-based provisioning over legacy saga.
-    /// 1. First tries ProvisioningWorkflowCoordinator (v4.0 Workflow-as-Code)
-    /// 2. Falls back to ProvisioningSagaCoordinator (legacy Step-list pattern)
-    /// 3. Last resort: direct WorkerProvisioningService
+    /// EPIC-94-C v4.0: Uses DurableWorkflow-based provisioning (no legacy fallback).
+    /// 1. Execute ProvisioningWorkflowCoordinator (v4.0 Workflow-as-Code)
+    /// 2. Final fallback: direct WorkerProvisioningService
     #[instrument(skip(self), fields(job_id = %job.id), ret)]
     async fn trigger_provisioning(&self, job: &Job) -> anyhow::Result<()> {
-        // EPIC-94-C: Prioritize DurableWorkflow-based provisioning (v4.0)
+        // EPIC-94-C: Use DurableWorkflow-based provisioning (v4.0)
         if let Some(ref coordinator) = self.provisioning_workflow_coordinator {
             info!(job_id = %job.id, "🚀 JobDispatcher: Using v4.0 DurableWorkflow provisioning");
 
@@ -551,10 +537,22 @@ impl JobDispatcher {
                     message: "No provisioning service available".to_string(),
                 }
             })?;
-            let spec = provisioning
+            let mut spec = provisioning
                 .default_worker_spec(&provider_id)
                 .await
                 .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
+
+            // GAP-006 FIX: Override image with job's image if specified
+            // This allows users to define custom worker images per job
+            if let Some(ref job_image) = job.spec.image {
+                info!(
+                    job_id = %job.id,
+                    job_image = %job_image,
+                    default_image = %spec.image,
+                    "JobDispatcher: Using job-specified image for worker"
+                );
+                spec.image = job_image.clone();
+            }
 
             // Execute workflow-based provisioning (v4.0)
             match coordinator
@@ -566,51 +564,8 @@ impl JobDispatcher {
                     return Ok(());
                 }
                 Err(e) => {
-                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: v4.0 Workflow failed, falling back to legacy saga");
-                    // Fall through to legacy saga
-                }
-            }
-        }
-
-        // Fallback to legacy saga-based provisioning (v3.x Step-list pattern)
-        if let Some(ref coordinator) = self.provisioning_saga_coordinator {
-            info!(job_id = %job.id, "🚀 JobDispatcher: Using legacy saga-based provisioning");
-
-            // Get enabled providers
-            let providers = self.provider_registry.list_enabled_providers().await?;
-            if providers.is_empty() {
-                warn!("⚠️ JobDispatcher: No providers available for provisioning");
-                return Ok(());
-            }
-
-            // Select best provider using scheduler with job preferences
-            let provider_id = self
-                .select_provider_for_provisioning(job, &providers)
-                .await?;
-
-            // Get spec from provisioning service
-            let provisioning = self.provisioning_service.as_ref().ok_or_else(|| {
-                DomainError::InfrastructureError {
-                    message: "No provisioning service available".to_string(),
-                }
-            })?;
-            let spec = provisioning
-                .default_worker_spec(&provider_id)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
-
-            // Execute saga provisioning
-            match coordinator
-                .execute_provisioning_saga(&provider_id, &spec, Some(job.id.clone()))
-                .await
-            {
-                Ok(result) => {
-                    info!(job_id = %job.id, worker_id = %result.worker_id, saga_status = ?result, "✅ JobDispatcher: Legacy saga provisioning completed");
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: Legacy saga provisioning failed, will try fallback");
-                    // Continue to fallback
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: v4.0 Workflow failed");
+                    // Fall through to direct provisioning
                 }
             }
         }
@@ -631,10 +586,21 @@ impl JobDispatcher {
                 .await?;
 
             // Get default spec and provision
-            let spec = provisioning
+            let mut spec = provisioning
                 .default_worker_spec(&provider_id)
                 .await
                 .ok_or_else(|| anyhow::anyhow!("No default spec for provider {}", provider_id))?;
+
+            // GAP-006 FIX: Override image with job's image if specified
+            if let Some(ref job_image) = job.spec.image {
+                info!(
+                    job_id = %job.id,
+                    job_image = %job_image,
+                    default_image = %spec.image,
+                    "JobDispatcher: Using job-specified image for worker (fallback)"
+                );
+                spec.image = job_image.clone();
+            }
 
             match provisioning
                 .provision_worker(&provider_id, spec, job.id.clone())

@@ -3,8 +3,8 @@
 //!
 //! Coordinates the recovery saga using saga-engine v4.0 workflows.
 
-use crate::saga::sync_executor::SyncWorkflowExecutor;
-use crate::saga::workflows::recovery::RecoveryWorkflow;
+use crate::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
+use crate::saga::workflows::recovery_durable::RecoveryWorkflow;
 use async_trait::async_trait;
 use hodei_server_domain::shared_kernel::JobId;
 use hodei_server_domain::shared_kernel::WorkerId;
@@ -50,11 +50,11 @@ impl Default for RecoverySagaCoordinatorConfig {
 /// Coordinator for recovery workflow
 #[derive(Clone)]
 pub struct RecoverySagaCoordinator {
-    executor: Arc<SyncWorkflowExecutor<RecoveryWorkflow>>,
+    executor: Arc<SyncDurableWorkflowExecutor<RecoveryWorkflow>>,
 }
 
 impl RecoverySagaCoordinator {
-    pub fn new(executor: Arc<SyncWorkflowExecutor<RecoveryWorkflow>>) -> Self {
+    pub fn new(executor: Arc<SyncDurableWorkflowExecutor<RecoveryWorkflow>>) -> Self {
         Self { executor }
     }
 
@@ -67,7 +67,7 @@ impl RecoverySagaCoordinator {
     ) -> Result<RecoverySagaResult, RecoverySagaError> {
         let start_time = std::time::Instant::now();
         let saga_id = uuid::Uuid::new_v4().to_string();
-        let input = RecoveryWorkflowInput::new(
+        let input = RecoveryInput::new(
             job_id.clone(),
             failed_worker_id.clone(),
             Some(saga_id.clone()),
@@ -110,7 +110,7 @@ impl RecoverySagaCoordinator {
     }
 }
 
-use super::workflows::recovery::RecoveryWorkflowInput;
+use super::workflows::recovery_durable::RecoveryInput;
 use crate::saga::SagaExecutionId;
 use crate::saga::port::SagaPort;
 
@@ -120,7 +120,7 @@ impl SagaPort<RecoveryWorkflow> for RecoverySagaCoordinator {
 
     async fn start_workflow(
         &self,
-        input: RecoveryWorkflowInput,
+        input: RecoveryInput,
         _idempotency_key: Option<String>,
     ) -> Result<SagaExecutionId, Self::Error> {
         let execution_id = SagaExecutionId::new();
@@ -167,7 +167,7 @@ impl SagaPort<RecoveryWorkflow> for RecoverySagaCoordinator {
         &self,
         _execution_id: &SagaExecutionId,
         _signal: String,
-        _payload: <RecoveryWorkflow as saga_engine_core::workflow::WorkflowDefinition>::Output,
+        _payload: <RecoveryWorkflow as saga_engine_core::workflow::DurableWorkflow>::Output,
     ) -> Result<(), Self::Error> {
         Ok(())
     }

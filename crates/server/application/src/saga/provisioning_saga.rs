@@ -4,7 +4,7 @@
 //! Coordinates the provisioning saga using saga-engine v4.0 workflows.
 //! This module replaces the legacy ProvisioningSagaCoordinator.
 
-use crate::saga::sync_executor::SyncWorkflowExecutor;
+use crate::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
 use async_trait::async_trait;
 use hodei_server_domain::shared_kernel::{DomainError, JobId, ProviderId, WorkerId};
 use hodei_server_domain::workers::{WorkerRegistry, WorkerSpec};
@@ -57,13 +57,19 @@ impl ProvisioningSagaCoordinatorConfig {
 /// Coordinator for provisioning workflow
 #[derive(Clone)]
 pub struct ProvisioningSagaCoordinator {
-    executor: Arc<SyncWorkflowExecutor<super::workflows::provisioning::ProvisioningWorkflow>>,
+    executor: Arc<
+        SyncDurableWorkflowExecutor<super::workflows::provisioning_durable::ProvisioningWorkflow>,
+    >,
     registry: Arc<dyn WorkerRegistry + Send + Sync>,
 }
 
 impl ProvisioningSagaCoordinator {
     pub fn new(
-        executor: Arc<SyncWorkflowExecutor<super::workflows::provisioning::ProvisioningWorkflow>>,
+        executor: Arc<
+            SyncDurableWorkflowExecutor<
+                super::workflows::provisioning_durable::ProvisioningWorkflow,
+            >,
+        >,
         registry: Arc<dyn WorkerRegistry + Send + Sync>,
     ) -> Self {
         Self { executor, registry }
@@ -71,14 +77,14 @@ impl ProvisioningSagaCoordinator {
 }
 
 #[async_trait]
-impl crate::saga::port::SagaPort<super::workflows::provisioning::ProvisioningWorkflow>
+impl crate::saga::port::SagaPort<super::workflows::provisioning_durable::ProvisioningWorkflow>
     for ProvisioningSagaCoordinator
 {
     type Error = ProvisioningSagaError;
 
     async fn start_workflow(
         &self,
-        input: super::workflows::provisioning::ProvisioningWorkflowInput,
+        input: super::workflows::provisioning_durable::ProvisioningInput,
         _idempotency_key: Option<String>,
     ) -> Result<crate::saga::SagaExecutionId, Self::Error> {
         let execution_id = crate::saga::SagaExecutionId::new();
@@ -127,7 +133,7 @@ impl crate::saga::port::SagaPort<super::workflows::provisioning::ProvisioningWor
         &self,
         _execution_id: &crate::saga::SagaExecutionId,
         _signal: String,
-        _payload: super::workflows::provisioning::ProvisioningWorkflowOutput,
+        _payload: super::workflows::provisioning_durable::ProvisioningOutput,
     ) -> Result<(), Self::Error> {
         // TODO: Implement signal sending
         Ok(())
@@ -173,8 +179,8 @@ impl ProvisioningSagaCoordinatorTrait for ProvisioningSagaCoordinator {
         job_id: Option<JobId>,
     ) -> Result<ProvisioningSagaResult, ProvisioningSagaError> {
         let start_time = std::time::Instant::now();
-        let input = super::workflows::provisioning::ProvisioningWorkflowInput::new(
-            super::workflows::provisioning::WorkerSpecData::from(spec),
+        let input = super::workflows::provisioning_durable::ProvisioningInput::new(
+            super::workflows::provisioning_durable::WorkerSpecData::from_spec(spec),
             provider_id.to_string(),
             job_id.as_ref().map(|j| j.to_string()),
         );
@@ -190,7 +196,7 @@ impl ProvisioningSagaCoordinatorTrait for ProvisioningSagaCoordinator {
 
         match result {
             saga_engine_core::workflow::WorkflowResult::Completed { output, .. } => {
-                let output: super::workflows::provisioning::ProvisioningWorkflowOutput =
+                let output: super::workflows::provisioning_durable::ProvisioningOutput =
                     serde_json::from_value(output)
                         .map_err(|e| ProvisioningSagaError::SagaFailed(e.to_string()))?;
                 let worker_id =

@@ -18,6 +18,7 @@
 
 use async_nats::jetstream::{self, stream};
 use futures::StreamExt;
+use hodei_server_application::workers::provisioning::WorkerProvisioningService;
 use hodei_server_domain::command::{Command, CommandHandler};
 use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::saga::commands::cancellation::{

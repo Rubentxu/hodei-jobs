@@ -210,9 +210,10 @@ impl From<&JobState> for i32 {
 ///
 /// Estados simplificados según EPIC-43 Sprint 3:
 /// - Creating: Worker provisionándose, agent iniciándose
-/// - Ready: Worker listo para recibir jobs
+/// - Ready: Worker listo para recibir jobs (también llamado Idle)
 /// - Busy: Worker ejecutando un job
 /// - Terminated: Worker destruido (estado terminal)
+/// - Destroyed: Worker infraestructura terminada (estado terminal, usado por workflows)
 ///
 /// Los estados transitorios (Connecting, Draining, Terminating) fueron eliminados.
 /// En su lugar, los errores durante Creating van directamente a Terminated.
@@ -223,6 +224,8 @@ pub enum WorkerState {
     Ready,
     Busy,
     Terminated,
+    /// Estado destruido usado por workflows v4 para indicar infraestructura terminada
+    Destroyed,
 }
 
 impl fmt::Display for WorkerState {
@@ -232,6 +235,7 @@ impl fmt::Display for WorkerState {
             WorkerState::Ready => write!(f, "READY"),
             WorkerState::Busy => write!(f, "BUSY"),
             WorkerState::Terminated => write!(f, "TERMINATED"),
+            WorkerState::Destroyed => write!(f, "DESTROYED"),
         }
     }
 }
@@ -245,6 +249,7 @@ impl FromStr for WorkerState {
             "READY" => Ok(WorkerState::Ready),
             "BUSY" => Ok(WorkerState::Busy),
             "TERMINATED" => Ok(WorkerState::Terminated),
+            "DESTROYED" => Ok(WorkerState::Destroyed),
             _ => Err(format!("Invalid WorkerState: {}", s)),
         }
     }
@@ -259,6 +264,7 @@ impl TryFrom<i32> for WorkerState {
             1 => Ok(WorkerState::Ready),
             2 => Ok(WorkerState::Busy),
             3 => Ok(WorkerState::Terminated),
+            4 => Ok(WorkerState::Destroyed),
             _ => Err(format!("Invalid WorkerState value: {}", value)),
         }
     }
@@ -271,6 +277,7 @@ impl From<&WorkerState> for i32 {
             WorkerState::Ready => 1,
             WorkerState::Busy => 2,
             WorkerState::Terminated => 3,
+            WorkerState::Destroyed => 4,
         }
     }
 }
@@ -278,11 +285,11 @@ impl From<&WorkerState> for i32 {
 impl WorkerState {
     /// Valida si una transición de estado es válida según el State Machine del dominio.
     ///
-    /// Transiciones válidas según Crash-Only Design (4 estados):
+    /// Transiciones válidas según Crash-Only Design (5 estados):
     /// - Creating → Ready (éxito), Terminated (error)
     /// - Ready → Busy (job asignado), Terminated (terminación directa)
     /// - Busy → Terminated (job completado o error)
-    /// - Terminated → (terminal, no transiciones salientes)
+    /// - Terminated, Destroyed → (terminal, no transiciones salientes)
     ///
     /// Los estados intermedios (Connecting, Draining, Terminating) fueron eliminados.
     /// Esto simplifica el modelo y elimina condiciones de carrera.
@@ -319,7 +326,7 @@ impl WorkerState {
 
     /// Retorna true si el estado es terminal (no se puede continuar)
     pub fn is_terminal(&self) -> bool {
-        matches!(self, WorkerState::Terminated)
+        matches!(self, WorkerState::Terminated | WorkerState::Destroyed)
     }
 
     /// Retorna true si el estado está en progreso (no es terminal)
@@ -332,7 +339,7 @@ impl WorkerState {
 
     /// Retorna true si el estado es de terminación o terminado
     pub fn is_terminating(&self) -> bool {
-        matches!(self, WorkerState::Terminated)
+        matches!(self, WorkerState::Terminated | WorkerState::Destroyed)
     }
 
     /// Retorna true si el worker puede aceptar jobs
@@ -348,9 +355,9 @@ impl WorkerState {
         )
     }
 
-    /// Retorna true si el worker está terminado
+    /// Retorna true si el worker está terminado (cualquier estado terminal)
     pub fn is_terminated(&self) -> bool {
-        matches!(self, WorkerState::Terminated)
+        matches!(self, WorkerState::Terminated | WorkerState::Destroyed)
     }
 
     /// Retorna true si el worker está listo para recibir jobs

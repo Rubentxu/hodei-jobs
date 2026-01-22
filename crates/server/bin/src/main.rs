@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_state.lifecycle_manager.clone(),
         grpc_services.worker_agent_service.clone(),
         app_state.saga_orchestrator.clone(),
-        config.server_address,
+        config.clone(), // EPIC-94-C: Pass StartupConfig for get_worker_server_address()
         Arc::new(app_state.clone()), // EPIC-94-C: Pass AppState for v4.0 workflow coordinator
     )
     .await;
@@ -124,8 +124,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|e| anyhow::anyhow!("Failed to start WorkerEphemeralTerminatingConsumer: {}", e))?;
 
     // Start background tasks (TimeoutChecker)
-    let _background_tasks_handle =
-        start_background_tasks(app_state.pool.clone(), saga_orchestrator.clone()).await;
+    let _background_tasks_handle = start_background_tasks(
+        app_state.pool.clone(),
+        saga_orchestrator.clone(),
+        app_state.worker_registry.clone(),
+        app_state.worker_provisioning.clone(),
+    )
+    .await;
 
     // ✅ Start Command Relay (EPIC-63)
     let _command_relay_handle = start_command_relay(
@@ -152,6 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for shutdown signal
     info!("Server running. Waiting for shutdown signal (SIGTERM/SIGINT)...");
 
+    // EPIC-94-D: Extract v4 worker handles before passing app_state to gRPC server
+    let v4_shutdown_handles = app_state.v4_worker_shutdown_handles.clone();
+
     // Start the gRPC server with shutdown integration
     tokio::select! {
         result = startup::start_grpc_server(
@@ -171,6 +179,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Shutting down gracefully...");
+
+    // EPIC-94-D: Shutdown v4.0 workers
+    if let Some(handles) = v4_shutdown_handles {
+        info!("Shutting down v4.0 workers...");
+        handles.shutdown_all().await;
+        info!("✓ v4.0 workers shut down");
+    }
+
     Ok(())
 }
 

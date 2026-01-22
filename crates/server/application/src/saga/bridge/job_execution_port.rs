@@ -21,7 +21,7 @@
 //! ```
 //!
 
-use crate::saga::workflows::execution::{CollectedResult, JobExecutionPort, JobResultData};
+use crate::saga::workflows::execution_durable::{CollectedResult, JobExecutionPort, JobResultData};
 use hodei_server_domain::command::{Command, DynCommandBus, dispatch_erased};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;

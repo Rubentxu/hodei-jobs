@@ -1,0 +1,11 @@
+[package]
+name = "create-nats-streams"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+async-nats = { workspace = true, features = ["jetstream"] }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }

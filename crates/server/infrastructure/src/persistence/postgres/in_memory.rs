@@ -383,7 +383,7 @@ pub mod test_in_memory {
         ) -> Result<()> {
             let mut workers = self.workers.write().await;
             if let Some(worker) = workers.get_mut(worker_id) {
-                // Simplified state update for tests (Crash-Only Design: 4 states)
+                // Simplified state update for tests (Crash-Only Design: 5 states)
                 match state {
                     hodei_server_domain::shared_kernel::WorkerState::Creating => {
                         // Start in Creating, no transition needed
@@ -395,7 +395,8 @@ pub mod test_in_memory {
                         // Simulate job assignment to create Busy state
                         let _ = worker.assign_job(hodei_server_domain::shared_kernel::JobId::new());
                     }
-                    hodei_server_domain::shared_kernel::WorkerState::Terminated => {
+                    hodei_server_domain::shared_kernel::WorkerState::Terminated
+                    | hodei_server_domain::shared_kernel::WorkerState::Destroyed => {
                         let _ = worker.mark_terminating();
                     }
                 };
