@@ -90,6 +90,21 @@ impl SagaIdentity {
         }
     }
 
+    /// Create a new SagaIdentity with a specific started_at time
+    ///
+    /// This is used when loading from persistence where the started_at
+    /// timestamp is already known.
+    pub fn new_with_time(id: SagaId, type_: SagaType, started_at: DateTime<Utc>) -> Self {
+        Self {
+            id,
+            type_,
+            correlation_id: None,
+            actor: None,
+            started_at,
+            trace_parent: None,
+        }
+    }
+
     /// Add correlation ID
     pub fn with_correlation_id(mut self, id: CorrelationId) -> Self {
         self.correlation_id = Some(id);
@@ -203,13 +218,13 @@ impl Default for SagaExecutionState {
 /// ```ignore
 /// let metadata = context.get_metadata::<ProvisioningMetadata>();
 /// ```
-pub trait SagaMetadata: Send + Sync + 'static {
+pub trait SagaMetadata: Send + Sync + 'static + Default {
     /// Get metadata as Any for downcasting
     fn as_any(&self) -> &dyn Any;
 }
 
 /// Default empty metadata implementation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DefaultSagaMetadata;
 
 impl SagaMetadata for DefaultSagaMetadata {
@@ -233,6 +248,17 @@ pub struct ProvisioningMetadata {
     pub worker_spec: WorkerSpec,
 }
 
+impl Default for ProvisioningMetadata {
+    fn default() -> Self {
+        Self {
+            provider_id: String::new(),
+            retry_count: 0,
+            last_error: None,
+            worker_spec: WorkerSpec::new(String::new(), String::new()),
+        }
+    }
+}
+
 impl SagaMetadata for ProvisioningMetadata {
     fn as_any(&self) -> &dyn Any {
         self
@@ -250,6 +276,15 @@ pub struct ExecutionMetadata {
     pub worker_id: Option<WorkerId>,
 }
 
+impl Default for ExecutionMetadata {
+    fn default() -> Self {
+        Self {
+            job_id: JobId::new(),
+            worker_id: None,
+        }
+    }
+}
+
 impl SagaMetadata for ExecutionMetadata {
     fn as_any(&self) -> &dyn Any {
         self
@@ -265,6 +300,15 @@ pub struct RecoveryMetadata {
     pub worker_id: WorkerId,
     /// Reason for recovery
     pub reason: String,
+}
+
+impl Default for RecoveryMetadata {
+    fn default() -> Self {
+        Self {
+            worker_id: WorkerId::new(),
+            reason: String::new(),
+        }
+    }
 }
 
 impl SagaMetadata for RecoveryMetadata {
@@ -788,7 +832,7 @@ impl SagaContextV2<DefaultSagaMetadata> {
             identity: identity_builder,
             execution,
             outputs,
-            metadata: DefaultSagaMetadata,
+            metadata: DefaultSagaMetadata::default(),
         }
     }
 
@@ -837,12 +881,12 @@ impl<M: SagaMetadata> SagaContextV2<M> {
     /// # Arguments
     ///
     /// * `v1` - The V1 context to convert from
-    /// * `metadata` - The custom metadata to use
+    /// * `custom_metadata` - The custom metadata to use
     ///
     /// # Returns
     ///
     /// A new V2 context with the provided metadata
-    pub fn from_v1_with_metadata(v1: &SagaContextV1, metadata: M) -> Self {
+    pub fn from_v1_with_metadata(v1: &SagaContextV1, custom_metadata: M) -> Self {
         // Build identity from V1 fields
         let mut identity_builder = SagaIdentity::new(v1.saga_id.clone(), v1.saga_type);
 
@@ -882,7 +926,127 @@ impl<M: SagaMetadata> SagaContextV2<M> {
             identity: identity_builder,
             execution,
             outputs,
-            metadata,
+            metadata: custom_metadata,
+        }
+    }
+
+    /// Creates a SagaContextV2 from persisted data
+    ///
+    /// This method is used when loading saga state from the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `saga_id` - The unique saga identifier
+    /// * `saga_type` - The type of saga
+    /// * `correlation_id` - Optional correlation ID
+    /// * `actor` - Optional actor
+    /// * `started_at` - When the saga started
+    /// * `current_step` - Current step number
+    /// * `is_compensating` - Whether the saga is compensating
+    /// * `metadata` - Custom metadata
+    /// * `error_message` - Optional error message
+    /// * `version` - Optimistic locking version
+    /// * `trace_parent` - Optional W3C trace context
+    ///
+    /// # Returns
+    ///
+    /// A new SagaContextV2 with data from persistence
+    pub fn from_persistence(
+        saga_id: SagaId,
+        saga_type: SagaType,
+        correlation_id: Option<String>,
+        actor: Option<String>,
+        started_at: chrono::DateTime<chrono::Utc>,
+        current_step: usize,
+        is_compensating: bool,
+        metadata: std::collections::HashMap<String, serde_json::Value>,
+        error_message: Option<String>,
+        version: u64,
+        trace_parent: Option<String>,
+    ) -> Self {
+        // Build identity from persisted fields
+        let mut identity_builder = SagaIdentity::new_with_time(saga_id, saga_type, started_at);
+
+        if let Some(corr_id) = correlation_id {
+            identity_builder = identity_builder.with_correlation_id(CorrelationId::new(corr_id));
+        }
+
+        if let Some(act) = actor {
+            identity_builder = identity_builder.with_actor(Actor::new(act));
+        }
+
+        if let Some(trace) = trace_parent {
+            identity_builder = identity_builder.with_trace_parent(TraceParent::new(trace));
+        }
+
+        // Build execution state from persisted fields
+        let phase = if is_compensating {
+            SagaPhase::Compensating
+        } else {
+            SagaPhase::Forward
+        };
+
+        let execution = SagaExecutionState {
+            current_step,
+            phase,
+            state: crate::saga::SagaState::Pending, // Will be updated from DB
+            version,
+            error_message,
+        };
+
+        // Note: step_outputs cannot be restored from persistence without conversion
+        let outputs = StepOutputs::new();
+
+        Self {
+            identity: identity_builder,
+            execution,
+            outputs,
+            metadata: M::default(),
+        }
+    }
+
+    /// Converts V2 context to the unified SagaContext type
+    ///
+    /// This method is used after Phase 5 migration where V2 is the default.
+    /// It creates a SagaContext that wraps the V2 implementation.
+    ///
+    /// # Returns
+    ///
+    /// A SagaContext with V2 data
+    pub fn to_context(&self) -> crate::saga::SagaContext {
+        // Convert StepOutputs inner HashMap to serde_json::Value format
+        let step_outputs = self
+            .outputs
+            .inner
+            .iter()
+            .map(|(k, v)| {
+                let json_value = match v {
+                    StepOutputValue::WorkerId(id) => serde_json::json!(id.to_string()),
+                    StepOutputValue::ProviderId(s) => serde_json::json!(s),
+                    StepOutputValue::String(s) => serde_json::json!(s),
+                    StepOutputValue::U32(n) => serde_json::json!(n),
+                    StepOutputValue::U64(n) => serde_json::json!(n),
+                    StepOutputValue::Bool(b) => serde_json::json!(b),
+                };
+                (k.clone(), json_value)
+            })
+            .collect();
+
+        crate::saga::SagaContext {
+            saga_id: self.identity.id.clone(),
+            saga_type: self.identity.type_,
+            correlation_id: self.identity.correlation_id.as_ref().map(|id| id.0.clone()),
+            actor: self.identity.actor.as_ref().map(|a| a.0.clone()),
+            started_at: self.identity.started_at,
+            current_step: self.execution.current_step,
+            is_compensating: self.execution.phase == SagaPhase::Compensating,
+            metadata: std::collections::HashMap::new(), // V2 stores metadata differently
+            step_outputs,
+            error_message: self.execution.error_message.clone(),
+            services: None,
+            state: self.execution.state,
+            version: self.execution.version,
+            trace_parent: self.identity.trace_parent.as_ref().map(|t| t.0.clone()),
         }
     }
 }

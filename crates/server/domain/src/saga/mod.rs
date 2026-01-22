@@ -19,9 +19,7 @@ pub mod cancellation;
 pub mod circuit_breaker;
 pub mod cleanup;
 pub mod commands;
-pub mod context_factory; // Factory for creating contexts with feature flags
-pub mod context_migration; // Migration module for gradual V1→V2 transition
-pub mod context_v2; // Refactored SagaContext (SOLID/DDD compliant)
+pub mod context_builder; // Phase 5: Unified builder (V2 is now default)
 pub mod engine_config;
 pub mod errors;
 pub mod event_handlers;
@@ -29,11 +27,11 @@ pub mod event_sourcing;
 pub mod execution;
 pub mod metrics;
 pub mod orchestrator;
-pub mod production_integration; // Production integration examples
 pub mod provisioning;
 pub mod recovery;
 pub mod repository;
 pub mod retry_policy;
+pub mod saga_context; // Phase 5: Renamed from context_v2.rs (Clean Code)
 pub mod stuck_detector;
 pub mod timeout;
 pub mod timeout_config;
@@ -45,19 +43,13 @@ pub use types::{
     SagaServices, SagaState, SagaStep, SagaType,
 };
 
-// Re-exports from context_factory module
-pub use context_factory::{SagaContextEither, SagaContextFactory};
+// Re-exports from context_builder module (Phase 5: Unified builder)
+pub use context_builder::{create_saga_context, create_saga_context_from_persistence};
 
-// Re-exports from context_v2 module
-pub use context_v2::{
-    DefaultSagaMetadata, SagaContextV2, SagaExecutionState, SagaIdentity, SagaMetadata, SagaPhase,
-    StepOutputs,
-};
-
-// Re-exports from context_migration module
-pub use context_migration::{
-    MigrationConfig, MigrationStats, SagaContextOps, WithSagaContext, convert_v1_to_v2,
-    convert_v2_to_v1, create_saga_context, create_saga_context_from_persistence,
+// Re-exports from saga_context module (Phase 5: Renamed from context_v2)
+pub use saga_context::{
+    Actor, CorrelationId, DefaultSagaMetadata, SagaContextV2, SagaContextV2Builder,
+    SagaExecutionState, SagaIdentity, SagaMetadata, SagaPhase, StepOutputs, TraceParent,
 };
 
 // Re-exports from errors module (EPIC-46 GAP-21)

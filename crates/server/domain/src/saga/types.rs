@@ -446,8 +446,8 @@ pub struct SagaContext {
     pub is_compensating: bool,
     /// Custom metadata for saga-specific data
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
-    /// Step outputs for compensation
-    step_outputs: std::collections::HashMap<String, serde_json::Value>,
+    /// Step outputs for compensation (Phase 5: now public after V2 migration)
+    pub step_outputs: std::collections::HashMap<String, serde_json::Value>,
     /// Error message if saga failed
     pub error_message: Option<String>,
     /// Runtime services injected for step execution (not persisted)
@@ -463,6 +463,8 @@ pub struct SagaContext {
 
 impl SagaContext {
     /// Creates a new SagaContext with the given parameters.
+    ///
+    /// Phase 5: Now delegates to V2 implementation as the default.
     #[inline]
     pub fn new(
         saga_id: SagaId,
@@ -470,28 +472,34 @@ impl SagaContext {
         correlation_id: Option<String>,
         actor: Option<String>,
     ) -> Self {
-        Self {
-            saga_id,
-            saga_type,
-            correlation_id,
-            actor,
-            started_at: Utc::now(),
-            current_step: 0,
-            is_compensating: false,
-            metadata: std::collections::HashMap::new(),
-            step_outputs: std::collections::HashMap::new(),
-            error_message: None,
-            services: None,
-            state: SagaState::Pending,
-            version: 0,
-            trace_parent: None,
+        // Use V2 implementation internally
+        let mut builder = super::saga_context::SagaContextV2Builder::new()
+            .with_id(saga_id.clone())
+            .with_type(saga_type);
+
+        // Add optional fields
+        if let Some(corr_id) = correlation_id {
+            builder = builder.with_correlation_id(super::saga_context::CorrelationId::new(corr_id));
         }
+
+        if let Some(act) = actor {
+            builder = builder.with_actor(super::saga_context::Actor::new(act));
+        }
+
+        let ctx_v2 = builder
+            .with_metadata(super::saga_context::DefaultSagaMetadata)
+            .build()
+            .expect("SagaContextV2Builder should not fail with valid inputs");
+
+        // Convert V2 to unified SagaContext
+        ctx_v2.to_context()
     }
 
     /// Creates a fully initialized SagaContext from persisted data.
     /// EPIC-45 Gap 6: Added state parameter
     /// EPIC-46 GAP-02: Added version parameter
     /// EPIC-46 GAP-14: Added trace_parent parameter
+    /// Phase 5: Now delegates to V2 implementation as the default.
     #[inline]
     pub fn from_persistence(
         saga_id: SagaId,
@@ -507,7 +515,8 @@ impl SagaContext {
         version: u64,
         trace_parent: Option<String>,
     ) -> Self {
-        Self {
+        // Use V2 implementation internally
+        let ctx_v2 = super::saga_context::SagaContextV2::<super::saga_context::DefaultSagaMetadata>::from_persistence(
             saga_id,
             saga_type,
             correlation_id,
@@ -516,16 +525,20 @@ impl SagaContext {
             current_step,
             is_compensating,
             metadata,
-            step_outputs: std::collections::HashMap::new(),
             error_message,
-            services: None,
-            state,
             version,
             trace_parent,
-        }
+        );
+
+        // Convert V2 to unified SagaContext and set the state
+        let mut context = ctx_v2.to_context();
+        context.state = state;
+        context
     }
 
     /// Creates a new SagaContext from event metadata.
+    ///
+    /// Phase 5: Now delegates to V2 implementation as the default.
     #[inline]
     pub fn from_event_metadata(
         saga_id: SagaId,
