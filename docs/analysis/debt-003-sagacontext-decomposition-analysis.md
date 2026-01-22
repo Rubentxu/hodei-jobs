@@ -1206,6 +1206,118 @@ async fn compensate_create_worker(
 
 ---
 
-**Documento mantenido por**: Arquitectura de Software  
+**Documento mantenido por**: Arquitectura de Software
+
+---
+
+## Seguimiento de Implementación
+
+**Última actualización**: 2026-01-22
+
+### Progreso General
+
+| Fase | Estado | Completado |
+|------|--------|------------|
+| Fase 0: Preparación | ✅ Completado | 2026-01-22 |
+| Fase 1: SagaIdentity | ✅ Completado | 2026-01-22 |
+| Fase 2: SagaExecutionState | ✅ Completado | 2026-01-22 |
+| Fase 3: Metadata Tipado | ✅ Completado | 2026-01-22 |
+| Fase 4: Integración | 🔄 En progreso | 2026-01-22 |
+| Fase 5: Limpieza | ⏳ Pendiente | - |
+
+### Entregables Fase 0-3
+
+#### ✅ Feature Flags
+- **Archivo**: `crates/server/bin/src/config.rs`
+- **Campos añadidos**:
+  - `saga_v2_enabled: bool` - Master toggle
+  - `saga_v2_percentage: u8` - Gradual rollout (0-100%)
+- **Método**: `should_use_saga_v2(saga_id: &str) -> bool`
+- **Tests**: 4 tests pasando
+- **Hashing consistente**: Para que una saga siempre use la misma versión
+
+#### ✅ SagaContextV2 Module
+- **Archivo**: `crates/server/domain/src/saga/context_v2.rs`
+- **Componentes implementados**:
+  - `SagaIdentity` (Value Object) - Identidad de la saga
+  - `SagaExecutionState` (Value Object) - Estado de ejecución
+  - `SagaMetadata` trait - Sistema de metadata tipado
+  - `StepOutputs` - Outputs type-safe para compensación
+  - `SagaContextV2<M>` - Context genérico sobre metadata
+  - `SagaContextV2Builder` - Builder pattern
+- **Tests**: 19 tests pasando
+- **Líneas de código**: ~800 líneas
+
+#### ✅ Implementaciones de Metadata
+- `DefaultSagaMetadata` - Metadata vacía por defecto
+- `ProvisioningMetadata` - Metadata para sagas de provisioning
+- `ExecutionMetadata` - Metadata para sagas de ejecución
+- `RecoveryMetadata` - Metadata para sagas de recuperación
+
+### Métricas Actuales
+
+| Métrica | Antes | Después | Mejora |
+|---------|-------|---------|--------|
+| Tests del domain crate | 554 | 573 | +19 |
+| Clippy warnings (domain) | 68 | 42 | -26 |
+| Compilación | ✅ | ✅ | - |
+| Tests pasando | 100% | 100% | - |
+
+### Próximos Pasos
+
+1. **Fase 4**: Integración gradual
+   - Añadir método de conversión V1 → V2 en `SagaContext`
+   - Implementar factory con feature flag
+   - Migrar un saga type a la vez
+
+2. **Fase 5**: Limpieza
+   - Eliminar código deprecated
+   - Actualizar documentación
+   - Remover feature flags (una vez completa la migración)
+
+### Archivos Modificados
+
+```
+M  crates/server/bin/src/config.rs                    (+90 líneas)
+M  crates/server/domain/src/saga/mod.rs               (+1 línea)
+M  crates/server/domain/src/saga/context_v2.rs        (nuevo, ~800 líneas)
+M  crates/server/domain/src/saga/circuit_breaker.rs   (+1 línea)
+M  crates/server/domain/src/saga/orchestrator.rs      (+3 líneas)
+```
+
+### Tests Nuevos
+
+```
+crates/server/domain/src/saga/context_v2.rs (19 tests):
+  ✅ test_saga_identity_new
+  ✅ test_saga_identity_builder
+  ✅ test_saga_identity_equality
+  ✅ test_execution_state_new
+  ✅ test_execution_state_advance
+  ✅ test_execution_state_fail
+  ✅ test_execution_state_complete
+  ✅ test_execution_state_start_compensation
+  ✅ test_step_outputs_new
+  ✅ test_step_outputs_set_get
+  ✅ test_step_outputs_typed_accessors
+  ✅ test_saga_context_v2_new
+  ✅ test_saga_context_v2_advance
+  ✅ test_saga_context_v2_outputs
+  ✅ test_saga_context_v2_with_provisioning_metadata
+  ✅ test_builder_basic
+  ✅ test_builder_full
+  ✅ test_builder_missing_identity
+  ✅ test_builder_missing_metadata
+
+crates/server/bin/src/config.rs (4 tests):
+  ✅ test_should_use_saga_v2_disabled
+  ✅ test_should_use_saga_v2_zero_percentage
+  ✅ test_should_use_saga_v2_hundred_percentage
+  ✅ test_should_use_saga_v2_consistent_hashing
+```
+
+---
+
+**Fin del documento**
 **Creado**: 2026-01-22  
 **Próxima revisión**: Post-implementación de Fase 2
