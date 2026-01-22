@@ -19,6 +19,12 @@ pub struct ServerConfig {
     pub log_persistence_path: String,
     #[serde(default = "default_log_ttl_hours")]
     pub log_ttl_hours: u64,
+    /// Feature flag for SagaContext V2 migration
+    #[serde(default = "default_saga_v2_enabled")]
+    pub saga_v2_enabled: bool,
+    /// Percentage of sagas to use V2 (0-100) for gradual rollout
+    #[serde(default = "default_saga_v2_percentage")]
+    pub saga_v2_percentage: u8,
 }
 
 fn default_server_port() -> u16 {
@@ -49,6 +55,14 @@ fn default_log_ttl_hours() -> u64 {
     168 // 7 days
 }
 
+fn default_saga_v2_enabled() -> bool {
+    false // Disabled by default for gradual rollout
+}
+
+fn default_saga_v2_percentage() -> u8 {
+    0 // 0% initially, will increase during migration
+}
+
 impl ServerConfig {
     #[allow(dead_code)]
     pub fn new() -> Result<Self, config::ConfigError> {
@@ -63,6 +77,9 @@ impl ServerConfig {
             .set_default("log_storage_backend", "local")?
             .set_default("log_persistence_path", "/tmp/hodei-logs")?
             .set_default("log_ttl_hours", 168)?
+            // Feature flags defaults
+            .set_default("saga_v2_enabled", false)?
+            .set_default("saga_v2_percentage", 0u8)?
             // Merge with config file (if exists)
             .add_source(config::File::with_name("config/default").required(false))
             .add_source(config::File::with_name(&format!("config/{}", run_mode)).required(false))
@@ -106,5 +123,144 @@ impl ServerConfig {
             storage_backend,
             self.log_ttl_hours,
         )
+    }
+
+    /// Check if SagaContext V2 should be used for a specific saga
+    ///
+    /// Uses consistent hashing based on saga ID to determine whether to use V2.
+    /// This ensures that the same saga always uses the same version during
+    /// gradual rollout.
+    ///
+    /// # Arguments
+    ///
+    /// * `saga_id` - The saga ID to check
+    ///
+    /// # Returns
+    ///
+    /// * `true` if V2 should be used, `false` for V1
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::collections::hash_map::DefaultHasher;
+    /// use std::hash::{Hash, Hasher};
+    ///
+    /// let saga_id = "saga-123";
+    /// if config.should_use_saga_v2(saga_id) {
+    ///     // Use SagaContextV2
+    /// } else {
+    ///     // Use legacy SagaContext
+    /// }
+    /// ```
+    pub fn should_use_saga_v2(&self, saga_id: &str) -> bool {
+        if !self.saga_v2_enabled {
+            return false;
+        }
+
+        if self.saga_v2_percentage == 0 {
+            return false;
+        }
+
+        if self.saga_v2_percentage >= 100 {
+            return true;
+        }
+
+        // Use consistent hashing for gradual rollout
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        saga_id.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Map hash to 0-99 range
+        let bucket = (hash % 100) as u8;
+        bucket < self.saga_v2_percentage
+    }
+}
+
+// =============================================================================
+// Feature Flags Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_use_saga_v2_disabled() {
+        let config = ServerConfig {
+            port: 50051,
+            database_url: None,
+            log_level: "info".to_string(),
+            log_persistence_enabled: true,
+            log_storage_backend: "local".to_string(),
+            log_persistence_path: "/tmp/hodei-logs".to_string(),
+            log_ttl_hours: 168,
+            saga_v2_enabled: false,
+            saga_v2_percentage: 0,
+        };
+
+        assert!(!config.should_use_saga_v2("saga-123"));
+    }
+
+    #[test]
+    fn test_should_use_saga_v2_zero_percentage() {
+        let config = ServerConfig {
+            port: 50051,
+            database_url: None,
+            log_level: "info".to_string(),
+            log_persistence_enabled: true,
+            log_storage_backend: "local".to_string(),
+            log_persistence_path: "/tmp/hodei-logs".to_string(),
+            log_ttl_hours: 168,
+            saga_v2_enabled: true,
+            saga_v2_percentage: 0,
+        };
+
+        assert!(!config.should_use_saga_v2("saga-123"));
+    }
+
+    #[test]
+    fn test_should_use_saga_v2_hundred_percentage() {
+        let config = ServerConfig {
+            port: 50051,
+            database_url: None,
+            log_level: "info".to_string(),
+            log_persistence_enabled: true,
+            log_storage_backend: "local".to_string(),
+            log_persistence_path: "/tmp/hodei-logs".to_string(),
+            log_ttl_hours: 168,
+            saga_v2_enabled: true,
+            saga_v2_percentage: 100,
+        };
+
+        assert!(config.should_use_saga_v2("saga-123"));
+    }
+
+    #[test]
+    fn test_should_use_saga_v2_consistent_hashing() {
+        let config = ServerConfig {
+            port: 50051,
+            database_url: None,
+            log_level: "info".to_string(),
+            log_persistence_enabled: true,
+            log_storage_backend: "local".to_string(),
+            log_persistence_path: "/tmp/hodei-logs".to_string(),
+            log_ttl_hours: 168,
+            saga_v2_enabled: true,
+            saga_v2_percentage: 50,
+        };
+
+        // Same saga ID should always produce the same result
+        let result1 = config.should_use_saga_v2("saga-123");
+        let result2 = config.should_use_saga_v2("saga-123");
+        assert_eq!(result1, result2);
+
+        // Different saga IDs may produce different results
+        let result3 = config.should_use_saga_v2("saga-456");
+        // We can't assert the exact value, but we can verify it's deterministic
+        let result4 = config.should_use_saga_v2("saga-456");
+        assert_eq!(result3, result4);
     }
 }
