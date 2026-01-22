@@ -5,7 +5,7 @@
 
 use crate::saga::{
     SagaId, SagaType,
-    context_v2::{DefaultSagaMetadata, SagaContextV2, SagaMetadata},
+    context_v2::{DefaultSagaMetadata, SagaContextV2},
     types::SagaContext as SagaContextV1,
 };
 

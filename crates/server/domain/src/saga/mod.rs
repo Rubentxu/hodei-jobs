@@ -20,6 +20,7 @@ pub mod circuit_breaker;
 pub mod cleanup;
 pub mod commands;
 pub mod context_factory; // Factory for creating contexts with feature flags
+pub mod context_migration; // Migration module for gradual V1→V2 transition
 pub mod context_v2; // Refactored SagaContext (SOLID/DDD compliant)
 pub mod engine_config;
 pub mod errors;
@@ -41,6 +42,21 @@ pub mod types;
 pub use types::{
     Saga, SagaContext, SagaError, SagaExecutionResult, SagaId, SagaOrchestrator, SagaResult,
     SagaServices, SagaState, SagaStep, SagaType,
+};
+
+// Re-exports from context_factory module
+pub use context_factory::{SagaContextEither, SagaContextFactory};
+
+// Re-exports from context_v2 module
+pub use context_v2::{
+    DefaultSagaMetadata, SagaContextV2, SagaExecutionState, SagaIdentity, SagaMetadata, SagaPhase,
+    StepOutputs,
+};
+
+// Re-exports from context_migration module
+pub use context_migration::{
+    MigrationConfig, MigrationStats, SagaContextOps, WithSagaContext, convert_v1_to_v2,
+    convert_v2_to_v1, create_saga_context, create_saga_context_from_persistence,
 };
 
 // Re-exports from errors module (EPIC-46 GAP-21)
