@@ -685,23 +685,72 @@ El sistema soporta múltiples providers para ejecutar workers:
 | **Kubernetes** | Container (Pod) | ~5-15s | Sí | K8s cluster |
 | **Firecracker** | Hardware (KVM) | ~125ms | No | Linux + KVM |
 
-### WorkerProvider Trait
+### WorkerProvider Trait (ISP Refactoring - DEBT-001)
+
+**Estado**: 🟡 Fase 1 Completada - ISP traits segregados, trait combinado deprecated
 
 ```rust
+// ISP Traits - Segregados (recomendado para nuevo código)
 #[async_trait]
-pub trait WorkerProvider: Send + Sync {
-    fn provider_id(&self) -> &ProviderId;
-    fn provider_type(&self) -> ProviderType;
-    fn capabilities(&self) -> &ProviderCapabilities;
-
+pub trait WorkerLifecycle: Send + Sync {
     async fn create_worker(&self, spec: &WorkerSpec) -> Result<WorkerHandle, ProviderError>;
     async fn get_worker_status(&self, handle: &WorkerHandle) -> Result<WorkerState, ProviderError>;
     async fn destroy_worker(&self, handle: &WorkerHandle) -> Result<(), ProviderError>;
-    async fn get_worker_logs(&self, handle: &WorkerHandle, tail: Option<u32>) -> Result<Vec<LogEntry>, ProviderError>;
+}
+
+#[async_trait]
+pub trait WorkerHealth: Send + Sync {
     async fn health_check(&self) -> Result<HealthStatus, ProviderError>;
+}
+
+#[async_trait]
+pub trait WorkerLogs: Send + Sync {
+    async fn get_worker_logs(&self, handle: &WorkerHandle, tail: Option<u32>) 
+        -> Result<Vec<LogEntry>, ProviderError>;
+}
+
+pub trait WorkerCost: Send + Sync {
+    fn estimate_cost(&self, spec: &WorkerSpec, duration: Duration) -> Option<CostEstimate>;
     fn estimated_startup_time(&self) -> Duration;
 }
+
+// ... más ISP traits: WorkerEligibility, WorkerMetrics, WorkerEventSource, WorkerProviderIdentity
+
+// Trait combinado (DEPRECATED - solo para backward compatibility)
+#[deprecated(
+    since = "0.83.0",
+    note = "Use specific ISP traits (WorkerLifecycle, WorkerHealth, etc.) instead"
+)]
+#[async_trait]
+pub trait WorkerProvider:
+    WorkerProviderIdentity
+    + WorkerLifecycle
+    + WorkerLogs
+    + WorkerCost
+    + WorkerHealth
+    + WorkerEligibility
+    + WorkerMetrics
+    + WorkerEventSource
+    + Send
+    + Sync
+{
+}
 ```
+
+**Uso Recomendado (ISP-compliant)**:
+```rust
+// Cliente que solo necesita crear/destruir workers
+struct SagaWorkerProvisioner {
+    provider: Arc<dyn WorkerLifecycle + WorkerProviderIdentity>,
+}
+
+// Cliente que solo necesita health checks
+struct MonitoringService {
+    providers: Vec<Arc<dyn WorkerHealth>>,
+}
+```
+
+**Migración**: Ver `docs/analysis/TECHNICAL_DEBT_SOLID_DDD.md#debt-001` para guía completa
 
 ### Variables de Entorno por Provider
 
