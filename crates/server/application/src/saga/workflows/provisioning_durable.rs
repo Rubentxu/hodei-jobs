@@ -442,11 +442,12 @@ impl ProvisioningWorkflow {
     /// # Example
     /// ```
     /// use std::sync::Arc;
+    /// use saga_engine_core::workflow::WorkflowConfig;
     /// use hodei_server_application::saga::workflows::provisioning_durable::*;
     /// use hodei_server_application::workers::provisioning::WorkerProvisioningService;
     ///
     /// # fn example(service: Arc<dyn WorkerProvisioningService>) {
-    /// let config = default_provisioning_config();
+    /// let config = WorkflowConfig::default();
     /// let workflow = ProvisioningWorkflow::with_service_and_config(service, config);
     /// # }
     /// ```

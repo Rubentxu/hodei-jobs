@@ -566,6 +566,7 @@ impl DurableWorkflow for RecoveryWorkflow {
 mod tests {
     use super::*;
     use crate::workers::provisioning::{MockWorkerProvisioning, MockWorkerRegistry};
+    use hodei_server_domain::workers::WorkerProvisioning;
     use saga_engine_core::workflow::WorkflowContext;
     use std::sync::Arc;
 
@@ -577,21 +578,25 @@ mod tests {
 
     #[test]
     fn test_recovery_input_idempotency_key() {
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
         let input = RecoveryInput::new(
-            JobId::from_string("job-123").unwrap(),
-            WorkerId::from_string("worker-456").unwrap(),
+            job_id.clone(),
+            worker_id.clone(),
             Some("provider-789".to_string()),
             "test failure",
         );
 
         let key = input.idempotency_key();
-        assert!(key.starts_with("recovery:job-123:worker-456"));
+        assert!(key.starts_with("recovery:"));
+        assert!(key.contains(&job_id.to_string()));
+        assert!(key.contains(&worker_id.to_string()));
     }
 
     #[test]
     fn test_recovery_workflow_creation() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
-        let provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+        let provisioning: Arc<dyn WorkerProvisioningService + Send + Sync> =
             Arc::new(MockWorkerProvisioning::new());
 
         let workflow = RecoveryWorkflow::new(registry, provisioning);

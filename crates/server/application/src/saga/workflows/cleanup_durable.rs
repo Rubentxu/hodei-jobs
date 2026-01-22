@@ -631,8 +631,8 @@ impl DurableWorkflow for CleanupDurableWorkflow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::workers::MockWorkerProvisioning;
-    use hodei_server_domain::workers::MockWorkerRegistry;
+    use crate::workers::provisioning::{MockWorkerProvisioning, MockWorkerRegistry};
+    use hodei_server_domain::workers::WorkerProvisioning;
 
     #[tokio::test]
     async fn test_cleanup_workflow_input_production_defaults() {
@@ -688,7 +688,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_unhealthy_workers_activity_dry_run() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
-        let provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+        let provisioning: Arc<dyn WorkerProvisioningService + Send + Sync> =
             Arc::new(MockWorkerProvisioning::new());
         let activity = CleanupUnhealthyWorkersActivity::new(provisioning, registry);
         let input = CleanupUnhealthyWorkersInput {

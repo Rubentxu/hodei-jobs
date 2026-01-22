@@ -508,65 +508,66 @@ impl DurableWorkflow for CancellationDurableWorkflow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::workers::MockWorkerProvisioning;
-    use hodei_server_domain::workers::MockWorkerRegistry;
+    use crate::workers::provisioning::{MockWorkerProvisioning, MockWorkerRegistry};
+    use hodei_server_domain::workers::WorkerProvisioning;
 
     #[tokio::test]
     async fn test_cancellation_workflow_input() {
-        let input = CancellationWorkflowInput::new(
-            JobId::from_string("job-123").unwrap(),
-            "User requested cancellation",
-        );
+        let job_id = JobId::new();
+        let input = CancellationWorkflowInput::new(job_id.clone(), "User requested cancellation");
 
-        assert_eq!(input.job_id, "job-123");
+        assert_eq!(input.job_id, job_id.to_string());
         assert_eq!(input.reason, "User requested cancellation");
         assert!(!input.destroy_infrastructure);
     }
 
     #[tokio::test]
     async fn test_cancellation_workflow_input_with_requester() {
-        let input = CancellationWorkflowInput::new(
-            JobId::from_string("job-123").unwrap(),
-            "Timeout reached",
-        )
-        .with_requester("system")
-        .with_destroy_infrastructure(true);
+        let job_id = JobId::new();
+        let input = CancellationWorkflowInput::new(job_id.clone(), "Timeout reached")
+            .with_requester("system")
+            .with_destroy_infrastructure(true);
 
-        assert_eq!(input.job_id, "job-123");
+        assert_eq!(input.job_id, job_id.to_string());
         assert_eq!(input.requester, Some("system".to_string()));
         assert!(input.destroy_infrastructure);
     }
 
     #[tokio::test]
     async fn test_idempotency_key() {
-        let input =
-            CancellationWorkflowInput::new(JobId::from_string("job-123").unwrap(), "test reason");
+        let job_id = JobId::new();
+        let input = CancellationWorkflowInput::new(job_id.clone(), "test reason");
 
         let key = input.idempotency_key();
-        assert!(key.starts_with("cancellation:job-123:test reason"));
+        assert!(key.starts_with("cancellation:"));
+        assert!(key.contains(&job_id.to_string()));
+        assert!(key.contains(":test reason"));
     }
 
     #[tokio::test]
     async fn test_validate_cancellation_activity_with_mock() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
         let activity = ValidateCancellationActivity::new(registry);
+        let job_id = JobId::new();
         let input = ValidateCancellationInput {
-            job_id: "job-123".to_string(),
+            job_id: job_id.to_string(),
         };
 
         let result = activity.execute(input).await;
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert_eq!(output.job_id, "job-123");
+        assert_eq!(output.job_id, job_id.to_string());
     }
 
     #[tokio::test]
     async fn test_notify_worker_stop_activity_with_mock() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
         let activity = NotifyWorkerStopActivity::new(registry);
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
         let input = NotifyWorkerStopInput {
-            job_id: "job-123".to_string(),
-            worker_id: Some("worker-456".to_string()),
+            job_id: job_id.to_string(),
+            worker_id: Some(worker_id.to_string()),
             reason: "test".to_string(),
         };
 
@@ -595,7 +596,7 @@ mod tests {
     #[tokio::test]
     async fn test_terminate_infrastructure_activity_with_mock() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
-        let provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+        let provisioning: Arc<dyn WorkerProvisioningService + Send + Sync> =
             Arc::new(MockWorkerProvisioning::new());
         let activity = TerminateInfrastructureActivity::new(provisioning, registry);
         let input = TerminateInfrastructureInput {

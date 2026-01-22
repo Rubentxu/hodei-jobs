@@ -500,42 +500,47 @@ impl DurableWorkflow for TimeoutDurableWorkflow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hodei_server_domain::workers::MockWorkerProvisioning;
-    use hodei_server_domain::workers::MockWorkerRegistry;
+    use crate::workers::provisioning::{MockWorkerProvisioning, MockWorkerRegistry};
+    use hodei_server_domain::workers::WorkerProvisioning;
 
     #[tokio::test]
     async fn test_timeout_workflow_input() {
+        let job_id = JobId::new();
         let input = TimeoutWorkflowInput::new(
-            JobId::from_string("job-123").unwrap(),
+            job_id.clone(),
             Duration::from_secs(3600),
             Duration::from_secs(7200),
             "Scheduled timeout check",
         );
 
-        assert_eq!(input.job_id, "job-123");
+        assert_eq!(input.job_id, job_id.to_string());
         assert_eq!(input.expected_duration, Duration::from_secs(3600));
         assert_eq!(input.max_duration, Duration::from_secs(7200));
     }
 
     #[tokio::test]
     async fn test_idempotency_key() {
+        let job_id = JobId::new();
         let input = TimeoutWorkflowInput::new(
-            JobId::from_string("job-123").unwrap(),
+            job_id.clone(),
             Duration::from_secs(3600),
             Duration::from_secs(7200),
             "test reason",
         );
 
         let key = input.idempotency_key();
-        assert!(key.starts_with("timeout:job-123:test reason"));
+        assert!(key.starts_with("timeout:"));
+        assert!(key.contains(&job_id.to_string()));
+        assert!(key.contains(":test reason"));
     }
 
     #[tokio::test]
     async fn test_check_timeout_activity_with_mock() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
         let activity = CheckTimeoutActivity::new(registry);
+        let job_id = JobId::new();
         let input = CheckTimeoutInput {
-            job_id: "job-123".to_string(),
+            job_id: job_id.to_string(),
             expected_duration: Duration::from_secs(3600),
             max_duration: Duration::from_secs(7200),
         };
@@ -543,13 +548,13 @@ mod tests {
         let result = activity.execute(input).await;
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert_eq!(output.job_id, "job-123");
+        assert_eq!(output.job_id, job_id.to_string());
     }
 
     #[tokio::test]
     async fn test_terminate_timed_out_worker_activity_with_mock() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
-        let provisioning: Arc<dyn WorkerProvisioning + Send + Sync> =
+        let provisioning: Arc<dyn WorkerProvisioningService + Send + Sync> =
             Arc::new(MockWorkerProvisioning::new());
         let activity = TerminateTimedOutWorkerActivity::new(provisioning, registry);
         let input = TerminateTimedOutWorkerInput {
@@ -566,8 +571,9 @@ mod tests {
     async fn test_mark_job_failed_activity_with_mock() {
         let registry: Arc<dyn WorkerRegistry + Send + Sync> = Arc::new(MockWorkerRegistry::new());
         let activity = MarkJobFailedActivity::new(registry);
+        let job_id = JobId::new();
         let input = MarkJobFailedInput {
-            job_id: "job-123".to_string(),
+            job_id: job_id.to_string(),
             timeout_reason: "Job exceeded maximum duration".to_string(),
         };
 
@@ -583,17 +589,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_workflow_output() {
+        let job_id = JobId::new();
+        let worker_id = WorkerId::new();
         let output = TimeoutWorkflowOutput {
-            job_id: "job-123".to_string(),
+            job_id: job_id.to_string(),
             timed_out: true,
-            worker_id: Some("worker-456".to_string()),
+            worker_id: Some(worker_id.to_string()),
             worker_terminated: true,
             final_state: JobState::Failed,
             handled_at: chrono::Utc::now(),
             checked_duration_secs: 7200,
         };
 
-        assert_eq!(output.job_id, "job-123");
+        assert_eq!(output.job_id, job_id.to_string());
         assert!(output.timed_out);
         assert_eq!(output.final_state, JobState::Failed);
     }
