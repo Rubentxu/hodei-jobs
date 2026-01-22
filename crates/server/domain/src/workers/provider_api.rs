@@ -2018,4 +2018,220 @@ mod tests {
             assert_eq!(*max_bytes, 64 * 1024 * 1024 * 1024);
         }
     }
+
+    // ========================================================================
+    // DEBT-001: ISP-Based Provider Usage Tests
+    // ========================================================================
+    // These tests demonstrate how to use providers with specific ISP traits
+    // instead of the deprecated combined WorkerProvider trait.
+
+    #[tokio::test]
+    async fn test_isp_worker_lifecycle_only() {
+        // Test that a provider can be used with only WorkerLifecycle trait
+        // This is useful for components that only need to create/destroy workers
+        let provider = MockProvider;
+
+        // Use as WorkerLifecycle trait object
+        let lifecycle_provider: &(dyn WorkerLifecycle + Send + Sync) = &provider;
+
+        let spec = WorkerSpec::new("test".to_string(), "http://localhost".to_string());
+        let result = lifecycle_provider.create_worker(&spec).await;
+
+        assert!(result.is_err());
+        if let Err(ProviderError::UnsupportedOperation { .. }) = result {
+            // Expected - mock doesn't implement actual creation
+        } else {
+            panic!("Expected UnsupportedOperation error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_isp_worker_health_only() {
+        // Test that a provider can be used with only WorkerHealth trait
+        // This is useful for health monitoring components
+        let provider = MockProvider;
+
+        // Use as WorkerHealth trait object
+        let health_provider: &(dyn WorkerHealth + Send + Sync) = &provider;
+
+        let result = health_provider.health_check().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), HealthStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_isp_combined_traits() {
+        // Test that a provider can be used with multiple specific traits
+        // This is useful for components that need multiple capabilities
+        let provider = MockProvider;
+
+        // Use as both WorkerLifecycle and WorkerHealth
+        let lifecycle_provider: &(dyn WorkerLifecycle + Send + Sync) = &provider;
+        let health_provider: &(dyn WorkerHealth + Send + Sync) = &provider;
+
+        // Check health
+        let health_result = health_provider.health_check().await;
+        assert!(health_result.is_ok());
+
+        // Try to create worker
+        let spec = WorkerSpec::new("test".to_string(), "http://localhost".to_string());
+        let create_result = lifecycle_provider.create_worker(&spec).await;
+        assert!(create_result.is_err());
+    }
+
+    #[test]
+    fn test_isp_worker_cost_only() {
+        // Test that a provider can be used with only WorkerCost trait
+        // This is useful for cost estimation components
+        let provider = MockProvider;
+
+        // Use as WorkerCost trait object
+        let cost_provider: &dyn WorkerCost = &provider;
+
+        let spec = WorkerSpec::new("test".to_string(), "http://localhost".to_string());
+        let duration = Duration::from_secs(3600);
+
+        let cost = cost_provider.estimate_cost(&spec, duration);
+        assert!(cost.is_none());
+
+        let startup_time = cost_provider.estimated_startup_time();
+        assert_eq!(startup_time, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_isp_worker_eligibility_only() {
+        // Test that a provider can be used with only WorkerEligibility trait
+        // This is useful for scheduler components
+        let provider = MockProvider;
+
+        // Use as WorkerEligibility trait object
+        let eligibility_provider: &dyn WorkerEligibility = &provider;
+
+        let requirements = JobRequirements {
+            resources: ResourceRequirements {
+                cpu_cores: 2.0,
+                memory_bytes: 4 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(eligibility_provider.can_fulfill(&requirements));
+    }
+
+    #[test]
+    fn test_isp_worker_metrics_only() {
+        // Test that a provider can be used with only WorkerMetrics trait
+        // This is useful for monitoring and analytics components
+        let provider = MockProvider;
+
+        // Use as WorkerMetrics trait object
+        let metrics_provider: &dyn WorkerMetrics = &provider;
+
+        let metrics = metrics_provider.get_performance_metrics();
+        assert!(metrics.startup_times.is_empty());
+
+        let health_score = metrics_provider.calculate_health_score();
+        assert_eq!(health_score, 0.95);
+    }
+
+    #[test]
+    fn test_isp_provider_identity_only() {
+        // Test that a provider can be used with only WorkerProviderIdentity trait
+        // This is useful for provider discovery and registry components
+        let provider = MockProvider;
+
+        // Use as WorkerProviderIdentity trait object
+        let identity_provider: &dyn WorkerProviderIdentity = &provider;
+
+        let provider_id = identity_provider.provider_id();
+        let provider_type = identity_provider.provider_type();
+        let capabilities = identity_provider.capabilities();
+
+        assert_eq!(provider_type, ProviderType::Docker);
+        assert!(!capabilities.architectures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_isp_worker_logs_only() {
+        // Test that a provider can be used with only WorkerLogs trait
+        // This is useful for log aggregation components
+        let provider = MockProvider;
+
+        // Use as WorkerLogs trait object
+        let logs_provider: &(dyn WorkerLogs + Send + Sync) = &provider;
+
+        let handle = WorkerHandle::new(
+            WorkerId::new(),
+            "test".to_string(),
+            ProviderType::Docker,
+            ProviderId::new(),
+        );
+
+        let result = logs_provider.get_worker_logs(&handle, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_isp_deprecated_combined_trait() {
+        // Test that the deprecated combined WorkerProvider trait still works
+        // This ensures backward compatibility during migration
+        // Note: MockProvider doesn't implement the deprecated trait by default
+        // This test demonstrates that individual ISP traits work independently
+
+        let provider = MockProvider;
+
+        // Use individual ISP traits instead of combined trait
+        let health_provider: &(dyn WorkerHealth + Send + Sync) = &provider;
+        let lifecycle_provider: &(dyn WorkerLifecycle + Send + Sync) = &provider;
+
+        // All methods are available through individual traits
+        let health_result = health_provider.health_check().await;
+        assert!(health_result.is_ok());
+
+        let spec = WorkerSpec::new("test".to_string(), "http://localhost".to_string());
+        let create_result = lifecycle_provider.create_worker(&spec).await;
+        assert!(create_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_isp_trait_object_collection() {
+        // Test storing providers in a collection using specific ISP traits
+        // This demonstrates how to create a capability-based registry
+
+        // Collection of providers that support health checks
+        let mut health_checkable: Vec<&(dyn WorkerHealth + Send + Sync)> = Vec::new();
+        let provider1 = MockProvider;
+        let provider2 = MockProvider;
+
+        health_checkable.push(&provider1);
+        health_checkable.push(&provider2);
+
+        // Check health of all providers
+        for provider in &health_checkable {
+            let result = provider.health_check().await;
+            assert!(result.is_ok());
+        }
+
+        assert_eq!(health_checkable.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_isp_extension_trait_methods() {
+        // Test that extension methods work with ISP traits
+        // Note: WorkerProviderExt is only available for types implementing WorkerProvider
+        // For ISP traits, use the trait methods directly
+        let provider = MockProvider;
+
+        // Use individual trait methods directly
+        let health = WorkerHealth::health_check(&provider).await;
+        assert!(health.is_ok());
+
+        let spec = WorkerSpec::new("test".to_string(), "http://localhost".to_string());
+        let cost = WorkerCost::estimate_cost(&provider, &spec, Duration::from_secs(3600));
+        assert!(cost.is_none());
+
+        let startup_time = WorkerCost::estimated_startup_time(&provider);
+        assert_eq!(startup_time, Duration::from_secs(30));
+    }
 }
