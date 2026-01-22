@@ -44,6 +44,8 @@ Se han identificado **23 violaciones significativas** a principios SOLID, patron
 
 **Archivo**: `crates/server/domain/src/workers/provider_api.rs:748-756`
 
+**Estado**: 🟡 **EN PROGRESO** (Fase 1 completada: Deprecated combined trait, ISP tests added)
+
 **Descripción**:
 ```rust
 pub trait WorkerProvider:
@@ -70,6 +72,30 @@ pub trait WorkerProvider:
 - Testing requiere mocks de 8 traits aunque solo use 1 método
 - Nuevos providers deben implementar ~30 métodos
 - Imposible crear `dyn WorkerProvider` sin problemas de object safety
+
+**Progreso Realizado** (2026-01-22):
+
+✅ **Fase 1 Completada**:
+1. Deprecated the combined `WorkerProvider` trait with `#[deprecated]` attribute
+2. Added comprehensive documentation with migration guide
+3. Updated all provider implementations (Docker, Kubernetes, Firecracker, TestWorkerProvider) to use `#[allow(deprecated)]`
+4. Added 11 TDD tests demonstrating ISP-based provider usage:
+   - `test_isp_worker_lifecycle_only` - Using only WorkerLifecycle trait
+   - `test_isp_worker_health_only` - Using only WorkerHealth trait
+   - `test_isp_combined_traits` - Using multiple specific traits
+   - `test_isp_worker_cost_only` - Using only WorkerCost trait
+   - `test_isp_worker_eligibility_only` - Using only WorkerEligibility trait
+   - `test_isp_worker_metrics_only` - Using only WorkerMetrics trait
+   - `test_isp_provider_identity_only` - Using only WorkerProviderIdentity trait
+   - `test_isp_worker_logs_only` - Using only WorkerLogs trait
+   - `test_isp_deprecated_combined_trait` - Backward compatibility test
+   - `test_isp_trait_object_collection` - Capability-based registry pattern
+   - `test_isp_extension_trait_methods` - Direct trait method usage
+
+📋 **Fase 2 Pendiente**:
+- Create ISP-based provider registry to store providers by specific traits
+- Update provider consumers (WorkerLifecycleManager, providers_init) to depend on specific ISP traits
+- Remove `dyn WorkerProvider` usage from application layer
 
 **Propuesta de Refactorización**:
 
