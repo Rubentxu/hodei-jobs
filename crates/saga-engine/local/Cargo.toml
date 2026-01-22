@@ -1,0 +1,53 @@
+[package]
+name = "saga-engine-local"
+description = "Local adapters for saga-engine - Tokio TaskQueue, InMemory timer store, and LocalSagaEngine builder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Core saga engine
+saga-engine-core = { path = "../core" }
+
+# SQLite for event store
+saga-engine-sqlite = { path = "../sqlite", optional = true }
+
+# Async trait for trait implementations
+async-trait = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "macros", "time", "rt-multi-thread", "fs"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+# Tracing for logging
+tracing = { workspace = true }
+
+# CPU detection
+num_cpus = "1.17"
+
+# Locking
+parking_lot = "0.12"
+
+# Optional: SQLite support
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls", "json", "uuid", "chrono"], optional = true }
+
+[features]
+default = ["sqlite"]
+sqlite = ["dep:sqlx", "dep:saga-engine-sqlite"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+saga-engine-testing = { path = "../testing" }
+tempfile = { workspace = true }

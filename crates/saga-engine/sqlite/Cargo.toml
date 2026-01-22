@@ -1,0 +1,40 @@
+[package]
+name = "saga-engine-sqlite"
+description = "SQLite backend for saga-engine - EventStore with ACID transactions for local applications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Core saga engine
+saga-engine-core = { path = "../core" }
+
+# Async trait for trait implementations
+async-trait = { workspace = true }
+
+# Database - using workspace sqlx version
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls", "json", "uuid", "chrono"] }
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "macros", "time", "rt-multi-thread"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+# Tracing for logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+saga-engine-testing = { path = "../testing" }
+tempfile = { workspace = true }
