@@ -16,7 +16,10 @@ use hodei_server_domain::workers::{
 };
 
 use crate::providers::ProviderRegistry;
-use crate::workers::provisioning::{ProvisioningResult, WorkerProvisioningService};
+use crate::workers::provisioning::{
+    ProvisioningResult, WorkerProviderQuery, WorkerProvisioner, WorkerProvisioningService,
+    WorkerSpecValidator,
+};
 
 /// Default OTP TTL for provisioned workers (5 minutes)
 const DEFAULT_OTP_TTL: Duration = Duration::from_secs(300);
@@ -65,6 +68,14 @@ impl ProvisioningConfig {
 }
 
 /// Production implementation of WorkerProvisioningService
+///
+/// This service implements all three segregated traits:
+/// - `WorkerProvisioner`: Core provisioning operations
+/// - `WorkerProviderQuery`: Read-only queries for provider information
+/// - `WorkerSpecValidator`: Specification validation
+///
+/// It also implements the domain layer `WorkerProvisioning` trait
+/// for compatibility with saga steps.
 #[derive(Clone)]
 pub struct DefaultWorkerProvisioningService {
     /// Worker registry for registration
@@ -115,8 +126,12 @@ impl DefaultWorkerProvisioningService {
     }
 }
 
+// =============================================================================
+// WorkerProvisioner Implementation
+// =============================================================================
+
 #[async_trait]
-impl WorkerProvisioningService for DefaultWorkerProvisioningService {
+impl WorkerProvisioner for DefaultWorkerProvisioningService {
     async fn provision_worker(
         &self,
         provider_id: &ProviderId,
@@ -195,6 +210,55 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         ))
     }
 
+    async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()> {
+        info!("Terminating worker {} (reason: {})", worker_id, reason);
+
+        // Get worker info to find the provider and handle
+        let worker = self.registry.find_by_id(worker_id).await?.ok_or_else(|| {
+            DomainError::WorkerNotFound {
+                worker_id: worker_id.clone(),
+            }
+        })?;
+
+        let handle = worker.handle().clone();
+        let provider_id = worker.provider_id().clone();
+
+        // Get the provider
+        let provider = self.get_provider(&provider_id).await?;
+
+        // Try to destroy the worker on the provider
+        match provider.destroy_worker(&handle).await {
+            Ok(_) => {
+                info!(
+                    "Worker {} destroyed via provider {}",
+                    worker_id, provider_id
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Provider {} failed to destroy worker {}: {}",
+                    provider_id, worker_id, e
+                );
+            }
+        }
+
+        // Unregister from registry
+        self.registry.unregister(worker_id).await?;
+        Ok(())
+    }
+
+    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
+        // Explicit call to avoid ambiguity with WorkerProvisioning trait
+        <Self as WorkerProvisioner>::terminate_worker(self, worker_id, "saga compensation").await
+    }
+}
+
+// =============================================================================
+// WorkerProviderQuery Implementation
+// =============================================================================
+
+#[async_trait]
+impl WorkerProviderQuery for DefaultWorkerProvisioningService {
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
         let Some(provider) = self.providers.get(provider_id) else {
             return Ok(false);
@@ -282,7 +346,14 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         // For now, return None as we need additional conversion logic
         Ok(None)
     }
+}
 
+// =============================================================================
+// WorkerSpecValidator Implementation
+// =============================================================================
+
+#[async_trait]
+impl WorkerSpecValidator for DefaultWorkerProvisioningService {
     async fn validate_spec(&self, spec: &WorkerSpec) -> Result<()> {
         // Basic validation of worker spec
         if spec.image.is_empty() {
@@ -299,54 +370,32 @@ impl WorkerProvisioningService for DefaultWorkerProvisioningService {
         }
         Ok(())
     }
+}
 
-    async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()> {
-        info!("Terminating worker {} (reason: {})", worker_id, reason);
+// =============================================================================
+// Combined Trait Implementation (Backward Compatibility)
+// =============================================================================
 
-        // Get worker info to find the provider and handle
-        let worker = self.registry.find_by_id(worker_id).await?.ok_or_else(|| {
-            DomainError::WorkerNotFound {
-                worker_id: worker_id.clone(),
-            }
-        })?;
-
-        let handle = worker.handle().clone();
-        let provider_id = worker.provider_id().clone();
-
-        // Get the provider
-        let provider = self.get_provider(&provider_id).await?;
-
-        // Try to destroy the worker on the provider
-        match provider.destroy_worker(&handle).await {
-            Ok(_) => {
-                info!(
-                    "Worker {} destroyed via provider {}",
-                    worker_id, provider_id
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Provider {} failed to destroy worker {}: {}",
-                    provider_id, worker_id, e
-                );
-            }
-        }
-
-        // Unregister from registry
-        self.registry.unregister(worker_id).await?;
-        Ok(())
-    }
-
-    async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
-        <Self as WorkerProvisioningService>::terminate_worker(self, worker_id, "saga compensation")
-            .await
-    }
+/// Combined trait implementation for backward compatibility
+///
+/// This allows existing code that depends on `WorkerProvisioningService`
+/// to continue working without changes.
+#[async_trait]
+impl WorkerProvisioningService for DefaultWorkerProvisioningService {
+    // All methods are automatically implemented via the supertraits:
+    // - WorkerProvisioner provides: provision_worker, terminate_worker, destroy_worker
+    // - WorkerProviderQuery provides: is_provider_available, default_worker_spec, list_providers, get_provider_config
+    // - WorkerSpecValidator provides: validate_spec
 }
 
 /// Implementation of domain trait WorkerProvisioning for saga steps.
 ///
 /// This allows the DefaultWorkerProvisioningService to be used directly
 /// in saga steps like CreateInfrastructureStep.
+///
+/// This implementation delegates to the segregated ISP traits:
+/// - WorkerProvisioner for provisioning operations
+/// - WorkerProviderQuery for provider queries
 #[async_trait]
 impl WorkerProvisioning for DefaultWorkerProvisioningService {
     async fn provision_worker(
@@ -355,9 +404,9 @@ impl WorkerProvisioning for DefaultWorkerProvisioningService {
         spec: WorkerSpec,
         job_id: JobId,
     ) -> Result<WorkerProvisioningResult> {
-        // Delegate to WorkerProvisioningService implementation
+        // Delegate to WorkerProvisioner (segregated trait)
         let result =
-            WorkerProvisioningService::provision_worker(self, provider_id, spec, job_id.clone())
+            <Self as WorkerProvisioner>::provision_worker(self, provider_id, spec, job_id.clone())
                 .await?;
         Ok(WorkerProvisioningResult {
             worker_id: result.worker_id,
@@ -367,16 +416,18 @@ impl WorkerProvisioning for DefaultWorkerProvisioningService {
     }
 
     async fn is_provider_available(&self, provider_id: &ProviderId) -> Result<bool> {
-        // Delegate to WorkerProvisioningService implementation
-        WorkerProvisioningService::is_provider_available(self, provider_id).await
+        // Delegate to WorkerProviderQuery (segregated trait)
+        <Self as WorkerProviderQuery>::is_provider_available(self, provider_id).await
     }
 
     async fn terminate_worker(&self, worker_id: &WorkerId, reason: &str) -> Result<()> {
-        <Self as WorkerProvisioningService>::terminate_worker(self, worker_id, reason).await
+        // Delegate to WorkerProvisioner (segregated trait)
+        <Self as WorkerProvisioner>::terminate_worker(self, worker_id, reason).await
     }
 
     async fn destroy_worker(&self, worker_id: &WorkerId) -> Result<()> {
-        <Self as WorkerProvisioningService>::destroy_worker(self, worker_id).await
+        // Delegate to WorkerProvisioner (segregated trait)
+        <Self as WorkerProvisioner>::destroy_worker(self, worker_id).await
     }
 }
 
