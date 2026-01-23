@@ -518,9 +518,11 @@ impl WorkerAgentServiceImpl {
 
                                 // BUG-001 FIX: Persist worker to PostgreSQL via WorkerRegistry
                                 if let Some(ref registry) = self.worker_registry {
-                                    let job_id = job_id_from_token.unwrap_or_else(JobId::new);
+                                    // Clone job_id before consuming it
+                                    let job_id_for_db =
+                                        job_id_from_token.clone().unwrap_or_else(JobId::new);
                                     match registry
-                                        .register(handle.clone(), spec.clone(), job_id)
+                                        .register(handle.clone(), spec.clone(), job_id_for_db)
                                         .await
                                     {
                                         Ok(worker) => {
@@ -717,6 +719,13 @@ impl WorkerAgentServiceImpl {
         // 2. Emit WorkerRegistered and WorkerReady events (triggers JobDispatcher)
         self.emit_worker_events(&worker_id).await?;
 
+        // 3. Emit JobAssigned event if worker was registered with a job_id
+        // This ensures the job.worker_id is updated for data consistency
+        // Clone the job_id since it may have been consumed earlier
+        if let Some(job_id) = job_id_from_token {
+            self.emit_job_assigned_event(&job_id, &worker_id).await?;
+        }
+
         Ok(())
     }
 
@@ -753,6 +762,36 @@ impl WorkerAgentServiceImpl {
                 info!(
                     "🚀 Emitted WorkerReady for {}. JobDispatcher should pick this up.",
                     worker_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit JobAssigned event to ensure job.worker_id is updated
+    async fn emit_job_assigned_event(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+    ) -> Result<(), Status> {
+        if let Some(event_bus) = &self.event_bus {
+            let event = DomainEvent::JobAssigned {
+                job_id: job_id.clone(),
+                worker_id: worker_id.clone(),
+                occurred_at: Utc::now(),
+                correlation_id: None,
+                actor: Some("worker-registration".to_string()),
+            };
+
+            if let Err(e) = event_bus.publish(&event).await {
+                warn!(
+                    "Failed to publish JobAssigned event for job {} worker {}: {}",
+                    job_id, worker_id, e
+                );
+            } else {
+                info!(
+                    "✅ Emitted JobAssigned event for job {} -> worker {}",
+                    job_id, worker_id
                 );
             }
         }

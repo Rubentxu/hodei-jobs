@@ -46,6 +46,7 @@ Desktop.ini
 .env.local
 .env.*.local
 !.env.example
+!.env.development
 
 # Secrets and certificates
 *.pem

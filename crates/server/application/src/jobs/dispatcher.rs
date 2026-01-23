@@ -461,8 +461,8 @@ impl JobDispatcher {
     /// 5. Job state transitions: QUEUED → ASSIGNED → RUNNING → SUCCEEDED/FAILED
     ///
     /// ## Error Handling
-    /// If execution_saga_dispatcher is not available, this returns an error
-    /// since the legacy path (JobAssignmentService) no longer sends RUN_JOB.
+    /// If execution_saga_dispatcher fails, falls back to direct RUN_JOB via worker_command_sender.
+    /// This is a temporary workaround until the v4.0 DurableWorkflow Runtime is complete.
     async fn assign_and_dispatch(&self, job: &mut Job, worker_id: &WorkerId) -> anyhow::Result<()> {
         info!(
             job_id = %job.id,
@@ -487,25 +487,51 @@ impl JobDispatcher {
                     Ok(())
                 }
                 Err(e) => {
-                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed");
-                    Err(anyhow::anyhow!("ExecutionSaga failed: {}", e))
+                    warn!(job_id = %job.id, error = %e, "⚠️ JobDispatcher: ExecutionSaga failed, falling back to direct RUN_JOB");
+                    // FALLBACK: Send RUN_JOB directly via worker_command_sender
+                    self.send_run_job_direct(job, worker_id).await
                 }
             }
         } else {
             // CRITICAL ERROR: No saga dispatcher available
-            // The legacy JobAssignmentService path has been removed because
-            // it doesn't send RUN_JOB, leaving jobs stuck in ASSIGNED state.
-            error!(
-                "❌ JobDispatcher: No execution_saga_dispatcher available! \
-                Cannot dispatch job {} to worker {}. \
-                Ensure ExecutionSagaConsumer is started with JobExecutorImpl.",
-                job.id, worker_id
+            // Fallback to direct RUN_JOB via worker_command_sender
+            warn!(
+                "❌ JobDispatcher: No execution_saga_dispatcher available, using direct RUN_JOB fallback"
             );
-            Err(anyhow::anyhow!(
-                "Execution saga dispatcher not configured. \
-                Cannot dispatch job to worker. Check server startup configuration."
-            ))
+            self.send_run_job_direct(job, worker_id).await
         }
+    }
+
+    /// Send RUN_JOB directly to worker via gRPC (fallback when saga fails)
+    ///
+    /// This is a temporary workaround until the v4.0 DurableWorkflow Runtime is complete
+    /// and can properly execute activities via NATS task queues.
+    async fn send_run_job_direct(&self, job: &Job, worker_id: &WorkerId) -> anyhow::Result<()> {
+        info!(
+            job_id = %job.id,
+            worker_id = %worker_id,
+            "📤 JobDispatcher: Sending RUN_JOB directly to worker"
+        );
+
+        // 1. Update job state to RUNNING
+        self.job_repository
+            .update_state(&job.id, JobState::Running)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to update job state to RUNNING: {}", e))?;
+
+        // 2. Send RUN_JOB command to worker via gRPC
+        self.worker_command_sender
+            .send_run_job(worker_id, &job)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send RUN_JOB to worker: {}", e))?;
+
+        info!(
+            job_id = %job.id,
+            worker_id = %worker_id,
+            "✅ JobDispatcher: RUN_JOB sent successfully (fallback mode)"
+        );
+
+        Ok(())
     }
 
     /// Trigger worker provisioning when no workers are available

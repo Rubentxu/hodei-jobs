@@ -66,7 +66,7 @@ fn main() {
 
     // Start server
     println!("4. Starting server...");
-    let server_cmd = " DATABASE_URL=postgres://postgres:postgres@localhost:5432/hodei_jobs \
+    let server_cmd = " HODEI_DATABASE_URL=postgres://postgres:postgres@localhost:5432/hodei_jobs \
         cargo run --bin hodei-server-bin > /tmp/server.log 2>&1 &";
     let _ = Command::new("bash")
         .arg("-c")

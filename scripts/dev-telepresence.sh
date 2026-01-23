@@ -126,6 +126,113 @@ quit() {
     print_success "Desconectado"
 }
 
+# Extraer servicio DNS de una URL
+extract_service_from_url() {
+    local url="$1"
+    # Extraer hostname de URL (ej: postgres://host:port -> host)
+    echo "$url" | sed -E 's|^[^:]+://([^:/]+).*$|\1|'
+}
+
+# Construir nombre DNS completo de Kubernetes
+build_k8s_dns() {
+    local service_name="$1"
+    local namespace="${2:-hodei-jobs}"
+
+    # Si ya es un nombre completo, retornarlo tal cual
+    if echo "$service_name" | grep -q '\.svc\.cluster\.local'; then
+        echo "$service_name"
+        return
+    fi
+
+    # Si contiene un punto, probablemente ya es un nombre calificado
+    if echo "$service_name" | grep -q '\.'; then
+        echo "$service_name"
+        return
+    fi
+
+    # Construir nombre completo usando el namespace por defecto
+    echo "$service_name.$namespace.svc.cluster.local"
+}
+
+# Verificar DNS de servicios críticos
+check_dns() {
+    local service_name="$1"
+    local full_dns="$2"
+
+    # Try full DNS name
+    if getent hosts "$full_dns" &>/dev/null; then
+        local full_ip=$(getent hosts "$full_dns" | awk '{print $1}' | head -1)
+        print_success "DNS: $full_dns → $full_ip"
+        return 0
+    fi
+
+    # Try with nslookup/dig if available
+    if command -v nslookup &>/dev/null; then
+        if nslookup "$full_dns" &>/dev/null; then
+            print_success "DNS: $full_dns (nslookup OK)"
+            return 0
+        fi
+    fi
+
+    print_error "DNS: $service_name no resuelve ($full_dns)"
+    return 1
+}
+
+# Verificar todos los DNS importantes
+verify_all_dns() {
+    echo ""
+    echo -e "${CYAN}═════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  🔍 Verificando DNS de Servicios               ${NC}"
+    echo -e "${CYAN}═════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    local all_ok=true
+
+    # Cargar variables desde .env.development si existe
+    if [ -f ".env.development" ]; then
+        set -a
+        source .env.development
+        set +a
+    fi
+
+    # Extraer servicios de las variables de entorno
+    local db_service=$(extract_service_from_url "${HODEI_DATABASE_URL:-}")
+    local nats_service=$(extract_service_from_url "${HODEI_NATS_URL:-}")
+    local grpc_service=$(extract_service_from_url "${HODEI_GRPC_ADDRESS:-}")
+
+    # Si no hay variables configuradas, usar defaults
+    if [ -z "$db_service" ]; then
+        db_service="hodei-hodei-jobs-platform-postgresql"
+    fi
+    if [ -z "$nats_service" ]; then
+        nats_service="hodei-hodei-jobs-platform-nats"
+    fi
+    if [ -z "$grpc_service" ]; then
+        grpc_service="hodei-server"
+    fi
+
+    # Construir nombres DNS completos
+    local db_dns=$(build_k8s_dns "$db_service")
+    local nats_dns=$(build_k8s_dns "$nats_service")
+    local grpc_dns=$(build_k8s_dns "$grpc_service")
+
+    # PostgreSQL
+    check_dns "PostgreSQL" "$db_dns" || all_ok=false
+
+    # NATS
+    check_dns "NATS" "$nats_dns" || all_ok=false
+
+    # Server service
+    check_dns "Hodei Server" "$grpc_dns" || all_ok=false
+
+    echo ""
+    if [ "$all_ok" = true ]; then
+        print_success "Todos los DNS resuelven correctamente"
+    else
+        print_warning "Algunos DNS no resuelven - verifica Telepresence"
+    fi
+}
+
 # Estado
 status() {
     echo ""
@@ -138,15 +245,10 @@ status() {
 
     echo ""
     echo "Servicios en $NAMESPACE:"
-    kubectl get svc -n "$NAMESPACE" -o name 2>/dev/null | head -10 || echo "  No hay servicios"
+    kubectl get svc -n "$NAMESPACE" -o name 2>/dev/null || echo "  No hay servicios"
 
-    echo ""
-    echo "Verificando DNS..."
-    if getent hosts hodei-hodei-jobs-platform-postgresql.hodei-jobs.svc.cluster.local &>/dev/null; then
-        print_success "DNS: hodei-hodei-jobs-platform-postgresql resuelve"
-    else
-        print_warning "DNS: Resolviendo solo con nombre largo"
-    fi
+    # Verificar todos los DNS
+    verify_all_dns
 }
 
 # Mostrar entorno
@@ -164,7 +266,7 @@ show_env() {
     echo ""
     echo "💡 Para desarrollo, usa:"
     echo ""
-    echo '   export DATABASE_URL="postgres://postgres:postgres@postgresql:5432/hodei_jobs"'
+    echo '   export HODEI_DATABASE_URL="postgres://postgres:postgres@postgresql:5432/hodei_jobs"'
     echo '   export HODEI_NATS_URL="nats://nats:4222"'
     echo ""
     echo -e "${YELLOW}🛑 Para terminar: ./scripts/dev-telepresence.sh quit${NC}"
@@ -187,7 +289,7 @@ help() {
     echo "Ejemplo:"
     echo "   $0 connect"
     echo "   # Luego ejecutar el servidor con las variables correctas"
-    echo "   DATABASE_URL='postgres://postgres:postgres@postgresql:5432/hodei_jobs' \\"
+    echo "   HODEI_DATABASE_URL='postgres://postgres:postgres@postgresql:5432/hodei_jobs' \\"
     echo "   HODEI_NATS_URL='nats://nats:4222' \\"
     echo "   cargo run --release -p hodei-server-bin"
     echo ""

@@ -36,6 +36,10 @@ pub struct GrpcServerConfig {
     pub enable_cors: bool,
     /// Enable gRPC-Web for browser clients
     pub enable_grpc_web: bool,
+    /// Port for worker connections (defaults to addr port if not set)
+    pub worker_port: Option<u16>,
+    /// Default fallback address for local development
+    pub local_fallback: Option<String>,
 }
 
 impl Default for GrpcServerConfig {
@@ -44,6 +48,8 @@ impl Default for GrpcServerConfig {
             addr: "0.0.0.0:9090".parse().unwrap(),
             enable_cors: true,
             enable_grpc_web: true,
+            worker_port: None,
+            local_fallback: None,
         }
     }
 }
@@ -53,19 +59,56 @@ impl GrpcServerConfig {
     pub fn from_env() -> Self {
         use std::env;
 
-        let port: u16 = env::var("GRPC_PORT")
-            .unwrap_or_else(|_| "9090".to_string())
+        let grpc_addr =
+            env::var("HODEI_GRPC_ADDRESS").unwrap_or_else(|_| "0.0.0.0:9090".to_string());
+        let addr = grpc_addr
             .parse()
-            .unwrap_or(9090);
+            .unwrap_or_else(|_| "0.0.0.0:9090".parse().unwrap());
 
-        let host = env::var("HODEI_SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let addr = format!("{}:{}", host, port).parse().unwrap();
+        let worker_port = env::var("HODEI_WORKER_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok());
+
+        let local_fallback = env::var("HODEI_LOCAL_FALLBACK").ok();
 
         Self {
             addr,
             enable_cors: true,
             enable_grpc_web: true,
+            worker_port,
+            local_fallback,
         }
+    }
+
+    /// Get the server address that workers should use to connect
+    ///
+    /// DEPRECATED: Use `self.inner.grpc.worker_connect_url` instead.
+    /// This method is kept for backward compatibility with legacy code.
+    ///
+    /// The loader now automatically builds `worker_connect_url` from:
+    /// - HODEI_SERVER_ADDRESS (hostname)
+    /// - HODEI_SERVER_PROTOCOL (default: "http")
+    /// - HODEI_SERVER_BIND port
+    ///
+    /// Reads from environment variables:
+    /// - `HODEI_SERVER_ADDRESS`: Server hostname (e.g., "hodei-server.hodei-jobs.svc.cluster.local")
+    /// - `HODEI_SERVER_PROTOCOL`: Protocol (default: "http")
+    /// - Falls back to bind address port if not specified
+    #[deprecated(note = "Use config.grpc.worker_connect_url instead")]
+    pub fn get_worker_server_address(&self) -> String {
+        use std::env;
+
+        // Try HODEI_SERVER_ADDRESS first (new variable)
+        if let Ok(server_address) = env::var("HODEI_SERVER_ADDRESS") {
+            // Also check for protocol
+            let protocol = env::var("HODEI_SERVER_PROTOCOL").unwrap_or_else(|_| "http".to_string());
+            let port = self.worker_port.unwrap_or_else(|| self.addr.port());
+            return format!("{}://{}:{}", protocol, server_address, port);
+        }
+
+        // Fallback: use bind address but replace 0.0.0.0 with localhost
+        let port = self.worker_port.unwrap_or_else(|| self.addr.port());
+        format!("localhost:{}", port)
     }
 }
 

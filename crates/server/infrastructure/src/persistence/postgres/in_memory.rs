@@ -149,6 +149,21 @@ pub mod test_in_memory {
             }
             Ok(())
         }
+
+        /// Assign a worker to a job (in-memory stub - no-op)
+        async fn assign_worker(
+            &self,
+            _job_id: &JobId,
+            _worker_id: &hodei_shared::WorkerId,
+        ) -> Result<()> {
+            // In-memory repository doesn't persist worker_id
+            Ok(())
+        }
+
+        /// Check if the repository supports JobAssigned event handling
+        fn supports_job_assigned(&self) -> bool {
+            false
+        }
     }
 
     /// In-memory Job Queue for tests

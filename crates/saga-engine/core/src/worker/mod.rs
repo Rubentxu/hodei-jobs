@@ -234,16 +234,39 @@ where
             WorkerError::TaskFailed(format!("Invalid workflow task payload: {}", e))
         })?;
 
+        // 🔍 DEBUG: Log workflow lookup attempt
+        tracing::debug!(
+            "🔍 [Worker] Looking for workflow type: '{}' (saga_id: {})",
+            inner_task.workflow_type,
+            inner_task.saga_id
+        );
+        tracing::debug!(
+            "🔍 [Worker] Registry has {} workflows: {:?}",
+            self.workflow_registry.len(),
+            self.workflow_registry.workflow_keys()
+        );
+
         // Lookup workflow
         let workflow = self
             .workflow_registry
             .get_workflow(&inner_task.workflow_type)
             .ok_or_else(|| {
+                tracing::error!(
+                    "❌ [Worker] Workflow '{}' not found in registry! Available workflows: {:?}",
+                    inner_task.workflow_type,
+                    self.workflow_registry.workflow_keys()
+                );
                 WorkerError::TaskFailed(format!(
                     "Workflow type not found: {}",
                     inner_task.workflow_type
                 ))
             })?;
+
+        tracing::debug!(
+            "✅ [Worker] Found workflow '{}', resuming saga {}",
+            inner_task.workflow_type,
+            inner_task.saga_id
+        );
 
         // Resume the workflow
         self.saga_engine

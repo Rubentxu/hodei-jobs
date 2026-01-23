@@ -111,13 +111,22 @@ struct EventRow {
 
 impl From<EventRow> for HistoryEvent {
     fn from(row: EventRow) -> Self {
+        // 🔍 The payload column contains the entire serialized HistoryEvent.
+        // We need to extract the attributes from the nested structure.
+        // The payload has the structure: { saga_id, event_id, event_type, ..., attributes }
+        let attributes = row
+            .payload
+            .get("attributes")
+            .cloned()
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
         Self {
             event_id: EventId(row.event_id as u64),
             saga_id: SagaId(row.saga_id.to_string()),
             event_type: EventType::from_str(&row.event_type).unwrap_or(EventType::MarkerRecorded),
             category: EventCategory::from_str(&row.category).unwrap_or(EventCategory::Marker),
             timestamp: row.created_at,
-            attributes: row.payload,
+            attributes,
             event_version: row.event_version as u32,
             is_reset_point: row.is_reset_point,
             is_retry: row.is_retry,

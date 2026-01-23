@@ -32,13 +32,51 @@ impl Default for WorkerConfig {
         // Use tmpfs for logs if available (via Kubernetes hodei-tmp volume mount at /tmp)
         let log_dir = std::path::PathBuf::from("/tmp/hodei-logs");
 
+        // Get server address from environment
+        // Can be either:
+        // - Full URL: "http://host:port" or "https://host:port"
+        // - Just hostname: "host.domain" (will use default port 9090)
+        let server_addr_raw =
+            env::var("HODEI_SERVER_ADDRESS").unwrap_or_else(|_| "localhost:9090".to_string());
+
+        // Extract hostname (remove protocol if present, remove port if present)
+        let server_hostname = if server_addr_raw.starts_with("http://") {
+            server_addr_raw
+                .strip_prefix("http://")
+                .unwrap_or(&server_addr_raw)
+        } else if server_addr_raw.starts_with("https://") {
+            server_addr_raw
+                .strip_prefix("https://")
+                .unwrap_or(&server_addr_raw)
+        } else {
+            &server_addr_raw
+        };
+
+        // Remove port if present
+        let server_hostname: String = if let Some(colon_pos) = server_hostname.find(':') {
+            server_hostname[..colon_pos].to_string()
+        } else {
+            server_hostname.to_string()
+        };
+
+        // Get protocol (default: http)
+        let protocol = env::var("HODEI_SERVER_PROTOCOL").unwrap_or_else(|_| "http".to_string());
+
+        // Get port (default: 9090)
+        let port = env::var("HODEI_SERVER_PORT")
+            .unwrap_or_else(|_| "9090".to_string())
+            .parse()
+            .unwrap_or(9090);
+
+        // Compose final URL
+        let server_addr = format!("{}://{}:{}", protocol, server_hostname, port);
+
         Self {
             worker_id: env::var("HODEI_WORKER_ID")
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string()),
             worker_name: env::var("HODEI_WORKER_NAME")
                 .unwrap_or_else(|_| format!("Worker Agent on {}", hostname)),
-            server_addr: env::var("HODEI_SERVER_ADDRESS")
-                .unwrap_or_else(|_| "http://localhost:50051".to_string()),
+            server_addr,
             // Capabilities updated: NO DOCKER, only shell
             capabilities: vec!["shell".to_string()],
             cpu_cores: num_cpus::get() as f64,

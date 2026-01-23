@@ -109,8 +109,8 @@ pub async fn initialize_workflow_engine(
     // Register provisioning activities
     if config.provisioning_worker_enabled {
         if let Some(service) = provisioning_service {
-            register_provisioning_activities(&activity_registry, service);
-            register_provisioning_workflows(&workflow_registry);
+            register_provisioning_activities(&activity_registry, service.clone());
+            register_provisioning_workflows(&workflow_registry, service);
             info!("✓ Provisioning activities and workflows registered");
         } else {
             warn!("Provisioning worker enabled but no provisioning service provided");
@@ -291,9 +291,32 @@ fn register_execution_activities_mock(registry: &Arc<ActivityRegistry>) {
 // =============================================================================
 
 /// Register all provisioning workflow definitions
-fn register_provisioning_workflows(registry: &Arc<WorkflowRegistry>) {
-    registry.register_workflow(ProvisioningWorkflow::default());
-    debug!("Registered workflow: provisioning");
+///
+/// Uses the real WorkerProvisioningService instead of mock to enable actual worker provisioning.
+fn register_provisioning_workflows(
+    registry: &Arc<WorkflowRegistry>,
+    provisioning_service: Arc<dyn WorkerProvisioningService>,
+) {
+    // 🔍 DEBUG: Log before registration
+    debug!("🔍 Registering provisioning workflow with real service");
+    debug!(
+        "🔍 Workflow registry size before registration: {}",
+        registry.len()
+    );
+
+    // Use real service instead of default (mock)
+    let workflow = ProvisioningWorkflow::new(provisioning_service);
+    registry.register_workflow(workflow);
+
+    // 🔍 DEBUG: Log after registration
+    debug!(
+        "✅ Registered workflow: provisioning (registry size: {})",
+        registry.len()
+    );
+    debug!(
+        "🔍 Registered workflow types: {:?}",
+        registry.workflow_keys()
+    );
 }
 
 /// Register all execution workflow definitions

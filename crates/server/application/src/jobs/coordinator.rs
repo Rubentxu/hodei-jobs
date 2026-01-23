@@ -17,6 +17,7 @@ use crate::jobs::worker_monitor::WorkerMonitor;
 use futures::StreamExt;
 use hodei_server_domain::event_bus::EventBus;
 use hodei_server_domain::events::{DomainEvent, JobCreated};
+use hodei_server_domain::jobs::JobRepository;
 use hodei_server_domain::workers::WorkerRegistry;
 use hodei_shared::event_topics::job_topics;
 use hodei_shared::event_topics::worker_topics;
@@ -73,6 +74,8 @@ pub struct JobCoordinator {
     worker_monitor: Arc<WorkerMonitor>,
     // EPIC-32: Dependencies for worker cleanup
     worker_registry: Arc<dyn WorkerRegistry>,
+    // EPIC-93: For JobAssigned event handler to update job.worker_id
+    job_repository: Option<Arc<dyn JobRepository>>,
     shutdown_tx: watch::Sender<()>,
     monitor_shutdown: Option<mpsc::Receiver<()>>,
 }
@@ -103,6 +106,30 @@ impl JobCoordinator {
             job_dispatcher,
             worker_monitor,
             worker_registry,
+            job_repository: None,
+            shutdown_tx,
+            monitor_shutdown: None,
+        }
+    }
+
+    /// Create a JobCoordinator with JobRepository for JobAssigned event handling
+    ///
+    /// This variant is needed when the system emits JobAssigned events that
+    /// require updating the job.worker_id column for data consistency.
+    pub fn with_job_repository(
+        event_bus: Arc<dyn EventBus>,
+        job_dispatcher: Arc<JobDispatcher>,
+        worker_monitor: Arc<WorkerMonitor>,
+        worker_registry: Arc<dyn WorkerRegistry>,
+        job_repository: Arc<dyn JobRepository>,
+    ) -> Self {
+        let (shutdown_tx, _) = watch::channel(());
+        Self {
+            event_bus,
+            job_dispatcher,
+            worker_monitor,
+            worker_registry,
+            job_repository: Some(job_repository),
             shutdown_tx,
             monitor_shutdown: None,
         }
@@ -175,9 +202,20 @@ impl JobCoordinator {
                 )
             })?;
 
+        // EPIC-93: Subscribe to JobAssigned events - update job.worker_id for data consistency
+        let mut job_assigned_stream =
+            event_bus
+                .subscribe(job_topics::ASSIGNED)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to subscribe to {}: {}", job_topics::ASSIGNED, e)
+                })?;
+
         let dispatcher = self.job_dispatcher.clone();
         let event_bus_for_cleanup = event_bus.clone();
         let worker_registry = self.worker_registry.clone();
+        // EPIC-93: Job repository for JobAssigned event handler
+        let job_repository = self.job_repository.clone();
 
         // Spawn event processing task (pure reactive - no polling)
         tokio::spawn(async move {
@@ -284,6 +322,54 @@ impl JobCoordinator {
                             }
                             None => {
                                 warn!("⚠️ JobCoordinator: JobStatusChanged stream ended, reconnecting...");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
+
+                    // EPIC-93: Process JobAssigned events - update job.worker_id for data consistency
+                    event_result = job_assigned_stream.next() => {
+                        match event_result {
+                            Some(Ok(event)) => {
+                                if let DomainEvent::JobAssigned {
+                                    job_id,
+                                    worker_id,
+                                    correlation_id,
+                                    actor,
+                                    ..
+                                } = event
+                                {
+                                    info!(
+                                        "🔔 JobCoordinator: Received JobAssigned event (job={}, worker={})",
+                                        job_id, worker_id
+                                    );
+
+                                    // Update job.worker_id for bidirectional relationship consistency
+                                    if let Some(ref repo) = job_repository {
+                                        if let Err(e) = repo.assign_worker(&job_id, &worker_id).await {
+                                            error!(
+                                                "❌ JobCoordinator: Failed to assign worker {} to job {}: {}",
+                                                worker_id, job_id, e
+                                            );
+                                        } else {
+                                            info!(
+                                                "✅ JobCoordinator: Updated job.worker_id = {} for job {}",
+                                                worker_id, job_id
+                                            );
+                                        }
+                                    } else {
+                                        warn!(
+                                            "⚠️ JobCoordinator: No JobRepository configured, skipping job.worker_id update for job {}",
+                                            job_id
+                                        );
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                error!("❌ JobCoordinator: Error receiving JobAssigned event: {}", e);
+                            }
+                            None => {
+                                warn!("⚠️ JobCoordinator: JobAssigned stream ended, reconnecting...");
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                             }
                         }

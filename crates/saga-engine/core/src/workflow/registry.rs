@@ -88,6 +88,14 @@ impl WorkflowRegistry {
     pub fn is_empty(&self) -> bool {
         self.workflows.is_empty()
     }
+
+    /// Get all registered workflow type IDs.
+    pub fn workflow_keys(&self) -> Vec<String> {
+        self.workflows
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]

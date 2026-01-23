@@ -25,7 +25,7 @@ fn main() {
         .arg("-c")
         .arg(
             r#"
-            export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
+            export HODEI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
             export RUST_LOG="debug"
             export HODEI_K8S_ENABLED="0"
             export HODEI_DOCKER_ENABLED="1"

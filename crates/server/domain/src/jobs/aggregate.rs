@@ -1258,6 +1258,12 @@ pub trait JobRepository: Send + Sync {
     async fn delete(&self, job_id: &JobId) -> Result<()>;
     async fn update(&self, job: &Job) -> Result<()>;
     async fn update_state(&self, job_id: &JobId, new_state: JobState) -> Result<()>;
+    /// Assign a worker to a job - updates worker_id column for data consistency
+    /// Used by JobAssigned event handler to maintain bidirectional relationship
+    async fn assign_worker(&self, job_id: &JobId, worker_id: &WorkerId) -> Result<()>;
+    /// Check if the repository supports JobAssigned event handling
+    /// Returns true if assign_worker() is implemented and will update the database
+    fn supports_job_assigned(&self) -> bool;
 }
 
 /// Filter for querying jobs

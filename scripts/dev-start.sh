@@ -115,17 +115,17 @@ start_server() {
 
     # Detect if we are using Telepresence or host.docker.internal
     if telepresence status 2>/dev/null | grep -q "Connected"; then
-        export DATABASE_URL="postgres://postgres:postgres@hodei-hodei-jobs-platform-postgresql.hodei-jobs.svc.cluster.local:5432/hodei_jobs"
-        export HODEI_NATS_URLS="nats://hodei-hodei-jobs-platform-nats.hodei-jobs.svc.cluster.local:4222"
+        export HODEI_DATABASE_URL="postgres://postgres:postgres@hodei-hodei-jobs-platform-postgresql.hodei-jobs.svc.cluster.local:5432/hodei_jobs"
+        export HODEI_NATS_URL="nats://hodei-hodei-jobs-platform-nats.hodei-jobs.svc.cluster.local:4222"
         export HODEI_SERVER_ADDRESS="http://hodei-server-placeholder.hodei-jobs.svc.cluster.local:9090"
         export HODEI_WORKER_IMAGE="registry.local:31500/hodei-jobs-worker:latest"
     else
-        export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
-        export HODEI_NATS_URLS="nats://localhost:4222"
+        export HODEI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"
+        export HODEI_NATS_URL="nats://localhost:4222"
         export HODEI_SERVER_ADDRESS="http://localhost:9090"
         export HODEI_WORKER_IMAGE="hodei-jobs-worker:latest"
     fi
-    
+
     export RUST_LOG="${RUST_LOG:-info,hodei_server=debug,hodei_jobs=debug}"
 
     # Compilar

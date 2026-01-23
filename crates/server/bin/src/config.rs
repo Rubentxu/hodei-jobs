@@ -1,96 +1,60 @@
-use serde::Deserialize;
-use std::env;
+//! Server Configuration
+//!
+//! This module provides server configuration using the centralized configuration
+//! from the `hodei-shared` crate. It wraps `ServerConfigDto` and provides
+//! convenience methods for backward compatibility.
+
 use std::path::PathBuf;
 use tracing::warn;
 
-#[derive(Debug, Deserialize, Clone)]
+use hodei_shared::config::{FeatureFlags, ServerConfigDto as SharedServerConfigDto};
+
+/// Server configuration
+///
+/// This wraps the shared `ServerConfigDto` and provides convenience methods
+/// for backward compatibility with existing code.
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
-    #[serde(default = "default_server_port")]
-    pub port: u16,
-    #[serde(default = "default_database_url")]
-    pub database_url: Option<String>,
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
-    #[serde(default = "default_log_persistence_enabled")]
-    pub log_persistence_enabled: bool,
-    #[serde(default = "default_log_storage_backend")]
-    pub log_storage_backend: String,
-    #[serde(default = "default_log_persistence_path")]
-    pub log_persistence_path: String,
-    #[serde(default = "default_log_ttl_hours")]
-    pub log_ttl_hours: u64,
-    /// Feature flag for SagaContext V2 migration
-    #[serde(default = "default_saga_v2_enabled")]
-    pub saga_v2_enabled: bool,
-    /// Percentage of sagas to use V2 (0-100) for gradual rollout
-    #[serde(default = "default_saga_v2_percentage")]
-    pub saga_v2_percentage: u8,
-}
-
-fn default_server_port() -> u16 {
-    50051
-}
-
-fn default_database_url() -> Option<String> {
-    None
-}
-
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-fn default_log_persistence_enabled() -> bool {
-    true
-}
-
-fn default_log_storage_backend() -> String {
-    "local".to_string()
-}
-
-fn default_log_persistence_path() -> String {
-    "/tmp/hodei-logs".to_string()
-}
-
-fn default_log_ttl_hours() -> u64 {
-    168 // 7 days
-}
-
-fn default_saga_v2_enabled() -> bool {
-    false // Disabled by default for gradual rollout
-}
-
-fn default_saga_v2_percentage() -> u8 {
-    0 // 0% initially, will increase during migration
+    /// The underlying shared configuration DTO
+    pub inner: SharedServerConfigDto,
 }
 
 impl ServerConfig {
-    #[allow(dead_code)]
-    pub fn new() -> Result<Self, config::ConfigError> {
-        let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
+    /// Load server configuration from environment variables
+    ///
+    /// This method uses the centralized ConfigLoader from hodei-shared.
+    /// It reads configuration from:
+    /// 1. Optional .env file (if HODEI_CONFIG_FILE is set)
+    /// 2. Environment variables (HODEI_*)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(ServerConfig)` if configuration is valid and complete
+    /// `Err(ConfigError)` if required configuration is missing or invalid
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use hodei_server_bin::config::ServerConfig;
+    ///
+    /// // Set required environment variables first
+    /// let config = ServerConfig::load()?;
+    /// println!("Database: {}", config.inner.database.url);
+    /// ```
+    pub fn load() -> Result<Self, hodei_shared::ConfigError> {
+        // Check for optional .env file path
+        let env_file = std::env::var("HODEI_CONFIG_FILE").ok().map(PathBuf::from);
 
-        let s = config::Config::builder()
-            // Start with default values
-            .set_default("port", 50051)?
-            .set_default("database_url", None::<String>)?
-            .set_default("log_level", "info")?
-            .set_default("log_persistence_enabled", true)?
-            .set_default("log_storage_backend", "local")?
-            .set_default("log_persistence_path", "/tmp/hodei-logs")?
-            .set_default("log_ttl_hours", 168)?
-            // Feature flags defaults
-            .set_default("saga_v2_enabled", false)?
-            .set_default("saga_v2_percentage", 0u8)?
-            // Merge with config file (if exists)
-            .add_source(config::File::with_name("config/default").required(false))
-            .add_source(config::File::with_name(&format!("config/{}", run_mode)).required(false))
-            // Merge with environment variables (SERVER_...)
-            .add_source(config::Environment::with_prefix("SERVER"))
-            .build()?;
+        let loader = hodei_shared::ConfigLoader::new(env_file);
+        let dto = loader.load_server_config()?;
 
-        s.try_deserialize()
+        Ok(Self { inner: dto })
     }
 
     /// Convert to log persistence configuration
+    ///
+    /// This method converts the logging configuration to the format expected
+    /// by the log persistence service.
     pub fn to_log_persistence_config(
         &self,
     ) -> hodei_server_interface::log_persistence::LogPersistenceConfig {
@@ -98,9 +62,9 @@ impl ServerConfig {
             LocalStorageConfig, LogPersistenceConfig, StorageBackend,
         };
 
-        let storage_backend = match self.log_storage_backend.to_lowercase().as_str() {
+        let storage_backend = match self.inner.logging.storage_backend.to_lowercase().as_str() {
             "local" | "file" | "filesystem" => StorageBackend::Local(LocalStorageConfig {
-                base_path: PathBuf::from(self.log_persistence_path.clone()),
+                base_path: self.inner.logging.persistence_path.clone(),
             }),
             // Future implementations:
             // "s3" => StorageBackend::S3(S3StorageConfig { ... }),
@@ -110,72 +74,102 @@ impl ServerConfig {
                 // Default to local if unknown backend specified
                 warn!(
                     "Unknown log storage backend '{}', defaulting to 'local'",
-                    self.log_storage_backend
+                    self.inner.logging.storage_backend
                 );
                 StorageBackend::Local(LocalStorageConfig {
-                    base_path: PathBuf::from(self.log_persistence_path.clone()),
+                    base_path: self.inner.logging.persistence_path.clone(),
                 })
             }
         };
 
         LogPersistenceConfig::new(
-            self.log_persistence_enabled,
+            self.inner.logging.persistence_enabled,
             storage_backend,
-            self.log_ttl_hours,
+            self.inner.logging.ttl_hours,
         )
     }
 
     /// Check if SagaContext V2 should be used for a specific saga
     ///
     /// Uses consistent hashing based on saga ID to determine whether to use V2.
-    /// This ensures that the same saga always uses the same version during
-    /// gradual rollout.
-    ///
-    /// # Arguments
-    ///
-    /// * `saga_id` - The saga ID to check
-    ///
-    /// # Returns
-    ///
-    /// * `true` if V2 should be used, `false` for V1
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use std::collections::hash_map::DefaultHasher;
-    /// use std::hash::{Hash, Hasher};
-    ///
-    /// let saga_id = "saga-123";
-    /// if config.should_use_saga_v2(saga_id) {
-    ///     // Use SagaContextV2
-    /// } else {
-    ///     // Use legacy SagaContext
-    /// }
-    /// ```
-    pub fn should_use_saga_v2(&self, saga_id: &str) -> bool {
-        if !self.saga_v2_enabled {
-            return false;
-        }
+    /// Get the gRPC bind address
+    pub fn grpc_bind_address(&self) -> &std::net::SocketAddr {
+        &self.inner.grpc.bind_address
+    }
 
-        if self.saga_v2_percentage == 0 {
-            return false;
-        }
+    /// Get the worker connect URL
+    pub fn worker_connect_url(&self) -> &str {
+        &self.inner.grpc.worker_connect_url
+    }
 
-        if self.saga_v2_percentage >= 100 {
-            return true;
-        }
+    /// Get the database URL
+    pub fn database_url(&self) -> &str {
+        &self.inner.database.url
+    }
 
-        // Use consistent hashing for gradual rollout
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+    /// Get the database pool size
+    pub fn db_pool_size(&self) -> u32 {
+        self.inner.database.pool_size
+    }
 
-        let mut hasher = DefaultHasher::new();
-        saga_id.hash(&mut hasher);
-        let hash = hasher.finish();
+    /// Get the database min idle connections
+    pub fn db_min_idle(&self) -> u32 {
+        self.inner.database.min_idle
+    }
 
-        // Map hash to 0-99 range
-        let bucket = (hash % 100) as u8;
-        bucket < self.saga_v2_percentage
+    /// Get the database connect timeout (seconds)
+    pub fn db_connect_timeout_secs(&self) -> u64 {
+        self.inner.database.connect_timeout_secs
+    }
+
+    /// Get the database idle timeout (seconds)
+    pub fn db_idle_timeout_secs(&self) -> u64 {
+        self.inner.database.idle_timeout_secs
+    }
+
+    /// Get the database max lifetime (seconds)
+    pub fn db_max_lifetime_secs(&self) -> u64 {
+        self.inner.database.max_lifetime_secs
+    }
+
+    /// Get the NATS URLs
+    pub fn nats_urls(&self) -> &[String] {
+        &self.inner.nats.urls
+    }
+
+    /// Get the NATS timeout (seconds)
+    pub fn nats_timeout_secs(&self) -> u64 {
+        self.inner.nats.timeout_secs
+    }
+
+    /// Get the worker image
+    pub fn worker_image(&self) -> &str {
+        &self.inner.workers.default_image
+    }
+
+    /// Get the OTP TTL (seconds)
+    pub fn worker_otp_ttl_secs(&self) -> u64 {
+        self.inner.workers.otp_ttl_secs
+    }
+
+    /// Check if provisioning is enabled
+    pub fn provisioning_enabled(&self) -> bool {
+        self.inner.workers.enabled
+    }
+
+    /// Get the log level
+    pub fn log_level(&self) -> &str {
+        &self.inner.logging.level
+    }
+
+    /// Check if dev mode is enabled
+    pub fn dev_mode(&self) -> bool {
+        self.inner.features.dev_mode
+    }
+
+    /// Get feature flags
+    pub fn features(&self) -> &FeatureFlags {
+        &self.inner.features
     }
 }
 
@@ -186,81 +180,4 @@ impl ServerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_should_use_saga_v2_disabled() {
-        let config = ServerConfig {
-            port: 50051,
-            database_url: None,
-            log_level: "info".to_string(),
-            log_persistence_enabled: true,
-            log_storage_backend: "local".to_string(),
-            log_persistence_path: "/tmp/hodei-logs".to_string(),
-            log_ttl_hours: 168,
-            saga_v2_enabled: false,
-            saga_v2_percentage: 0,
-        };
-
-        assert!(!config.should_use_saga_v2("saga-123"));
-    }
-
-    #[test]
-    fn test_should_use_saga_v2_zero_percentage() {
-        let config = ServerConfig {
-            port: 50051,
-            database_url: None,
-            log_level: "info".to_string(),
-            log_persistence_enabled: true,
-            log_storage_backend: "local".to_string(),
-            log_persistence_path: "/tmp/hodei-logs".to_string(),
-            log_ttl_hours: 168,
-            saga_v2_enabled: true,
-            saga_v2_percentage: 0,
-        };
-
-        assert!(!config.should_use_saga_v2("saga-123"));
-    }
-
-    #[test]
-    fn test_should_use_saga_v2_hundred_percentage() {
-        let config = ServerConfig {
-            port: 50051,
-            database_url: None,
-            log_level: "info".to_string(),
-            log_persistence_enabled: true,
-            log_storage_backend: "local".to_string(),
-            log_persistence_path: "/tmp/hodei-logs".to_string(),
-            log_ttl_hours: 168,
-            saga_v2_enabled: true,
-            saga_v2_percentage: 100,
-        };
-
-        assert!(config.should_use_saga_v2("saga-123"));
-    }
-
-    #[test]
-    fn test_should_use_saga_v2_consistent_hashing() {
-        let config = ServerConfig {
-            port: 50051,
-            database_url: None,
-            log_level: "info".to_string(),
-            log_persistence_enabled: true,
-            log_storage_backend: "local".to_string(),
-            log_persistence_path: "/tmp/hodei-logs".to_string(),
-            log_ttl_hours: 168,
-            saga_v2_enabled: true,
-            saga_v2_percentage: 50,
-        };
-
-        // Same saga ID should always produce the same result
-        let result1 = config.should_use_saga_v2("saga-123");
-        let result2 = config.should_use_saga_v2("saga-123");
-        assert_eq!(result1, result2);
-
-        // Different saga IDs may produce different results
-        let result3 = config.should_use_saga_v2("saga-456");
-        // We can't assert the exact value, but we can verify it's deterministic
-        let result4 = config.should_use_saga_v2("saga-456");
-        assert_eq!(result3, result4);
-    }
 }

@@ -110,6 +110,8 @@ pub struct AppState {
     pub workflow_engine_shutdown_handles: Option<WorkflowEngineShutdownHandles>,
     /// Capability-based provider registry
     pub capability_registry: Arc<CapabilityRegistry>,
+    /// SagaEngine for v4.0 DurableWorkflow (execution and provisioning)
+    pub saga_engine: Option<Arc<SagaEngine<PostgresEventStore, NatsTaskQueue, PostgresTimerStore>>>,
 }
 
 impl AppState {
@@ -137,6 +139,7 @@ impl AppState {
         provisioning_workflow_coordinator: Option<Arc<dyn ProvisioningWorkflowCoordinator>>,
         workflow_engine_shutdown_handles: Option<WorkflowEngineShutdownHandles>,
         capability_registry: Arc<CapabilityRegistry>,
+        saga_engine: Option<Arc<SagaEngine<PostgresEventStore, NatsTaskQueue, PostgresTimerStore>>>,
     ) -> Self {
         Self {
             pool,
@@ -154,6 +157,7 @@ impl AppState {
             provisioning_workflow_coordinator,
             workflow_engine_shutdown_handles,
             capability_registry,
+            saga_engine,
         }
     }
 
@@ -609,6 +613,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
         Some(provisioning_workflow_coordinator), // v4.0 ProvisioningWorkflowCoordinator
         Some(wf_shutdown_handles), // v4.0 workflow engine shutdown handles
         capability_registry, // DEBT-001 Fase 2: Capability-based provider registry
+        Some(saga_engine), // v4.0 SagaEngine for execution workflows
     ))
 }
 

@@ -136,6 +136,29 @@ pub struct PodSpecBuildResult {
     pub gpu_resource_name: Option<String>,
 }
 
+/// Parse server address URL into components
+///
+/// Extracts protocol, hostname, and port from a URL like "http://host:9090"
+fn parse_server_address(url: &str) -> (String, String, String) {
+    let mut protocol = "http".to_string();
+    let mut hostname = url.to_string();
+    let mut port = "9090".to_string();
+
+    // Extract protocol
+    if let Some(colon_pos) = url.find("://") {
+        protocol = url[..colon_pos].to_string();
+        hostname = url[colon_pos + 3..].to_string();
+    }
+
+    // Extract port from hostname:port
+    if let Some(colon_pos) = hostname.find(':') {
+        port = hostname[colon_pos + 1..].to_string();
+        hostname = hostname[..colon_pos].to_string();
+    }
+
+    (protocol, hostname, port)
+}
+
 /// PodSpecFactory - Factory para construcción de Kubernetes PodSpecs
 ///
 /// Encapsula toda la lógica de construcción de PodSpecs desde WorkerSpecs,
@@ -372,6 +395,10 @@ impl PodSpecFactory {
         // Generate worker name from worker_id for consistency
         let worker_name = format!("hodei-worker-{}", spec.worker_id);
 
+        // Parse server_address to extract components
+        // server_address can be: "http://host:port", "host:port", or "host"
+        let (protocol, hostname, port) = parse_server_address(&spec.server_address);
+
         let mut env_vars = vec![
             EnvVar {
                 name: "HODEI_WORKER_ID".to_string(),
@@ -383,9 +410,20 @@ impl PodSpecFactory {
                 value: Some(worker_name),
                 ..Default::default()
             },
+            // Worker receives individual components to compose URL
             EnvVar {
                 name: "HODEI_SERVER_ADDRESS".to_string(),
-                value: Some(spec.server_address.clone()),
+                value: Some(hostname),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "HODEI_SERVER_PROTOCOL".to_string(),
+                value: Some(protocol),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "HODEI_SERVER_PORT".to_string(),
+                value: Some(port),
                 ..Default::default()
             },
             EnvVar {

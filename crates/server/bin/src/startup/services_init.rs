@@ -25,6 +25,7 @@ use hodei_server_application::saga::bridge::CommandBusJobExecutionPort;
 use hodei_server_application::saga::dispatcher_saga::{
     DynExecutionSagaDispatcher, ExecutionSagaDispatcher,
 };
+use hodei_server_application::saga::saga_engine_executor::SagaEngineExecutionExecutor;
 use hodei_server_application::saga::sync_durable_executor::SyncDurableWorkflowExecutor;
 use hodei_server_application::saga::timeout_checker::TimeoutChecker;
 use hodei_server_application::saga::workflows::execution_durable::ExecutionWorkflow;
@@ -70,6 +71,8 @@ use hodei_server_interface::grpc::{
     JobExecutionServiceImpl, LogStreamService, MetricsServiceImpl, ProviderManagementServiceImpl,
     SchedulerServiceImpl, WorkerAgentServiceImpl, worker_command_sender::GrpcWorkerCommandSender,
 };
+use saga_engine_nats::NatsTaskQueue;
+use saga_engine_pg::{PostgresEventStore, PostgresTimerStore};
 
 /// Container for all initialized gRPC services.
 /// Used to register them with the tonic Server.
@@ -288,8 +291,21 @@ pub async fn start_job_coordinator(
     // Create ExecutionWorkflow with the port
     let execution_workflow = ExecutionWorkflow::new(Arc::new(execution_port));
 
-    // Create SyncDurableWorkflowExecutor for the execution workflow
-    let execution_executor = Arc::new(SyncDurableWorkflowExecutor::new(execution_workflow));
+    // EPIC-94-C: Get SagaEngine from AppState for v4.0 DurableWorkflow execution
+    let saga_engine = app_state
+        .saga_engine
+        .clone()
+        .expect("SagaEngine must be initialized for v4.0 DurableWorkflow");
+
+    // Create SagaEngineExecutionExecutor for the execution workflow
+    // This executor properly handles async activities via NATS TaskQueue
+    let execution_executor: Arc<
+        SagaEngineExecutionExecutor<
+            saga_engine_pg::PostgresEventStore,
+            saga_engine_nats::NatsTaskQueue,
+            saga_engine_pg::PostgresTimerStore,
+        >,
+    > = Arc::new(SagaEngineExecutionExecutor::new(saga_engine, None));
 
     // Create the ExecutionSagaDispatcher
     let execution_saga_dispatcher: Arc<
@@ -299,7 +315,9 @@ pub async fn start_job_coordinator(
     > = Arc::new(DynExecutionSagaDispatcher::new(
         ExecutionSagaDispatcher::new(execution_executor, worker_registry.clone()),
     ));
-    info!("✓ ExecutionSagaDispatcher initialized (v4.0 DurableWorkflow)");
+    info!(
+        "✓ ExecutionSagaDispatcher initialized with SagaEngineExecutionExecutor (v4.0 DurableWorkflow)"
+    );
 
     // EPIC-94-C: Get workflow coordinator from AppState
     let provisioning_workflow_coordinator = app_state.provisioning_workflow_coordinator.clone();
@@ -325,13 +343,24 @@ pub async fn start_job_coordinator(
     info!("✓ WorkerMonitor initialized");
 
     // EPIC-32: Create the reactive JobCoordinator (not the polling loop)
-    let mut job_coordinator = JobCoordinator::new(
-        event_bus.clone(),
-        job_dispatcher.clone(),
-        Arc::new(worker_monitor),
-        worker_registry.clone(),
-    );
-    info!("✓ JobCoordinator created (reactive mode)");
+    // EPIC-93: Use with_job_repository to enable JobAssigned event handling
+    let mut job_coordinator = if job_repository.supports_job_assigned() {
+        JobCoordinator::with_job_repository(
+            event_bus.clone(),
+            job_dispatcher.clone(),
+            Arc::new(worker_monitor),
+            worker_registry.clone(),
+            job_repository.clone(),
+        )
+    } else {
+        JobCoordinator::new(
+            event_bus.clone(),
+            job_dispatcher.clone(),
+            Arc::new(worker_monitor),
+            worker_registry.clone(),
+        )
+    };
+    info!("✓ JobCoordinator created (reactive mode with JobAssigned support)");
 
     // Keep dispatcher reference for fallback (move into async block)
     let dispatcher = job_dispatcher.clone();

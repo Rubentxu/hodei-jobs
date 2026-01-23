@@ -51,7 +51,7 @@ fn main() {
     println!("2. Starting server...");
     let _ = Command::new("bash")
         .arg("-c")
-        .arg(r#"cd /home/rubentxu/Proyectos/rust/hodei-jobs && DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs" cargo run -p hodei-server-bin > /tmp/server.log 2>&1 &"#)
+        .arg(r#"cd /home/rubentxu/Proyectos/rust/hodei-jobs && HODEI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs" cargo run -p hodei-server-bin > /tmp/server.log 2>&1 &"#)
         .status();
     println!("   ✅ Server started (logs: tail -f /tmp/server.log)");
 

@@ -37,8 +37,9 @@ pub mod recovery_saga;
 pub mod timeout_checker;
 pub mod workflow_engine; // saga-engine v4.0: Workflow orchestration engine with NATS activity consumers
 
+pub mod saga_engine_executor;
 pub mod sync_durable_executor;
-pub mod sync_executor;
+pub mod sync_executor; // SagaEngine-based executor for v4.0 DurableWorkflow
 
 pub use port::types::{SagaExecutionId, SagaPortConfig, SagaPortResult, WorkflowState};
 

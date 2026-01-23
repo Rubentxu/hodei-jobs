@@ -12,6 +12,7 @@ use hodei_server_domain::shared_kernel::{DomainError, JobId, Result};
 use hodei_shared::states::JobState;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
+use tracing::info;
 
 /// PostgreSQL Job Repository
 #[derive(Clone, Debug)]
@@ -353,6 +354,41 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
             })?;
 
         Ok(())
+    }
+
+    /// Assign a worker to a job - updates worker_id column for data consistency
+    async fn assign_worker(
+        &self,
+        job_id: &JobId,
+        worker_id: &hodei_shared::WorkerId,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE jobs SET worker_id = $1, updated_at = NOW() WHERE id = $2
+            "#,
+        )
+        .bind(worker_id.0)
+        .bind(job_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::InfrastructureError {
+            message: format!(
+                "Failed to assign worker {} to job {}: {}",
+                worker_id, job_id, e
+            ),
+        })?;
+
+        info!(
+            "✅ Worker {} assigned to job {} (worker_id column updated)",
+            worker_id, job_id
+        );
+
+        Ok(())
+    }
+
+    /// Check if the repository supports JobAssigned event handling
+    fn supports_job_assigned(&self) -> bool {
+        true
     }
 
     async fn find(&self, filter: hodei_server_domain::jobs::JobsFilter) -> Result<Vec<Job>> {

@@ -11,6 +11,7 @@
 //! - `SagaEventHandler`: Handle saga completion/failure events
 //!
 
+use anyhow::Context as AnyhowContext;
 use async_trait::async_trait;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
@@ -482,11 +483,96 @@ impl EventHandlerBuilder {
     pub fn build_saga_handler(self) -> SagaEventHandler {
         SagaEventHandler::new(self.outbox_repository)
     }
+
+    /// Build JobAssignedEventHandler
+    pub fn build_job_assigned_handler(
+        self,
+    ) -> Result<JobAssignedEventHandler, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(JobAssignedEventHandler::new(
+            self.job_repository.ok_or("job_repository required")?,
+        ))
+    }
 }
 
 impl Default for EventHandlerBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Handler for JobAssigned events
+///
+/// When a worker registers with a job_id, this handler updates the job.worker_id column
+/// to maintain data consistency between the jobs and workers tables.
+///
+/// This fixes the data inconsistency where:
+/// - workers.current_job_id is set during registration
+/// - but jobs.worker_id was NOT being updated
+///
+/// The bidirectional relationship is now properly maintained.
+pub struct JobAssignedEventHandler {
+    /// Job repository to update worker_id
+    job_repository: Arc<dyn JobRepository>,
+}
+
+impl JobAssignedEventHandler {
+    /// Create a new handler
+    pub fn new(job_repository: Arc<dyn JobRepository>) -> Self {
+        Self { job_repository }
+    }
+}
+
+#[async_trait::async_trait]
+impl EventHandler for JobAssignedEventHandler {
+    async fn handle_event(
+        &self,
+        event: DomainEvent,
+    ) -> anyhow::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Only handle JobAssigned events
+        let (job_id, worker_id, correlation_id, actor) = match event {
+            DomainEvent::JobAssigned {
+                job_id,
+                worker_id,
+                occurred_at: _,
+                correlation_id,
+                actor,
+            } => (job_id, worker_id, correlation_id, actor),
+            _ => return Ok(()),
+        };
+
+        info!(
+            job_id = %job_id,
+            worker_id = %worker_id,
+            correlation_id = ?correlation_id,
+            "🔔 JobAssignedEventHandler: Assigning worker {} to job {}",
+            worker_id, job_id
+        );
+
+        // Update job.worker_id for data consistency
+        // Note: We log errors but don't return them - following the pattern of other handlers
+        // The handler processes events reactively, and logging is sufficient for observability
+        if let Err(e) = self.job_repository.assign_worker(&job_id, &worker_id).await {
+            error!(
+                job_id = %job_id,
+                worker_id = %worker_id,
+                error = ?e,
+                correlation_id = ?correlation_id,
+                "❌ JobAssignedEventHandler: Failed to update job.worker_id - DB error: {}",
+                e
+            );
+            // Don't return error - just log and continue processing
+            return Ok(());
+        }
+
+        info!(
+            job_id = %job_id,
+            worker_id = %worker_id,
+            actor = ?actor,
+            "✅ JobAssignedEventHandler: Worker {} successfully assigned to job {}",
+            worker_id, job_id
+        );
+
+        Ok(())
     }
 }
 

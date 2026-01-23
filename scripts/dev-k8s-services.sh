@@ -135,7 +135,7 @@ start_all() {
     echo "  🐳  Registry:   localhost:5000"
     echo ""
     print_status "Conexión de ejemplo:"
-    echo '  DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"'
+    echo '  HODEI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei_jobs"'
     echo ""
     print_warning "Para SALIR: ./dev-k8s-services.sh stop"
 }
