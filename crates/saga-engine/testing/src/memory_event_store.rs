@@ -240,6 +240,19 @@ impl EventStore for InMemoryEventStore {
         Ok(current.get(saga_id).copied().unwrap_or(0))
     }
 
+    async fn get_last_reset_point(&self, saga_id: &SagaId) -> Result<Option<u64>, Self::Error> {
+        let events = self.events.read();
+        if let Some(saga_events) = events.get(saga_id) {
+            // Find the last reset point (iterate in reverse)
+            for event in saga_events.iter().rev() {
+                if event.is_reset_point {
+                    return Ok(Some(event.event_id.0));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     async fn saga_exists(&self, saga_id: &SagaId) -> Result<bool, Self::Error> {
         let events = self.events.read();
         Ok(events.contains_key(saga_id))
