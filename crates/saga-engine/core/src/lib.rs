@@ -39,6 +39,7 @@
 
 pub mod activity_registry;
 pub mod codec;
+pub mod compensation;
 pub mod determinism_enforcer;
 pub mod error;
 pub mod event;
@@ -53,6 +54,10 @@ pub use activity_registry::{
     ActivityContext, ActivityError, ActivityRegistry, ActivityResult, ActivityTypeId,
 };
 pub use codec::{BincodeCodec, CodecError, EventCodec, JsonCodec};
+pub use compensation::{
+    CompensationAction, CompensationError, CompensationHandler, CompensationTracker,
+    CompensationWorkflowResult, CompletedStep, InMemoryCompensationHandler, WorkflowError,
+};
 pub use determinism_enforcer::{
     DeterminismConfig, DeterminismEnforcer, DeterminismError, DeterminismReport,
     DeterminismViolation, ViolationKind,

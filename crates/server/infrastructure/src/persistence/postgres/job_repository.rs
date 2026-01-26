@@ -244,7 +244,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     async fn find_pending(&self) -> Result<Vec<Job>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+            SELECT id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             WHERE state = 'PENDING'
@@ -278,7 +278,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
 
         let job_rows = sqlx::query(
             r#"
-            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+            SELECT id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             ORDER BY created_at DESC
@@ -305,7 +305,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     async fn find_by_execution_id(&self, execution_id: &str) -> Result<Option<Job>> {
         let row_opt = sqlx::query(
             r#"
-            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+            SELECT id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             WHERE execution_context->>'execution_id' = $1
@@ -394,7 +394,7 @@ impl hodei_server_domain::jobs::JobRepository for PostgresJobRepository {
     async fn find(&self, filter: hodei_server_domain::jobs::JobsFilter) -> Result<Vec<Job>> {
         let mut query = sqlx::QueryBuilder::new(
             r#"
-            SELECT id, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
+            SELECT id, name, spec, state, selected_provider_id, execution_context, attempts, max_attempts,
                    created_at, started_at, completed_at, result, error_message, metadata
             FROM jobs
             "#,

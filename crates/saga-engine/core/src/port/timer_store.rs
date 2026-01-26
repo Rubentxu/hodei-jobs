@@ -25,6 +25,9 @@ pub enum TimerStoreError<E> {
 
     #[error("Timer not found: {0}")]
     NotFound(String),
+
+    #[error("Backend error: {0}")]
+    Backend(E),
 }
 
 impl<E> TimerStoreError<E> {

@@ -17,6 +17,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="hodei-jobs"
 
+# CRC Kubeconfig path
+CRC_KUBECONFIG="${HOME}/.crc/machines/crc/kubeconfig"
+
+# Set KUBECONFIG for all kubectl operations
+export KUBECONFIG="${CRC_KUBECONFIG}"
+
 # Colores
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -108,7 +114,7 @@ connect() {
     fi
 
     print_status "Conectando a namespace: $NAMESPACE"
-    telepresence connect --namespace "$NAMESPACE"
+    telepresence connect --kubeconfig "${CRC_KUBECONFIG}" --namespace "$NAMESPACE"
 
     if [ $? -eq 0 ]; then
         print_success "¡Conectado!"

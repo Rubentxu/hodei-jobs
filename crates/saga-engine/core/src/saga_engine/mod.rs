@@ -1,7 +1,9 @@
 //! # SagaEngine - Central Workflow Execution Engine
 //!
 //! This module provides the [`SagaEngine`] which is the core orchestrator for
-//! durable workflow execution.
+//! durable workflow execution with reactive event processing.
+
+pub mod config;
 
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;

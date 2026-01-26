@@ -25,7 +25,7 @@ use hodei_jobs::{
 #[command(version)]
 struct Cli {
     /// gRPC server address
-    #[arg(short, long, default_value = "http://localhost:50051", global = true)]
+    #[arg(short, long, default_value = "http://localhost:9090", global = true)]
     server: String,
 
     /// Output format (text, json)
