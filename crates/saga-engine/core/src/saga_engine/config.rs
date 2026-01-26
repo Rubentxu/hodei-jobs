@@ -371,9 +371,11 @@ mod tests {
     #[test]
     fn test_env_config_load() {
         // Set environment variables
-        std::env::set_var("SAGA_WORKER_ID", "3");
-        std::env::set_var("SAGA_TOTAL_SHARDS", "8");
-        std::env::set_var("SAGA_AUTO_COMPENSATION", "false");
+        unsafe {
+            std::env::set_var("SAGA_WORKER_ID", "3");
+            std::env::set_var("SAGA_TOTAL_SHARDS", "8");
+            std::env::set_var("SAGA_AUTO_COMPENSATION", "false");
+        }
 
         let config = EnvConfig::load_saga_engine_config();
 
@@ -382,8 +384,10 @@ mod tests {
         assert!(!config.auto_compensation);
 
         // Clean up
-        std::env::remove_var("SAGA_WORKER_ID");
-        std::env::remove_var("SAGA_TOTAL_SHARDS");
-        std::env::remove_var("SAGA_AUTO_COMPENSATION");
+        unsafe {
+            std::env::remove_var("SAGA_WORKER_ID");
+            std::env::remove_var("SAGA_TOTAL_SHARDS");
+            std::env::remove_var("SAGA_AUTO_COMPENSATION");
+        }
     }
 }
