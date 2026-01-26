@@ -23,7 +23,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Crate `saga-engine-testing` con utilities para tests
   - Crate `saga-engine-pg` con PostgreSQL backend
 
-## [v0.69.1] - 2026-01-19
+## [v0.88.0] - 2026-01-26
+
+### Added
+
+- **EPIC-96: Saga Engine v4.0 - Modernización y Optimización Integral**
+  - `TimerProcessor`: Procesamiento dual (reactivo + polling con fallback automático)
+    - Integración PostgreSQL LISTEN/NOTIFY para timers
+    - Polling de respaldo si las notificaciones fallan
+    - Sharding por `worker_id` para escalabilidad horizontal
+  - `CompensationTracker`: Tracking de pasos completados para rollback
+    - Orden de compensación LIFO (Last-In-First-Out)
+    - Integración automática con `DurableWorkflow` en fallos
+  - `SagaTelemetry`: Trait de instrumentación para workflows
+    - `DefaultSagaTelemetry` usando `tracing` para observabilidad
+    - Métricas de inicio, completación, duración de steps
+  - `WorkflowDefinition` deprecated: Marcado para migración a `DurableWorkflow`
+    - Documentación de migración incluída
+    - `#[allow(deprecated)]` para backwards compatibility
+  - `Error` potenciado: Contexto estructurado con timestamps y HashMap
+    - `StructuredError` trait para errores enriquecidos
+    - Mejora del debugging en producción
+
+  - **PostgreSQL Optimization (US-96.12, US-96.13, US-96.14)**
+    - `append_events_batch()`: Batch insert con múltiples VALUES en una query
+    - TOAST compression: `ALTER COLUMN payload SET STORAGE EXTENDED`
+    - `get_last_reset_point()`: Optimización de replay desde último reset point
+    - `PostgresEventStoreConfig.batch_size`: Configurable batch size (default 100)
+
+### Changed
+
+- **Timer Processing**: De polling puro a modo dual reactivo
+  - Latencia reducida de 500ms a <5ms con LISTEN/NOTIFY
+  - Fallback automático a polling si PostgreSQL notify falla
+
+- **EventStore**: Optimizado para alto throughput
+  - Batch inserts reducen overhead de red
+  - TOAST compression para payloads grandes
+
+### Fixed
+
+- **Arc<AtomicBool>**: Shutdown signaling en contextos async
+- **Error chaining**: `source()` ahora funciona correctamente con trait objects
+- **Serialization**: `#[serde(skip)]` para `CompensationTracker` en `WorkflowContext`
+
+## [v0.87.0] - 2026-01-26
 
 ### Added
 
