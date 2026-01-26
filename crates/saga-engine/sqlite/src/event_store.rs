@@ -340,6 +340,21 @@ impl EventStore for SqliteEventStore {
         Ok(id.unwrap_or(0) as u64)
     }
 
+    async fn get_last_reset_point(&self, saga_id: &SagaId) -> Result<Option<u64>, Self::Error> {
+        let id: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT MAX(event_id) FROM saga_events
+            WHERE saga_id = ? AND is_reset_point = 1
+            "#,
+        )
+        .bind(&saga_id.0)
+        .fetch_one(&*self.pool)
+        .await
+        .map_err(SqliteEventStoreError::Backend)?;
+
+        Ok(id.flatten().map(|v| v as u64))
+    }
+
     async fn saga_exists(&self, saga_id: &SagaId) -> Result<bool, Self::Error> {
         let count: i64 = sqlx::query_scalar(
             r#"
