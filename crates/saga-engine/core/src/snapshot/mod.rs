@@ -421,6 +421,13 @@ mod tests {
             Ok(0)
         }
 
+        async fn get_last_reset_point(
+            &self,
+            _saga_id: &SagaId,
+        ) -> Result<Option<u64>, Self::Error> {
+            Ok(None)
+        }
+
         async fn saga_exists(&self, _saga_id: &SagaId) -> Result<bool, Self::Error> {
             Ok(false)
         }
