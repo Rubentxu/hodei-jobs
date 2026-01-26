@@ -96,7 +96,7 @@ impl CompensationTrackerBuilder {
 }
 
 /// Tracker for compensation actions
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompensationTracker {
     /// Completed steps (thread-safe)
     steps: Arc<Mutex<Vec<CompletedStep>>>,

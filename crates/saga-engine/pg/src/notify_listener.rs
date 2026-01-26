@@ -220,7 +220,7 @@ mod tests {
     #[tokio::test]
     async fn test_notification_receiver_create() {
         let (tx, rx) = mpsc::unbounded_channel::<String>();
-        let receiver = NotificationReceiver { rx };
+        let mut receiver = NotificationReceiver { rx };
 
         // Send a test message
         tx.send("test payload".to_string()).unwrap();

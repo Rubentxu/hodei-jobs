@@ -47,6 +47,7 @@ pub mod port;
 pub mod relay;
 pub mod saga_engine;
 pub mod snapshot;
+pub mod telemetry;
 pub mod worker;
 pub mod workflow;
 
@@ -89,3 +90,5 @@ pub use workflow::{
     WorkflowExecutionErrorKind, WorkflowExecutor, WorkflowInput, WorkflowPaused, WorkflowResult,
     WorkflowStep, WorkflowTypeId,
 };
+
+pub use telemetry::{DefaultSagaTelemetry, SagaTelemetry, TelemetryConfig, TelemetryGuard};

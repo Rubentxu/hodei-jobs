@@ -263,20 +263,14 @@ where
 #[cfg(test)]
 mod scheduler_tests {
     use super::*;
-    use saga_engine_core::port::event_store::MockEventStore;
-    use saga_engine_core::port::timer_store::MockTimerStore;
-
-    fn create_test_config() -> ReactiveTimerSchedulerConfig {
-        ReactiveTimerSchedulerConfig {
-            worker_id: 0,
-            total_shards: 4,
-            max_batch_size: 100,
-        }
-    }
 
     #[tokio::test]
     async fn test_should_process_timer_by_shard() {
-        let config = create_test_config();
+        let config = ReactiveTimerSchedulerConfig {
+            worker_id: 0,
+            total_shards: 4,
+            max_batch_size: 100,
+        };
 
         // Worker 0 should process timers with worker_id 0, 4, 8, ...
         assert!(config.worker_id == 0);
@@ -289,21 +283,20 @@ mod scheduler_tests {
     async fn test_sharding_distribution() {
         let total_timers = 1000;
         let workers = 4;
-        let mut worker_counts = vec![0; workers];
+        let our_worker = 0;
+        let mut shard_counts = vec![0; workers];
 
         for i in 0..total_timers {
-            let worker_id = (i as u64) % workers;
-            let our_worker = 0;
-            let assigned_shard = worker_id % workers;
+            let worker_id = i as u64;
+            let assigned_shard = worker_id % workers as u64;
 
             if assigned_shard == our_worker {
-                worker_counts[worker_id as usize] += 1;
+                shard_counts[our_worker as usize] += 1;
             }
         }
 
-        for count in &worker_counts {
-            assert!(*count >= 240 && *count <= 260);
-        }
+        // With 1000 timers and 4 shards, each shard should get ~250 timers
+        assert_eq!(shard_counts[our_worker as usize], 250);
     }
 
     #[tokio::test]

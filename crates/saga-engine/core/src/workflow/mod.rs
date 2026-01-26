@@ -16,6 +16,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::compensation::{CompensationAction, CompensationTracker};
 use crate::event::{EventId, HistoryEvent, SagaId};
 
 /// Unique identifier for a workflow type
@@ -71,6 +72,7 @@ impl Default for WorkflowConfig {
 /// - Active signals (for "wait for signal" patterns)
 /// - Cancellation state and reasons
 /// - Execution metadata for observability
+/// - Compensation tracking for rollback on failure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowContext {
     /// Unique execution identifier
@@ -95,6 +97,9 @@ pub struct WorkflowContext {
     pub metadata: WorkflowMetadata,
     /// Pending activity execution (if paused)
     pub pending_activity: Option<PendingActivity>,
+    /// Compensation tracker for rollback on failure (not persisted, recreated on replay)
+    #[serde(skip)]
+    pub compensation_tracker: Option<CompensationTracker>,
 }
 
 /// Details of an activity validation
@@ -205,6 +210,7 @@ impl WorkflowContext {
             cancellation: None,
             metadata: WorkflowMetadata::default(),
             pending_activity: None,
+            compensation_tracker: None,
         }
     }
 
@@ -279,6 +285,87 @@ impl WorkflowContext {
     /// Get total duration so far
     pub fn duration_so_far(&self) -> chrono::Duration {
         chrono::Utc::now().signed_duration_since(self.started_at)
+    }
+
+    // =========================================================================
+    // Compensation Methods
+    // =========================================================================
+
+    /// Initialize the compensation tracker for this workflow
+    pub fn init_compensation_tracker(&mut self) {
+        self.compensation_tracker = Some(CompensationTracker::new());
+    }
+
+    /// Initialize the compensation tracker with custom configuration
+    pub fn init_compensation_tracker_with_auto_compensate(&mut self, auto_compensate: bool) {
+        self.compensation_tracker = Some(
+            CompensationTracker::builder()
+                .with_auto_compensate(auto_compensate)
+                .build(),
+        );
+    }
+
+    /// Track a completed step for potential compensation
+    pub fn track_compensatable_step(
+        &mut self,
+        step_id: impl Into<String>,
+        activity_type: impl Into<String>,
+        compensation_activity_type: impl Into<String>,
+        input: serde_json::Value,
+        output: serde_json::Value,
+        step_order: u32,
+    ) {
+        if let Some(ref tracker) = self.compensation_tracker {
+            tracker.track_step(
+                step_id,
+                activity_type,
+                compensation_activity_type,
+                input,
+                output,
+                step_order,
+            );
+        }
+    }
+
+    /// Track a step with auto-derived compensation activity
+    pub fn track_compensatable_step_auto(
+        &mut self,
+        step_id: impl Into<String>,
+        activity_type: impl Into<String>,
+        input: serde_json::Value,
+        output: serde_json::Value,
+        step_order: u32,
+    ) {
+        if let Some(ref tracker) = self.compensation_tracker {
+            tracker.track_step_with_auto_compensation(
+                step_id,
+                activity_type,
+                input,
+                output,
+                step_order,
+            );
+        }
+    }
+
+    /// Get all compensation actions in reverse order (LIFO)
+    pub fn get_compensation_actions(&self) -> Vec<CompensationAction> {
+        self.compensation_tracker
+            .as_ref()
+            .map(|t| t.get_compensation_actions())
+            .unwrap_or_default()
+    }
+
+    /// Check if we're currently compensating
+    pub fn is_in_compensation_phase(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .map(|s| s.compensating)
+            .unwrap_or(false)
+    }
+
+    /// Check if compensation tracker is initialized
+    pub fn has_compensation_tracker(&self) -> bool {
+        self.compensation_tracker.is_some()
     }
 
     /// Execute an activity in a durable manner.
@@ -700,10 +787,51 @@ pub trait WorkflowStep: Send + Sync + 'static + Debug {
 ///     }
 ///
 ///     fn configuration(&self) -> WorkflowConfig {
-///         WorkflowConfig::default()
+/// Declarative workflow definition (DEPRECATED)
+///
+/// This trait is deprecated and will be removed in a future version.
+/// Use [`DurableWorkflow`] instead for Workflow-as-Code pattern.
+///
+/// ## Migration to DurableWorkflow
+///
+/// ```rust,ignore
+/// // Before (deprecated)
+/// impl WorkflowDefinition for MyWorkflow {
+///     const TYPE_ID: &'static str = "my-workflow";
+///     const VERSION: u32 = 1;
+///
+///     fn steps(&self) -> &[Box<dyn DynWorkflowStep>] {
+///         &[
+///             Box::new(ActivityStep::new("activity_1", ActivityA)),
+///             Box::new(ActivityStep::new("activity_2", ActivityB)),
+///         ]
+///     }
+/// }
+///
+/// // After (recommended)
+/// #[async_trait::async_trait]
+/// impl DurableWorkflow for MyWorkflow {
+///     const TYPE_ID: &'static str = "my-workflow";
+///     const VERSION: u32 = 1;
+///
+///     async fn run(&self, ctx: &mut WorkflowContext, input: serde_json::Value) -> Result<serde_json::Value, std::io::Error> {
+///         let result_a = ctx.execute_activity(&ActivityA, &input).await?;
+///         let result_b = ctx.execute_activity(&ActivityB, &result_a).await?;
+///         Ok(result_b)
 ///     }
 /// }
 /// ```
+///
+/// ## Reasons for deprecation
+///
+/// - `WorkflowDefinition` uses a declarative step list which limits control flow
+/// - `DurableWorkflow` uses imperative Rust code with full control flow support
+/// - Better type safety with `DurableWorkflow`'s generic input/output types
+/// - Simpler debugging and testing with actual Rust code
+#[deprecated(
+    since = "0.87.0",
+    note = "Use `DurableWorkflow` trait instead. See migration guide in documentation."
+)]
 pub trait WorkflowDefinition: Send + Sync + 'static {
     /// Unique identifier for this workflow type
     const TYPE_ID: &'static str;
@@ -748,7 +876,14 @@ impl std::fmt::Display for InputValidationError {
 
 impl std::error::Error for InputValidationError {}
 
-/// Workflow executor
+/// Workflow executor (DEPRECATED)
+///
+/// Use [`DurableWorkflow`] directly with the saga engine instead.
+/// This executor is only for legacy `WorkflowDefinition` workflows.
+#[deprecated(
+    since = "0.87.0",
+    note = "Use `DurableWorkflow` trait with saga engine instead."
+)]
 pub struct WorkflowExecutor<W: WorkflowDefinition> {
     workflow: W,
     config: WorkflowConfig,
@@ -1131,6 +1266,7 @@ pub fn create_workflow_started_event(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

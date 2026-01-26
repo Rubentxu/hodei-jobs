@@ -29,6 +29,7 @@ pub mod outbox;
 pub mod reactive_timer_scheduler;
 pub mod reactive_worker;
 pub mod replayer;
+pub mod timer_processor;
 pub mod timer_store;
 
 // Engine module (Application Layer - Facade)
@@ -46,4 +47,8 @@ pub use reactive_worker::{
     ReactiveWorker, ReactiveWorkerConfig, WorkerError as ReactiveWorkerError,
 };
 pub use replayer::PostgresReplayer;
+pub use timer_processor::{
+    ProcessingMode, TimerProcessor, TimerProcessorError, TimerProcessorMetrics,
+    TimerProcessorMetricsSnapshot,
+};
 pub use timer_store::{PostgresTimerStore, PostgresTimerStoreConfig};
