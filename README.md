@@ -5,16 +5,16 @@
 <h1 align="center">Hodei Jobs Platform</h1>
 
 <p align="center">
-  <strong>The High-Performance, Durable, and Universal CI/CD Alternative</strong>
+  <strong>A distributed HPC-ready job execution platform with Zero Trust security</strong>
 </p>
 
 <p align="center">
-  <a href="#-why-hodei">Why Hodei?</a> •
-  <a href="#-key-features">Features</a> •
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-performance">Performance</a> •
-  <a href="#-documentation">Docs</a>
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#providers">Providers</a> •
+  <a href="#documentation">Documentation</a> •
+  <a href="#contributing">Contributing</a>
 </p>
 
 <p align="center">
@@ -34,126 +34,345 @@
 
 ---
 
-## 🚀 The Future of CI/CD & Job Execution
+## 🎯 What is Hodei Jobs?
 
-**Hodei Jobs** is a distributed, high-performance job execution platform built in Rust. It redefines how you run CI/CD pipelines, long-running tasks, and HPC workloads by combining the **Durable Execution** of modern workflow engines with the **Universal Portability** of a multi-provider infrastructure.
+**Hodei Jobs** is a production-ready, HPC-ready distributed job execution platform built in Rust. It automatically provisions workers on-demand using your preferred infrastructure (Docker, Kubernetes, or Firecracker microVMs) and executes jobs with full observability and Zero Trust security.
 
-### 🛡️ Durable Execution (Saga Engine v4.0)
-Unlike traditional CI/CD tools, Hodei is built on a **Saga Engine** with **Event Sourcing**. This means your workflows are not just scripts; they are resilient processes that can survive server crashes, network partitions, and infrastructure failures.
+### Why Hodei v8.0?
 
----
-
-## 💡 Why Hodei?
-
-| Feature | **Jenkins** | **Tekton** | **Hodei Jobs** |
-| :--- | :---: | :---: | :---: |
-| **Language/Runtime** | Java (Bloated) | Go | **Rust (Ultralight)** |
-| **Startup Time** | Slow (Minutes) | Medium (K8s Cold Start) | **Sub-second (Firecracker)** |
-| **Security** | Plugin-dependent | K8s RBAC | **Native Zero Trust (mTLS)** |
-| **Resilience** | Brittle (Lost state) | K8s-dependent | **Durable Sagas (Event Sourcing)** |
-| **Infra Support** | VM/Bare Metal | K8s Only | **Universal (K8s, Docker, VMs)** |
-| **Logic** | Groovy/DSL | YAML | **Workflows-as-Code** |
+- **🚀 On-Demand Scaling**: Workers are provisioned automatically when jobs are queued
+- **🔌 Pluggable Providers**: Choose Docker for simplicity, Kubernetes for orchestration, or Firecracker for isolation
+- **🔐 Zero Trust Security**: mTLS infrastructure with PKI, secret injection via stdin, log redaction
+- **📊 Full Observability**: Real-time log streaming with batching (90-99% overhead reduction), cached metrics, cgroups integration
+- **⚡ High Performance Computing**: LogBatching, Zero-Copy I/O, backpressure handling, async operations
+- **🏗️ Production Ready**: DDD architecture, comprehensive testing (277+ tests), battle-tested patterns
 
 ---
 
-## ✨ Key Features
+## ✨ Features
 
-### 🔌 Universal Provisioning
-Provision workers on-demand across any infrastructure:
-- **Docker**: Simple, local, and fast.
-- **Kubernetes**: Scale to infinity with cloud-native orchestration.
-- **Firecracker**: Hardware-level isolation with sub-250ms startup times.
 
-### ⚡ Extreme Performance (HPC-Ready)
-- **LogBatching**: 90-99% reduction in gRPC overhead.
-- **Zero-Copy I/O**: Memory-efficient streaming of huge log volumes.
-- **Async Metrics**: Non-blocking resource tracking with cgroups integration.
-
-### 🔐 Zero Trust Security
-- **Inside-Out Connectivity**: Workers connect to the server; no open ports on executors.
-- **mTLS PKI**: End-to-end encryption with automated certificate management.
-- **Secret Injection**: Secure stdin injection prevents secrets from ever touching the disk or logs.
-
----
-
-## 🏗️ Architecture
-
-Hodei follows a **Hexagonal/DDD** architecture powered by an asynchronous Rust runtime.
-
-```mermaid
-graph TD
-    Client[Client CLI/API] -->|gRPC/REST| Server[Hodei Control Plane]
-    Server -->|Saga Engine| State[(Event Store)]
-    Server -->|Provision| Provider{Infrastructure}
-    Provider -->|Spawn| Worker[Hodei Agent]
-    Worker -->|mTLS Stream| Server
-```
-
-### The "Inside-Out" Pattern
-Every Hodei worker initiates its own connection to the Control Plane. This allows you to run workers in isolated private networks, behind firewalls, or in multi-cloud environments without complex VPNs or open ports.
+| Feature                           | Description                                                         |
+| --------------------------------- | ------------------------------------------------------------------- |
+| **Automatic Worker Provisioning** | Workers are created on-demand when jobs are queued                  |
+| **Multiple Providers**            | Docker containers, Kubernetes pods, or Firecracker microVMs         |
+| **OTP Authentication**            | Secure one-time password authentication for workers                 |
+| **LogBatching (v8.0)**            | 90-99% reduction in gRPC overhead with automatic batching           |
+| **Zero-Copy I/O (v8.0)**          | Memory-efficient streaming with FramedRead + BytesCodec             |
+| **Secret Injection (v8.0)**       | Secure stdin injection with JSON serialization and log redaction    |
+| **mTLS/Zero Trust (v8.0)**        | Complete PKI infrastructure with certificate management            |
+| **Cached Metrics (v8.0)**         | Non-blocking metrics with 35s TTL cache and cgroups integration     |
+| **Write-Execute Pattern (v8.0)**  | Jenkins/K8s-style script execution with safety headers             |
+| **Backpressure Handling (v8.0)**  | Non-blocking async operations with try_send()                       |
+| **Job Lifecycle Management**      | Queue, monitor, cancel, and retry jobs                              |
+| **gRPC API**                      | High-performance API with bidirectional streaming                   |
+| **REST API**                      | HTTP endpoints for easy integration                                 |
+| **Horizontal Scaling**            | Run multiple server instances for high availability                 |
 
 ---
 
-## 📊 Performance Benchmark
+## 📊 Performance Metrics (v8.0)
 
-| Optimization | Efficiency | Impact |
-| :--- | :--- | :--- |
-| **Network Overhead** | **95% Reduction** | LogBatching reduces gRPC calls from per-line to batched packets. |
-| **Memory Pressure** | **40% Lower** | Zero-copy streaming avoids unnecessary allocations. |
-| **Startup Latency** | **< 125ms** | Optimized Firecracker provider for near-instant execution. |
-| **Reactivity** | **Instant** | Event-driven architecture replaces polling with reactive events. |
+The worker agent v8.0 delivers significant performance improvements:
+
+| Optimization | Improvement | Metric |
+|--------------|-------------|--------|
+| **LogBatching** | 90-99% | gRPC calls reduction |
+| **Zero-Copy I/O** | ~40% | Memory allocation reduction |
+| **Cached Metrics** | ~60% | Metrics collection overhead |
+| **Backpressure Handling** | 100% | Async runtime stability |
+| **Write-Execute Pattern** | N/A | Script execution robustness |
+
+**Test Results**: All 277 tests passing, including 30 worker-specific performance tests.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Prerequisites
+### Prerequisites
+
 ```bash
-# Rust 1.83+
+# Rust 1.83+ (2024 edition)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# Protobuf Compiler
-sudo apt install protobuf-compiler
+
+# Protocol Buffers compiler
+sudo apt install protobuf-compiler  # Ubuntu/Debian
+brew install protobuf               # macOS
+
+# Docker (for Docker provider)
+sudo apt install docker.io && sudo usermod -aG docker $USER
 ```
 
-### 2. Launch local stack
-```bash
-# Clone and build
-git clone https://github.com/Rubentxu/hodei-jobs.git && cd hodei-jobs
-cargo build --release
+### Installation
 
-# Start DB and Server
-just dev-db
-just db-migrate
-cargo run --bin hodei-server-bin
+```bash
+# Clone the repository
+git clone https://github.com/Rubentxu/hodei-jobs.git
+cd hodei-jobs
+
+# Build the project
+cargo build --workspace --release
 ```
 
-### 3. Run Your First Job
+### Run the Server
+
 ```bash
-# In a new terminal, execute a hello world in Kubernetes (local)
-just job-k8s-hello
+# Start PostgreSQL
+docker run -d --name hodei-postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=hodei \
+  -p 5432:5432 postgres:16-alpine
+
+# Start the server with Docker provider
+HODEI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/hodei" \
+HODEI_DEV_MODE=1 \
+HODEI_DOCKER_ENABLED=1 \
+cargo run --bin server -p hodei-jobs-grpc
+```
+
+### Queue Your First Job
+
+```bash
+# Install grpcurl
+brew install grpcurl  # macOS
+# or: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
+
+# Queue a job
+grpcurl -plaintext -d '{
+  "job_definition": {
+    "job_id": {"value": "my-first-job"},
+    "name": "Hello World",
+    "command": "echo",
+    "arguments": ["Hello from Hodei!"]
+  },
+  "queued_by": "quickstart"
+}' localhost:50051 hodei.JobExecutionService/QueueJob
+
+# Check job status
+grpcurl -plaintext -d '{
+  "job_id": {"value": "my-first-job"}
+}' localhost:50051 hodei.JobExecutionService/GetJobStatus
+```
+
+That's it! The server automatically provisions a Docker container, the worker registers itself, executes the job, and reports the result.
+
+---
+
+## 🏗️ Architecture
+
+### High-Level Components
+
+The following diagram illustrates the interaction between the core services:
+
+<p align="center">
+  <img src="docs/assets/diagrama-jobs-services.png" alt="Hodei Jobs Services Diagram" width="800" />
+</p>
+
+### Job Execution Flow
+
+Detailed view of how a job flows through the system:
+
+<p align="center">
+  <img src="docs/assets/diagrama-jobs-eng.png" alt="Hodei Jobs Execution Flow" width="800" />
+</p>
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     HODEI JOBS PLATFORM                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────┐     ┌────────────────────────────────────────┐    │
+│  │ Client  │────▶│         gRPC Server (Control Plane)    │    │
+│  └─────────┘     │  ┌──────────────┐ ┌─────────────────┐  │    │
+│                  │  │ JobExecution │ │ WorkerAgent     │  │    │
+│                  │  │ Service      │ │ Service (OTP)   │  │    │
+│                  │  └──────┬───────┘ └────────┬────────┘  │    │
+│                  │         │                  │           │    │
+│                  │  ┌──────▼──────────────────▼────────┐  │    │
+│                  │  │    Worker Provisioning Service   │  │    │
+│                  │  └──────────────┬───────────────────┘  │    │
+│                  └─────────────────┼──────────────────────┘    │
+│                                    │                           │
+│                  ┌─────────────────▼───────────────────┐       │
+│                  │         Worker Providers            │       │
+│                  │  ┌────────┐ ┌─────┐ ┌───────────┐  │       │
+│                  │  │ Docker │ │ K8s │ │Firecracker│  │       │
+│                  │  └───┬────┘ └──┬──┘ └─────┬─────┘  │       │
+│                  └──────┼─────────┼──────────┼────────┘       │
+│                         │         │          │                 │
+│                    Container    Pod      microVM               │
+│                    (Worker)   (Worker)  (Worker)               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Job Lifecycle
+
+1. **Queue** → Client submits job via `QueueJob`
+2. **Schedule** → Server detects pending job, provisions worker with OTP
+3. **Register** → Worker starts, reads OTP, registers with server
+4. **Dispatch** → Server sends job to worker via bidirectional stream
+5. **Execute** → Worker runs command, streams logs
+6. **Complete** → Worker reports result, job marked as completed
+
+---
+
+## 🔌 Providers
+
+### Docker Provider
+
+Best for: **Development, CI/CD, simple deployments**
+
+```bash
+HODEI_DOCKER_ENABLED=1 \
+HODEI_WORKER_IMAGE=hodei-worker:latest \
+cargo run --bin server -p hodei-jobs-grpc
+```
+
+### Kubernetes Provider
+
+Best for: **Production, auto-scaling, cloud-native deployments**
+
+```bash
+HODEI_K8S_ENABLED=1 \
+HODEI_K8S_NAMESPACE=hodei-workers \
+HODEI_WORKER_IMAGE=your-registry/hodei-worker:v1.0.0 \
+cargo run --bin server -p hodei-jobs-grpc
+```
+
+### Firecracker Provider
+
+Best for: **Maximum isolation, multi-tenant environments, security-critical workloads**
+
+```bash
+HODEI_FC_ENABLED=1 \
+HODEI_FC_KERNEL_PATH=/var/lib/hodei/vmlinux \
+HODEI_FC_ROOTFS_PATH=/var/lib/hodei/rootfs.ext4 \
+sudo cargo run --bin server -p hodei-jobs-grpc
 ```
 
 ---
 
-## 🗺️ Roadmap
+## 📚 Documentation
 
-- [x] **v8.0**: High-Performance Worker Agent & mTLS.
-- [x] **v4.0 (Core)**: Saga Engine & Event Sourcing (In Progress).
-- [ ] **Web Dashboard**: Modern UI for workflow visualization.
-- [ ] **Native Workflows**: DAG support for complex multi-job pipelines.
-- [ ] **OpenTelemetry**: Deep observability and distributed tracing.
+
+| Document                                         | Description                           |
+| ------------------------------------------------ | ------------------------------------- |
+| [**GETTING_STARTED.md**](GETTING_STARTED.md)     | Complete setup guide with examples    |
+| [**docs/architecture.md**](docs/architecture.md) | DDD architecture and design decisions |
+| [**docs/development.md**](docs/development.md)   | Development guide for contributors    |
+| [**docs/use-cases.md**](docs/use-cases.md)       | Use cases and sequence diagrams       |
+| [**docs/workflows.md**](docs/workflows.md)       | Detailed workflow diagrams (v8.0)     |
+| [**docs/security/PKI-DESIGN.md**](docs/security/PKI-DESIGN.md) | mTLS PKI architecture (v8.0) |
+| [**docs/security/CERTIFICATE-MANAGEMENT.md**](docs/security/CERTIFICATE-MANAGEMENT.md) | Certificate operations (v8.0) |
+
+---
+
+## 🧪 Testing
+
+```bash
+# Unit tests (~95 tests)
+cargo test --workspace
+
+# Integration tests (require Docker)
+cargo test --test docker_integration -- --ignored
+
+# E2E tests (full stack)
+cargo test --test e2e_docker_provider -- --ignored --nocapture
+
+# Kubernetes E2E (requires cluster)
+HODEI_K8S_TEST=1 cargo test --test e2e_kubernetes_provider -- --ignored
+
+# Firecracker E2E (requires KVM)
+HODEI_FC_TEST=1 cargo test --test e2e_firecracker_provider -- --ignored
+```
 
 ---
 
 ## 🤝 Contributing
 
-We are building the future of distributed execution. Join us!
-Check [CONTRIBUTING.md](docs/development.md) for more info.
+We welcome contributions! Here's how you can help:
+
+### Ways to Contribute
+
+- 🐛 **Report bugs** - Open an issue with reproduction steps
+- 💡 **Suggest features** - Share your ideas in discussions
+- 📖 **Improve docs** - Fix typos, add examples, clarify explanations
+- 🔧 **Submit PRs** - Bug fixes, features, or improvements
+
+### Development Setup
+
+```bash
+# Fork and clone
+git clone https://github.com/YOUR_USERNAME/hodei-jobs.git
+cd hodei-jobs
+
+# Create a branch
+git checkout -b feature/my-feature
+
+# Make changes and test
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt --all
+
+# Submit PR
+```
+
+### Code Style
+
+- Follow Rust idioms and best practices
+- Use `cargo fmt` for formatting
+- Ensure `cargo clippy` passes with no warnings
+- Add tests for new functionality
+- Update documentation as needed
+
+---
+
+## 📊 Project Status
+
+
+| Component            | Status              |
+| -------------------- | ------------------- |
+| Core Platform        | ✅ Production Ready |
+| Docker Provider      | ✅ Stable           |
+| Kubernetes Provider  | ✅ Stable           |
+| Firecracker Provider | 🔶 Beta             |
+| REST API             | ✅ Stable           |
+| gRPC API             | ✅ Stable           |
+| Web Dashboard        | ✅ Production Ready |
+| Helm Chart           | ✅ Available        |
+
+---
+
+## 🗺️ Roadmap
+
+- [X]  Web dashboard for job monitoring
+- [ ]  Job scheduling (cron-like)
+- [ ]  Job dependencies and workflows
+- [ ]  Prometheus metrics endpoint
+- [ ]  OpenTelemetry tracing
+- [ ]  Multi-region support
+- [ ]  Job result caching
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [Tokio](https://tokio.rs/) - Async runtime for Rust
+- [Tonic](https://github.com/hyperium/tonic) - gRPC implementation
+- [Bollard](https://github.com/fussybeaver/bollard) - Docker API client
+- [kube-rs](https://github.com/kube-rs/kube) - Kubernetes client
+- [Firecracker](https://firecracker-microvm.github.io/) - microVM technology
 
 ---
 
 <p align="center">
-  <strong>⭐ Star this repo to support the project!</strong>
+  <strong>⭐ Star this repo if you find it useful!</strong>
 </p>
 
 <p align="center">
