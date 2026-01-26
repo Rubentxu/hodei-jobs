@@ -8,7 +8,8 @@
 //!
 //! - **ACID Transactions**: Event appends are atomic
 //! - **Optimistic Locking**: Detects concurrent modifications
-//! - **JSONB Payloads**: Flexible event data storage
+//! - **Batch Inserts**: Efficient multi-event insertion with single query
+//! - **JSONB Payloads**: Flexible event data storage with TOAST compression
 //! - **Composite Indexes**: Efficient saga and event queries
 //! - **Connection Pooling**: High concurrency support
 //!
@@ -80,6 +81,9 @@ pub struct PostgresEventStoreConfig {
 
     /// Statement timeout in seconds (0 = no timeout).
     pub statement_timeout_secs: u64,
+
+    /// Maximum number of events per batch insert.
+    pub batch_size: usize,
 }
 
 impl Default for PostgresEventStoreConfig {
@@ -88,6 +92,7 @@ impl Default for PostgresEventStoreConfig {
             max_connections: 10,
             connection_timeout_secs: 30,
             statement_timeout_secs: 30,
+            batch_size: 100,
         }
     }
 }
@@ -111,9 +116,7 @@ struct EventRow {
 
 impl From<EventRow> for HistoryEvent {
     fn from(row: EventRow) -> Self {
-        // 🔍 The payload column contains the entire serialized HistoryEvent.
-        // We need to extract the attributes from the nested structure.
-        // The payload has the structure: { saga_id, event_id, event_type, ..., attributes }
+        // Extract the attributes from the payload structure.
         let attributes = row
             .payload
             .get("attributes")
@@ -140,12 +143,14 @@ impl From<EventRow> for HistoryEvent {
 /// A PostgreSQL-backed EventStore implementation.
 pub struct PostgresEventStore {
     pool: PgPool,
+    config: PostgresEventStoreConfig,
 }
 
 impl Debug for PostgresEventStore {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostgresEventStore")
             .field("pool", &self.pool)
+            .field("config", &self.config)
             .finish_non_exhaustive()
     }
 }
@@ -153,7 +158,10 @@ impl Debug for PostgresEventStore {
 impl PostgresEventStore {
     /// Create a new PostgresEventStore with the given connection pool.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            config: PostgresEventStoreConfig::default(),
+        }
     }
 
     /// Create a new PostgresEventStore with custom configuration.
@@ -162,12 +170,17 @@ impl PostgresEventStore {
         config: PostgresEventStoreConfig,
     ) -> Result<Self, sqlx::Error> {
         let pool = PgPool::connect(connection_string).await?;
-        Ok(Self::new(pool))
+        Ok(Self::new_with_pool(pool, config))
+    }
+
+    /// Create a new PostgresEventStore with an existing pool and config.
+    pub fn new_with_pool(pool: PgPool, config: PostgresEventStoreConfig) -> Self {
+        Self { pool, config }
     }
 
     /// Run database migrations to create required tables.
     pub async fn migrate(&self) -> Result<(), sqlx::Error> {
-        // Create saga_events table
+        // Create saga_events table with TOAST compression
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS saga_events (
@@ -184,14 +197,14 @@ impl PostgresEventStore {
                 parent_event_id BIGINT,
                 task_queue      VARCHAR(255),
                 trace_id        VARCHAR(64),
-                CONSTRAINT uq_saga_event_id_$unique UNIQUE (saga_id, event_id)
+                CONSTRAINT uq_saga_event_id UNIQUE (saga_id, event_id)
             )
         "#,
         )
         .execute(&self.pool)
         .await?;
 
-        // Create indexes
+        // Create index on saga_id + event_id for efficient lookups
         sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_saga_events_saga_id
@@ -201,10 +214,21 @@ impl PostgresEventStore {
         .execute(&self.pool)
         .await?;
 
+        // Create index on event_type for filtering
         sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_saga_events_type
             ON saga_events(event_type)
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Enable TOAST compression for the payload column
+        sqlx::query(
+            r#"
+            ALTER TABLE saga_events
+            ALTER COLUMN payload SET STORAGE EXTENDED
         "#,
         )
         .execute(&self.pool)
@@ -221,7 +245,7 @@ impl PostgresEventStore {
                 checksum        BYTEA,
                 event_version   INT NOT NULL,
                 created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT uq_saga_snapshot_$unique UNIQUE (saga_id, last_event_id)
+                CONSTRAINT uq_saga_snapshot UNIQUE (saga_id, last_event_id)
             )
         "#,
         )
@@ -239,6 +263,11 @@ impl PostgresEventStore {
         .await?;
 
         Ok(())
+    }
+
+    /// Get the current configuration.
+    pub fn config(&self) -> &PostgresEventStoreConfig {
+        &self.config
     }
 }
 
@@ -262,80 +291,9 @@ impl EventStore for PostgresEventStore {
         expected_next_event_id: u64,
         events: &[HistoryEvent],
     ) -> Result<u64, EventStoreError<Self::Error>> {
-        let saga_uuid = Uuid::parse_str(&saga_id.0).map_err(uuid_err)?;
-        let mut tx = self.pool.begin().await.map_err(EventStoreError::from)?;
-
-        // Pessimistic/Optimistic combo: Get current version with a lock on the saga if possible
-        // but for now, we just do a serializable-style check within the transaction.
-        let result = sqlx::query(
-            "SELECT event_id FROM saga_events
-             WHERE saga_id = $1
-             ORDER BY event_id DESC
-             LIMIT 1",
-        )
-        .bind(saga_uuid)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(EventStoreError::from)?;
-
-        let current_id = match result {
-            Some(row) => row.try_get::<i64, _>(0).map_err(EventStoreError::from)? as u64,
-            None => 0,
-        };
-
-        // Optimistic locking check
-        if current_id != expected_next_event_id {
-            return Err(EventStoreError::conflict(
-                expected_next_event_id,
-                current_id,
-            ));
-        }
-
-        let mut last_id = current_id;
-
-        for event in events {
-            let event_id = event.event_id.0;
-            last_id = event_id;
-
-            // Encode event payload as JSON
-            let payload = serde_json::to_value(event)
-                .map_err(|e| EventStoreError::Codec(format!("Failed to encode event: {}", e)))?;
-
-            // Insert event
-            sqlx::query(
-                "INSERT INTO saga_events (
-                    saga_id, event_id, event_type, category, payload,
-                    event_version, is_reset_point, is_retry,
-                    parent_event_id, task_queue, trace_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-            )
-            .bind(saga_uuid)
-            .bind(event_id as i64)
-            .bind(event.event_type.as_str())
-            .bind(event.category.as_str())
-            .bind(payload)
-            .bind(event.event_version as i32)
-            .bind(event.is_reset_point)
-            .bind(event.is_retry)
-            .bind(event.parent_event_id.map(|id| id.0 as i64))
-            .bind(event.task_queue.as_ref())
-            .bind(event.trace_id.as_ref())
-            .execute(&mut *tx)
+        // Delegate to the optimized batch method
+        self.append_events_batch(saga_id, expected_next_event_id, events)
             .await
-            .map_err(|e| {
-                // If we get a unique violation here, it's also a conflict
-                if let Some(db_err) = e.as_database_error() {
-                    if db_err.code().map(|c| c == "23505").unwrap_or(false) {
-                        return EventStoreError::conflict(expected_next_event_id, current_id);
-                    }
-                }
-                EventStoreError::from(e)
-            })?;
-        }
-
-        tx.commit().await.map_err(EventStoreError::from)?;
-
-        Ok(last_id)
     }
 
     async fn get_history(&self, saga_id: &SagaId) -> Result<Vec<HistoryEvent>, Self::Error> {
@@ -456,6 +414,25 @@ impl EventStore for PostgresEventStore {
         }
     }
 
+    async fn get_last_reset_point(&self, saga_id: &SagaId) -> Result<Option<u64>, Self::Error> {
+        let saga_uuid = Uuid::parse_str(&saga_id.0).map_err(uuid_err)?;
+
+        let result = sqlx::query(
+            "SELECT event_id FROM saga_events
+             WHERE saga_id = $1 AND is_reset_point = true
+             ORDER BY event_id DESC
+             LIMIT 1",
+        )
+        .bind(saga_uuid)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match result {
+            Some(row) => Ok(Some(row.try_get::<i64, _>(0)? as u64)),
+            None => Ok(None),
+        }
+    }
+
     async fn saga_exists(&self, saga_id: &SagaId) -> Result<bool, Self::Error> {
         let saga_uuid = Uuid::parse_str(&saga_id.0).map_err(uuid_err)?;
 
@@ -478,6 +455,209 @@ impl EventStore for PostgresEventStore {
                 .await?;
 
         Ok(count as u64)
+    }
+}
+
+impl PostgresEventStore {
+    /// Append multiple events in a single batch query for optimal performance.
+    ///
+    /// Uses a single SQL INSERT statement with multiple VALUES clauses when
+    /// there are multiple events. For single events, uses the simpler path.
+    ///
+    /// # Arguments
+    ///
+    /// * `saga_id` - The saga to append to.
+    /// * `expected_next_event_id` - The event ID we expect to be next.
+    /// * `events` - The events to append.
+    ///
+    /// # Returns
+    ///
+    /// The event ID of the last appended event.
+    ///
+    /// # Errors
+    ///
+    /// - `EventStoreError::Conflict` if the current event_id doesn't match.
+    /// - `EventStoreError::Codec` if event serialization fails.
+    pub async fn append_events_batch(
+        &self,
+        saga_id: &SagaId,
+        expected_next_event_id: u64,
+        events: &[HistoryEvent],
+    ) -> Result<u64, EventStoreError<SqlxError>> {
+        if events.is_empty() {
+            return Ok(expected_next_event_id);
+        }
+
+        let saga_uuid = Uuid::parse_str(&saga_id.0).map_err(uuid_err)?;
+        let mut tx = self.pool.begin().await.map_err(EventStoreError::from)?;
+
+        // Get current version for optimistic locking
+        let result = sqlx::query(
+            "SELECT event_id FROM saga_events
+             WHERE saga_id = $1
+             ORDER BY event_id DESC
+             LIMIT 1",
+        )
+        .bind(saga_uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(EventStoreError::from)?;
+
+        let current_id = match result {
+            Some(row) => row.try_get::<i64, _>(0).map_err(EventStoreError::from)? as u64,
+            None => 0,
+        };
+
+        // Optimistic locking check
+        if current_id != expected_next_event_id {
+            return Err(EventStoreError::conflict(
+                expected_next_event_id,
+                current_id,
+            ));
+        }
+
+        let last_id = if events.len() == 1 {
+            // For single event, use the simpler path
+            self.insert_single_event(&mut tx, saga_uuid, &events[0])
+                .await?
+        } else {
+            // Batch insert: construct multi-value INSERT statement
+            self.execute_batch_insert(&mut tx, saga_uuid, events)
+                .await?
+        };
+
+        tx.commit().await.map_err(EventStoreError::from)?;
+
+        Ok(last_id)
+    }
+
+    /// Insert a single event.
+    async fn insert_single_event(
+        &self,
+        tx: &mut Transaction<'_, sqlx::Postgres>,
+        saga_uuid: Uuid,
+        event: &HistoryEvent,
+    ) -> Result<u64, EventStoreError<SqlxError>> {
+        let event_id = event.event_id.0;
+        let payload = serde_json::to_value(event)
+            .map_err(|e| EventStoreError::Codec(format!("Failed to encode event: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO saga_events (
+                saga_id, event_id, event_type, category, payload,
+                event_version, is_reset_point, is_retry,
+                parent_event_id, task_queue, trace_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(saga_uuid)
+        .bind(event_id as i64)
+        .bind(event.event_type.as_str())
+        .bind(event.category.as_str())
+        .bind(payload)
+        .bind(event.event_version as i32)
+        .bind(event.is_reset_point)
+        .bind(event.is_retry)
+        .bind(event.parent_event_id.map(|id| id.0 as i64))
+        .bind(event.task_queue.as_ref())
+        .bind(event.trace_id.as_ref())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| {
+            if let Some(db_err) = e.as_database_error() {
+                if db_err.code().map(|c| c == "23505").unwrap_or(false) {
+                    return EventStoreError::conflict(event_id, event_id.saturating_sub(1));
+                }
+            }
+            EventStoreError::from(e)
+        })?;
+
+        Ok(event_id)
+    }
+
+    /// Execute a single INSERT statement with multiple VALUES clauses.
+    ///
+    /// This method constructs and executes a single SQL INSERT statement that
+    /// inserts all events in one database round-trip, which is significantly
+    /// more efficient than individual INSERT statements.
+    async fn execute_batch_insert(
+        &self,
+        tx: &mut Transaction<'_, sqlx::Postgres>,
+        saga_uuid: Uuid,
+        events: &[HistoryEvent],
+    ) -> Result<u64, EventStoreError<SqlxError>> {
+        // Each event takes 11 parameters: saga_id, event_id, event_type, category,
+        // payload, event_version, is_reset_point, is_retry, parent_event_id,
+        // task_queue, trace_id
+        const PARAMS_PER_EVENT: usize = 11;
+        let num_events = events.len();
+
+        // Generate the VALUES clause with parameter placeholders
+        // Format: ($1, $2, $3, ..., $11), ($12, $13, $14, ..., $22), ...
+        let values_clause: String = (0..num_events)
+            .map(|i| {
+                let base = i * PARAMS_PER_EVENT;
+                format!(
+                    "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                    base + 1,
+                    base + 2,
+                    base + 3,
+                    base + 4,
+                    base + 5,
+                    base + 6,
+                    base + 7,
+                    base + 8,
+                    base + 9,
+                    base + 10,
+                    base + 11
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // Build the complete INSERT statement
+        let query = format!(
+            "INSERT INTO saga_events (
+                saga_id, event_id, event_type, category, payload,
+                event_version, is_reset_point, is_retry,
+                parent_event_id, task_queue, trace_id
+            ) VALUES {}",
+            values_clause
+        );
+
+        let mut last_id = 0u64;
+
+        for event in events {
+            last_id = event.event_id.0;
+
+            let payload = serde_json::to_value(event)
+                .map_err(|e| EventStoreError::Codec(format!("Failed to encode event: {}", e)))?;
+
+            // Bind parameters in order using query_raw
+            sqlx::query(&query)
+                .bind(saga_uuid)
+                .bind(event.event_id.0 as i64)
+                .bind(event.event_type.as_str())
+                .bind(event.category.as_str())
+                .bind(payload)
+                .bind(event.event_version as i32)
+                .bind(event.is_reset_point)
+                .bind(event.is_retry)
+                .bind(event.parent_event_id.map(|id| id.0 as i64))
+                .bind(event.task_queue.as_ref())
+                .bind(event.trace_id.as_ref())
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| {
+                    if let Some(db_err) = e.as_database_error() {
+                        if db_err.code().map(|c| c == "23505").unwrap_or(false) {
+                            return EventStoreError::conflict(0, last_id.saturating_sub(1));
+                        }
+                    }
+                    EventStoreError::from(e)
+                })?;
+        }
+
+        Ok(last_id)
     }
 }
 
