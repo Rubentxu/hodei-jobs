@@ -11,6 +11,7 @@ use saga_engine_core::worker::{Worker, WorkerConfig};
 use saga_engine_core::workflow::registry::WorkflowRegistry;
 use saga_engine_core::workflow::{DurableWorkflow, WorkflowContext};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -77,6 +78,11 @@ impl EventStore for MockEventStore {
     async fn get_current_event_id(&self, _saga: &SagaId) -> Result<u64, Self::Error> {
         Ok(0)
     }
+
+    async fn get_last_reset_point(&self, _saga: &SagaId) -> Result<Option<u64>, Self::Error> {
+        Ok(None)
+    }
+
     async fn saga_exists(&self, _saga: &SagaId) -> Result<bool, Self::Error> {
         Ok(true)
     }
