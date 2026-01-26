@@ -216,6 +216,20 @@ pub trait EventStore: Send + Sync {
     /// The current event ID.
     async fn get_current_event_id(&self, saga_id: &SagaId) -> Result<u64, Self::Error>;
 
+    /// Get the last reset point event ID for a saga.
+    ///
+    /// Reset points allow optimizing replay by starting from the last
+    /// marked point instead of from the beginning of the saga.
+    ///
+    /// # Arguments
+    ///
+    /// * `saga_id` - The saga to check.
+    ///
+    /// # Returns
+    ///
+    /// `Some(event_id)` if a reset point exists, `None` otherwise.
+    async fn get_last_reset_point(&self, saga_id: &SagaId) -> Result<Option<u64>, Self::Error>;
+
     /// Check if a saga exists.
     ///
     /// # Arguments
