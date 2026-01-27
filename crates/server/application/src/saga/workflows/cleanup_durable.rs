@@ -430,7 +430,7 @@ impl Activity for PublishCleanupMetricsActivity {
     type Output = PublishCleanupMetricsOutput;
     type Error = CleanupWorkflowError;
 
-    async fn execute(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
+    async fn execute(&self, _input: Self::Input) -> Result<Self::Output, Self::Error> {
         // In production, this would publish metrics to a monitoring system
         Ok(PublishCleanupMetricsOutput {
             published: true,

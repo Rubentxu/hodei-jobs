@@ -625,7 +625,7 @@ mod tests {
     #[tokio::test]
     async fn test_execution_workflow_with_mock_port() {
         let port = Arc::new(MockJobExecutionPort);
-        let workflow = ExecutionWorkflow::new(port);
+        let _workflow = ExecutionWorkflow::new(port);
 
         // Test that workflow can be created with the mock port
         // Note: Full workflow execution requires ActivityRegistry setup

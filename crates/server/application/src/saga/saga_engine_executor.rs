@@ -140,7 +140,7 @@ where
 
                 // Wait for completion with timeout
                 match self.wait_for_completion(&saga_id).await {
-                    Ok(output) => {
+                    Ok(_output) => {
                         info!(
                             saga_id = %saga_id,
                             job_id = %job_id_str,

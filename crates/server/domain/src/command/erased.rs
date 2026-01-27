@@ -573,11 +573,10 @@ mod tests {
             futures::future::join_all(handles).await;
 
         // Verify all completed successfully
-        let mut total_increments = 0;
+        let _total_increments = 0;
         for result in results {
-            let inner = result.unwrap();
-            assert!(inner.is_ok());
-            total_increments += inner.unwrap();
+            let _inner = result.unwrap();
+            assert!(_inner.is_ok());
         }
 
         // Verify counter was incremented correctly (may have race conditions but still consistent)

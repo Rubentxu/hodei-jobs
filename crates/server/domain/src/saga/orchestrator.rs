@@ -1439,8 +1439,8 @@ mod tests {
         let attempts_0: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let attempts_1: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
 
-        struct RetryableCompensationStep {
-            step_number: usize,
+         struct RetryableCompensationStep {
+            _step_number: usize,
             fail_until_attempt: u32,
             attempts: Arc<Mutex<Vec<u32>>>,
         }
@@ -1521,12 +1521,12 @@ mod tests {
             fn steps(&self) -> Vec<Box<dyn SagaStep<Output = ()>>> {
                 vec![
                     Box::new(RetryableCompensationStep {
-                        step_number: 0,
+                        _step_number: 0,
                         fail_until_attempt: 2,
                         attempts: self.attempts_0.clone(),
                     }),
                     Box::new(RetryableCompensationStep {
-                        step_number: 1,
+                        _step_number: 1,
                         fail_until_attempt: 3,
                         attempts: self.attempts_1.clone(),
                     }),

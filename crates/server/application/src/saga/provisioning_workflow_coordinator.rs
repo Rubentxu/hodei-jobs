@@ -194,11 +194,11 @@ where
 
                     // Check workflow status
                     match self.engine.get_workflow_status(&saga_id).await {
-                        Ok(Some(status)) => match status {
-                            saga_engine_core::saga_engine::SagaExecutionResult::Completed {
-                                output,
+                         Ok(Some(status)) => match status {
+                             saga_engine_core::saga_engine::SagaExecutionResult::Completed {
+                                 output: _,
                                 ..
-                            } => {
+                             } => {
                                 info!(saga_id = %saga_id, "Workflow completed");
 
                                 // Parse output to get worker_id and otp_token

@@ -428,6 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_registry() {
+        #[allow(unused_assignments)]
         let registry: SagaEventHandlerRegistry<LoggingHandler> = SagaEventHandlerRegistry::new();
 
         // Verify registry can be created
