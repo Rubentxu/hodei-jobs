@@ -179,6 +179,7 @@ CLAUDE.md
 crates/shared/tests/
 context/
 docs/epics/
+!docs/manuales/
 infrastructure-migrations/
 migrations/
 proto/src/generated/hodei_descriptor.bin
