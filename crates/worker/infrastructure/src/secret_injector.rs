@@ -25,6 +25,8 @@ use thiserror::Error;
 use tracing::info;
 
 // Re-export SecretString for use in other modules
+#[cfg(test)]
+use secrecy::ExposeSecret;
 pub use secrecy::SecretString;
 
 /// Errors that can occur during secret injection

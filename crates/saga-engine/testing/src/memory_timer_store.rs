@@ -2,7 +2,9 @@
 
 use parking_lot::RwLock;
 use saga_engine_core::event::SagaId;
-use saga_engine_core::port::timer_store::{DurableTimer, TimerStatus, TimerStore, TimerStoreError};
+use saga_engine_core::port::timer_store::{
+    DurableTimer, TimerStatus, TimerStore, TimerStoreError, TimerType,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 

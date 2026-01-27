@@ -8,7 +8,7 @@ use saga_engine_core::port::replay::{HistoryReplayer, ReplayConfig, ReplayError,
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Simple state for testing replay operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
