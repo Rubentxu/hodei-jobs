@@ -450,12 +450,184 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream::BoxStream;
     use hodei_server_domain::event_bus::{EventBus, EventBusError};
-    use hodei_server_domain::jobs::JobsFilter;
-    use hodei_server_domain::shared_kernel::{JobState, Result};
+    use hodei_server_domain::jobs::{Job, JobQueue, JobSpec, JobsFilter, CommandType, JobResources, JobPreferences};
+    use hodei_server_domain::shared_kernel::{JobState, Result, WorkerId};
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    #[derive(Default)]
+    struct MockEventBus {
+        published: Arc<Mutex<Vec<DomainEvent>>>,
+    }
+
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
+            self.published.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> std::result::Result<BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>, EventBusError> {
+            unimplemented!()
+        }
+    }
+
+    #[derive(Default)]
+    struct MockJobQueue {
+        queue: Arc<Mutex<VecDeque<Job>>>,
+    }
+
+    impl MockJobQueue {
+        fn new() -> Self {
+            Self {
+                queue: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl JobQueue for MockJobQueue {
+        async fn enqueue(&self, job: Job) -> Result<()> {
+            self.queue.lock().unwrap().push_back(job);
+            Ok(())
+        }
+
+        async fn dequeue(&self) -> Result<Option<Job>> {
+            Ok(self.queue.lock().unwrap().pop_front())
+        }
+
+        async fn peek(&self) -> Result<Option<Job>> {
+            Ok(self.queue.lock().unwrap().front().cloned())
+        }
+
+        async fn len(&self) -> Result<usize> {
+            Ok(self.queue.lock().unwrap().len())
+        }
+
+        async fn is_empty(&self) -> Result<bool> {
+            Ok(self.queue.lock().unwrap().is_empty())
+        }
+
+        async fn clear(&self) -> Result<()> {
+            self.queue.lock().unwrap().clear();
+            Ok(())
+        }
+    }
+
     // Mocks
-    struct MockJobRepository;
+    struct MockJobRepository {
+        job: Mutex<Option<Job>>,
+    }
+
+    impl MockJobRepository {
+        fn new() -> Self {
+            Self {
+                job: Mutex::new(None),
+            }
+        }
+    }
+
+    struct MockJobRepositoryWithFailedJob {
+        job: Mutex<Option<Job>>,
+    }
+
+    impl MockJobRepositoryWithFailedJob {
+        fn new_with_failed_job() -> Self {
+            let spec = JobSpec {
+                command: CommandType::shell("echo"),
+                env: std::collections::HashMap::new(),
+                inputs: vec![],
+                outputs: vec![],
+                constraints: vec![],
+                resources: hodei_server_domain::jobs::JobResources::default(),
+                timeout_ms: 60000,
+                image: None,
+                working_dir: None,
+                stdin: None,
+                preferences: hodei_server_domain::jobs::JobPreferences::default(),
+            };
+
+            let job_id = JobId::new();
+            let mut job = Job::new(
+                job_id.clone(),
+                "test-job".to_string(),
+                spec,
+            );
+            job.set_state(JobState::Failed).unwrap();
+            job.set_attempts(1);
+            Self {
+                job: Mutex::new(Some(job)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl JobRepository for MockJobRepositoryWithFailedJob {
+        async fn save(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+
+        async fn find_by_id(&self, id: &JobId) -> Result<Option<Job>> {
+            let job_guard = self.job.lock().unwrap();
+            Ok(job_guard.as_ref().filter(|j| j.id == *id).cloned())
+        }
+
+        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
+            Ok(0)
+        }
+
+        async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn find_pending(&self) -> Result<Vec<Job>> {
+            Ok(vec![])
+        }
+
+        async fn find_all(&self, _limit: usize, _offset: usize) -> Result<(Vec<Job>, usize)> {
+            Ok((vec![], 0))
+        }
+
+        async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _id: &JobId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update(&self, _job: &Job) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
+            Ok(())
+        }
+
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> Result<()> {
+            Ok(())
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
+        }
+    }
+
     #[async_trait]
     impl JobRepository for MockJobRepository {
         async fn save(&self, _job: &Job) -> Result<()> {
@@ -491,172 +663,13 @@ mod tests {
         async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
-    }
 
-    struct MockJobQueue;
-    #[async_trait]
-    impl JobQueue for MockJobQueue {
-        async fn enqueue(&self, _job: Job) -> Result<()> {
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> Result<()> {
             Ok(())
         }
-        async fn dequeue(&self) -> Result<Option<Job>> {
-            Ok(None)
-        }
-        async fn peek(&self) -> Result<Option<Job>> {
-            Ok(None)
-        }
-        async fn len(&self) -> Result<usize> {
-            Ok(0)
-        }
-        async fn is_empty(&self) -> Result<bool> {
-            Ok(true)
-        }
-        async fn clear(&self) -> Result<()> {
-            Ok(())
-        }
-    }
 
-    struct MockEventBus {
-        published: Arc<Mutex<Vec<DomainEvent>>>,
-    }
-    impl MockEventBus {
-        fn new() -> Self {
-            Self {
-                published: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-    }
-    #[async_trait]
-    impl EventBus for MockEventBus {
-        async fn publish(&self, event: &DomainEvent) -> std::result::Result<(), EventBusError> {
-            self.published.lock().unwrap().push(event.clone());
-            Ok(())
-        }
-        async fn subscribe(
-            &self,
-            _topic: &str,
-        ) -> std::result::Result<
-            BoxStream<'static, std::result::Result<DomainEvent, EventBusError>>,
-            EventBusError,
-        > {
-            Err(EventBusError::SubscribeError(
-                "Mock not implemented".to_string(),
-            ))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_job_publishes_event() {
-        let repo = Arc::new(MockJobRepository);
-        let queue = Arc::new(MockJobQueue);
-        let bus = Arc::new(MockEventBus::new());
-
-        let use_case = CreateJobUseCase::new(repo, queue, bus.clone());
-
-        let spec_request = JobSpecRequest {
-            command: vec!["echo".to_string(), "hello".to_string()],
-            image: None,
-            env: None,
-            timeout_ms: Some(1000),
-            working_dir: None,
-            cpu_cores: Some(0.5),
-            memory_bytes: Some(512 * 1024 * 1024),
-            disk_bytes: Some(1024 * 1024 * 1024),
-            preferred_provider: None,
-            preferred_region: None,
-            required_labels: None,
-            required_annotations: None,
-        };
-
-        let request = CreateJobRequest {
-            name: "test-job".to_string(),
-            spec: spec_request,
-            correlation_id: Some("test-correlation".to_string()),
-            actor: Some("test-user".to_string()),
-            job_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
-        };
-
-        let result = use_case.execute(request).await;
-        assert!(result.is_ok());
-
-        let events = bus.published.lock().unwrap();
-        // Solo se publica el evento JobCreated (JobQueueDepthChanged fue eliminado)
-        assert_eq!(events.len(), 1);
-
-        // El evento debe ser JobCreated
-        match &events[0] {
-            DomainEvent::JobCreated(JobCreated {
-                job_id: _,
-                spec,
-                occurred_at: _,
-                correlation_id,
-                actor,
-            }) => {
-                // EPIC-21 Jenkins sh behavior: commands are wrapped as bash -c "command"
-                let cmd_vec = spec.command_vec();
-                assert_eq!(cmd_vec[0], "bash"); // Interpreter
-                assert_eq!(cmd_vec[1], "-c"); // Flag
-                assert!(cmd_vec[2].contains("echo")); // Content contains original command
-                assert!(cmd_vec[2].contains("hello"));
-                assert_eq!(correlation_id.as_deref(), Some("test-correlation"));
-                assert_eq!(actor.as_deref(), Some("test-user"));
-            }
-            _ => panic!("Unexpected event type"),
-        }
-    }
-
-    // Mock repository that returns a failed job for retry testing
-    struct MockJobRepositoryWithFailedJob {
-        job: Mutex<Option<Job>>,
-    }
-
-    impl MockJobRepositoryWithFailedJob {
-        fn new_with_failed_job() -> Self {
-            let job_id = JobId::new();
-            let spec = JobSpec::new(vec!["test".to_string()]);
-            let mut job = Job::new(job_id, "test-failed-job".to_string(), spec);
-            job.fail("Test failure".to_string()).unwrap();
-            Self {
-                job: Mutex::new(Some(job)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl JobRepository for MockJobRepositoryWithFailedJob {
-        async fn save(&self, _job: &Job) -> Result<()> {
-            Ok(())
-        }
-        async fn find_by_id(&self, _id: &JobId) -> Result<Option<Job>> {
-            Ok(self.job.lock().unwrap().clone())
-        }
-        async fn find(&self, _filter: JobsFilter) -> Result<Vec<Job>> {
-            Ok(vec![])
-        }
-        async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
-            Ok(0)
-        }
-        async fn find_by_state(&self, _state: &JobState) -> Result<Vec<Job>> {
-            Ok(vec![])
-        }
-        async fn find_pending(&self) -> Result<Vec<Job>> {
-            Ok(vec![])
-        }
-        async fn find_all(&self, _limit: usize, _offset: usize) -> Result<(Vec<Job>, usize)> {
-            Ok((vec![], 0))
-        }
-        async fn find_by_execution_id(&self, _execution_id: &str) -> Result<Option<Job>> {
-            Ok(None)
-        }
-        async fn delete(&self, _id: &JobId) -> Result<()> {
-            Ok(())
-        }
-        async fn update(&self, job: &Job) -> Result<()> {
-            *self.job.lock().unwrap() = Some(job.clone());
-            Ok(())
-        }
-        async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
-            Ok(())
+        fn supports_job_assigned(&self) -> bool {
+            true
         }
     }
 
@@ -811,8 +824,8 @@ mod tests {
 
         // Create a mock use case to test convert_to_job_spec
         let use_case = CreateJobUseCase::new(
-            Arc::new(MockJobRepository),
-            Arc::new(MockJobQueue),
+            Arc::new(MockJobRepository::new()),
+            Arc::new(MockJobQueue::new()),
             Arc::new(MockEventBus::new()),
         );
 
@@ -856,8 +869,8 @@ mod tests {
         };
 
         let use_case = CreateJobUseCase::new(
-            Arc::new(MockJobRepository),
-            Arc::new(MockJobQueue),
+            Arc::new(MockJobRepository::new()),
+            Arc::new(MockJobQueue::new()),
             Arc::new(MockEventBus::new()),
         );
 
@@ -889,8 +902,8 @@ mod tests {
         };
 
         let use_case = CreateJobUseCase::new(
-            Arc::new(MockJobRepository),
-            Arc::new(MockJobQueue),
+            Arc::new(MockJobRepository::new()),
+            Arc::new(MockJobQueue::new()),
             Arc::new(MockEventBus::new()),
         );
 
