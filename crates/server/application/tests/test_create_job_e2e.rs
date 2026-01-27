@@ -7,7 +7,7 @@ use hodei_server_domain::JobCreated;
 use hodei_server_domain::event_bus::{EventBus, EventBusError};
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::jobs::{Job, JobQueue, JobRepository};
-use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState};
+use hodei_server_domain::shared_kernel::{DomainError, JobId, JobState, WorkerId};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -151,6 +151,14 @@ impl JobRepository for MockJobRepository {
 
     async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<(), DomainError> {
         Ok(())
+    }
+
+    async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    fn supports_job_assigned(&self) -> bool {
+        true
     }
 }
 

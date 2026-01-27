@@ -15,7 +15,7 @@
 use chrono::Utc;
 use hodei_server_domain::events::DomainEvent;
 use hodei_server_domain::outbox::{OutboxEventInsert, OutboxRepository};
-use hodei_server_domain::shared_kernel::JobId;
+use hodei_server_domain::shared_kernel::{JobId, WorkerId};
 use hodei_shared::states::{JobState, SchedulingFailureReason};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -413,12 +413,19 @@ mod tests {
         ) -> std::result::Result<(Vec<Job>, usize), DomainError> {
             Ok((vec![], 0))
         }
-        async fn find_by_execution_id(
-            &self,
-            _execution_id: &str,
-        ) -> std::result::Result<Option<Job>, DomainError> {
+
+        async fn find_by_execution_id(&self, _execution_id: &str) -> std::result::Result<Option<Job>, DomainError> {
             Ok(None)
         }
+
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> std::result::Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
+        }
+
         async fn update(&self, _job: &Job) -> std::result::Result<(), DomainError> {
             Ok(())
         }

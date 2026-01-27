@@ -258,6 +258,14 @@ mod tests {
         async fn update(&self, _job: &Job) -> std::result::Result<(), DomainError> {
             Ok(())
         }
+
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> std::result::Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
+        }
     }
 
     // Mock outbox repository for testing
@@ -370,7 +378,7 @@ mod tests {
 
         let job_id = JobId::new();
         let worker_id = WorkerId::new();
-        let provider_id = ProviderId::new();
+        let _provider_id = ProviderId::new();
 
         // Event with max retries reached
         let event = DomainEvent::JobDispatchFailed {

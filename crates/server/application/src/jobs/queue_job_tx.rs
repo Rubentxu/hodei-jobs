@@ -302,7 +302,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use hodei_server_domain::jobs::{Job, JobRepository, JobRepositoryTx, JobsFilter};
-    use hodei_server_domain::shared_kernel::JobState;
+    use hodei_server_domain::shared_kernel::{JobState, WorkerId};
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
@@ -354,7 +354,16 @@ mod tests {
         async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
+
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> Result<()> {
+            Ok(())
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
+        }
     }
+
 
     #[async_trait::async_trait]
     impl JobRepositoryTx for MockJobRepositoryTx {

@@ -429,7 +429,21 @@ mod tests {
         async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
+
+        async fn assign_worker(&self, job_id: &JobId, worker_id: &WorkerId) -> Result<()> {
+            if let Some(_job) = self.jobs.write().await.get_mut(job_id) {
+                // worker_id field does not exist on Job, skip assignment
+                Ok(())
+            } else {
+                Err(DomainError::JobNotFound { job_id: job_id.clone() })
+            }
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
+        }
     }
+
 
     struct MockJobQueue {
         queue: Arc<Mutex<VecDeque<Job>>>,

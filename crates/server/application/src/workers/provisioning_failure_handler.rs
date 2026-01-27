@@ -424,6 +424,14 @@ mod tests {
         async fn update_state(&self, _job_id: &JobId, _new_state: JobState) -> Result<()> {
             Ok(())
         }
+
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> Result<()> {
+            Ok(())
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
+        }
     }
 
     struct MockOutboxRepository;

@@ -40,7 +40,7 @@ pub mod testing {
 pub mod test_infrastructure {
     use hodei_server_domain::jobs::{Job, JobQueue, JobRepository, JobsFilter};
     use hodei_server_domain::providers::config::{ProviderConfig, ProviderConfigRepository};
-    use hodei_server_domain::shared_kernel::{JobId, JobState, ProviderId, Result};
+    use hodei_server_domain::shared_kernel::{JobId, JobState, ProviderId, Result, WorkerId};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -119,6 +119,18 @@ pub mod test_infrastructure {
         async fn count_by_state(&self, _state: &JobState) -> Result<u64> {
             let jobs = self.jobs.lock().unwrap();
             Ok(jobs.values().filter(|j| j.state() == _state).count() as u64)
+        }
+
+        async fn assign_worker(&self, _job_id: &JobId, _worker_id: &WorkerId) -> Result<()> {
+            let mut jobs = self.jobs.lock().unwrap();
+            if let Some(_job) = jobs.get_mut(_job_id) {
+                // worker_id field does not exist on Job, skip assignment
+            }
+            Ok(())
+        }
+
+        fn supports_job_assigned(&self) -> bool {
+            true
         }
     }
 
@@ -320,7 +332,7 @@ pub mod test_infrastructure {
             let workers = self.workers.lock().unwrap();
             Ok(workers
                 .values()
-                .find(|w| w.current_job_id() == Some(job_id))
+                .find(|w| w.current_job_id().as_ref() == Some(&job_id))
                 .cloned())
         }
 
