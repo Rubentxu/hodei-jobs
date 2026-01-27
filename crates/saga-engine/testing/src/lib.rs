@@ -15,6 +15,9 @@ pub mod test_database;
 pub mod test_nats;
 
 #[cfg(feature = "test-postgres")]
+pub mod test_postgres;
+
+#[cfg(feature = "test-postgres")]
 pub mod integration;
 
 pub use in_memory_replayer::{InMemoryReplayer, TestState};
