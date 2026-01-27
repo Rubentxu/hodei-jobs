@@ -17,7 +17,6 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{Level, Span, debug, error, info, span};
 use tracing_subscriber::layer::SubscriberExt;

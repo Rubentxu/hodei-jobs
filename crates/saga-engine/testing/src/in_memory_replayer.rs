@@ -3,13 +3,12 @@
 //! This module provides a simple, in-memory implementation of [`HistoryReplayer`]
 //! for unit testing and development.
 
-use async_trait::async_trait;
 use saga_engine_core::event::{HistoryEvent, SagaId};
 use saga_engine_core::port::replay::{HistoryReplayer, ReplayConfig, ReplayError, ReplayResult};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Simple state for testing replay operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,7 +139,7 @@ impl HistoryReplayer<TestState> for InMemoryReplayer {
         &self,
         _saga_id: &SagaId,
         _from_event_id: u64,
-        config: Option<ReplayConfig>,
+        _config: Option<ReplayConfig>,
     ) -> Result<ReplayResult<TestState>, ReplayError<Self::Error>> {
         let replay_start = Instant::now();
 
@@ -158,7 +157,7 @@ impl HistoryReplayer<TestState> for InMemoryReplayer {
         config: Option<ReplayConfig>,
     ) -> Result<ReplayResult<TestState>, ReplayError<Self::Error>> {
         let replay_start = Instant::now();
-        let config = config.unwrap_or_default();
+        let _config = config.unwrap_or_default();
 
         Ok(ReplayResult {
             state: TestState::new(saga_id.clone()),

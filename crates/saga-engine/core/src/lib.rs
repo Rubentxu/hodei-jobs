@@ -37,6 +37,8 @@
 //! let decoded = codec.decode(&encoded).unwrap();
 //! ```
 
+#![allow(deprecated)]
+
 pub mod activity_registry;
 pub mod codec;
 pub mod compensation;

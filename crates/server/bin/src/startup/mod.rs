@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Startup module - orchestrates application initialization.
 //!
 //! Uses exponential backoff for resilient connections to database and NATS.

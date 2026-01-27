@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! gRPC Services Initialization Module
 //!
 //! Responsible for instantiating and configuring all gRPC services with their dependencies.

@@ -18,7 +18,7 @@
 //! cargo test --package saga-engine-testing --test test_postgres
 //! ```
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::OnceLock;
 
 use saga_engine_core::{

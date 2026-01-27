@@ -19,6 +19,7 @@
 //! preventing exposure in core dumps or memory forensics.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::info;

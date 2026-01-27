@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::SystemTime;
-use thiserror::Error;
 
 /// Central error type for saga-engine
 #[derive(Debug)]

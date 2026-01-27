@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Saga Orchestrator
 //!
 //! Core orchestrator for executing sagas with automatic compensation.
@@ -1439,7 +1441,7 @@ mod tests {
         let attempts_0: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let attempts_1: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
 
-         struct RetryableCompensationStep {
+        struct RetryableCompensationStep {
             _step_number: usize,
             fail_until_attempt: u32,
             attempts: Arc<Mutex<Vec<u32>>>,

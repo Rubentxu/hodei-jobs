@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //!
 //! # Synchronous Workflow Executor
 //!

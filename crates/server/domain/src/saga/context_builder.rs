@@ -8,6 +8,9 @@
 //! As of Phase 5 cleanup, SagaContextV2 is now the sole implementation.
 //! The V1 code has been removed and feature flags are no longer needed.
 
+#[cfg(test)]
+use chrono::Utc;
+
 use crate::saga::{
     SagaId, SagaType,
     saga_context::{
@@ -15,7 +18,6 @@ use crate::saga::{
     },
     types::SagaContext,
 };
-use chrono::Utc;
 
 /// Creates a new saga context using V2 implementation
 ///

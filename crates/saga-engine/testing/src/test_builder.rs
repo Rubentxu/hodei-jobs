@@ -48,9 +48,9 @@ use std::sync::{Arc, RwLock};
 
 use saga_engine_core::event::SagaId;
 use saga_engine_core::workflow::{
-    Activity, ActivityOptions, DurableWorkflow, WorkflowConfig, WorkflowContext,
+    Activity, DurableWorkflow, WorkflowConfig, WorkflowContext,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Configuration for test execution
 #[derive(Debug, Clone, Default)]
@@ -564,7 +564,7 @@ where
     }
 
     /// Verify that the workflow output matches expected value
-    pub fn assert_output(&self, expected: &W::Output)
+    pub fn assert_output(&self, _expected: &W::Output)
     where
         W::Output: PartialEq + Debug,
     {

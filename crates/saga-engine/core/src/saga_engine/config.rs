@@ -4,7 +4,6 @@
 //! The Saga Engine uses PostgreSQL LISTEN/NOTIFY by default for reactive
 //! event processing without polling.
 
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Reactive mode configuration for the Saga Engine.

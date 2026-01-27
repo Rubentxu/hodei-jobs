@@ -23,33 +23,47 @@ use hodei_jobs::scheduler_service_client::SchedulerServiceClient;
 /// Connection state
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionState {
+    /// Not connected, initial state
     Disconnected,
+    /// Connection attempt in progress
     Connecting,
+    /// Successfully connected
     Connected,
+    /// Attempting to reconnect after disconnect
     Reconnecting,
 }
 
 /// Errors for gRPC client operations
 #[derive(Debug, Error)]
 pub enum GrpcClientError {
+    /// Connection to server failed
     #[error("Connection failed")]
     Connection,
 
+    /// gRPC request failed with status
     #[error("Request failed: {0}")]
     Request(#[from] Status),
 
+    /// Service is not available
     #[error("Service unavailable: {service}")]
-    ServiceUnavailable { service: &'static str },
+    ServiceUnavailable {
+        /// Name of the unavailable service
+        service: &'static str,
+    },
 
+    /// Invalid server address format
     #[error("Invalid address format")]
     InvalidAddress,
 
+    /// Not connected to server when request was made
     #[error("Not connected to server")]
     NotConnected,
 
+    /// Maximum reconnection attempts exceeded
     #[error("Max reconnection attempts exceeded")]
     MaxRetriesExceeded,
 
+    /// Connection attempt timed out
     #[error("Connection timeout")]
     Timeout,
 }

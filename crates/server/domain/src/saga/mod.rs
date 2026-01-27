@@ -86,6 +86,7 @@ pub use audit_trail::{
 };
 
 // Re-exports from orchestrator module
+#[allow(deprecated)]
 pub use orchestrator::{InMemorySagaOrchestrator, OrchestratorError, SagaOrchestratorConfig};
 
 // Re-exports from provisioning module
