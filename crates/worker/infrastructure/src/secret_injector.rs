@@ -19,15 +19,12 @@
 //! preventing exposure in core dumps or memory forensics.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::info;
 
 // Re-export SecretString for use in other modules
 pub use secrecy::SecretString;
-// Import ExposeSecret trait for accessing secret values
-use secrecy::ExposeSecret;
 
 /// Errors that can occur during secret injection
 #[derive(Debug, Error)]

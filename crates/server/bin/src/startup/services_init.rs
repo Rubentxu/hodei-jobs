@@ -87,8 +87,10 @@ pub struct GrpcServices {
 }
 
 /// Job coordinator shutdown handle for graceful shutdown
+#[derive(Debug)]
 pub struct CoordinatorShutdownHandle {
-    shutdown_tx: watch::Sender<()>,
+    /// Sender for shutdown signal (reserved for future use)
+    _shutdown_tx: watch::Sender<()>,
 }
 
 /// Initialize all gRPC services with their dependencies.
@@ -379,7 +381,9 @@ pub async fn start_job_coordinator(
 
     info!("✓ Job coordinator started in REACTIVE mode (EPIC-32)");
 
-    CoordinatorShutdownHandle { shutdown_tx }
+    CoordinatorShutdownHandle {
+        _shutdown_tx: shutdown_tx,
+    }
 }
 
 /// Dispatch loop that polls and dispatches jobs
@@ -408,9 +412,12 @@ async fn start_dispatch_loop(dispatcher: Arc<JobDispatcher>, mut shutdown_rx: wa
 }
 
 /// Shutdown handle for saga consumers
+#[derive(Debug)]
 pub struct SagaConsumersShutdownHandle {
-    pub cancellation_consumer_stop: tokio::sync::broadcast::Sender<()>,
-    pub cleanup_consumer_stop: tokio::sync::broadcast::Sender<()>,
+    /// Sender for cancellation consumer stop signal (reserved for future use)
+    pub _cancellation_consumer_stop: tokio::sync::broadcast::Sender<()>,
+    /// Sender for cleanup consumer stop signal (reserved for future use)
+    pub _cleanup_consumer_stop: tokio::sync::broadcast::Sender<()>,
 }
 
 /// Start all saga consumers (Cancellation, Cleanup)
@@ -477,14 +484,16 @@ pub async fn start_saga_consumers(
     info!("✅ CleanupSagaConsumer started");
 
     SagaConsumersShutdownHandle {
-        cancellation_consumer_stop: cancellation_stop_tx,
-        cleanup_consumer_stop: cleanup_stop_tx,
+        _cancellation_consumer_stop: cancellation_stop_tx,
+        _cleanup_consumer_stop: cleanup_stop_tx,
     }
 }
 
 /// Shutdown handle for background tasks
+#[derive(Debug)]
 pub struct BackgroundTasksShutdownHandle {
-    pub timeout_checker_stop: tokio::sync::broadcast::Sender<()>,
+    /// Sender for timeout checker stop signal (reserved for future use)
+    pub _timeout_checker_stop: tokio::sync::broadcast::Sender<()>,
 }
 
 /// Start SagaPoller for processing pending sagas
@@ -660,13 +669,15 @@ pub async fn start_background_tasks(
     info!("✅ TimeoutChecker started");
 
     BackgroundTasksShutdownHandle {
-        timeout_checker_stop: timeout_stop_tx,
+        _timeout_checker_stop: timeout_stop_tx,
     }
 }
 
 /// Shutdown handle for ReactiveSagaProcessor
+#[derive(Debug)]
 pub struct ReactiveSagaProcessorShutdownHandle {
-    pub stop_tx: tokio::sync::watch::Sender<()>,
+    /// Sender for stop signal (reserved for future use)
+    pub _stop_tx: tokio::sync::watch::Sender<()>,
 }
 
 /// Start ReactiveSagaProcessor for reactive saga processing
@@ -723,12 +734,14 @@ pub async fn start_reactive_saga_processor(
     });
 
     info!("✅ ReactiveSagaProcessor started (reactive + safety net polling)");
-    ReactiveSagaProcessorShutdownHandle { stop_tx }
+    ReactiveSagaProcessorShutdownHandle { _stop_tx: stop_tx }
 }
 
 /// Shutdown handle for WorkerEphemeralTerminatingConsumer
+#[derive(Debug)]
 pub struct WorkerEphemeralTerminatingConsumerShutdownHandle {
-    pub stop_tx: tokio::sync::broadcast::Sender<()>,
+    /// Sender for stop signal (reserved for future use)
+    pub _stop_tx: tokio::sync::broadcast::Sender<()>,
 }
 
 /// Start WorkerEphemeralTerminatingConsumer for reactive worker cleanup
@@ -771,12 +784,14 @@ pub async fn start_worker_ephemeral_terminating_consumer(
     });
 
     info!("✅ WorkerEphemeralTerminatingConsumer started");
-    Ok(WorkerEphemeralTerminatingConsumerShutdownHandle { stop_tx })
+    Ok(WorkerEphemeralTerminatingConsumerShutdownHandle { _stop_tx: stop_tx })
 }
 
 /// Shutdown handle for CommandRelay
+#[derive(Debug)]
 pub struct CommandRelayShutdownHandle {
-    pub stop_tx: tokio::sync::broadcast::Sender<()>,
+    /// Sender for stop signal (reserved for future use)
+    pub _stop_tx: tokio::sync::broadcast::Sender<()>,
 }
 
 /// Start Command Relay for publishing commands to NATS
@@ -801,7 +816,7 @@ pub async fn start_command_relay(
 
     // We return the sender so the caller can trigger shutdown
     Ok(CommandRelayShutdownHandle {
-        stop_tx: shutdown_signal_sender,
+        _stop_tx: shutdown_signal_sender,
     })
 }
 

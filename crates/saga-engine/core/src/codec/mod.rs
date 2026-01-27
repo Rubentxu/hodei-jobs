@@ -31,7 +31,7 @@
 
 use super::event::{CURRENT_EVENT_VERSION, HistoryEvent};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// Error type for codec operations.
 #[derive(Debug, thiserror::Error)]
