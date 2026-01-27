@@ -19,6 +19,9 @@ sqlx = { workspace = true, features = ["postgres", "runtime-tokio-rustls", "json
 # Async runtime
 tokio = { workspace = true, features = ["sync", "macros", "time"] }
 
+# Futures for blocking operations
+futures = { workspace = true }
+
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -36,6 +39,9 @@ sha2 = { workspace = true, features = ["asm"] }
 
 # Utilities
 parking_lot = { workspace = true }
+
+# Prometheus metrics
+prometheus = { workspace = true }
 
 # Tracing for logging
 tracing = { workspace = true }

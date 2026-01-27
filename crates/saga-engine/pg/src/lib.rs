@@ -32,23 +32,34 @@ pub mod replayer;
 pub mod timer_processor;
 pub mod timer_store;
 
+// Watchdog module for health monitoring and auto-recovery
+pub mod watchdog;
+
 // Engine module (Application Layer - Facade)
 pub mod engine;
 
 pub use engine::{PostgresSagaEngine, PostgresSagaEngineConfig};
 pub use event_store::{PostgresEventStore, PostgresEventStoreConfig};
 pub use notify_listener::{
-    CHANNEL_SAGA_EVENTS, CHANNEL_SAGA_SIGNALS, CHANNEL_SAGA_SNAPSHOTS, CHANNEL_SAGA_TIMERS,
-    NotificationReceiver, NotifyListener, PgNotifyListener,
+     CHANNEL_SAGA_EVENTS, CHANNEL_SAGA_SIGNALS, CHANNEL_SAGA_SNAPSHOTS, CHANNEL_SAGA_TIMERS,
+     NotificationReceiver, NotifyListener, PgNotifyListener,
 };
 pub use outbox::{OutboxRepositoryConfig, PostgresOutboxRepository};
 pub use reactive_timer_scheduler::{ReactiveTimerScheduler, ReactiveTimerSchedulerConfig};
 pub use reactive_worker::{
-    ReactiveWorker, ReactiveWorkerConfig, WorkerError as ReactiveWorkerError,
+     ReactiveWorker, ReactiveWorkerConfig, WorkerError as ReactiveWorkerError,
 };
 pub use replayer::PostgresReplayer;
 pub use timer_processor::{
-    ProcessingMode, TimerProcessor, TimerProcessorError, TimerProcessorMetrics,
-    TimerProcessorMetricsSnapshot,
+     ProcessingMode, TimerProcessor, TimerProcessorError, TimerProcessorMetrics,
+     TimerProcessorMetricsSnapshot,
 };
 pub use timer_store::{PostgresTimerStore, PostgresTimerStoreConfig};
+pub use watchdog::{
+     DeadlockDetector, DeadlockDetectorConfig, DeadlockStatus,
+     HealthAggregator, HealthCheck, HealthEndpoint, HealthInfo, HealthResponse,
+     HealthStatus, LivenessResponse, OverallHealthStatus, ReadinessCheck,
+     ReadinessResponse, SagaEngineWatchdog, StallDetector, StallDetectorConfig,
+     StallStatus, WatchdogAction, WatchdogActionMetrics, WatchdogComponent,
+     WatchdogConfig, WatchdogMetrics,
+};
