@@ -663,9 +663,13 @@ impl PostgresEventStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use saga_engine_core::event::{EventCategory, EventType, SagaId};
-    use serde_json::json;
+    use saga_engine_core::event::{EventCategory, EventType, HistoryEvent, SagaId};
+    use sqlx::postgres::{PgPool, PgRow};
+    use sqlx::{ConnectOptions, Error as SqlxError, Row, Transaction};
+    use std::fmt::{Debug, Formatter};
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use uuid::Uuid;
 
     // These tests require a PostgreSQL instance
     // They can be run with: cargo test --features postgres_test
