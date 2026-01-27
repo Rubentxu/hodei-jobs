@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::health_check::{HealthCheck, HealthInfo, HealthStatus, MetricValue};
+use super::health_check::{HealthInfo, HealthStatus};
 
 /// Overall health status for the entire saga engine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,16 +211,14 @@ impl HealthAggregator {
             return;
         }
 
-        let mut has_healthy = false;
         let mut has_degraded = false;
         let mut has_unhealthy = false;
 
         for health in cache.values() {
             match health.status {
-                HealthStatus::Healthy => has_healthy = true,
                 HealthStatus::Degraded => has_degraded = true,
                 HealthStatus::Unhealthy => has_unhealthy = true,
-                HealthStatus::Unknown => {}
+                HealthStatus::Healthy | HealthStatus::Unknown => {}
             }
         }
 

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::health_check::{HealthCheck, HealthInfo};
+use super::health_check::{HealthCheck, HealthInfo, HealthStatus};
 
 /// Result of a recovery attempt
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,8 +142,8 @@ mod tests {
         assert!(matches!(RecoveryResult::NotSupported, RecoveryResult::NotSupported));
     }
 
-    #[test]
-    fn test_mock_component_health() {
+    #[tokio::test]
+    async fn test_mock_component_health() {
         let component = MockComponent {
             name: "TestComponent".to_string(),
             healthy: true,
@@ -156,8 +156,8 @@ mod tests {
         assert_eq!(component.last_activity().await, component.last_activity);
     }
 
-    #[test]
-    fn test_mock_component_is_stalled() {
+    #[tokio::test]
+    async fn test_mock_component_is_stalled() {
         let mut component = MockComponent {
             name: "TestComponent".to_string(),
             healthy: true,

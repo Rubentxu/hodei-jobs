@@ -2,10 +2,10 @@
 //!
 //! Prometheus metrics for watchdog system monitoring.
 
-use prometheus::{Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, Opts, Registry};
-use std::sync::Arc;
+use prometheus::{Counter, CounterVec, Gauge, Histogram, HistogramOpts, Opts, Registry};
 
 /// Watchdog metrics for Prometheus monitoring
+#[derive(Clone)]
 pub struct WatchdogMetrics {
     /// Total health checks performed
     pub health_checks_total: Counter,
@@ -30,53 +30,45 @@ pub struct WatchdogMetrics {
 impl WatchdogMetrics {
     /// Register metrics with Prometheus registry
     pub fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
-        let health_checks_total = Counter::new(Opts::new(
+        let health_checks_total = Counter::new(
             "saga_watchdog_health_checks_total",
             "Total health checks performed by watchdog",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let unhealthy_components_total = Counter::new(Opts::new(
+        let unhealthy_components_total = Counter::new(
             "saga_watchdog_unhealthy_components_total",
             "Total unhealthy components detected",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let restarts_total = Counter::new(Opts::new(
+        let restarts_total = Counter::new(
             "saga_watchdog_restarts_total",
             "Total component restarts performed",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let recovery_failures_total = Counter::new(Opts::new(
+        let recovery_failures_total = Counter::new(
             "saga_watchdog_recovery_failures_total",
             "Total recovery failures",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let stalls_detected_total = Counter::new(Opts::new(
+        let stalls_detected_total = Counter::new(
             "saga_watchdog_stalls_detected_total",
             "Total stalls detected",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let deadlocks_detected_total = Counter::new(Opts::new(
+        let deadlocks_detected_total = Counter::new(
             "saga_watchdog_deadlocks_detected_total",
             "Total deadlocks detected",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let healthy_components = Gauge::new(Opts::new(
+        let healthy_components = Gauge::new(
             "saga_watchdog_healthy_components",
             "Current number of healthy components",
-        ))?
-        .register(registry)?;
+        )?;
 
-        let unhealthy_components = Gauge::new(Opts::new(
+        let unhealthy_components = Gauge::new(
             "saga_watchdog_unhealthy_components",
             "Current number of unhealthy components",
-        ))?
-        .register(registry)?;
+        )?;
 
         let health_check_duration = Histogram::with_opts(
             HistogramOpts::new(
@@ -84,8 +76,17 @@ impl WatchdogMetrics {
                 "Health check duration in seconds",
             )
             .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-        )?
-        .register(registry)?;
+        )?;
+
+        registry.register(Box::new(health_checks_total.clone()))?;
+        registry.register(Box::new(unhealthy_components_total.clone()))?;
+        registry.register(Box::new(restarts_total.clone()))?;
+        registry.register(Box::new(recovery_failures_total.clone()))?;
+        registry.register(Box::new(stalls_detected_total.clone()))?;
+        registry.register(Box::new(deadlocks_detected_total.clone()))?;
+        registry.register(Box::new(healthy_components.clone()))?;
+        registry.register(Box::new(unhealthy_components.clone()))?;
+        registry.register(Box::new(health_check_duration.clone()))?;
 
         Ok(Self {
             health_checks_total,
@@ -132,17 +133,31 @@ impl WatchdogMetrics {
 
     /// Update healthy components gauge
     pub fn set_healthy_components(&self, count: u64) {
-        self.healthy_components.set(count as i64);
+        self.healthy_components.set(count as f64);
     }
 
     /// Update unhealthy components gauge
     pub fn set_unhealthy_components(&self, count: u64) {
-        self.unhealthy_components.set(count as i64);
+        self.unhealthy_components.set(count as f64);
     }
 
     /// Record health check duration
     pub fn observe_health_check_duration(&self, duration_seconds: f64) {
         self.health_check_duration.observe(duration_seconds);
+    }
+}
+
+impl Default for WatchdogMetrics {
+    fn default() -> Self {
+        let registry = Registry::new();
+        Self::register(&registry).expect("Failed to create default metrics")
+    }
+}
+
+impl Default for WatchdogActionMetrics {
+    fn default() -> Self {
+        let registry = Registry::new();
+        Self::register(&registry).expect("Failed to create default action metrics")
     }
 }
 
@@ -166,14 +181,12 @@ pub struct WatchdogActionMetrics {
 impl WatchdogActionMetrics {
     /// Register action metrics with Prometheus registry
     pub fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
-        let actions = CounterVec::new(
-            Opts::new(
-                "saga_watchdog_actions_total",
-                "Total watchdog actions performed",
-            ),
-            &["action"],
-        )?
-        .register(registry)?;
+        let opts = Opts::new(
+            "saga_watchdog_actions_total",
+            "Total watchdog actions performed",
+        );
+        let actions = CounterVec::new(opts, &["action"])?;
+        registry.register(Box::new(actions.clone()))?;
 
         Ok(Self { actions })
     }
@@ -232,14 +245,14 @@ mod tests {
         metrics.observe_health_check_duration(0.5);
 
         // Verify metrics were recorded
-        assert_eq!(metrics.health_checks_total.get(), 1);
-        assert_eq!(metrics.unhealthy_components_total.get(), 1);
-        assert_eq!(metrics.restarts_total.get(), 1);
-        assert_eq!(metrics.recovery_failures_total.get(), 1);
-        assert_eq!(metrics.stalls_detected_total.get(), 1);
-        assert_eq!(metrics.deadlocks_detected_total.get(), 1);
-        assert_eq!(metrics.healthy_components.get(), 5);
-        assert_eq!(metrics.unhealthy_components.get(), 2);
+        assert_eq!(metrics.health_checks_total.get(), 1.0);
+        assert_eq!(metrics.unhealthy_components_total.get(), 1.0);
+        assert_eq!(metrics.restarts_total.get(), 1.0);
+        assert_eq!(metrics.recovery_failures_total.get(), 1.0);
+        assert_eq!(metrics.stalls_detected_total.get(), 1.0);
+        assert_eq!(metrics.deadlocks_detected_total.get(), 1.0);
+        assert_eq!(metrics.healthy_components.get(), 5.0);
+        assert_eq!(metrics.unhealthy_components.get(), 2.0);
     }
 
     #[test]
@@ -275,8 +288,8 @@ mod tests {
             .with_label_values(&["component_restarted"])
             .get();
 
-        assert_eq!(health_check_count, Some(1));
-        assert_eq!(unhealthy_count, Some(1));
-        assert_eq!(restarted_count, Some(1));
+        assert_eq!(health_check_count, 1.0);
+        assert_eq!(unhealthy_count, 1.0);
+        assert_eq!(restarted_count, 1.0);
     }
 }

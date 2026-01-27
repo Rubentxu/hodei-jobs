@@ -36,7 +36,7 @@ impl HealthStatus {
 }
 
 /// Metric value for health information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum MetricValue {
     String(String),

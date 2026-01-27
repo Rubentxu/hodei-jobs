@@ -3,19 +3,17 @@
 //! Auto-polling watchdog that monitors components, detects failures,
 //! and performs automatic recovery.
 
-use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use futures::executor;
 
 use super::aggregator::{HealthAggregator, OverallHealthStatus};
 use super::deadlock_detector::{DeadlockDetector, DeadlockDetectorConfig, DeadlockStatus};
-use super::health_check::{HealthCheck, HealthInfo, HealthStatus};
 use super::metrics::{WatchdogAction, WatchdogActionMetrics, WatchdogMetrics};
 use super::stall_detector::{StallDetector, StallDetectorConfig, StallStatus};
 use super::watchdog_component::{WatchdogComponent};
@@ -279,7 +277,7 @@ impl SagaEngineWatchdog {
         let mut restart_actions = Vec::new();
 
         // Check all components
-        for component in components {
+        for component in &components {
             let component_name = component.name().to_string();
 
             // Get health info
@@ -354,6 +352,17 @@ impl SagaEngineWatchdog {
         // Update aggregator with health status
         aggregator.update_all_components(health_updates).await;
 
+        // Update metrics before moving components
+        let total_components = components.len();
+        let healthy_count = components
+            .iter()
+            .filter(|c| executor::block_on(c.is_healthy()))
+            .count();
+        let unhealthy_count = total_components - healthy_count;
+
+        metrics.set_healthy_components(healthy_count as u64);
+        metrics.set_unhealthy_components(unhealthy_count as u64);
+
         // Perform restarts if auto-restart enabled
         if config.auto_restart {
             Self::perform_restarts(
@@ -365,20 +374,6 @@ impl SagaEngineWatchdog {
                 action_metrics,
             ).await;
         }
-
-        // Update metrics
-        let total_components = components.len();
-        let healthy_count = components
-            .iter()
-            .filter(|c| {
-                let health = c.health();
-                executor::block_on(health).unwrap_or(false)
-            })
-            .count();
-        let unhealthy_count = total_components - healthy_count;
-
-        metrics.set_healthy_components(healthy_count as u64);
-        metrics.set_unhealthy_components(unhealthy_count as u64);
     }
 
     /// Internal: Perform component restarts
@@ -481,8 +476,8 @@ mod tests {
         assert_eq!(watchdog.components.len(), 0);
     }
 
-    #[test]
-    fn test_watchdog_aggregator() {
+    #[tokio::test]
+    async fn test_watchdog_aggregator() {
         let watchdog = SagaEngineWatchdog::with_defaults();
         let aggregator = watchdog.aggregator();
 
@@ -493,7 +488,7 @@ mod tests {
     async fn test_watchdog_start_stop() {
         let watchdog = SagaEngineWatchdog::with_defaults();
 
-        let shutdown_rx = watchdog.start().await.unwrap();
+        let _shutdown_rx = watchdog.start().await.unwrap();
 
         assert!(watchdog.is_running());
 

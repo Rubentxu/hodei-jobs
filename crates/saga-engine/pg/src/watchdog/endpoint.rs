@@ -6,8 +6,10 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use super::aggregator::{HealthAggregator, ReadinessCheck};
+use super::aggregator::HealthAggregator;
+use crate::watchdog::health_check::MetricValue;
 
 /// Overall health response
 #[derive(Debug, Serialize)]
@@ -85,7 +87,8 @@ impl HealthEndpoint {
     /// Returns overall health status and per-component health
     pub async fn get_health(&self) -> HealthResponse {
         let overall_status = self.aggregator.get_overall_status().await;
-        let components = self.aggregator.get_all_components().await;
+        let components: Vec<crate::watchdog::health_check::HealthInfo> =
+            self.aggregator.get_all_components().await;
         let timestamp = Utc::now();
 
         // Calculate overall uptime (simplified)
@@ -104,18 +107,10 @@ impl HealthEndpoint {
                     .into_iter()
                     .map(|(k, v)| {
                         let json_value = match v {
-                            super::super::health_check::MetricValue::String(s) => {
-                                serde_json::json!(s)
-                            }
-                            super::super::health_check::MetricValue::Int64(i) => {
-                                serde_json::json!(i)
-                            }
-                            super::super::health_check::MetricValue::Float64(f) => {
-                                serde_json::json!(f)
-                            }
-                            super::super::health_check::MetricValue::Boolean(b) => {
-                                serde_json::json!(b)
-                            }
+                            MetricValue::String(s) => serde_json::json!(s),
+                            MetricValue::Int64(i) => serde_json::json!(i),
+                            MetricValue::Float64(f) => serde_json::json!(f),
+                            MetricValue::Boolean(b) => serde_json::json!(b),
                         };
                         (k, json_value)
                     })
@@ -145,7 +140,8 @@ impl HealthEndpoint {
     /// Returns true if all readiness checks passed.
     pub async fn get_readiness(&self) -> ReadinessResponse {
         let ready = self.aggregator.is_ready().await;
-        let checks = self.aggregator.get_readiness_checks().await;
+        let checks: Vec<super::aggregator::ReadinessCheck> =
+            self.aggregator.get_readiness_checks().await;
         let timestamp = Utc::now();
 
         let check_responses: Vec<ReadinessCheckResponse> = checks
@@ -180,6 +176,7 @@ impl HealthEndpoint {
 mod tests {
     use super::*;
     use crate::watchdog::health_check::HealthStatus;
+    use crate::watchdog::aggregator::ReadinessCheck;
 
     #[tokio::test]
     async fn test_health_endpoint_get_health() {
