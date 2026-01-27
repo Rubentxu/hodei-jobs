@@ -1,7 +1,7 @@
-//! # Timer Processor with Dual Mode Support
+//! # Timer Processor
 //!
-//! This module provides a unified timer processor that supports both reactive
-//! (LISTEN/NOTIFY) and polling modes with automatic fallback for reliability.
+//! This module provides a reactive timer processor that uses PostgreSQL
+//! LISTEN/NOTIFY for real-time timer processing without polling.
 
 use crate::notify_listener::NotifyListener;
 use saga_engine_core::event::{EventId, EventType, HistoryEvent, SagaId};
@@ -44,8 +44,6 @@ where
 pub enum ProcessingMode {
     /// Reactive mode using LISTEN/NOTIFY
     Reactive,
-    /// Polling mode (fallback)
-    Polling,
     /// Uninitialized
     Uninitialized,
 }
@@ -55,10 +53,6 @@ pub enum ProcessingMode {
 pub enum ModeChangeEvent {
     /// Switched to reactive mode
     SwitchedToReactive,
-    /// Switched to polling mode
-    SwitchedToPolling,
-    /// Reactive mode failed, switching to polling
-    ReactiveFailed { error: String },
 }
 
 /// Metrics for timer processing.
@@ -68,47 +62,24 @@ pub struct TimerProcessorMetrics {
     timers_processed: AtomicU64,
     /// Timers processed in reactive mode
     reactive_timers: AtomicU64,
-    /// Timers processed in polling mode
-    polling_timers: AtomicU64,
     /// Mode switches to reactive
     switches_to_reactive: AtomicU64,
-    /// Mode switches to polling (fallback)
-    switches_to_polling: AtomicU64,
-    /// Reactive mode failures
-    reactive_failures: AtomicU64,
 }
 
 impl TimerProcessorMetrics {
     /// Increment timers processed counter.
     pub fn record_timer(&self, mode: ProcessingMode) {
         self.timers_processed.fetch_add(1, Ordering::Relaxed);
-        match mode {
-            ProcessingMode::Reactive => {
-                self.reactive_timers.fetch_add(1, Ordering::Relaxed);
-            }
-            ProcessingMode::Polling => {
-                self.polling_timers.fetch_add(1, Ordering::Relaxed);
-            }
-            ProcessingMode::Uninitialized => {}
+        if matches!(mode, ProcessingMode::Reactive) {
+            self.reactive_timers.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Record mode switch.
     pub fn record_mode_switch(&self, new_mode: ProcessingMode) {
-        match new_mode {
-            ProcessingMode::Reactive => {
-                self.switches_to_reactive.fetch_add(1, Ordering::Relaxed);
-            }
-            ProcessingMode::Polling => {
-                self.switches_to_polling.fetch_add(1, Ordering::Relaxed);
-            }
-            ProcessingMode::Uninitialized => {}
+        if matches!(new_mode, ProcessingMode::Reactive) {
+            self.switches_to_reactive.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    /// Record reactive failure.
-    pub fn record_reactive_failure(&self) {
-        self.reactive_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get snapshot of metrics.
@@ -116,10 +87,7 @@ impl TimerProcessorMetrics {
         TimerProcessorMetricsSnapshot {
             timers_processed: self.timers_processed.load(Ordering::Relaxed),
             reactive_timers: self.reactive_timers.load(Ordering::Relaxed),
-            polling_timers: self.polling_timers.load(Ordering::Relaxed),
             switches_to_reactive: self.switches_to_reactive.load(Ordering::Relaxed),
-            switches_to_polling: self.switches_to_polling.load(Ordering::Relaxed),
-            reactive_failures: self.reactive_failures.load(Ordering::Relaxed),
         }
     }
 }
@@ -154,14 +122,8 @@ where
     ) -> Result<(), TimerProcessorError> {
         self.notify_listener = notify_listener;
 
-        match self.config.reactive_mode {
-            ReactiveMode::Enabled => self.start_reactive_mode().await,
-            #[allow(deprecated)]
-            ReactiveMode::Polling => {
-                warn!("Polling mode is deprecated. Consider using reactive mode.");
-                self.start_polling_mode().await
-            }
-        }
+        // Reactive mode is the only supported mode
+        self.start_reactive_mode().await
     }
 
     /// Start processing in reactive mode.
@@ -178,15 +140,6 @@ where
             self.spawn_reactive_processor(listener.clone());
         }
 
-        Ok(())
-    }
-
-    /// Start processing in polling mode.
-    async fn start_polling_mode(&mut self) -> Result<(), TimerProcessorError> {
-        info!("Starting TimerProcessor in polling mode");
-        self.current_mode = ProcessingMode::Polling;
-        self.metrics.record_mode_switch(ProcessingMode::Polling);
-        self.spawn_polling_processor();
         Ok(())
     }
 
@@ -224,37 +177,6 @@ where
                         }
                     }
                 }
-            }
-        });
-
-        self.processor_handle = Some(handle);
-    }
-
-    /// Spawn polling timer processor task.
-    fn spawn_polling_processor(&mut self) {
-        let event_store = Arc::clone(&self.event_store);
-        let timer_store = Arc::clone(&self.timer_store);
-        let config = self.config.clone();
-        let metrics = Arc::clone(&self.metrics);
-        let shutdown = Arc::clone(&self.shutdown);
-        let poll_interval = Duration::from_secs(5);
-
-        let handle = tokio::spawn(async move {
-            let mut last_poll = std::time::Instant::now();
-
-            loop {
-                if shutdown.load(Ordering::Relaxed) {
-                    info!("Shutdown signal received in polling timer processor");
-                    break;
-                }
-
-                let elapsed = std::time::Instant::now().duration_since(last_poll);
-                if elapsed < poll_interval {
-                    tokio::time::sleep(poll_interval - elapsed).await;
-                }
-                last_poll = std::time::Instant::now();
-
-                Self::poll_and_process_timers(&event_store, &timer_store, &config, &metrics).await;
             }
         });
 
@@ -348,76 +270,6 @@ where
         Ok(())
     }
 
-    /// Poll and process expired timers.
-    async fn poll_and_process_timers(
-        event_store: &Arc<E>,
-        timer_store: &Arc<ES>,
-        config: &SagaEngineConfig,
-        metrics: &Arc<TimerProcessorMetrics>,
-    ) {
-        let timers = match timer_store.get_expired_timers(100).await {
-            Ok(t) => t,
-            Err(e) => {
-                error!("Failed to get expired timers: {:?}", e);
-                return;
-            }
-        };
-
-        for timer in timers {
-            if let Err(e) =
-                Self::process_expired_timer(event_store, timer_store, config, &timer, metrics).await
-            {
-                error!("Error processing timer {}: {:?}", timer.timer_id, e);
-            }
-        }
-    }
-
-    /// Process a single expired timer.
-    async fn process_expired_timer(
-        event_store: &Arc<E>,
-        timer_store: &Arc<ES>,
-        config: &SagaEngineConfig,
-        timer: &DurableTimer,
-        metrics: &Arc<TimerProcessorMetrics>,
-    ) -> Result<(), TimerProcessorError> {
-        let claimed = match timer_store
-            .claim_timers(
-                &[timer.timer_id.clone()],
-                &format!("timer-processor-{}", config.worker_id),
-            )
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => return Err(TimerProcessorError::TimerStore(format!("{:?}", e))),
-        };
-
-        if claimed.is_empty() {
-            return Ok(());
-        }
-
-        let timer_fired_event = HistoryEvent::builder()
-            .event_id(EventId(0))
-            .event_type(EventType::TimerFired)
-            .saga_id(timer.saga_id.clone())
-            .payload(serde_json::json!({
-                "timer_id": timer.timer_id,
-                "timer_type": timer.timer_type.as_str(),
-                "fire_at": timer.fire_at.to_rfc3339(),
-                "worker_id": config.worker_id,
-            }))
-            .build();
-
-        if let Err(e) = event_store
-            .append_event(&timer.saga_id, u64::MAX, &timer_fired_event)
-            .await
-        {
-            return Err(TimerProcessorError::EventStore(format!("{:?}", e)));
-        }
-
-        metrics.record_timer(ProcessingMode::Polling);
-        Ok(())
-    }
-
     /// Stop the processor.
     pub async fn stop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -445,14 +297,8 @@ pub struct TimerProcessorMetricsSnapshot {
     pub timers_processed: u64,
     /// Timers processed in reactive mode
     pub reactive_timers: u64,
-    /// Timers processed in polling mode
-    pub polling_timers: u64,
     /// Mode switches to reactive
     pub switches_to_reactive: u64,
-    /// Mode switches to polling (fallback)
-    pub switches_to_polling: u64,
-    /// Reactive mode failures
-    pub reactive_failures: u64,
 }
 
 /// Timer processor errors.
@@ -494,10 +340,6 @@ mod tests {
     #[test]
     fn test_mode_change_event_variants() {
         let _ = ModeChangeEvent::SwitchedToReactive;
-        let _ = ModeChangeEvent::SwitchedToPolling;
-        let _ = ModeChangeEvent::ReactiveFailed {
-            error: "test error".to_string(),
-        };
     }
 
     #[test]
@@ -505,23 +347,7 @@ mod tests {
         let snapshot = TimerProcessorMetricsSnapshot::default();
         assert_eq!(snapshot.timers_processed, 0);
         assert_eq!(snapshot.reactive_timers, 0);
-        assert_eq!(snapshot.polling_timers, 0);
         assert_eq!(snapshot.switches_to_reactive, 0);
-        assert_eq!(snapshot.switches_to_polling, 0);
-        assert_eq!(snapshot.reactive_failures, 0);
-    }
-
-    #[tokio::test]
-    async fn test_config_builder_pattern() {
-        let config = SagaEngineConfig::new()
-            .with_worker_id(5)
-            .with_total_shards(10)
-            .with_max_events_before_snapshot(50)
-            .with_auto_compensation(false);
-
-        assert_eq!(config.worker_id, 5);
-        assert_eq!(config.total_shards, 10);
-        assert!(!config.auto_compensation);
     }
 
     #[tokio::test]
@@ -531,6 +357,5 @@ mod tests {
 
         assert_eq!(snapshot.timers_processed, 0);
         assert_eq!(snapshot.reactive_timers, 0);
-        assert_eq!(snapshot.polling_timers, 0);
     }
 }

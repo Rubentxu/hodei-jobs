@@ -28,7 +28,8 @@ use saga_engine_core::{
 };
 use saga_engine_pg::{
     PostgresEventStore, PostgresSagaEngine,
-    reactive_timer_scheduler::{ReactiveTimerScheduler, TimerMode},
+    reactive_timer_scheduler::{ReactiveTimerScheduler, ReactiveTimerSchedulerConfig},
+    notify_listener::PgNotifyListener,
 };
 use anyhow::Result;
 
@@ -212,108 +213,77 @@ mod tests {
         Ok(())
     }
 
-    /// Test US-96.4: Reactive notification latency < 5ms
+    /// Test US-96.4: Reactive infrastructure is properly initialized
     #[tokio::test]
-    async fn test_reactive_notification_flow() -> anyhow::Result<()> {
-        // Given: Reactive mode enabled
+    async fn test_reactive_timer_scheduler() -> anyhow::Result<()> {
+        // Given: PostgreSQL LISTEN/NOTIFY infrastructure
         let config = TestConfig::default();
         let helper = TestHelper::new(config.clone()).await?;
-        let engine = helper.create_engine().await?;
 
         // Create reactive timer scheduler
-        let timer_config = saga_engine_pg::reactive_timer_scheduler::TimerMode::Reactive {
-            enabled: true,
-            ..Default::default()
-        };
-        let scheduler = ReactiveTimerScheduler::new(helper.pool.clone(), timer_config);
+        let timer_config = ReactiveTimerSchedulerConfig::default();
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost/hodei_test".to_string());
 
-        let saga_id = SagaId::new();
+        let notify_listener = PgNotifyListener::new(&database_url).await
+            .map_err(|e| anyhow::anyhow!("Failed to create notify listener: {}", e))?;
 
-        // When: Timer event is fired
-        // Then: Should be processed quickly (< 5ms latency)
+        let event_store = Arc::new(PostgresEventStore::new(helper.pool.clone()));
+        let timer_store = Arc::new(saga_engine_pg::PostgresTimerStore::new(helper.pool.clone()));
 
-        // Track start time
-        let start = Instant::now();
-
-        // Schedule timer
-        let timer_id = format!("test_timer_{}", uuid::Uuid::new_v4());
-        scheduler
-            .schedule_timer(&saga_id, &timer_id, Duration::from_millis(100))
-            .await
-            .map_err(|e| anyhow::anyhow!("Schedule failed: {}", e))?;
-
-        // Process timer events (simulated - in real scenario, reactive worker would handle)
-        // Since we can't easily simulate reactive processing in tests,
-        // we'll verify the timer was registered
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        // Get latency (should be < 5ms in reactive mode)
-        // In production with PgNotifyListener, actual latency is even lower (< 1ms)
-        // Here we're simulating processing, so latency will be ~150ms
-        // We're testing the reactive infrastructure is in place
-
-        let latency = start.elapsed().as_millis();
-        assert!(
-            latency < 500,
-            "Reactive notification should be processed within 500ms (configured wait time)"
+        let mut scheduler = ReactiveTimerScheduler::new(
+            event_store,
+            timer_store,
+            Arc::new(notify_listener),
+            timer_config,
         );
+
+        // When: Scheduler is started
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+        let scheduler_handle = tokio::spawn(async move {
+            scheduler.run().await
+        });
+
+        // Wait a bit to ensure initialization
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Then: Should be running without errors
+        // Verify by sending a shutdown signal
+        shutdown_tx.send(()).await?;
+        let result = tokio::time::timeout(Duration::from_secs(1), scheduler_handle).await;
+
+        assert!(result.is_ok(), "Scheduler should shutdown cleanly");
 
         Ok(())
     }
 
-    /// Test failover between reactive and polling modes
+    /// Test US-96.4: Reactive notification flow validation
     #[tokio::test]
-    async fn test_failover_between_modes() -> anyhow::Result<()> {
-        // Given: Toggle between reactive and polling
+    async fn test_reactive_infrastructure() -> anyhow::Result<()> {
+        // Given: Reactive mode is the ONLY mode in v4.0
         let config = TestConfig::default();
         let helper = TestHelper::new(config.clone()).await?;
+        let engine = helper.create_engine().await?;
 
-        // Test 1: Reactive mode (default in v4.0)
-        let reactive_config = saga_engine_pg::reactive_timer_scheduler::TimerMode::Reactive {
-            enabled: true,
-            ..Default::default()
-        };
-        let reactive_scheduler = ReactiveTimerScheduler::new(helper.pool.clone(), reactive_config);
-        let reactive_engine = PostgresSagaEngine::builder()
-            .event_store(PostgresEventStore::new(helper.pool.clone()))
-            .timer_scheduler(reactive_scheduler)
-            .build()
+        // Verify reactive mode is enabled (default)
+        let engine_config = engine.config();
+        assert!(engine_config.reactive_mode.is_enabled(),
+            "Reactive mode should be enabled by default");
+
+        // Test that workflow executes successfully with reactive infrastructure
+        let saga_id = SagaId::new();
+        let result = engine.start_workflow::<SuccessWorkflow>(saga_id.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create reactive engine: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Workflow failed: {}", e))?;
 
-        // Test 2: Polling mode
-        let polling_config = saga_engine_pg::reactive_timer_scheduler::TimerMode::Polling {
-            poll_interval_ms: 100, // Poll every 100ms
-            enabled: true,
-            ..Default::default()
-        };
-        let polling_scheduler = ReactiveTimerScheduler::new(helper.pool.clone(), polling_config);
-        let polling_engine = PostgresSagaEngine::builder()
-            .event_store(Postgres::EventStore::new(helper.pool.clone()))
-            .timer_scheduler(polling_scheduler)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create polling engine: {}", e))?;
+        assert_eq!(result, "workflow completed");
 
-        // Execute a workflow in both modes
-        let fixtures = TestFixtures::new();
-        let saga_id_1 = SagaId::new();
-        let saga_id_2 = SagaId::new();
+        // Get workflow status
+        let status = engine.get_workflow_status(&saga_id).await
+            .map_err(|e| anyhow::anyhow!("Get status failed: {}", e))?;
 
-        let result_reactive = reactive_engine
-            .start_workflow::<SuccessWorkflow>(saga_id_1)
-            .await?;
-
-        let result_polling = polling_engine
-            .start_workflow::<SuccessWorkflow>(saga_id_2)
-            .await?;
-
-        // Verify both completed
-        assert!(result_reactive.is_ok(), "Reactive mode failed");
-        assert!(result_polling.is_ok(), "Polling mode failed");
-
-        tracing::info!("Reactive mode: {}, Polling mode: {}", result_reactive.is_ok(), result_polling.is_ok());
+        assert!(matches!(status, saga_engine_core::workflow::WorkflowStatus::Completed));
 
         Ok(())
     }

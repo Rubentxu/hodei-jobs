@@ -7,6 +7,7 @@
 //!
 //! Run with: cargo bench --bench
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
@@ -16,8 +17,7 @@ use saga_engine_core::{
 };
 use saga_engine_pg::{
     event_store::{EventStore, PostgresEventStore},
-    reactive_worker::{ReactiveWorker, WorkerConfig},
-    reactive_timer_scheduler::{ReactiveTimerScheduler, TimerMode},
+    reactive_timer_scheduler::{ReactiveTimerScheduler, ReactiveTimerSchedulerConfig},
 };
 
 /// Number of events for batch benchmarks
@@ -65,10 +65,6 @@ fn benchmark_saga_engine(c: &mut Criterion) {
 
         setup_and_bench(c, "replay_with_reset_point", &pool, &event_store, |b| {
             b.iter(|| replay_with_reset_point(&event_store));
-        });
-
-        setup_and_bench(c, "timer_processing_reactive", &pool, |b| {
-            b.iter(|| process_timers_reactive(&pool));
         });
 
         // Cleanup
@@ -123,25 +119,6 @@ async fn replay_with_reset_point(event_store: &PostgresEventStore) {
             .map(|_| ())
             .unwrap_or_else(|_| ())
     );
-}
-
-/// Benchmark: Timer processing with reactive mode
-async fn process_timers_reactive(pool: &sqlx::postgres::PgPool) {
-    let config = WorkerConfig::default();
-    let timer_scheduler = ReactiveTimerScheduler::new(pool.clone(), config);
-    let worker = ReactiveWorker::new(pool.clone(), timer_scheduler, config);
-
-    // Process 100 timers
-    let saga_id = SagaId::new();
-    for i in 0..100 {
-        let timer_id = format!("timer_{}", i);
-        let _ = black_box(
-            worker
-                .process_timer_event(&saga_id, &timer_id)
-                .await
-                .unwrap_or_else(|_| ())
-        );
-    }
 }
 
 /// Helper: Setup and bench with proper cleanup

@@ -8,31 +8,24 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Reactive mode configuration for the Saga Engine.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReactiveMode {
-    /// Fully reactive mode using PostgreSQL LISTEN/NOTIFY
-    Enabled,
-    /// Legacy polling mode (deprecated, will be removed)
-    #[deprecated(since = "0.87.0", note = "Use ReactiveMode::Enabled instead")]
-    Polling,
-}
+///
+/// The Saga Engine operates exclusively in reactive mode using PostgreSQL
+/// LISTEN/NOTIFY for real-time event processing without polling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReactiveMode;
 
 impl Default for ReactiveMode {
     fn default() -> Self {
-        ReactiveMode::Enabled
+        ReactiveMode
     }
 }
 
 impl ReactiveMode {
     /// Check if reactive mode is enabled
+    ///
+    /// Always returns true as reactive mode is the only supported mode.
     pub fn is_enabled(&self) -> bool {
-        matches!(self, ReactiveMode::Enabled)
-    }
-
-    /// Check if polling mode is enabled (for deprecation warnings)
-    #[allow(deprecated)]
-    pub fn is_polling(&self) -> bool {
-        matches!(self, ReactiveMode::Polling)
+        true
     }
 }
 
@@ -58,7 +51,7 @@ pub struct SagaEngineConfig {
 impl Default for SagaEngineConfig {
     fn default() -> Self {
         Self {
-            reactive_mode: ReactiveMode::Enabled,
+            reactive_mode: ReactiveMode,
             max_events_before_snapshot: 100,
             default_activity_timeout: Duration::from_secs(300),
             workflow_task_queue: "saga-workflows".to_string(),
@@ -76,14 +69,18 @@ impl SagaEngineConfig {
     }
 
     /// Set reactive mode
-    pub fn with_reactive_mode(mut self, mode: ReactiveMode) -> Self {
-        self.reactive_mode = mode;
+    ///
+    /// Reactive mode is the only supported mode. This method is provided
+    /// for API compatibility and does not change behavior.
+    pub fn with_reactive_mode(mut self, _mode: ReactiveMode) -> Self {
         self
     }
 
     /// Enable reactive mode
-    pub fn with_reactive(mut self) -> Self {
-        self.reactive_mode = ReactiveMode::Enabled;
+    ///
+    /// Reactive mode is the only supported mode. This method is provided
+    /// for API compatibility and does not change behavior.
+    pub fn with_reactive(self) -> Self {
         self
     }
 
@@ -313,11 +310,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_reactive_mode_polling() {
-        let mode = ReactiveMode::Polling;
-        assert!(!mode.is_enabled());
-        assert!(mode.is_polling());
+    fn test_reactive_mode_always_enabled() {
+        let mode = ReactiveMode;
+        assert!(mode.is_enabled());
     }
 
     #[test]
