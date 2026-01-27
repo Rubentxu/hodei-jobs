@@ -333,6 +333,7 @@ impl<O, E: std::error::Error + Send + Sync> CompensationWorkflowResult<O, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[tokio::test]
     async fn test_track_step() {

@@ -16,6 +16,8 @@
 //! ctx.add_trace_id("request_id", "abc123");
 //! ```
 
+#![allow(unexpected_cfgs)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{Level, Span, debug, error, info, span};

@@ -71,7 +71,7 @@ impl SagaEngineConfig {
     ///
     /// Reactive mode is the only supported mode. This method is provided
     /// for API compatibility and does not change behavior.
-    pub fn with_reactive_mode(mut self, _mode: ReactiveMode) -> Self {
+    pub fn with_reactive_mode(self, _mode: ReactiveMode) -> Self {
         self
     }
 
