@@ -1144,6 +1144,9 @@ impl DurableWorkflow for MyWorkflow {
 | **Hexagonal Architecture** | 2024-Q1 | Layered, SOA | Testabilidad, flexibilidad |
 | **Optimistic Locking** | 2024-Q1 | Pessimistic locking | Mejor throughput, menor contención |
 | **Timer Store en Postgres** | 2024-Q2 | Redis, In-memory | Consistencia con event store |
+| **Error Bridge** | 2026-Q1 | Sin clasificación | Decisiones automáticas de retry |
+| **Event Upcasting** | 2026-Q1 | Sin versionado | Evolución de esquemas segura |
+| **Adaptive Snapshots** | 2026-Q1 | Fixed interval | Optimización automática |
 
 ### 13.2 Trade-offs Documentados
 
@@ -1164,6 +1167,156 @@ impl DurableWorkflow for MyWorkflow {
 ### Decisión: Event Sourcing
 - El negocio requiere compliance
 - El overhead es aceptable para el valor agregado
+```
+
+---
+
+## 14. Características Avanzadas v4.1
+
+Esta sección documenta las nuevas características introducidas en la versión 4.1.
+
+### 14.1 Error Bridge: Arquitectura de Manejo de Errores
+
+El Error Bridge proporciona clasificación automática de errores para decisiones del Saga Engine:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        ERROR BRIDGE ARCHITECTURE                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌──────────────┐     ┌────────────────┐     ┌──────────────────────┐     │
+│   │   Activity   │────▶│ExecutionError  │────▶│  ErrorDecision       │     │
+│   │   Execution  │     │   <E>          │     │  • Retry             │     │
+│   └──────────────┘     │  + attempts    │     │  • Compensate        │     │
+│                        │  + is_retry    │     │  • Fail              │     │
+│                        │  + timestamp   │     │  • Pause             │     │
+│                        └───────┬────────┘     └──────────────────────┘     │
+│                                │                                          │
+│                                ▼                                          │
+│                        ┌────────────────┐                                  │
+│                        │ ClassifiedError│                                  │
+│                        │   Trait        │                                  │
+│                        │  • category()  │                                  │
+│                        │  • behavior()  │                                  │
+│                        │  • is_retryable│                                  │
+│                        └───────┬────────┘                                  │
+│                                │                                          │
+│                                ▼                                          │
+│                        ┌────────────────┐                                  │
+│                        │ ErrorCategory  │                                  │
+│                        │  • Infrastructure │◀───── Retry automático       │
+│                        │  • Validation   │◀───── Fail inmediato          │
+│                        │  • Domain      │◀───── Compensar               │
+│                        │  • Transient   │◀───── RetryOnce                │
+│                        │  • Fatal       │◀───── Alert                    │
+│                        └────────────────┘                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Performance considerations**:
+- `#[repr(u8)]` para operaciones zero-cost
+- Sin heap allocations en hot paths
+- Copy semantics para tipos pequeños
+- `const fn` para default behaviors
+
+### 14.2 Event Upcasting: Versionado de Esquemas
+
+Para sagas de larga duración donde el código evoluciona:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        EVENT UPCASTING FLOW                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Event Store                  Upcaster Registry                            │
+│   ┌─────────────┐              ┌─────────────────┐                          │
+│   │ v0 Event    │─────────────▶│ v0→v1 Upcaster  │                          │
+│   │ {old_field} │              │                 │                          │
+│   └─────────────┘              └────────┬────────┘                          │
+│                                         │                                   │
+│                                         ▼                                   │
+│   Event Store                  Upcaster Registry                            │
+│   ┌─────────────┐              ┌─────────────────┐                          │
+│   │ v1 Event    │◀─────────────│ v1→v2 Upcaster  │                          │
+│   │ {new_field} │              │                 │                          │
+│   └─────────────┘              └─────────────────┘                          │
+│                                                                             │
+│   Current Schema: v2                                                         │
+│   El upcasting es transparente para el código que consume los eventos       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Componentes clave**:
+- `EventUpcasterRegistry`: Registro de upcasters disponibles
+- `SimpleUpcaster<F>`: Upcaster funcional con closure
+- `CURRENT_EVENT_VERSION`: Constante con la versión actual
+- Chain support: Soporte para múltiples pasos de upgrade
+
+### 14.3 Adaptive Snapshots: Optimización Automática
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SNAPSHOT STRATEGY DECISION TREE                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│                    ┌─────────────────────┐                                  │
+│                    │ Saga Configuration  │                                  │
+│                    └──────────┬──────────┘                                  │
+│                               │                                             │
+│               ┌───────────────┼───────────────┐                             │
+│               ▼               ▼               ▼                             │
+│         ┌──────────┐    ┌──────────┐    ┌──────────┐                       │
+│         │  Short   │    │ Medium   │    │   Long   │                       │
+│         │ <10 steps│    │10-50 steps│   │50-200 steps│                      │
+│         └────┬─────┘    └────┬─────┘    └─────┬─────┘                       │
+│              │               │               │                              │
+│              ▼               ▼               ▼                              │
+│         ┌──────────┐    ┌──────────┐    ┌──────────┐                       │
+│         │Disabled  │    │ Count(20)│    │ Adaptive │                       │
+│         │  ⏱️0     │    │   ⏱️20   │    │ ⏱️100/60m│                       │
+│         └──────────┘    └──────────┘    └──────────┘                       │
+│                                                                             │
+│   Performance Impact:                                                       │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │  Sin snapshot: O(n) eventos para replay                              │  │
+│   │  Con snapshot: O(m) eventos donde m << n                             │  │
+│   │  Ejemplo: Saga con 1000 eventos → ~50 eventos después de snapshot    │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Estrategias disponibles**:
+
+| Estrategia | Parámetros | Caso de uso |
+|------------|------------|-------------|
+| `Disabled` | - | Sagas cortas (< 10 steps) |
+| `CountBased` | events: u64 | Sagas medianas |
+| `TimeBased` | minutes: u64 | Sagas con I/O pesado |
+| `EventBased` | events: &[&str] | Checkpoints específicos |
+| `Adaptive` | max_events, max_minutes | Sagas largas |
+
+### 14.4 Métricas y Observabilidad
+
+El Error Bridge incluye tracking de métricas:
+
+```rust
+// ErrorStats collection
+pub struct ErrorStats {
+    total_errors: u64,
+    by_category: [u64; 6],
+    total_retries: u64,
+    successful_retries: u64,
+    compensation_count: u64,
+    failure_count: u64,
+    manual_intervention_count: u64,
+}
+
+// Métricas calculables
+let retry_rate = stats.retry_success_rate();  // % de retries exitosos
+let failure_rate = stats.failure_rate();       // % de errores que fallaron
 ```
 
 ---

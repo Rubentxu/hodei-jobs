@@ -1918,7 +1918,186 @@ flowchart TD
     style H fill:#ffcdd2
 ```
 
-### 10.3 Checklist de Implementación
+### 10.3 Novedades v4.1: Error Bridge, Upcasting y Snapshots
+
+Saga Engine V4.1 introduce tres mejoras importantes para sistemas de producción.
+
+#### 10.3.1 Error Bridge: Clasificación Inteligente de Errores
+
+Permite al Saga Engine decidir automáticamente si reintentar, compensar o fallar:
+
+```rust
+use saga_engine_core::error::{
+    ErrorCategory, ErrorBehaviorWithConfig, ClassifiedError, ExecutionError,
+};
+
+// Errores de dominio con clasificación automática
+#[derive(Debug, thiserror::Error)]
+pub enum OrderError {
+    #[error("Insufficient funds: requested {requested}, available {available}")]
+    InsufficientFunds { requested: u64, available: u64 },
+
+    #[error("Inventory unavailable for SKU: {sku_id}")]
+    InventoryUnavailable { sku_id: String },
+
+    #[error("Validation failed: {reason}")]
+    ValidationFailed { reason: String },
+}
+
+impl ClassifiedError for OrderError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            OrderError::InsufficientFunds { .. } => ErrorCategory::Domain,
+            OrderError::InventoryUnavailable { .. } => ErrorCategory::Domain,
+            OrderError::ValidationFailed { .. } => ErrorCategory::Validation,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        // Comportamiento por defecto según la categoría
+        // Domain → SkipToCompensation
+        // Validation → Fail
+        default_behavior(self.category())
+    }
+}
+
+// Uso en el workflow
+async fn process_order_with_error_handling(
+    ctx: &WorkflowContext,
+) -> Result<(), OrderError> {
+    match ctx.execute_activity::<ProcessPaymentActivity, _>(
+        PaymentInput { amount: 100 }
+    ).await {
+        Ok(_) => Ok(()),
+        Err(exec_err) => {
+            // El engine decide automáticamente: retry, compensar o fail
+            match ErrorDecision::from_error(&exec_err) {
+                ErrorDecision::Retry => { /* reintentar */ }
+                ErrorDecision::Compensate => { /* ejecutar compensaciones */ }
+                ErrorDecision::Fail => { /* fail definitivo */ }
+                ErrorDecision::Pause => { /* esperar intervención */ }
+            }
+            Err(exec_err.error)
+        }
+    }
+}
+```
+
+**Matriz de decisiones**:
+
+| Categoría | Reintentar? | Acción del Saga |
+|-----------|-------------|-----------------|
+| Infrastructure | SÍ (automático) | Retry con backoff |
+| Validation | NO | Fail inmediato |
+| Domain | NO | Compensar |
+| TransientDomain | MAYBE | RetryOnce |
+| Fatal | NO | Fail + Alert |
+
+#### 10.3.2 Upcasting: Evolución de Esquemas de Eventos
+
+Para sagas largas que sobreviven a cambios de esquema:
+
+```rust
+use saga_engine_core::event::{
+    EventUpcaster, EventUpcasterRegistry, EventTypeId, SimpleUpcaster,
+};
+
+// Evento versión 1 (viejo)
+#[derive(Debug, Deserialize)]
+pub struct OrderCreatedV1 {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total: u64,
+}
+
+// Evento versión 2 (nuevo, con campo adicional)
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OrderCreatedV2 {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total: u64,
+    pub priority: String,        // Nuevo campo
+    pub shipping_address: String, // Nuevo campo
+}
+
+// Upcaster de v1 a v2
+pub struct OrderCreatedV1toV2;
+
+impl EventUpcaster for OrderCreatedV1toV2 {
+    fn from_version(&self) -> u32 { 1 }
+    fn to_version(&self) -> u32 { 2 }
+    fn event_type(&self) -> EventTypeId {
+        EventTypeId("order.created")
+    }
+
+    fn upcast(
+        &self,
+        _event_type: EventTypeId,
+        _version: u32,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, UpcastError> {
+        let v1: OrderCreatedV1 = serde_json::from_value(payload.clone())
+            .map_err(|_| UpcastError::DeserializationFailed)?;
+
+        let v2 = OrderCreatedV2 {
+            order_id: v1.order_id,
+            customer_id: v1.customer_id,
+            total: v1.total,
+            priority: "standard".to_string(),  // Default para eventos antiguos
+            shipping_address: "pending".to_string(),
+        };
+
+        Ok(serde_json::to_value(v2)?)
+    }
+}
+
+// Registro de upcasters
+pub fn create_upcaster_registry() -> EventUpcasterRegistry {
+    let mut registry = EventUpcasterRegistry::new();
+    registry.register(OrderCreatedV1toV2);
+    registry
+}
+```
+
+**Cadena de upcasting**: Puedes encadenar múltiples upcasters (v0→v1→v2→v3).
+
+#### 10.3.3 Snapshots: Optimización para Sagas Largas
+
+```rust
+use saga_engine_core::snapshot::{SnapshotStrategy, SagaSnapshotManager};
+
+// Para sagas cortas (< 10 steps): sin snapshots
+let short_saga_strategy = SnapshotStrategy::for_short_saga();
+
+// Para sagas medianas (10-50 steps): cada 20 eventos
+let medium_saga_strategy = SnapshotStrategy::for_medium_saga();
+
+// Para sagas largas (50-200 steps): adaptive
+let long_saga_strategy = SnapshotStrategy::for_long_saga();
+
+// Para sagas muy largas (> 200 steps): cada 50 eventos
+let very_long_saga_strategy = SnapshotStrategy::for_very_long_saga();
+
+// Para sagas con mucho I/O: basado en tiempo
+let io_heavy_strategy = SnapshotStrategy::for_io_heavy_saga();
+
+// Configuración por defecto (adaptive)
+let default_strategy = SnapshotStrategy::default();
+```
+
+**Recomendaciones por tipo de saga**:
+
+| Tipo de Saga | Estrategia | Razón |
+|--------------|------------|-------|
+| Corta (< 10 steps) | Disabled | Overhead innecesario |
+| Media (10-50 steps) | CountBased(20) | Buena relación |
+| Larga (50-200 steps) | Adaptive | Equilibrio óptimo |
+| Muy larga (> 200 steps) | CountBased(50) | Crítico para perf |
+| I/O Heavy | TimeBased(30) | Captura esperas |
+
+---
+
+### 10.4 Checklist de Implementación
 
 ```markdown
 ## Checklist para Implementar un Nuevo Workflow

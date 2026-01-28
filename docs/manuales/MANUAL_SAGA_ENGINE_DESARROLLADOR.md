@@ -1345,31 +1345,387 @@ let error = Error::activity_execution("Activity failed")
 // }
 ```
 
-### 10.4 Recuperación Automática
+---
 
-```mermaid
-flowchart TB
-    A[Error detectado] --> B{¿Es recuperable?}
-    B -->|Sí: Timeout| C[Esperar backoff]
-    B -->|Sí: Concurrency| D[Replay]
-    B -->|Sí: Transient| E[Retry]
-    B -->|No| F[Compensar]
-    
-    C --> G[Reintentar]
-    D --> G
-    E --> G
-    
-    G --> H{¿Éxito?}
-    H -->|Sí| I[Continuar]
-    H -->|No| B
-    
-    F --> J[Marcar como fallido]
-    J --> K[Alertar]
+## 10. Manejo de Errores v4.1: Error Bridge
+
+Saga Engine V4.1 introduce el **Error Bridge** para clasificación automática de errores.
+
+### 10.1 ErrorCategory: Clasificación de Errores
+
+```rust
+use saga_engine_core::error::{ErrorCategory, ClassifiedError, ErrorDecision};
+
+// Las 5 categorías de errores
+pub enum ErrorCategory {
+    /// Error de infraestructura (red, DB, timeout)
+    /// El engine reintentará automáticamente
+    Infrastructure = 1,
+
+    /// Error de validación (input inválido)
+    /// No se reintenta, fail inmediato
+    Validation = 2,
+
+    /// Error de dominio (regla de negocio violada)
+    /// No se reintenta, se ejecuta compensación
+    Domain = 3,
+
+    /// Error transitorio de dominio (puede funcionar después)
+    /// Un solo retry después de delay
+    TransientDomain = 4,
+
+    /// Error fatal (bugs, estados inválidos)
+    /// Fail completo, requiere atención
+    Fatal = 5,
+}
+```
+
+### 10.2 ClassifiedError Trait: Tu Error en el Engine
+
+```rust
+use saga_engine_core::error::{ErrorCategory, ErrorBehaviorWithConfig, ClassifiedError};
+
+// ⭐ Tu error de dominio implementa el trait
+#[derive(Debug, thiserror::Error)]
+pub enum PaymentError {
+    #[error("Payment declined by gateway: {reason}")]
+    Declined { reason: String },
+
+    #[error("Insufficient funds: requested {requested}, available {available}")]
+    InsufficientFunds { requested: u64, available: u64 },
+
+    #[error("Invalid payment token")]
+    InvalidToken,
+}
+
+impl ClassifiedError for PaymentError {
+    // Definir la categoría del error
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Error del gateway = infraestructura (puede ser temporal)
+            PaymentError::Declined { .. } => ErrorCategory::Infrastructure,
+
+            // Regla de negocio = dominio
+            PaymentError::InsufficientFunds { .. } => ErrorCategory::Domain,
+
+            // Error de validación = validation
+            PaymentError::InvalidToken => ErrorCategory::Validation,
+        }
+    }
+
+    // Comportamiento por defecto según categoría
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        default_behavior(self.category())
+    }
+
+    // Opcional: reintentar?
+    fn is_retryable(&self) -> bool {
+        self.category() == ErrorCategory::Infrastructure
+    }
+}
+```
+
+### 10.3 ErrorDecision: Decisión Automática del Engine
+
+```rust
+use saga_engine_core::error::{ExecutionError, ErrorDecision};
+
+// El engine decide automáticamente qué hacer
+async fn process_with_error_handling(
+    ctx: &WorkflowContext,
+) -> Result<(), PaymentError> {
+    match ctx.execute_activity::<ProcessPaymentActivity, _>(
+        PaymentInput { amount: 100 }
+    ).await {
+        Ok(result) => Ok(result),
+        Err(exec_err) => {
+            // ⭐ El engine ya decidió: retry, compensar o fail
+            match ErrorDecision::from_error(&exec_err) {
+                ErrorDecision::Retry => {
+                    tracing::info!("Retry scheduled for attempt {}", exec_err.attempts);
+                }
+                ErrorDecision::Compensate => {
+                    tracing::warn!("Error requires compensation");
+                }
+                ErrorDecision::Fail => {
+                    tracing::error!("Saga failed definitively");
+                }
+                ErrorDecision::Pause => {
+                    tracing::error!("Manual intervention required");
+                }
+            }
+            Err(exec_err.error)
+        }
+    }
+}
+```
+
+### 10.4 Matriz de Decisiones
+
+| Categoría | is_retryable() | ErrorDecision | Acción del Engine |
+|-----------|----------------|---------------|-------------------|
+| Infrastructure | ✅ true | Retry | Reintento automático con backoff |
+| Validation | ❌ false | Fail | Fail inmediato |
+| Domain | ❌ false | Compensate | Ejecuta compensación |
+| TransientDomain | ⚠️ varies | RetryOnce | Un retry con delay |
+| Fatal | ❌ false | Fail | Fail + Alert |
+
+### 10.5 RetryConfig Personalizado
+
+```rust
+use saga_engine_core::error::{RetryConfig, ClassifiedError};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExternalServiceError {
+    #[error("External API timeout")]
+    Timeout,
+}
+
+impl ClassifiedError for ExternalServiceError {
+    fn category(&self) -> ErrorCategory {
+        ErrorCategory::Infrastructure
+    }
+
+    // ⭐ Personalizar retry para este error específico
+    fn retry_config(&self) -> Option<RetryConfig> {
+        Some(RetryConfig {
+            max_attempts: 5,        // Más reintentos que el default (3)
+            base_delay_ms: 2000,    // Delay más largo (2 segundos)
+        })
+    }
+}
 ```
 
 ---
 
-## 11. Configuración y Rendimiento
+## 11. Versionado de Eventos: Upcasting
+
+### 11.1 El Problema del Versionado
+
+En sagas largas, el código evoluciona mientras la saga sigue activa:
+
+```
+Timeline:
+┌────────────────────────────────────────────────────────────────────┐
+│                                                                    │
+│  Semana 1: Deploy v1        Semana 2: Deploy v2    Semana 3: v3   │
+│  ┌─────────────┐            ┌─────────────┐        ┌───────────┐  │
+│  │OrderCreated │───────────▶│OrderCreated │───────▶│OrderCreated│  │
+│  │{old_fields} │            │{new_fields} │        │{new_fields}│  │
+│  └─────────────┘            └─────────────┘        └───────────┘  │
+│        │                          │                      │        │
+│        │                          │                      │        │
+│        └──────────────────────────┼──────────────────────┘        │
+│                                     │                              │
+│                                     ▼                              │
+│                            Saga aún activa                          │
+│                            necesita entender                        │
+│                            eventos v1                               │
+│                                                                    │
+└───────────────────────────────────────┬────────────────────────────┘
+                                        │
+                                        ▼
+                            UPCASTING SOLUCIONA ESTO
+```
+
+### 11.2 EventUpcaster: Transformación de Versiones
+
+```rust
+use saga_engine_core::event::{
+    EventUpcaster, EventUpcasterRegistry, EventTypeId, UpcastError, CURRENT_EVENT_VERSION
+};
+use serde_json::Value;
+
+// Evento versión 1 (schema antiguo)
+#[derive(Debug, Deserialize)]
+pub struct OrderCreatedV1 {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total: u64,
+}
+
+// Evento versión 2 (schema actual)
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OrderCreatedV2 {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total: u64,
+    pub priority: String,        // Nuevo campo
+    pub shipping_address: String, // Nuevo campo
+}
+
+// Upcaster: transforma v1 → v2
+pub struct OrderCreatedV1toV2;
+
+impl EventUpcaster for OrderCreatedV1toV2 {
+    fn from_version(&self) -> u32 { 1 }
+    fn to_version(&self) -> u32 { 2 }
+    fn event_type(&self) -> EventTypeId {
+        EventTypeId("order.created")
+    }
+
+    fn upcast(
+        &self,
+        _event_type: EventTypeId,
+        _version: u32,
+        payload: &Value,
+    ) -> Result<Value, UpcastError> {
+        let v1: OrderCreatedV1 = serde_json::from_value(payload.clone())
+            .map_err(|_| UpcastError::DeserializationFailed)?;
+
+        let v2 = OrderCreatedV2 {
+            order_id: v1.order_id,
+            customer_id: v1.customer_id,
+            total: v1.total,
+            priority: "standard".to_string(),
+            shipping_address: "pending".to_string(),
+        };
+
+        Ok(serde_json::to_value(v2)?)
+    }
+}
+```
+
+### 11.3 Registry de Upcasters
+
+```rust
+pub fn create_upcaster_registry() -> EventUpcasterRegistry {
+    let mut registry = EventUpcasterRegistry::new();
+    registry.register(OrderCreatedV1toV2);
+    registry.register(OrderPaymentV1toV2);
+    registry
+}
+
+// El event store usa el registry automáticamente
+async fn load_events(saga_id: SagaId, registry: &EventUpcasterRegistry) {
+    for event in event_store.get_history(saga_id).await? {
+        if event.schema_version < CURRENT_EVENT_VERSION {
+            let upcasted = event.upcast_to_current(registry).await?;
+            // Usar upcasted...
+        }
+    }
+}
+```
+
+### 11.4 SimpleUpcaster: Atajo con Closures
+
+```rust
+use saga_engine_core::event::SimpleUpcaster;
+
+let upcaster = SimpleUpcaster::new(
+    1, 2, "order.updated",
+    |_, _, payload| {
+        let mut result = payload.clone();
+        result["priority"] = serde_json::json!("standard");
+        Ok(result)
+    }
+);
+registry.register(upcaster);
+```
+
+### 11.5 Chain de Upcasting
+
+```
+v0 ──▶ v1 ──▶ v2 ──▶ v3 (CURRENT)
+  │      │      │
+  ▼      ▼      ▼
+Upcaster Upcaster Upcaster
+0→1     1→2     2→3
+```
+
+```rust
+let mut registry = EventUpcasterRegistry::new();
+registry.register(OrderCreatedV0toV1);  // v0 → v1
+registry.register(OrderCreatedV1toV2);  // v1 → v2
+registry.register(OrderCreatedV2toV3);  // v2 → v3
+
+// El engine ejecuta el chain automáticamente
+let result = registry.upcast_payload(
+    EventTypeId("order.created"),
+    0,  // Versión original
+    &old_payload
+)?;
+```
+
+---
+
+## 12. Optimización de Replay: Snapshots
+
+### 12.1 El Problema del Replay
+
+```mermaid
+graph LR
+    subgraph "Sin Snapshot"
+    E1 --> E2 --> E3 --> E4 --> E5[...1000 eventos] --> AR[Replay: O(n)]
+    end
+
+    subgraph "Con Snapshot"
+    E1 --> E2 --> E3
+    S[S500] --> E5[...500 eventos] --> AR2[Replay: O(n-500)]
+    end
+```
+
+### 12.2 SnapshotStrategy: Estrategias
+
+```rust
+use saga_engine_core::snapshot::SnapshotStrategy;
+
+// ⭐ Elige la estrategia correcta para tu saga
+
+let short = SnapshotStrategy::for_short_saga();        // < 10 steps
+let medium = SnapshotStrategy::for_medium_saga();       // 10-50 steps
+let long = SnapshotStrategy::for_long_saga();           // 50-200 steps
+let very_long = SnapshotStrategy::for_very_long_saga(); // > 200 steps
+let io_heavy = SnapshotStrategy::for_io_heavy_saga();   // I/O heavy
+
+let default = SnapshotStrategy::default();              // Adaptive(100, 60)
+```
+
+### 12.3 Cuándo Usar Cada Estrategia
+
+| Tipo de Saga | Estrategia | Razón |
+|--------------|------------|-------|
+| Corta (< 10) | Disabled | Overhead > beneficio |
+| Media (10-50) | CountBased(20) | Buena relación |
+| Larga (50-200) | Adaptive(100, 60) | Optimización automática |
+| Muy larga (> 200) | CountBased(50) | Reducción significativa |
+| I/O Heavy | TimeBased(30) | Captura esperas |
+
+### 12.4 Configuración Manual
+
+```rust
+let strategy = SnapshotStrategy::CountBased { events: 50 };
+let strategy = SnapshotStrategy::TimeBased { minutes: 30 };
+let strategy = SnapshotStrategy::EventBased {
+    events: &["order.created", "payment.completed"]
+};
+let strategy = SnapshotStrategy::Adaptive {
+    max_events: 100,
+    max_minutes: 60
+};
+let strategy = SnapshotStrategy::Disabled;
+```
+
+### 12.5 ErrorStats: Métricas de Errores
+
+```rust
+use saga_engine_core::error::ErrorStats;
+
+let mut stats = ErrorStats::default();
+
+stats.record_error(ErrorCategory::Infrastructure);
+stats.record_error(ErrorCategory::Domain);
+stats.record_retry(true);
+stats.record_retry(false);
+stats.record_decision(ErrorDecision::Compensate);
+
+let retry_rate = stats.retry_success_rate();  // 0.0 - 1.0
+let failure_rate = stats.failure_rate();       // 0.0 - 1.0
+```
+
+---
+
+## 13. Configuración y Rendimiento
 
 ### 11.1 Configuración del Engine
 

@@ -1190,9 +1190,201 @@ sequenceDiagram
 
 ---
 
+## 17. Nuevas Características v4.1: Diagramas de Arquitectura
+
+### 17.1 Error Bridge: Clasificación Automática de Errores
+
+```mermaid
+flowchart TD
+    subgraph "Activity Execution"
+        A[Activity] -->|Error| EE[ExecutionError&lt;E&gt;]
+    end
+
+    subgraph "Error Classification"
+        EE -->|category| CE[ClassifiedError Trait]
+        CE -->|category| EC[ErrorCategory]
+    end
+
+    subgraph "Decision Making"
+        EC --> ED[ErrorDecision]
+        ED -->|Retry| R[Retry with backoff]
+        ED -->|Compensate| C[Execute Compensation]
+        ED -->|Fail| F[Mark as Failed]
+        ED -->|Pause| P[Manual Intervention]
+    end
+
+    subgraph "Retry Configuration"
+        RC[RetryConfig]
+        RC -->|max_attempts| RA[Retry Attempts]
+        RC -->|base_delay_ms| BD[Backoff Delay]
+    end
+
+    style EE fill:#ffcdd2
+    style ED fill:#fff9c4
+    style R fill:#c8e6c9
+    style C fill:#bbdefb
+    style F fill:#ffcdd2
+    style P fill:#ffe0b2
+```
+
+```mermaid
+sequenceDiagram
+    participant A as Activity
+    participant E as ExecutionError
+    participant C as ClassifiedError
+    participant D as ErrorDecision
+    participant S as SagaEngine
+
+    A->>E: Err(PaymentDeclined)
+    E->>C: category()
+    C->>C: match error
+    C-->>E: Infrastructure
+
+    E->>D: from_error()
+    D->>D: match behavior
+    D-->>S: Retry
+
+    Note over S: Engine schedules retry<br/>with exponential backoff
+
+    alt After max retries
+        S->>D: from_error()
+        D-->>S: Fail
+        Note over S: Mark saga as failed
+    else Success on retry
+        S->>S: Continue workflow
+    end
+```
+
+### 17.2 Event Upcasting: Versionado de Esquemas
+
+```mermaid
+flowchart LR
+    subgraph "Event Store"
+        E1[v0 Event<br/>old_schema]
+        E2[v1 Event<br/>mid_schema]
+        E3[v2 Event<br/>current_schema]
+    end
+
+    subgraph "Upcaster Registry"
+        U1[v0→v1]
+        U2[v1→v2]
+    end
+
+    E1 -->|needs upcast| U1
+    U1 -->|produces| E2
+    E2 -->|needs upcast| U2
+    U2 -->|produces| E3
+
+    style E1 fill:#ffecb3
+    style E3 fill:#c8e6c9
+```
+
+```mermaid
+sequenceDiagram
+    participant ES as EventStore
+    participant ER as EventUpcasterRegistry
+    participant U as Upcaster Chain
+    participant App as Application
+
+    ES->>ER: get_events(saga_id)
+    loop For each event
+        ER->>ER: check_version(event.schema_version)
+        alt version < CURRENT
+            ER->>U: upcast(event)
+            Note over U: v0→v1→v2 chain
+            U-->>ER: upcasted_event(v2)
+            App->>App: process(upcasted_event)
+        else version == CURRENT
+            App->>App: process(event)
+        end
+    end
+```
+
+### 17.3 Adaptive Snapshots: Optimización de Replay
+
+```mermaid
+flowchart TD
+    subgraph "Snapshot Strategy Decision"
+        S[Saga Configuration]
+        S -->|Short <10| D[Disabled]
+        S -->|Medium 10-50| CB[CountBased 20]
+        S -->|Long 50-200| A[Adaptive 100/60]
+        S -->|Very Long >200| CB2[CountBased 50]
+        S -->|I/O Heavy| TB[TimeBased 30min]
+    end
+
+    subgraph "Snapshot Process"
+        CB2 -->|events >= 50| SP[Snapshot Manager]
+        A -->|events >= 100| SP
+        A -->|time >= 60min| SP
+        TB -->|time >= 30min| SP
+    end
+
+    subgraph "Performance Impact"
+        SP -->|create| Snap[Snapshot]
+        Snap -->|store| ES[Event Store]
+        ES -->|restore| AR[Aggregate Replay]
+        AR -->|only new events| Result[Optimized State]
+    end
+
+    style D fill:#e0e0e0
+    style CB fill:#c8e6c9
+    style A fill:#bbdefb
+    style CB2 fill:#bbdefb
+    style Snap fill:#fff9c4
+```
+
+```mermaid
+flowchart TB
+    subgraph "Without Snapshot"
+        ES1[Event Store] -->|all 1000 events| R[Replay All]
+        R --> A1[Aggregate]
+        A1 -->|"⚠️ O(n) = 1000 ops"| Result1[Reconstructed State]
+    end
+
+    subgraph "With Snapshot"
+        ES2[Event Store] -->|first 500 events| S[Snapshot Store]
+        S -->|state at event 500| R2[Restore Snapshot]
+        ES2 -->|events 501-1000| R2
+        R2 --> A2[Aggregate]
+        A2 -->|"✅ O(n-500) = 500 ops"| Result2[Reconstructed State]
+    end
+
+    style S fill:#fff9c4
+    style Result1 fill:#ffcdd2
+    style Result2 fill:#c8e6c9
+```
+
+### 17.4 Métricas y Observabilidad
+
+```mermaid
+graph LR
+    subgraph "Error Stats Collection"
+        E[Errors] -->|record| Stats[ErrorStats]
+        Stats -->|update| TC[Total Count]
+        Stats -->|update| BC[By Category]
+        Stats -->|update| RC[Retry Count]
+        Stats -->|update| FC[Failure Count]
+    end
+
+    subgraph "Calculated Metrics"
+        TC --> RR[Retry Rate]
+        RC --> RR
+        TC --> FR[Failure Rate]
+        FC --> FR
+    end
+
+    subgraph "Dashboard"
+        RR --> D[Retry Success Rate %]
+        FR --> D2[Failure Rate %]
+    end
+```
+
+---
+
 ## Apéndice: Resumen Visual de Componentes
 
-### Arquitectura Completa en Una Vista
+### Arquitectura Completa en Una Vista (v4.1)
 
 ```mermaid
 graph TB
@@ -1200,45 +1392,99 @@ graph TB
         API[REST/gRPC API]
         CLI[CLI]
     end
-    
+
     subgraph "Application Layer"
         SE[SagaEngine]
+        EB[Error Bridge]
+        SM[Snapshot Manager]
     end
-    
+
     subgraph "Domain Layer"
         WF[Workflows]
         AC[Activities]
         EV[Events]
         CP[Compensation]
     end
-    
+
     subgraph "Ports Layer"
         ES[EventStore Port]
         TQ[TaskQueue Port]
         TS[TimerStore Port]
+        UR[Upcaster Registry Port]
     end
-    
+
     subgraph "Adapters Layer"
         PGE[Postgres Adapter]
         NAT[NATS Adapter]
         INM[InMemory Adapter]
+        UPC[Upcaster Adapter]
     end
-    
+
     API --> SE
     CLI --> SE
     SE --> WF
     SE --> AC
+    SE --> EB
+    SE --> SM
     WF --> EV
     AC --> EV
     WF --> CP
-    
+    WF --> UR
+
     WF --> ES
     AC --> TQ
     CP --> TS
-    
+    UR --> UPC
+
     ES <--> PGE
     TQ <--> NAT
-    TS <--> INM
+    UR <--> UPC
+
+    style EB fill:#fff9c4
+    style SM fill:#bbdefb
+    style UR fill:#fff9c4
+    style UPC fill:#bbdefb
+```
+
+```mermaid
+graph TB
+    subgraph "Error Bridge Components"
+        CE[ClassifiedError]
+        EC[ErrorCategory]
+        EB[ErrorBehaviorWithConfig]
+        ED[ErrorDecision]
+        ES[ErrorStats]
+    end
+
+    subgraph "Upcasting Components"
+        EU[EventUpcaster Trait]
+        EUR[EventUpcasterRegistry]
+        SU[SimpleUpcaster]
+        CV[CURRENT_VERSION]
+    end
+
+    subgraph "Snapshot Components"
+        SS[SnapshotStrategy]
+        SSM[SagaSnapshotManager]
+        SSV[SagaSnapshot]
+    end
+
+    CE --> EC
+    EC --> EB
+    EB --> ED
+    ES --> ED
+
+    EUR --> EU
+    EUR --> SU
+    CV --> EUR
+    EUR --> SSV
+
+    SS --> SSM
+    SSM --> SSV
+
+    style CE fill:#c8e6c9
+    style EUR fill:#bbdefb
+    style SS fill:#bbdefb
 ```
 
 ---
