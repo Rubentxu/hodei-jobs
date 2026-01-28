@@ -1,10 +1,45 @@
-# Saga Engine V4 - Diagramas de Arquitectura
+# Saga Engine V4 - Manual de Diagramas
 
-Este documento contiene los diagramas de arquitectura del Saga Engine en formato Mermaid.
+## Guía Visual Completa: Entendiendo la Arquitectura a través de Diagramas
 
 ---
 
-## 1. Diagrama de Contexto General
+> **¿Qué es este documento?**
+> Este manual utiliza diagramas Mermaid para visualizar los conceptos clave de Saga Engine V4. Cada diagrama incluye una explicación detallada de qué representa, por qué es importante, y cómo se relaciona con los demás.
+>
+> **Cómo usar este manual**:
+> 1. Lee la descripción de cada diagrama
+> 2. Observa cómo los componentes se conectan
+> 3. Consulta el código fuente referenciado para ver la implementación
+
+---
+
+## Tabla de Contenidos
+
+1. [Contexto General del Sistema](#1-contexto-general-del-sistema)
+2. [Arquitectura Hexagonal (Ports & Adapters)](#2-arquitectura-hexagonal-ports--adapters)
+3. [Estructura de Directorios](#3-estructura-de-directorios)
+4. [Flujo de Ejecución de un Workflow](#4-flujo-de-ejecución-de-un-workflow)
+5. [Modelo de Eventos](#5-modelo-de-eventos)
+6. [Patrón de Compensación (Rollback)](#6-patrón-de-compensación-rollback)
+7. [Diagrama de Estados del Workflow](#7-diagrama-de-estados-del-workflow)
+8. [Concurrencia: Optimistic Locking](#8-concurrencia-optimistic-locking)
+9. [Estrategia de Snapshots](#9-estrategia-de-snapshots)
+10. [Arquitectura de Timers](#10-arquitectura-de-timers)
+11. [Task Queue con NATS JetStream](#11-task-queue-con-nats-jetstream)
+12. [Registro de Actividades](#12-registro-de-actividades)
+13. [Jerarquía de Errores](#13-jerarquía-de-errores)
+14. [Comparación de Codecs](#14-comparación-de-codecs)
+15. [Sistema Watchdog](#15-sistema-watchdog)
+16. [Cómo Leer y Crear Diagramas Mermaid](#16-cómo-leer-y-crear-diagramas-mermaid)
+
+---
+
+## 1. Contexto General del Sistema
+
+### 1.1 Vista Panorámica
+
+Este diagrama muestra cómo Saga Engine V4 encaja en la plataforma Hodei Jobs y sus dependencias externas.
 
 ```mermaid
 graph TB
@@ -69,9 +104,39 @@ graph TB
     SE --> LG
 ```
 
+**Explicación detallada**:
+
+| Componente | Descripción | Rol |
+|------------|-------------|-----|
+| **API/Scheduler/Webhook/CLI** | Productores de workflows |发起 (inician) nuevos workflows |
+| **Durable Execution** | Motor de ejecución | 保证 (asegura) que los workflows completan |
+| **Event Sourcing** | Persistencia de eventos | 记录 (registra) cada cambio |
+| **Compensation Pattern** | Manejo de fallos | 回滚 (revierte) en caso de error |
+| **Temporal Events** | Timers y delays | 定时 (programa) acciones futuras |
+| **PostgreSQL** | Persistencia primaria | 存储 (almacena) eventos y estado |
+| **NATS JetStream** | Colas de mensajes | 传递 (transmite) tareas |
+| **SQLite/In-Memory** | Testing adapters | 测试 (permite tests) |
+
+### 1.2 Flujo de Datos Principal
+
+```
+Productores → Saga Engine → Infrastructure → Consumidores
+
+  API           Durable              PostgreSQL        Metrics
+  Scheduler  →  Execution      →      NATS        →   Tracing
+  Webhook        Event                 SQLite          Logs
+  CLI            Sourcing
+                 Compensation
+                 Timers
+```
+
 ---
 
 ## 2. Arquitectura Hexagonal (Ports & Adapters)
+
+### 2.1 El Patrón de Puertos y Adaptadores
+
+Este diagrama muestra cómo Saga Engine separa la lógica de negocio de la infraestructura.
 
 ```mermaid
 graph TB
@@ -135,9 +200,43 @@ graph TB
     IP5 <--> AD3
 ```
 
+**Conceptos clave**:
+
+- **Domain Core (Verde)**: Lógica de negocio pura, sin dependencias externas
+- **Inbound Ports (Amarillo)**: Contratos (traits) que definen qué necesita el dominio
+- **Outbound Adapters (Azul/Naranja)**: Implementaciones concretas para cada tecnología
+
+### 2.2 Beneficios de Esta Arquitectura
+
+```mermaid
+graph LR
+    subgraph "Sin Hexagonal"
+        A[App] --> B[MySQL<br/>Acoplado]
+        A --> C[Redis<br/>Acoplado]
+        A --> D[NATS<br/>Acoplado]
+    end
+    
+    subgraph "Con Hexagonal"
+        E[Domain] --> P1[Port]
+        P1 <--> A1[MySQL]
+        P1 <--> A2[Postgres]
+        P1 <--> A3[SQLite]
+    end
+    
+    style E fill:#c8e6c9
+    style P1 fill:#bbdefb
+    style A1 fill:#ffecb3
+    style A2 fill:#ffecb3
+    style A3 fill:#ffecb3
+```
+
+**Desacoplamiento**: Puedes cambiar la base de datos sin modificar el dominio.
+
 ---
 
 ## 3. Estructura de Directorios
+
+### 3.1 Organización del Código
 
 ```mermaid
 graph TD
@@ -171,15 +270,57 @@ graph TD
     pg_src --> rp[replayer.rs]
     pg_src --> eng[engine.rs]
     
+    nats --> nats_src[src/]
+    nats_src --> tq_nats[task_queue.rs]
+    nats_src --> eb[event_bus.rs]
+    nats_src --> sd_nats[signal_dispatcher.rs]
+    
     style root fill:#e3f2fd
     style core fill:#c8e6c9
     style pg fill:#ffecb3
     style nats fill:#bbdefb
 ```
 
+**Jerarquía de colores**:
+
+| Color | Significado | Contenido |
+|-------|-------------|-----------|
+| **Azul claro** | Raíz | Punto de entrada |
+| **Verde** | Core domain | Lógica pura |
+| **Amarillo** | PostgreSQL | Implementación persistente |
+| **Azul** | NATS | Implementación de mensajería |
+
+### 3.2 Correspondencia con Capas
+
+```
+┌─────────────────────────────────────────────┐
+│           Application Layer                  │
+│           (SagaEngine facade)                │
+├─────────────────────────────────────────────┤
+│              Domain Core                     │
+│  ┌──────────┬──────────┬──────────┐        │
+│  │ workflow │ activity │event     │        │
+│  └──────────┴──────────┴──────────┘        │
+├─────────────────────────────────────────────┤
+│              Ports (Traits)                  │
+│  ┌──────────┬──────────┬──────────┐        │
+│  │EventStore│TaskQueue │TimerStore│        │
+│  └──────────┴──────────┴──────────┘        │
+├─────────────────────────────────────────────┤
+│          Adapters (Infrastructure)           │
+│  ┌──────────┬──────────┬──────────┐        │
+│  │Postgres  │  NATS    │ InMemory │        │
+│  └──────────┴──────────┴──────────┘        │
+└─────────────────────────────────────────────┘
+```
+
 ---
 
-## 4. Diagrama de Flujo de Ejecución
+## 4. Flujo de Ejecución de un Workflow
+
+### 4.1 Secuencia Completa
+
+Este diagrama de secuencia muestra paso a paso cómo se ejecuta un workflow.
 
 ```mermaid
 sequenceDiagram
@@ -198,7 +339,7 @@ sequenceDiagram
     SE->>TQ: publish(WorkflowTask)
     TQ-->>SE: task_id
     
-    Note over SE: Workflow scheduled
+    Note over SE: Workflow programado
     
     loop Worker Pool
         W->>TQ: fetch()
@@ -211,7 +352,7 @@ sequenceDiagram
         SE->>SE: replay_events()
         SE->>SE: run_workflow()
         
-        Note over SE: execute_activity() called
+        Note over SE: execute_activity() llamado
         
         SE->>ES: append_event(ActivityTaskScheduled)
         SE->>TQ: publish(ActivityTask)
@@ -232,9 +373,48 @@ sequenceDiagram
     SE-->>C: output
 ```
 
+### 4.2 Paso a Paso
+
+| Paso | Descripción | Qué Sucede |
+|------|-------------|-----------|
+| 1 | **Iniciar Workflow** | Cliente envía input al engine |
+| 2 | **Grabar Evento Inicial** | Se persiste `WorkflowExecutionStarted` |
+| 3 | **Publicar Tarea** | El task va a la cola de NATS |
+| 4 | **Worker Fetch** | Un worker pickea la tarea |
+| 5 | **Replay** | Se reconstruye el estado desde eventos |
+| 6 | **Ejecutar Workflow** | Se corre la lógica del workflow |
+| 7 | **Actividad Schedule** | Se programa una actividad |
+| 8 | **Worker Procesa** | La actividad se ejecuta |
+| 9 | **Activity Completed** | Se graba el resultado |
+| 10 | **Workflow Continúa** | El workflow retoma |
+| 11 | **Workflow Complete** | Se graba el evento final |
+
+### 4.3 Durabilidad Garantizada
+
+```mermaid
+flowchart LR
+    subgraph "Sin Durable Execution"
+        A[Tarea] --> B[Worker]
+        B --> C[Reinicio]
+        C --> D[Perdido!]
+    end
+    
+    subgraph "Con Durable Execution"
+        E[Tarea] --> F[Worker]
+        F --> G[Event Store]
+        G --> H[Reinicio]
+        H --> I[Recuperado<br/>desde eventos]
+    end
+    
+    style D fill:#ffcdd2
+    style I fill:#c8e6c9
+```
+
 ---
 
 ## 5. Modelo de Eventos
+
+### 5.1 Taxonomía de Eventos
 
 ```mermaid
 graph TD
@@ -275,9 +455,42 @@ graph TD
     style EC fill:#bbdefb
 ```
 
+### 5.2 Detalle de Categorías
+
+| Categoría | Eventos Principales | Propósito |
+|-----------|--------------------|-----------|
+| **Workflow** | Started, Completed, Failed, TimedOut, Canceled | Ciclo de vida del workflow |
+| **Activity** | Scheduled, Started, Completed, Failed, TimedOut, Canceled | Ejecución de actividades |
+| **Timer** | Created, Fired, Canceled | Temporizadores |
+| **Signal** | SignalReceived | Señales externas |
+| **Marker** | MarkerRecorded | Marcas especiales |
+
+### 5.3 Ejemplo de Evento JSON
+
+```json
+{
+  "event_id": 15,
+  "saga_id": "saga-123e4567-e89b-12d3-a456-426614174000",
+  "event_type": "ActivityTaskCompleted",
+  "category": "Activity",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "attributes": {
+    "activity_type": "ProcessPayment",
+    "input": { "order_id": "order-456", "amount": 99.99 },
+    "output": { "transaction_id": "txn-abc123" }
+  },
+  "event_version": 1,
+  "is_reset_point": false,
+  "is_retry": false,
+  "trace_id": "span-abc123def456"
+}
+```
+
 ---
 
-## 6. Compensación (Rollback Pattern)
+## 6. Patrón de Compensación (Rollback)
+
+### 6.1 Flujo Normal vs. Flujo de Compensación
 
 ```mermaid
 flowchart LR
@@ -300,15 +513,77 @@ flowchart LR
     end
     
     style ROLL fill:#ffcdd2
-    style C1 fill:#ffcdd2
-    style C2 fill:#ffcdd2
     style C3 fill:#ffcdd2
+    style C2 fill:#ffcdd2
+    style C1 fill:#ffcdd2
     style FAILED fill:#ffcdd2
+```
+
+### 6.2 Orden de Compensación (LIFO)
+
+```mermaid
+flowchart TD
+    A[Orden de ejecución] --> B[1. Reserve Inventory]
+    B --> C[2. Charge Payment]
+    C --> D[3. Ship Order]
+    D -->|FALLA| E[Fallo detected]
+    
+    E --> F[Orden de compensación]
+    F --> G[1. Cancel Shipment<br/>(compensation del paso 3)]
+    G --> H[2. Refund Payment<br/>(compensation del paso 2)]
+    H --> I[3. Release Inventory<br/>(compensation del paso 1)]
+    
+    style E fill:#ffcdd2
+    style F fill:#ffecb3
+    style G fill:#ffcdd2
+    style H fill:#ffcdd2
+    style I fill:#ffcdd2
+```
+
+**Importante**: Las compensaciones se ejecutan en **orden inverso** (LIFO - Last In, First Out).
+
+### 6.3 Datos de Compensación
+
+```mermaid
+classDiagram
+    class CompensationTracker {
+        <<service>>
+        +steps: Vec~CompletedStep~
+        +auto_compensate: bool
+        +track_step()
+        +get_compensation_actions()
+    }
+    
+    class CompletedStep {
+        <<entity>>
+        +step_id: String
+        +activity_type: String
+        +compensation_activity_type: String
+        +input: Value
+        +output: Value
+        +step_order: u32
+        +completed_at: DateTime
+    }
+    
+    class CompensationAction {
+        <<value object>>
+        +step_id: String
+        +activity_type: String
+        +compensation_type: String
+        +input: Value
+        +retry_count: u32
+        +max_retries: u32
+    }
+    
+    CompensationTracker "1" --> "*" CompletedStep : tracks
+    CompletedStep "1" --> "*" CompensationAction : generates
 ```
 
 ---
 
 ## 7. Diagrama de Estados del Workflow
+
+### 7.1 Máquina de Estados
 
 ```mermaid
 stateDiagram-v2
@@ -339,9 +614,42 @@ stateDiagram-v2
     end note
 ```
 
+### 7.2 Transiciones de Estado
+
+| De | A | Trigger |
+|----|---|---------|
+| Initial | Running | `start_workflow()` |
+| Running | Paused | `execute_activity()` |
+| Running | Completed | Todos los pasos completados |
+| Running | Failed | Error no manejado |
+| Running | Cancelled | `cancel_workflow()` |
+| Paused | Running | Activity completada |
+| Paused | Failed | Activity falló |
+| Paused | Cancelled | Cancelado mientras estaba pausado |
+| Failed | Compensating | Hay acciones de compensación |
+| Failed | Terminal | No hay compensación needed |
+| Compensating | Cancelled | Todas las compensaciones completadas |
+| Compensating | Failed | Una compensación falló |
+
+### 7.3 Replay en Cada Transición
+
+```mermaid
+flowchart TD
+    A[Estado actual] --> B[Nueva transición]
+    B --> C[get_history() desde DB]
+    C --> D[Reconstruir estado]
+    D --> E[Aplicar transición]
+    E --> F[Nuevo estado]
+    
+    style C fill:#bbdefb
+    style D fill:#c8e6c9
+```
+
 ---
 
-## 8. Concurrency: Optimistic Locking
+## 8. Concurrencia: Optimistic Locking
+
+### 8.1 Cómo Funciona
 
 ```mermaid
 sequenceDiagram
@@ -374,14 +682,66 @@ sequenceDiagram
     ES-->>W2: OK (event_id=6)
 ```
 
+### 8.2 Por Qué Optimistic en Lugar de Pessimistic
+
+```mermaid
+graph TD
+    subgraph "Optimistic Locking"
+        O1[Read<br/>No lock] --> O2[Check version]
+        O2 --> O3[Write if match]
+        O4[Read<br/>No lock] --> O5[Check version]
+        O5 --> O6[Write if match]
+    end
+    
+    subgraph "Pessimistic Locking"
+        P1[Read<br/>Acquire lock] --> P2[Write<br/>Hold lock]
+        P3[Read<br/>Wait...] --> P4[Wait for lock]
+        P4 --> P5[Write<br/>Release lock]
+    end
+    
+    style P3 fill:#ffcdd2
+    style P4 fill:#ffcdd2
+```
+
+| Aspecto | Optimistic | Pessimistic |
+|---------|------------|-------------|
+| **Throughput** | Alto | Bajo (contención) |
+| **Complejidad** | Manejar conflictos | Simpler código |
+| **Cuándo usar** | Baja contención | Alta contención |
+| **Saga Engine** | ✅ Elegido | ❌ |
+
 ---
 
-## 9. Snapshot Strategy
+## 9. Estrategia de Snapshots
+
+### 9.1 El Problema del Replay Completo
+
+```mermaid
+flowchart TB
+    subgraph "Sin Snapshots"
+        A[Evento 0] --> B[Evento 1]
+        B --> C[...]
+        C --> D[Evento 999]
+        D --> E[Evento 1000]
+        E --> F[Replay completo<br/>1000 eventos]
+    end
+    
+    subgraph "Con Snapshots cada 100"
+        G[Evento 0] --> H[...]
+        H --> I[Evento 100<br/>⭐ SNAPSHOT]
+        I --> J[...]
+        J --> K[Evento 200<br/>⭐ SNAPSHOT]
+        K --> L[...]
+        L --> M[Replay solo<br/>200 eventos]
+    end
+```
+
+### 9.2 Flujo de Snapshot
 
 ```mermaid
 flowchart TB
     subgraph "Reconstrucción de Estado"
-        A[Iniciar replay] --> B{Existe snapshot?}
+        A[Iniciar replay] --> B{¿Existe snapshot?}
         B -->|Sí| C[Obtener snapshot<br/>last_event_id=50]
         B -->|No| D[Estado inicial vacío]
         
@@ -399,7 +759,7 @@ flowchart TB
     
     subgraph "Creación de Snapshot"
         K[Evento nuevo appendado] --> L[Contador++]
-        L --> M{contador >= intervalo?}
+        L --> M{¿contador >= intervalo?}
         M -->|Sí| N[Crear snapshot]
         M -->|No| O[Continuar]
         N --> P[Guardar en EventStore]
@@ -410,9 +770,26 @@ flowchart TB
     style N fill:#bbdefb
 ```
 
+### 9.3 Configuración de Snapshot
+
+```rust
+pub struct SnapshotConfig {
+    /// Intervalo de eventos (default: 100)
+    pub interval: u64,
+    
+    /// Máximo snapshots por saga (default: 5)
+    pub max_snapshots: u32,
+    
+    /// Habilitar checksums SHA-256 (default: true)
+    pub enable_checksum: bool,
+}
+```
+
 ---
 
-## 10. Timer Architecture
+## 10. Arquitectura de Timers
+
+### 10.1 Componentes del Sistema de Timers
 
 ```mermaid
 flowchart TD
@@ -448,9 +825,48 @@ flowchart TD
     TT5 --> TS
 ```
 
+### 10.2 Tipos de Timers
+
+| Tipo | Descripción | Caso de Uso |
+|------|-------------|-------------|
+| **WorkflowTimeout** | Timeout a nivel de saga completa | Cancelar sagas abandonadas |
+| **ActivityTimeout** | Timeout por actividad individual | Fail-fast en actividades lentas |
+| **Sleep** | Delay definido por el usuario | Esperar antes de continuar |
+| **RetryBackoff** | Delay exponencial para reintentos | Reintentos con backoff |
+| **Scheduled** | Ejecución en fecha específica | Jobs programados |
+
+### 10.3 Flujo de un Timer
+
+```mermaid
+sequenceDiagram
+    participant W as Workflow
+    participant TS as TimerScheduler
+    participant DB as TimerStore
+    participant ES as EventStore
+    
+    W->>TS: create_timer("delay", 1h)
+    TS->>DB: INSERT timer (fire_at = now + 1h)
+    
+    Note over TS: Polling cada 10 segundos
+    
+    loop Polling
+        TS->>DB: SELECT WHERE fire_at <= now
+        DB-->>TS: [timer-123]
+        TS->>DB: UPDATE status = Processing
+    end
+    
+    TS->>ES: append_event(TimerFired)
+    ES-->>TS: OK
+    
+    TS->>W: notify(timer fired)
+    W->>W: Continue execution
+```
+
 ---
 
-## 11. Task Queue (NATS JetStream)
+## 11. Task Queue con NATS JetStream
+
+### 11.1 Arquitectura de la Cola
 
 ```mermaid
 flowchart TB
@@ -477,14 +893,38 @@ flowchart TB
         PROCESS --> NAKED[Nak'd<br/>Redeliver after delay]
         PROCESS --> TERM[Terminated<br/>To DLQ]
     end
-    
-    style STORM fill:#bbdefb
-    style SUB fill:#c8e6c9
+```
+
+### 11.2 Conceptos de NATS JetStream
+
+| Concepto | Descripción |
+|----------|-------------|
+| **Stream** | Persistencia de mensajes (como un topic de Kafka) |
+| **Consumer** | Suscripción con estado (tracked offset) |
+| **Durable Consumer** | Consumer que persiste su posición |
+| **Ack/NAK** | Confirmar o rechazar mensaje |
+| **Pull Consumer** | Worker pide mensajes explícitamente |
+
+### 11.3 Garantías de Entrega
+
+```mermaid
+flowchart LR
+    subgraph "At-Least-Once Delivery"
+        A[Publisher] -->|1| N[NATS]
+        N -->|2| W1[Worker 1]
+        N -->|3| W2[Worker 2]
+        W1 -->|4| ACK[NATS]
+        W2 -->|5| NAK[NATS]
+        ACK -->|6| Remove
+        NAK -->|7| Redeliver to W2
+    end
 ```
 
 ---
 
-## 12. Activity Registry
+## 12. Registro de Actividades
+
+### 12.1 Diagrama de Clases del Registry
 
 ```mermaid
 classDiagram
@@ -532,9 +972,24 @@ classDiagram
     Activity~T~ <|-- InventoryActivity
 ```
 
+### 12.2 Registro de Actividades
+
+```rust
+// ⭐ Registrar una actividad
+registry.register_activity(PaymentActivity);
+registry.register_activity(ReserveInventoryActivity);
+registry.register_activity(ShipOrderActivity);
+
+// ⭐ Usar la actividad
+let activity = registry.get_activity("process-payment");
+let result = activity.execute(input).await;
+```
+
 ---
 
-## 13. Error Hierarchy
+## 13. Jerarquía de Errores
+
+### 13.1 Estructura del Error
 
 ```mermaid
 graph TD
@@ -566,9 +1021,23 @@ graph TD
     style EK fill:#c8e6c9
 ```
 
+### 13.2 Tipos de Error y Causas
+
+| Error Kind | Causa Típica | Estrategia |
+|------------|--------------|------------|
+| **EventStore** | DB temporalmente no disponible | Retry con backoff |
+| **WorkflowExecution** | Bug en la lógica del workflow | Fix código |
+| **ActivityExecution** | Bug en actividad o servicio externo | Fix o retry |
+| **Timeout** | Actividad demasiado lenta | Aumentar timeout |
+| **Concurrency** | Dos workers同一 saga | Replay automático |
+| **Compensation** | Compensación falló | Intervención manual |
+| **Validation** | Input inválido | Validar antes |
+
 ---
 
-## 14. Codec Performance Comparison
+## 14. Comparación de Codecs
+
+### 14.1 Rendimiento de Serialización
 
 ```mermaid
 graph LR
@@ -597,9 +1066,20 @@ graph LR
     style S3 fill:#c8e6c9
 ```
 
+### 14.2 Recomendaciones
+
+| Escenario | Codec Recomendado | Razón |
+|-----------|-------------------|-------|
+| Desarrollo | JSON | Legible, fácil debugging |
+| Producción | Bincode | Balance rendimiento/tamaño |
+| Alta throughput | Postcard | Máxima velocidad |
+| Storage limitado | Postcard | Menor tamaño |
+
 ---
 
-## 15. Watchdog System
+## 15. Sistema Watchdog
+
+### 15.1 Arquitectura del Watchdog
 
 ```mermaid
 flowchart TB
@@ -645,8 +1125,128 @@ flowchart TB
     style WD fill:#fff9c4
 ```
 
+### 15.2 Detectores y Respuestas
+
+| Detector | Qué Detecta | Respuesta |
+|----------|-------------|-----------|
+| **Stall Detector** | Saga sin progreso por tiempo | Alert + force timeout |
+| **Deadlock Detector** | Esperas circulares | Terminate + compensar |
+| **Health Detector** | Componente no responde | Circuit breaker |
+| **Capacity Detector** | Cola saturada | Scale workers |
+
 ---
 
-*Document Version: 1.0.0*
+## 16. Cómo Leer y Crear Diagramas Mermaid
+
+### 16.1 Guía Rápida de Mermaid
+
+```mermaid
+flowchart TD
+    A[Start] --> B{Decision?}
+    B -->|Yes| C[Do something]
+    B -->|No| D[Do other thing]
+    C --> E[End]
+    D --> E
+```
+
+**Sintaxis básica**:
+
+| Tipo | Sintaxis | Descripción |
+|------|----------|-------------|
+| Nodo | `A[Nombre]` | Nodo con texto |
+| Flecha | `A --> B` | Conexión |
+| Decisión | `B{?}` | Diamante de decisión |
+| Subgraph | `subgraph X ... end` | Agrupación |
+| Estilo | `style A fill:#color` | Color |
+
+### 16.2 Colores Semánticos
+
+| Color | Significado | Uso |
+|-------|-------------|-----|
+| **Verde** | Éxito, estado happy | Flujo normal |
+| **Rojo** | Error, fallo | Fallos, rollbacks |
+| **Amarillo** | Espera, pausa | Estados intermedios |
+| **Azul** | Proceso, dato | Procesos, bases de datos |
+| **Naranja** | Decisión | Puntos de decisión |
+
+### 16.3 Diagramas de Secuencia
+
+```mermaid
+sequenceDiagram
+    participant A as Actor
+    participant S as System
+    
+    A->>S: Request
+    S-->>A: Response
+```
+
+**Sintaxis de secuencia**:
+
+| Elemento | Sintaxis |
+|----------|----------|
+| Participante | `participant X as Alias` |
+| Mensaje sync | `A->>B: message` |
+| Mensaje async | `A-->>B: message` |
+| Nota | `Note over A,B: text` |
+| Loop | `loop Label ... end` |
+| Alt | `alt Condition ... else ... end` |
+
+---
+
+## Apéndice: Resumen Visual de Componentes
+
+### Arquitectura Completa en Una Vista
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        API[REST/gRPC API]
+        CLI[CLI]
+    end
+    
+    subgraph "Application Layer"
+        SE[SagaEngine]
+    end
+    
+    subgraph "Domain Layer"
+        WF[Workflows]
+        AC[Activities]
+        EV[Events]
+        CP[Compensation]
+    end
+    
+    subgraph "Ports Layer"
+        ES[EventStore Port]
+        TQ[TaskQueue Port]
+        TS[TimerStore Port]
+    end
+    
+    subgraph "Adapters Layer"
+        PGE[Postgres Adapter]
+        NAT[NATS Adapter]
+        INM[InMemory Adapter]
+    end
+    
+    API --> SE
+    CLI --> SE
+    SE --> WF
+    SE --> AC
+    WF --> EV
+    AC --> EV
+    WF --> CP
+    
+    WF --> ES
+    AC --> TQ
+    CP --> TS
+    
+    ES <--> PGE
+    TQ <--> NAT
+    TS <--> INM
+```
+
+---
+
+*Document Version: 2.0.0*
 *Format: Mermaid.js*
-*Generated: 2026-01-27*
+*Generated: 2026-01-28*
+*Language: English with bilingual labels for domain concepts*

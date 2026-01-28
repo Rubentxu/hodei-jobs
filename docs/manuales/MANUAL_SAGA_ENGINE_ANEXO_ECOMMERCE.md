@@ -1,29 +1,72 @@
 # Saga Engine V4 - Anexo: Ejemplo E-Commerce
 
-## Ventas Online con Arquitectura DDD y Optimización de Código
+## Tutorial Completo: Construyendo un Sistema de Ventas Online con Saga Engine
 
 ---
 
-## 1. Introducción al Ejemplo
-
-Este anexo presenta un **sistema de ventas online completo** implementado con Saga Engine V4, aplicando principios DDD para maximizar la modularidad y minimizar duplicidades.
-
-### Objetivos de Diseño
-
-1. **DRY (Don't Repeat Yourself)**: Reutilizar eventos y comandos genéricos
-2. **Separación de Responsabilidades**: Commands vs Events vs Activities
-3. **Perspectivas Múltiples**: API, Consola, Admin
-4. **Compensación Elegante**: Rollback automático sin boilerplate
+> **¿Qué es este documento?**
+> Este anexo presenta un **sistema de ventas online completo** implementado con Saga Engine V4. A diferencia de los otros manuales que explican conceptos teóricos, aquí verás cómo aplicar todos esos conceptos en un caso real y concreto.
+>
+> **Lo que aprenderás**:
+> - Cómo modelar un dominio de e-commerce con DDD
+> - Cómo diseñar eventos, commands y activities cohesivos
+> - Cómo implementar el patrón de compensación en un caso real
+> - Cómo estructurar el código para evitar duplicidades
+> - Perspectivas múltiples: API, Admin, CLI
 
 ---
 
-## 2. Contexto del Dominio (DDD)
+## Tabla de Contenidos
 
-### 2.1 Bounded Contexts del E-Commerce
+1. [Introducción: El Caso de Uso](#1-introducción-el-caso-de-uso)
+2. [Contexto del Dominio (DDD)](#2-contexto-del-dominio-ddd)
+3. [Catálogo de Eventos Unificados](#3-catálogo-de-eventos-unificados)
+4. [Commands: La Interfaz de Usuario del Dominio](#4-commands-la-interfaz-de-usuario-del-dominio)
+5. [Activities: Los Bloques de Construcción](#5-activities-los-bloques-de-construcción)
+6. [Workflow del Pedido: La Saga Completa](#6-workflow-del-pedido-la-saga-completa)
+7. [Command Handlers: Desacoplamiento](#7-command-handlers-desacoplamiento)
+8. [Perspectivas Múltiples](#8-perspectivas-múltiples)
+9. [Resumen de Optimizaciones](#9-resumen-de-optimizaciones)
+10. [Código Completo de Referencia](#10-código-completo-de-referencia)
+
+---
+
+## 1. Introducción: El Caso de Uso
+
+### 1.1 Escenario: Procesamiento de Pedidos Online
+
+Imagina que estás construyendo un sistema de comercio electrónico. Cuando un cliente realiza una compra, el sistema debe:
+
+```mermaid
+flowchart LR
+    subgraph "Flujo de un pedido"
+        A[Cliente<br/>selecciona productos] --> B[Carrito<br/>de compra]
+        B --> C[Checkout<br/>con pago]
+        C --> D[Sistema<br/>procesa pedido]
+        D --> E[Inventario<br/>reservado]
+        E --> F[Pago<br/>cobrado]
+        F --> G[Envío<br/>programado]
+        G --> H[Cliente<br/>recibe producto]
+    end
+```
+
+**El desafío**: Cada paso puede fallar, y si falla uno después de que otros hayan succeedido, necesitamos revertir los cambios.
+
+### 1.2 Objetivos de Diseño
+
+| Objetivo | Descripción | Técnica |
+|----------|-------------|---------|
+| **DRY** | No repetir código | Traits genéricos, composición |
+| **Cohesión** | Cada componente tiene una responsabilidad clara | DDD, Bounded Contexts |
+| **Compensación** | Rollback automático | Compensation Pattern |
+| **Testabilidad** | Fácil de probar | Puertos y adaptadores |
+
+### 1.3 Arquitectura General del Sistema
 
 ```mermaid
 graph TB
     subgraph "E-Commerce Platform"
+        
         subgraph "Sales Context"
             OC[Order Context]
             PC[Payment Context]
@@ -38,7 +81,6 @@ graph TB
         
         subgraph "Product Context"
             PRC[Product Context]
-            PRC2[Catalog Context]
         end
     end
     
@@ -54,7 +96,41 @@ graph TB
     style SC fill:#fff3e0
 ```
 
-### 2.2 Aggregates del Dominio
+---
+
+## 2. Contexto del Dominio (DDD)
+
+### 2.1 Bounded Contexts del E-Commerce
+
+En DDD, un **Bounded Context** es un límite dentro del cual existe un modelo de dominio consistente. Cada contexto tiene su propio "idioma" (lenguaje ubicuo).
+
+```mermaid
+graph TB
+    subgraph "Sales Bounded Context (El Rey)"
+        O[Order<br/>"Una orden tiene items y un total"]
+        P[Payment<br/>"Un pago tiene estado y monto"]
+    end
+    
+    subgraph "Inventory Bounded Context"
+        I[Inventory<br/>"El inventario tiene stock disponible"]
+        R[Reservation<br/>"Una reserva bloquea stock por tiempo"]
+    end
+    
+    subgraph "Shipping Bounded Context"
+        S[Shipment<br/>"Un envío tiene tracking number"]
+        C[Carrier<br/>"El carrier entrega el paquete"]
+    end
+    
+    O --> P : "procesa"
+    O --> I : "reserva"
+    O --> S : "coordina"
+    
+    style O fill:#e3f2fd
+    style I fill:#e8f5e8
+    style S fill:#fff3e0
+```
+
+### 2.2 Agregados del Dominio
 
 ```mermaid
 classDiagram
@@ -111,21 +187,74 @@ classDiagram
     Order "1" --> "1" Shipment : ships to
 ```
 
+### 2.3 Lenguaje Ubicuo
+
+| Término | Contexto | Definición |
+|---------|----------|------------|
+| **Order** | Sales | El pedido completo con todos los items |
+| **Payment** | Sales/Payment | El cobro al cliente |
+| **Reservation** | Inventory | Bloqueo temporal de stock |
+| **Shipment** | Shipping | El envío físico al cliente |
+
 ---
 
 ## 3. Catálogo de Eventos Unificados
 
-### 3.1 Event Structure (Reutilizable)
+### 3.1 Principios de Diseño de Eventos
+
+Los eventos representan **algo que ya ocurrió**. Se nombran en pasado y contienen toda la información necesaria.
+
+```mermaid
+flowchart LR
+    subgraph "Command (verbo)"
+        C[CreateOrder<br/>"Crea una orden"]
+    end
+    
+    subgraph "Event (pasado)"
+        E[OrderCreated<br/>"La orden fue creada"]
+    end
+    
+    C --> E
+```
+
+### 3.2 Estructura Base de Eventos
 
 ```rust
-use saga_engine_core::event::{EventCategory, EventType};
+// ═══════════════════════════════════════════════════════════════
+// PAYLOAD BASE - Reutilizable en todo el sistema
+// ═══════════════════════════════════════════════════════════════
 
-// ============================================================================
+/// Metadata común para todos los eventos
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseEventPayload {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub correlation_id: Option<String>,  // Para tracing
+    pub trace_id: Option<String>,
+    pub source: String,  // Quién generó el evento
+}
+
+impl Default for BaseEventPayload {
+    fn default() -> Self {
+        Self {
+            timestamp: chrono::Utc::now(),
+            correlation_id: None,
+            trace_id: None,
+            source: "ecommerce".to_string(),
+        }
+    }
+}
+```
+
+### 3.3 Tipos de Eventos Genéricos (DomainEventType)
+
+Estos eventos son reutilizables en cualquier dominio:
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // SHARED EVENT TYPES - Reutilizables en todo el sistema
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
-/// Eventos base genéricos para cualquier dominio
-#[derive(Debug, Clone, Copy, PartialEq, Eq, saga_engine_core::event::Serialize, saga_engine_core::event::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainEventType {
     // Estados del ciclo de vida
     Created,
@@ -151,11 +280,6 @@ pub enum DomainEventType {
 }
 
 impl DomainEventType {
-    pub fn to_event_type(&self, prefix: &str) -> EventType {
-        let name = format!("{}_{}", prefix, self.as_str());
-        EventType::from_str(&name).unwrap_or(EventType::MarkerRecorded)
-    }
-    
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Created => "created",
@@ -175,12 +299,16 @@ impl DomainEventType {
         }
     }
 }
+```
 
-// ============================================================================
+### 3.4 Eventos Específicos del E-Commerce
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // ORDER EVENTS - Especializados pero coherentes
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, saga_engine_core::event::Serialize, saga_engine_core::event::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderEventType {
     OrderCreated,
     ItemAdded,
@@ -232,49 +360,12 @@ impl OrderEventType {
 }
 ```
 
-### 3.2 Payload Structure (Type-Safe)
+### 3.5 Payloads Tipados
 
 ```rust
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use saga_engine_core::event::SagaId;
-
-// ============================================================================
-// GENERIC PAYLOADS - Reutilizables
-// ============================================================================
-
-/// Payload base para eventos con metadata común
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BaseEventPayload {
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub correlation_id: Option<String>,
-    pub trace_id: Option<String>,
-    pub source: String,
-}
-
-impl Default for BaseEventPayload {
-    fn default() -> Self {
-        Self {
-            timestamp: chrono::Utc::now(),
-            correlation_id: None,
-            trace_id: None,
-            source: "ecommerce".to_string(),
-        }
-    }
-}
-
-/// Payload para eventos de creación
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatedEventPayload<T: Serialize> {
-    #[serde(flatten)]
-    pub base: BaseEventPayload,
-    pub entity_id: String,
-    pub data: T,
-}
-
-// ============================================================================
-// ORDER PAYLOADS - Especializados
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
+// ORDER PAYLOADS - Type-safe payloads
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderCreatedPayload {
@@ -284,16 +375,6 @@ pub struct OrderCreatedPayload {
     pub total_amount: Decimal,
     pub currency: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ItemAddedPayload {
-    pub order_id: String,
-    pub product_id: String,
-    pub product_name: String,
-    pub quantity: u32,
-    pub unit_price: Decimal,
-    pub subtotal: Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,10 +408,14 @@ pub struct ShippingScheduledPayload {
     pub tracking_number: String,
     pub estimated_delivery: chrono::DateTime<chrono::Utc>,
 }
+```
 
-// ============================================================================
+### 3.6 Payloads de Compensación
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // COMPENSATION PAYLOADS - Estructura unificada
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompensationActionPayload {
@@ -352,18 +437,36 @@ pub enum CompensationResult {
 
 ---
 
-## 4. Commands Unificados
+## 4. Commands: La Interfaz de Usuario del Dominio
 
-### 4.1 Command Bus Architecture
+### 4.1 ¿Qué es un Command?
+
+Un **Command** representa **algo que queremos que ocurra**. A diferencia de los eventos (pasado), los commands son intención (futuro).
+
+```mermaid
+flowchart LR
+    subgraph "API Layer"
+        API[REST API<br/>POST /orders]
+    end
+    
+    subgraph "Command"
+        CMD[CreateOrderCommand<br/>"Quiero crear una orden"]
+    end
+    
+    subgraph "Domain"
+        E[OrderCreated Event<br/>"La orden fue creada"]
+    end
+    
+    API --> CMD
+    CMD --> E
+```
+
+### 4.2 Arquitectura del Command Bus
 
 ```rust
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
-
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // COMMAND BUS - Framework agnóstico
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 /// Trait base para todos los commands
 pub trait Command: Send + Sync + Debug {
@@ -392,10 +495,14 @@ pub struct ValidationError {
 pub trait CommandHandler<C: Command>: Send + Sync {
     async fn handle(&self, command: C) -> CommandResult<C::Result>;
 }
+```
 
-// ============================================================================
-// ORDER COMMANDS - Especializados pero coherentes
-// ============================================================================
+### 4.3 Command de Creación de Orden
+
+```rust
+// ═══════════════════════════════════════════════════════════════
+// ORDER COMMANDS
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateOrderCommand {
@@ -416,6 +523,7 @@ impl Command for CreateOrderCommand {
     }
 }
 
+// Inputs tipados
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderItemInput {
     pub product_id: String,
@@ -436,10 +544,14 @@ pub struct PaymentMethodInput {
     pub method: String,
     pub token: String,
 }
+```
 
-// ============================================================================
-// PAYMENT COMMANDS - Reutilizables
-// ============================================================================
+### 4.4 Command de Pago
+
+```rust
+// ═══════════════════════════════════════════════════════════════
+// PAYMENT COMMANDS
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessPaymentCommand {
@@ -476,10 +588,14 @@ pub enum PaymentStatus {
     Pending,
     Refunded,
 }
+```
 
-// ============================================================================
-// INVENTORY COMMANDS - Reutilizables
-// ============================================================================
+### 4.5 Command de Inventario
+
+```rust
+// ═══════════════════════════════════════════════════════════════
+// INVENTORY COMMANDS
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReserveInventoryCommand {
@@ -518,89 +634,31 @@ pub struct ReservationOutcome {
     pub success: bool,
     pub error: Option<String>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleaseInventoryCommand {
-    pub order_id: String,
-    pub reservation_id: String,
-    pub reason: String,
-}
-
-impl Command for ReleaseInventoryCommand {
-    type Result = ReleaseResult;
-    fn command_type(&self) -> &'static str {
-        "inventory.release"
-    }
-    fn aggregate_id(&self) -> &str {
-        &self.order_id
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleaseResult {
-    pub released: bool,
-    pub message: String,
-}
-
-// ============================================================================
-// SHIPPING COMMANDS - Reutilizables
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScheduleShippingCommand {
-    pub order_id: String,
-    pub address: AddressInput,
-    pub items: Vec<ShippingItemInput>,
-    pub preferences: ShippingPreferences,
-}
-
-impl Command for ScheduleShippingCommand {
-    type Result = ShippingScheduleResult;
-    fn command_type(&self) -> &'static str {
-        "shipping.schedule"
-    }
-    fn aggregate_id(&self) -> &str {
-        &self.order_id
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShippingItemInput {
-    pub product_id: String,
-    pub quantity: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShippingPreferences {
-    pub carrier: Option<String>,
-    pub express: bool,
-    pub signature_required: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShippingScheduleResult {
-    pub shipment_id: String,
-    pub tracking_number: String,
-    pub carrier: String,
-    pub estimated_delivery: chrono::DateTime<chrono::Utc>,
-}
 ```
 
 ---
 
-## 5. Actividades Optimizadas
+## 5. Activities: Los Bloques de Construcción
 
-### 5.1 Activity Trait Base
+### 5.1 ¿Qué es una Activity?
+
+Una **Activity** es la unidad más pequeña de trabajo. Es una operación atómica que puede ejecutarse independientemente.
+
+```mermaid
+flowchart LR
+    subgraph "Activity"
+        I[Input] --> A[execute]
+        A -->|Éxito| O[Output]
+        A -->|Error| E[Error]
+    end
+```
+
+### 5.2 Trait Base Extendido para E-Commerce
 
 ```rust
-use async_trait::async_trait;
-use saga_engine_core::workflow::Activity;
-use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
-
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // ACTIVITY TRAIT - Extendido para el dominio e-commerce
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 /// Activity base con capacidades de compensación automática
 #[async_trait]
@@ -618,10 +676,14 @@ pub trait EcommerceActivity<I: Serialize + Deserialize<'static> + Send + Clone, 
         None
     }
 }
+```
 
-// ============================================================================
+### 5.3 Activity de Procesamiento de Pago
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // PAYMENT ACTIVITIES
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct ProcessPaymentActivity;
@@ -629,14 +691,20 @@ pub struct ProcessPaymentActivity;
 #[async_trait]
 impl EcommerceActivity<ProcessPaymentInput, PaymentOutput> for ProcessPaymentActivity {
     const TYPE_ID: &'static str = "payment.process";
+    
+    /// ⭐ Esta actividad puede ser compensada con un reembolso
     const COMPENSATION_ACTIVITY: Option<&'static str> = Some("payment.refund");
     
     async fn execute(&self, input: ProcessPaymentInput) -> Result<PaymentOutput, PaymentError> {
-        // Implementación del pago
-        // ... integración con gateway de pago
+        // ════════════════════════════════════════════════════════════
+        // LÓGICA REAL: Aquí integrarías con el gateway de pago
+        // ════════════════════════════════════════════════════════════
+        
+        // Simular llamada al gateway
+        let transaction_id = format!("txn_{}", uuid::Uuid::new_v4());
         
         Ok(PaymentOutput {
-            transaction_id: format!("txn_{}", uuid::Uuid::new_v4()),
+            transaction_id,
             status: PaymentStatus::Approved,
             approved_amount: input.amount,
             processed_at: chrono::Utc::now(),
@@ -670,10 +738,14 @@ pub enum PaymentError {
     #[error("Invalid token: {0}")]
     InvalidToken(String),
 }
+```
 
-// ============================================================================
+### 5.4 Activity de Reembolso (Compensación)
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // REFUND ACTIVITY - Compensación de Payment
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct RefundPaymentActivity;
@@ -681,10 +753,11 @@ pub struct RefundPaymentActivity;
 #[async_trait]
 impl EcommerceActivity<RefundInput, RefundOutput> for RefundPaymentActivity {
     const TYPE_ID: &'static str = "payment.refund";
+    /// ⭐ El reembolso no tiene compensación (no compensamos reembolsos)
+    const COMPENSATION_ACTIVITY: Option<&'static str> = None;
     
     async fn execute(&self, input: RefundInput) -> Result<RefundOutput, RefundError> {
-        // Implementación del reembolso
-        // Usa transaction_id del pago original
+        // Integración real con gateway de pago para reembolsar
         
         Ok(RefundOutput {
             refund_id: format!("ref_{}", uuid::Uuid::new_v4()),
@@ -727,10 +800,14 @@ pub enum RefundError {
     #[error("Refund failed: {0}")]
     RefundFailed(String),
 }
+```
 
-// ============================================================================
+### 5.5 Activity de Reserva de Inventario
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // INVENTORY ACTIVITIES
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct ReserveInventoryActivity;
@@ -738,6 +815,8 @@ pub struct ReserveInventoryActivity;
 #[async_trait]
 impl EcommerceActivity<ReserveInventoryInput, ReserveInventoryOutput> for ReserveInventoryActivity {
     const TYPE_ID: &'static str = "inventory.reserve";
+    
+    /// ⭐ Esta actividad puede ser compensada liberando la reserva
     const COMPENSATION_ACTIVITY: Option<&'static str> = Some("inventory.release");
     
     async fn execute(&self, input: ReserveInventoryInput) -> Result<ReserveInventoryOutput, InventoryError> {
@@ -757,9 +836,12 @@ impl EcommerceActivity<ReserveInventoryInput, ReserveInventoryOutput> for Reserv
         }))
     }
     
-    async fn reserve_items(&self, items: &[InventoryReservationInput], expires_secs: u32) 
+    async fn reserve_items(&self, items: &[InventoryReservationInput], _expires_secs: u32) 
         -> Result<Vec<ReservationOutcome>, InventoryError> {
-        // ... lógica de reserva de inventario
+        // ════════════════════════════════════════════════════════════
+        // LÓGICA REAL: Aquí verificarías stock y harías la reserva
+        // ════════════════════════════════════════════════════════════
+        
         Ok(items.iter().map(|item| ReservationOutcome {
             product_id: item.product_id.clone(),
             reserved_quantity: item.quantity,
@@ -800,10 +882,14 @@ pub enum InventoryError {
     #[error("Reservation failed: {0}")]
     ReservationFailed(String),
 }
+```
 
-// ============================================================================
+### 5.6 Activity de Liberación de Inventario (Compensación)
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // RELEASE INVENTORY ACTIVITY - Compensación
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct ReleaseInventoryActivity;
@@ -811,9 +897,13 @@ pub struct ReleaseInventoryActivity;
 #[async_trait]
 impl EcommerceActivity<ReleaseInventoryInput, ReleaseInventoryOutput> for ReleaseInventoryActivity {
     const TYPE_ID: &'static str = "inventory.release";
+    /// ⭐ La liberación no tiene compensación
+    const COMPENSATION_ACTIVITY: Option<&'static str> = None;
     
     async fn execute(&self, input: ReleaseInventoryInput) -> Result<ReleaseInventoryOutput, InventoryError> {
-        // Liberar inventario reservado
+        // ════════════════════════════════════════════════════════════
+        // LÓGICA REAL: Aquí liberarías la reserva en la base de datos
+        // ════════════════════════════════════════════════════════════
         
         Ok(ReleaseInventoryOutput {
             released: true,
@@ -835,10 +925,14 @@ pub struct ReleaseInventoryOutput {
     pub reservation_id: String,
     pub released_at: chrono::DateTime<chrono::Utc>,
 }
+```
 
-// ============================================================================
+### 5.7 Activity de Envío
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // SHIPPING ACTIVITIES
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct ScheduleShippingActivity;
@@ -846,10 +940,14 @@ pub struct ScheduleShippingActivity;
 #[async_trait]
 impl EcommerceActivity<ScheduleShippingInput, ScheduleShippingOutput> for ScheduleShippingActivity {
     const TYPE_ID: &'static str = "shipping.schedule";
+    
+    /// ⭐ El envío puede ser cancelado
     const COMPENSATION_ACTIVITY: Option<&'static str> = Some("shipping.cancel");
     
     async fn execute(&self, input: ScheduleShippingInput) -> Result<ScheduleShippingOutput, ShippingError> {
-        // Integración con carriers
+        // ════════════════════════════════════════════════════════════
+        // LÓGICA REAL: Aquí integrarías con el carrier (FedEx, UPS, etc.)
+        // ════════════════════════════════════════════════════════════
         
         Ok(ScheduleShippingOutput {
             shipment_id: format!("ship_{}", uuid::Uuid::new_v4()),
@@ -870,6 +968,19 @@ pub struct ScheduleShippingInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShippingItemInput {
+    pub product_id: String,
+    pub quantity: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShippingPreferences {
+    pub carrier: Option<String>,
+    pub express: bool,
+    pub signature_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleShippingOutput {
     pub shipment_id: String,
     pub tracking_number: String,
@@ -887,10 +998,14 @@ pub enum ShippingError {
     #[error("Shipping failed: {0}")]
     ShippingFailed(String),
 }
+```
 
-// ============================================================================
+### 5.8 Activity de Cancelación de Envío (Compensación)
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // CANCEL SHIPPING ACTIVITY - Compensación
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct CancelShippingActivity;
@@ -898,6 +1013,7 @@ pub struct CancelShippingActivity;
 #[async_trait]
 impl EcommerceActivity<CancelShippingInput, CancelShippingOutput> for CancelShippingActivity {
     const TYPE_ID: &'static str = "shipping.cancel";
+    const COMPENSATION_ACTIVITY: Option<&'static str> = None;
     
     async fn execute(&self, input: CancelShippingInput) -> Result<CancelShippingOutput, ShippingError> {
         // Cancelar shipment con carrier
@@ -929,26 +1045,19 @@ pub struct CancelShippingOutput {
 
 ---
 
-## 6. Workflow del Pedido (DurableWorkflow)
+## 6. Workflow del Pedido: La Saga Completa
 
-### 6.1 Order Saga Definition
+### 6.1 Definición del Workflow
 
 ```rust
-use async_trait::async_trait;
-use saga_engine_core::workflow::{DurableWorkflow, WorkflowContext, WorkflowPaused};
-use saga_engine_core::event::{SagaId, EventType, EventCategory, HistoryEvent, EventId};
-use saga_engine_core::compensation::{CompensationTracker, CompletedStep};
-use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
-
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // ORDER WORKFLOW - Saga principal de procesamiento de pedidos
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub struct OrderProcessingWorkflow;
 
-#[async_trait]
+#[async_trait::async_trait]
 impl DurableWorkflow for OrderProcessingWorkflow {
     const TYPE_ID: &'static str = "order.processing";
     const VERSION: u32 = 1;
@@ -962,20 +1071,26 @@ impl DurableWorkflow for OrderProcessingWorkflow {
         ctx: &mut WorkflowContext,
         input: Self::Input,
     ) -> Result<Self::Output, Self::Error> {
-        // Inicializar tracker de compensación
+        // ════════════════════════════════════════════════════════════
+        // INICIALIZACIÓN
+        // ════════════════════════════════════════════════════════════
+        
+        // ⭐ Inicializar tracker de compensación con auto-compensate
         ctx.init_compensation_tracker_with_auto_compensate(true);
         
-        // =========================================================================
-        // STEP 1: Validar y crear pedido
-        // =========================================================================
-        info!("[Order {}] Processing order for customer {}", input.order_id, input.customer_id);
+        tracing::info!("[Order {}] Processing order for customer {}", input.order_id, input.customer_id);
+        
+        // ════════════════════════════════════════════════════════════
+        // STEP 1: Crear orden (solo metadata, no actividad)
+        // ════════════════════════════════════════════════════════════
         
         let order = self.create_order(&input).await?;
         ctx.set_step_output("order".to_string(), serde_json::json!(order));
         
-        // =========================================================================
-        // STEP 2: Reservar inventario (CON COMPENSACIÓN AUTOMÁTICA)
-        // =========================================================================
+        // ════════════════════════════════════════════════════════════
+        // STEP 2: Reservar inventario (CON COMPENSACIÓN)
+        // ════════════════════════════════════════════════════════════
+        
         let inventory_result = ctx
             .execute_activity(
                 &ReserveInventoryActivity,
@@ -988,7 +1103,7 @@ impl DurableWorkflow for OrderProcessingWorkflow {
             .await
             .map_err(|e| OrderWorkflowError::ActivityFailed(e.to_string()))?;
         
-        // Trackear para compensación automática
+        // ⭐ Trackear para compensación automática
         ctx.track_compensatable_step_auto(
             "reserve-inventory",
             "ReserveInventoryActivity",
@@ -997,11 +1112,12 @@ impl DurableWorkflow for OrderProcessingWorkflow {
             1,
         );
         
-        info!("[Order {}] Inventory reserved: {}", input.order_id, inventory_result.reservation_id);
+        tracing::info!("[Order {}] Inventory reserved: {}", input.order_id, inventory_result.reservation_id);
         
-        // =========================================================================
-        // STEP 3: Procesar pago (CON COMPENSACIÓN AUTOMÁTICA)
-        // =========================================================================
+        // ════════════════════════════════════════════════════════════
+        // STEP 3: Procesar pago (CON COMPENSACIÓN)
+        // ════════════════════════════════════════════════════════════
+        
         let payment_result = ctx
             .execute_activity(
                 &ProcessPaymentActivity,
@@ -1027,11 +1143,12 @@ impl DurableWorkflow for OrderProcessingWorkflow {
             2,
         );
         
-        info!("[Order {}] Payment completed: {}", input.order_id, payment_result.transaction_id);
+        tracing::info!("[Order {}] Payment completed: {}", input.order_id, payment_result.transaction_id);
         
-        // =========================================================================
-        // STEP 4: Programar envío
-        // =========================================================================
+        // ════════════════════════════════════════════════════════════
+        // STEP 4: Programar envío (CON COMPENSACIÓN)
+        // ════════════════════════════════════════════════════════════
+        
         let shipping_result = ctx
             .execute_activity(
                 &ScheduleShippingActivity,
@@ -1057,11 +1174,12 @@ impl DurableWorkflow for OrderProcessingWorkflow {
             3,
         );
         
-        info!("[Order {}] Shipping scheduled: {}", input.order_id, shipping_result.tracking_number);
+        tracing::info!("[Order {}] Shipping scheduled: {}", input.order_id, shipping_result.tracking_number);
         
-        // =========================================================================
+        // ════════════════════════════════════════════════════════════
         // COMPLETAR WORKFLOW
-        // =========================================================================
+        // ════════════════════════════════════════════════════════════
+        
         let output = OrderProcessingOutput {
             order_id: input.order_id.clone(),
             status: OrderStatus::Processing,
@@ -1073,7 +1191,7 @@ impl DurableWorkflow for OrderProcessingWorkflow {
             completed_at: chrono::Utc::now(),
         };
         
-        // Limpiar tracker (no hay compensación pendiente)
+        // Limpiar tracker (no hay compensación pendiente porque todo salió bien)
         ctx.compensation_tracker.take();
         
         Ok(output)
@@ -1082,7 +1200,7 @@ impl DurableWorkflow for OrderProcessingWorkflow {
 
 impl OrderProcessingWorkflow {
     async fn create_order(&self, input: &OrderProcessingInput) -> Result<OrderInfo, OrderWorkflowError> {
-        // Crear orden en base de datos
+        // Aquí crearías la orden en tu base de datos
         Ok(OrderInfo {
             order_id: input.order_id.clone(),
             customer_id: input.customer_id.clone(),
@@ -1102,10 +1220,14 @@ impl OrderProcessingWorkflow {
             .collect()
     }
 }
+```
 
-// ============================================================================
+### 6.2 Input/Output del Workflow
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // INPUT/OUTPUT TYPES
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderProcessingInput {
@@ -1153,9 +1275,9 @@ pub enum OrderStatus {
     Failed,
 }
 
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // WORKFLOW ERROR - Unificado
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrderWorkflowError {
@@ -1179,20 +1301,44 @@ pub enum OrderWorkflowError {
 }
 ```
 
+### 6.3 Flujo Visual del Workflow
+
+```mermaid
+flowchart TD
+    subgraph "Order Processing Workflow"
+        A[Start] --> B[Crear Order<br/>meta]
+        B --> C[Reservar Inventory<br/>CON COMPENSACIÓN]
+        C --> D[Procesar Pago<br/>CON COMPENSACIÓN]
+        D --> E[Programar Envío<br/>CON COMPENSACIÓN]
+        E --> F[End<br/>✓ Orden Completa]
+    end
+    
+    subgraph "Compensation Path (si falla)"
+        C -->|Falla| C1[Release Inventory]
+        D -->|Falla| D1[Refund Payment]
+        D1 --> C1
+        E -->|Falla| E1[Cancel Shipping]
+        E1 --> D1
+    end
+    
+    style C fill:#c8e6c9
+    style D fill:#c8e6c9
+    style E fill:#c8e6c9
+    style C1 fill:#ffcdd2
+    style D1 fill:#ffcdd2
+    style E1 fill:#ffcdd2
+```
+
 ---
 
-## 7. Command Handlers (Optimizados)
+## 7. Command Handlers: Desacoplamiento
 
-### 7.1 Unified Command Handler
+### 7.1 Un Command Handler Unificado
 
 ```rust
-use async_trait::async_trait;
-use saga_engine_core::{SagaEngine, SagaEngineConfig};
-use std::sync::Arc;
-
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // COMMAND HANDLER FACTORY - Reduce boilerplate
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 pub struct EcommerceCommandHandler {
     saga_engine: Arc<SagaEngine<Es, Tq, Ts>>,
@@ -1207,7 +1353,7 @@ impl EcommerceCommandHandler {
         Self { saga_engine, activity_registry }
     }
     
-    /// Registrar todas las actividades
+    /// Registrar todas las actividades una vez
     pub fn register_activities(&self) {
         self.activity_registry.register_activity(ProcessPaymentActivity);
         self.activity_registry.register_activity(RefundPaymentActivity);
@@ -1217,15 +1363,22 @@ impl EcommerceCommandHandler {
         self.activity_registry.register_activity(CancelShippingActivity);
     }
 }
+```
 
-// ============================================================================
+### 7.2 Handler para Crear Orden
+
+```rust
+// ═══════════════════════════════════════════════════════════════
 // ORDER COMMAND HANDLER
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl CommandHandler<CreateOrderCommand> for EcommerceCommandHandler {
     async fn handle(&self, command: CreateOrderCommand) -> CommandResult<String> {
-        // Validación
+        // ════════════════════════════════════════════════════════════
+        // VALIDACIÓN
+        // ════════════════════════════════════════════════════════════
+        
         if command.items.is_empty() {
             return CommandResult::ValidationError(vec![ValidationError {
                 field: "items",
@@ -1234,13 +1387,18 @@ impl CommandHandler<CreateOrderCommand> for EcommerceCommandHandler {
             }]);
         }
         
-        // Calcular total
+        // ════════════════════════════════════════════════════════════
+        // LÓGICA DE NEGOCIO
+        // ════════════════════════════════════════════════════════════
+        
         let total_amount = self.calculate_total(&command.items).await?;
         
-        // Crear saga
+        // ════════════════════════════════════════════════════════════
+        // INICIAR WORKFLOW
+        // ════════════════════════════════════════════════════════════
+        
         let saga_id = SagaId::new();
         
-        // Preparar input del workflow
         let workflow_input = OrderProcessingInput {
             order_id: saga_id.0.clone(),
             customer_id: command.customer_id,
@@ -1252,7 +1410,6 @@ impl CommandHandler<CreateOrderCommand> for EcommerceCommandHandler {
             express_shipping: false,
         };
         
-        // Iniciar workflow
         self.saga_engine
             .start_workflow::<OrderProcessingWorkflow>(saga_id.clone(), workflow_input)
             .await
@@ -1265,18 +1422,25 @@ impl CommandHandler<CreateOrderCommand> for EcommerceCommandHandler {
 impl EcommerceCommandHandler {
     async fn calculate_total(&self, items: &[OrderItemInput]) -> Result<Decimal, CommandResult> {
         // Calcular total desde base de datos de productos
-        Ok(Decimal::from(100)) // Simplified
+        Ok(Decimal::from(100)) // Simplificado
     }
 }
+```
 
-// ============================================================================
-// PAYMENT COMMAND HANDLER
-// ============================================================================
+### 7.3 Handler para Procesar Pago Directo
+
+```rust
+// ═══════════════════════════════════════════════════════════════
+// PAYMENT COMMAND HANDLER - Ejecución directa (sin saga)
+// ═══════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl CommandHandler<ProcessPaymentCommand> for EcommerceCommandHandler {
     async fn handle(&self, command: ProcessPaymentCommand) -> CommandResult<PaymentResult> {
-        // Ejecutar actividad directamente (sin saga)
+        // ════════════════════════════════════════════════════════════
+        // EJECUTAR ACTIVIDAD DIRECTAMENTE (sin saga)
+        // ════════════════════════════════════════════════════════════
+        
         let activity = self.activity_registry
             .get_activity("payment.process")
             .ok_or_else(|| CommandResult::Failure("Activity not found".to_string()))?;
@@ -1303,42 +1467,14 @@ impl CommandHandler<ProcessPaymentCommand> for EcommerceCommandHandler {
         })
     }
 }
+```
 
-// ============================================================================
-// INVENTORY COMMAND HANDLER
-// ============================================================================
+### 7.4 Handler para Cancelar Orden (con Compensación)
 
-#[async_trait]
-impl CommandHandler<ReserveInventoryCommand> for EcommerceCommandHandler {
-    async fn handle(&self, command: ReserveInventoryCommand) -> CommandResult<InventoryReservationResult> {
-        let activity = self.activity_registry
-            .get_activity("inventory.reserve")
-            .ok_or_else(|| CommandResult::Failure("Activity not found".to_string()))?;
-        
-        let input = ReserveInventoryInput {
-            order_id: command.order_id,
-            items: command.items,
-            expires_in_seconds: command.expires_in_seconds,
-        };
-        
-        let output = activity.execute_dyn(serde_json::to_value(input).unwrap())
-            .await
-            .map_err(|e| CommandResult::Failure(e.to_string()))?;
-        
-        let reserve_output: ReserveInventoryOutput = serde_json::from_value(output)
-            .map_err(|e| CommandResult::Failure(e.to_string()))?;
-        
-        CommandResult::Success(InventoryReservationResult {
-            reservation_id: reserve_output.reservation_id,
-            reservations: reserve_output.reservations,
-            expires_at: reserve_output.expires_at,
-        })
-    }
-}
-
-// ============================================================================
+```rust
+// ═══════════════════════════════════════════════════════════════
 // CANCEL ORDER HANDLER - Con compensación automática
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CancelOrderCommand {
@@ -1360,15 +1496,24 @@ impl Command for CancelOrderCommand {
 #[async_trait]
 impl CommandHandler<CancelOrderCommand> for EcommerceCommandHandler {
     async fn handle(&self, command: CancelOrderCommand) -> CommandResult<CancelOrderResult> {
-        // Obtener historial del saga
+        // ════════════════════════════════════════════════════════════
+        // OBTENER HISTORIAL DEL SAGA
+        // ════════════════════════════════════════════════════════════
+        
         let saga_id = SagaId(command.order_id.clone());
         let history = self.saga_engine.event_store().get_history(&saga_id).await
             .map_err(|e| CommandResult::Failure(e.to_string()))?;
         
-        // Extraer steps completados del historial
+        // ════════════════════════════════════════════════════════════
+        // EXTRAER STEPS COMPLETADOS
+        // ════════════════════════════════════════════════════════════
+        
         let completed_steps = self.extract_completed_steps(&history)?;
         
-        // Ejecutar compensaciones en orden inverso
+        // ════════════════════════════════════════════════════════════
+        // EJECUTAR COMPENSACIONES EN ORDEN INVERSO (LIFO)
+        // ════════════════════════════════════════════════════════════
+        
         let mut compensation_results = Vec::new();
         
         for step in completed_steps.into_iter().rev() {
@@ -1378,7 +1523,10 @@ impl CommandHandler<CancelOrderCommand> for EcommerceCommandHandler {
             }
         }
         
-        // Verificar si todas las compensaciones fueron exitosas
+        // ════════════════════════════════════════════════════════════
+        // RESULTADO
+        // ════════════════════════════════════════════════════════════
+        
         let all_success = compensation_results.iter().all(|r| r.is_success());
         
         CommandResult::Success(CancelOrderResult {
@@ -1393,7 +1541,7 @@ impl CommandHandler<CancelOrderCommand> for EcommerceCommandHandler {
     
     fn extract_completed_steps(&self, history: &[HistoryEvent]) -> Result<Vec<CompletedStep>, CommandResult> {
         // Extraer steps completados del historial de eventos
-        Ok(vec![]) // Simplified
+        Ok(vec![]) // Simplificado
     }
     
     async fn execute_compensation(&self, step: &CompletedStep, reason: &str) -> CompensationResult {
@@ -1417,15 +1565,12 @@ pub struct CancelOrderResult {
 
 ## 8. Perspectivas Múltiples
 
-### 8.1 API REST Perspective
+### 8.1 API REST (Para Clientes)
 
 ```rust
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // REST API HANDLERS - Para clientes externos
-// ============================================================================
-
-use actix_web::{web, HttpResponse, Responder};
-use serde::Deserialize;
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Deserialize)]
 pub struct CreateOrderRequest {
@@ -1513,12 +1658,12 @@ pub struct CancelOrderRequest {
 }
 ```
 
-### 8.2 Admin Console Perspective
+### 8.2 Panel de Administración
 
 ```rust
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // ADMIN API - Para panel de administración
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[get("/admin/api/v1/orders")]
 async fn list_orders(
@@ -1544,7 +1689,6 @@ async fn retry_order(
     saga_engine: web::Data<Arc<SagaEngine<Es, Tq, Ts>>>,
     order_id: web::Path<String>,
 ) -> impl Responder {
-    let saga_id = SagaId(order_id.into_inner());
     // Re-ejecutar desde el último punto de fallo
     HttpResponse::Ok().json(json!({"message": "Retry initiated"}))
 }
@@ -1554,17 +1698,16 @@ async fn get_compensation_status(
     saga_engine: web::Data<Arc<SagaEngine<Es, Tq, Ts>>>,
     order_id: web::Path<String>,
 ) -> impl Responder {
-    // Obtener estado de compensaciones
     HttpResponse::Ok().json(json!({}))
 }
 ```
 
-### 8.3 Customer CLI Perspective
+### 8.3 CLI para Clientes
 
 ```rust
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 // CLI COMMANDS - Para clientes
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════
 
 #[derive(Parser)]
 #[command(name = "order")]
@@ -1643,15 +1786,15 @@ impl OrderCommands {
 
 ### 9.2 Patrones Aplicados
 
-| Patrón | Aplicación |
-|--------|------------|
-| **Template Method** | `EcommerceActivity` define estructura, implementaciones especializadas |
-| **Strategy** | `DomainEventType` con conversiones dinámicas |
-| **Command** | Commands tipados con `CommandHandler<C>` genérico |
-| **Event Sourcing** | Todos los cambios producen eventos |
-| **Compensation** | Auto-tracking via `track_compensatable_step_auto()` |
+| Patrón | Aplicación | Beneficio |
+|--------|------------|-----------|
+| **Template Method** | `EcommerceActivity` define estructura, implementaciones especializadas | DRY |
+| **Strategy** | `DomainEventType` con conversiones dinámicas | Flexibilidad |
+| **Command** | Commands tipados con `CommandHandler<C>` genérico | Desacoplamiento |
+| **Event Sourcing** | Todos los cambios producen eventos | Auditoría, replay |
+| **Compensation** | Auto-tracking via `track_compensatable_step_auto()` | Rollback automático |
 
-### 9.3 Archivos del Ejemplo
+### 9.3 Estructura de Archivos Final
 
 ```
 ecommerce-example/
@@ -1696,6 +1839,139 @@ ecommerce-example/
 
 ---
 
-*Document Version: 1.0.0*
+## 10. Código Completo de Referencia
+
+### 10.1 Resumen Visual de la Arquitectura
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        API[REST API]
+        CLI[CLI]
+        ADMIN[Admin Panel]
+    end
+    
+    subgraph "Command Layer"
+        CMD[Commands<br/>CreateOrder, Cancel, etc.]
+        HAND[CommandHandler<br/>Generic C]
+    end
+    
+    subgraph "Workflow Layer"
+        WF[OrderProcessingWorkflow<br/>Saga Orchestrator]
+        CT[CompensationTracker<br/>Auto-rollback]
+    end
+    
+    subgraph "Activity Layer"
+        PA[ProcessPayment]
+        RI[ReserveInventory]
+        SS[ScheduleShipping]
+    end
+    
+    subgraph "Event Layer"
+        ES[Event Store<br/>Append-only]
+        EV[Events<br/>OrderCreated, etc.]
+    end
+    
+    API --> CMD
+    CLI --> CMD
+    ADMIN --> CMD
+    
+    CMD --> HAND
+    HAND --> WF
+    
+    WF --> CT
+    WF --> PA
+    WF --> RI
+    WF --> SS
+    
+    PA --> ES
+    RI --> ES
+    SS --> ES
+    CT --> ES
+    
+    ES --> EV
+    
+    style CMD fill:#bbdefb
+    style WF fill:#c8e6c9
+    style ES fill:#fff9c4
+```
+
+### 10.2 Flujo de Compensación en Caso de Error
+
+```mermaid
+flowchart TD
+    A[Start Workflow] --> B[Reserve Inventory]
+    B --> C[Process Payment]
+    C -->|FAILED| D[Start Compensation]
+    
+    D --> E[Cancel Shipping<br/>Si se ejecutó]
+    E --> F[Refund Payment]
+    F --> G[Release Inventory]
+    
+    G --> H[Order Cancelled<br/>All compensations done]
+    
+    style C fill:#ffcdd2
+    style D fill:#ffecb3
+    style E fill:#ffcdd2
+    style F fill:#ffcdd2
+    style G fill:#ffcdd2
+    style H fill:#ffcdd2
+```
+
+### 10.3 Checklist de Implementación
+
+```markdown
+## Checklist para Implementar un Nuevo Workflow
+
+### Domain Layer
+- [ ] Definir Value Objects (IDs, Money, etc.)
+- [ ] Definir Events (en pasado)
+- [ ] Definir Commands (verbo + input)
+
+### Application Layer
+- [ ] Implementar Activities (con compensación)
+- [ ] Implementar Workflow (DurableWorkflow)
+- [ ] Configurar compensation tracker
+
+### Infrastructure Layer
+- [ ] Implementar Command Handlers
+- [ ] Configurar Event Store
+- [ ] Configurar Task Queue
+
+### Testing
+- [ ] Unit tests para Activities
+- [ ] Integration tests para Workflow
+- [ ] Test de compensación (fallo intencional)
+```
+
+---
+
+## Apéndice A: Glosario del Ejemplo
+
+| Término | Significado en este Contexto |
+|---------|------------------------------|
+| **Saga** | La secuencia completa de pasos para procesar un pedido |
+| **Workflow** | La definición de cómo se ejecuta la saga |
+| **Activity** | Una operación individual (pago, inventario, envío) |
+| **Command** | Una intención del usuario (crear orden, cancelar) |
+| **Event** | Algo que ya ocurrió (pago completado) |
+| **Compensación** | La operación inversa para revertir cambios |
+
+---
+
+## Apéndice B: Diferencias con v3
+
+| Característica | v3 (Old) | v4 (New) |
+|----------------|----------|----------|
+| Workflow Definition | Steps array | `DurableWorkflow::run()` |
+| Activities | `ActivityStep::new()` | `ctx.execute_activity()` |
+| Compensation | Manual | `track_compensatable_step_auto()` |
+| Events | Basic | Type-safe payloads |
+| Commands | None | `CommandHandler<C>` trait |
+
+---
+
+*Document Version: 2.0.0*
 *Example: E-Commerce Order Processing Saga*
-*Generated: 2026-01-27*
+*Language: English with Spanish terminology for domain concepts*
+*Last Updated: 2026-01-28*
