@@ -609,7 +609,7 @@ stateDiagram-v2
     
     Cancelled --> [*]
     
-    note right of Running : Replaying events from history on every state transition
+    note "Replaying events from history on every state transition" right of Running
 ```
 
 ### 7.2 State Transitions
