@@ -391,24 +391,24 @@ DDD helps you speak the same language as domain experts:
 flowchart TB
     subgraph "E-Commerce Platform"
         subgraph "Sales Bounded Context"
-            O[Order<br/>"An order has items and a total"]
-            P[Payment<br/>"A payment has status and amount"]
+            O[Order<br/>An order has items and total]
+            P[Payment<br/>A payment has status and amount]
         end
         
         subgraph "Inventory Bounded Context"
-            I[Inventory<br/>"Inventory has available stock"]
-            R[Reservation<br/>"A reservation blocks stock"]
+            I[Inventory<br/>Inventory has available stock]
+            R[Reservation<br/>A reservation blocks stock]
         end
         
         subgraph "Shipping Bounded Context"
-            S[Shipment<br/>"A shipment has tracking"]
-            C[Carrier<br/>"The carrier delivers the package"]
+            S[Shipment<br/>A shipment has tracking]
+            C[Carrier<br/>The carrier delivers the package]
         end
     end
     
-    O --> P : "processes"
-    O --> I : "reserves"
-    O --> S : "coordinates"
+    O --> P
+    O --> I
+    O --> S
     
     style O fill:#e3f2fd
     style I fill:#e8f5e8

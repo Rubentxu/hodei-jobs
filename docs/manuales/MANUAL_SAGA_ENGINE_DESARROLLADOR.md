@@ -406,9 +406,9 @@ flowchart TB
         end
     end
     
-    O --> P : "procesa"
-    O --> I : "reserva"
-    O --> S : "coordina"
+    O --> P
+    O --> I
+    O --> S
     
     style O fill:#e3f2fd
     style I fill:#e8f5e8
