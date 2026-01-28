@@ -41,6 +41,10 @@ pub mod saga_engine_executor;
 pub mod sync_durable_executor;
 pub mod sync_executor; // SagaEngine-based executor for v4.0 DurableWorkflow
 
+pub mod upcasting;
+
+pub mod snapshot_manager; // Snapshot management for efficient workflow replay
+
 pub use port::types::{SagaExecutionId, SagaPortConfig, SagaPortResult, WorkflowState};
 
 pub use dispatcher_saga::{DynExecutionSagaDispatcher, ExecutionSagaDispatcherConfig};

@@ -25,6 +25,9 @@ dashmap = { workspace = true }
 parking_lot = "0.12"
 rand = { workspace = true }
 
+# Saga Engine V4.1 - Error Bridge Integration
+saga-engine-core = { workspace = true }
+
 # OpenTelemetry Integration (EPIC-54)
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }

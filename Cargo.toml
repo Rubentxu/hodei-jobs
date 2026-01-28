@@ -49,6 +49,12 @@ hodei-worker-domain = { path = "crates/worker/domain" }
 hodei-worker-application = { path = "crates/worker/application" }
 hodei-worker-infrastructure = { path = "crates/worker/infrastructure" }
 
+# Saga Engine (workspace members as dependencies)
+saga-engine-core = { path = "crates/saga-engine/core" }
+saga-engine-testing = { path = "crates/saga-engine/testing" }
+saga-engine-pg = { path = "crates/saga-engine/pg" }
+saga-engine-nats = { path = "crates/saga-engine/nats" }
+
 # External Dependencies
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-stream = "0.1"

@@ -7,6 +7,354 @@ use crate::saga::{SagaId, SagaType};
 use crate::shared_kernel::{JobId, ProviderId, WorkerId};
 
 // ============================================================================
+// ClassifiedError Implementations (Saga Engine V4.1)
+// ============================================================================
+
+use saga_engine_core::error::{
+    ClassifiedError, ErrorBehaviorWithConfig, ErrorCategory, RetryConfig, RetryOnceConfig,
+    default_behavior,
+};
+
+// ----------------------------------------------------------------------------
+// SagaCoreError - Core saga errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for SagaCoreError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure errors (retryable)
+            Self::ExecutionFailed { .. } => ErrorCategory::Infrastructure,
+            Self::PersistenceError { .. } => ErrorCategory::Infrastructure,
+            Self::CompensationFailed { .. } => ErrorCategory::Infrastructure,
+            Self::OptimisticLockConflict { .. } => ErrorCategory::TransientDomain,
+            Self::Timeout { .. } => ErrorCategory::TransientDomain,
+
+            // Domain errors (compensate, don't retry)
+            Self::NotFound { .. } => ErrorCategory::Domain,
+            Self::InvalidStateTransition { .. } => ErrorCategory::Domain,
+            Self::Cancelled { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::Timeout { duration, .. } => {
+                // Retry once after a delay based on timeout duration
+                ErrorBehaviorWithConfig::RetryOnce {
+                    config: RetryOnceConfig {
+                        delay_ms: duration.as_millis() as u64,
+                    },
+                }
+            }
+            Self::OptimisticLockConflict { .. } => {
+                // Retry with short delay for lock conflicts
+                ErrorBehaviorWithConfig::Retry {
+                    config: RetryConfig {
+                        max_attempts: 3,
+                        base_delay_ms: 100,
+                    },
+                }
+            }
+            Self::CompensationFailed { .. } => {
+                // Compensation failures are critical - skip to compensation
+                ErrorBehaviorWithConfig::SkipToCompensation
+            }
+            _ => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::ExecutionFailed { .. } => Some(RetryConfig {
+                max_attempts: 3,
+                base_delay_ms: 1000,
+            }),
+            Self::PersistenceError { .. } => Some(RetryConfig {
+                max_attempts: 5,
+                base_delay_ms: 2000,
+            }),
+            Self::CompensationFailed { .. } => Some(RetryConfig {
+                max_attempts: 1,
+                base_delay_ms: 500,
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// ExecutionSagaError - Execution saga specific errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for ExecutionSagaError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure (retryable)
+            Self::DispatchFailed { .. } => ErrorCategory::Infrastructure,
+            Self::StateUpdateFailed { .. } => ErrorCategory::Infrastructure,
+            Self::WorkerDisconnected { .. } => ErrorCategory::Infrastructure,
+            Self::ExecutionTimeout { .. } => ErrorCategory::TransientDomain,
+
+            // Domain (compensate, don't retry)
+            Self::NoAvailableWorkers { .. } => ErrorCategory::TransientDomain,
+            Self::JobNotFound { .. } => ErrorCategory::Domain,
+            Self::WorkerAssignmentFailed { .. } => ErrorCategory::Domain,
+            Self::CompensationFailed { .. } => ErrorCategory::Domain,
+            Self::InvalidResult { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::ExecutionTimeout { duration, .. } => ErrorBehaviorWithConfig::RetryOnce {
+                config: RetryOnceConfig {
+                    delay_ms: duration.as_millis() as u64,
+                },
+            },
+            Self::DispatchFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 3,
+                    base_delay_ms: 500,
+                },
+            },
+            _ => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::DispatchFailed { .. } => Some(RetryConfig {
+                max_attempts: 3,
+                base_delay_ms: 500,
+            }),
+            Self::StateUpdateFailed { .. } => Some(RetryConfig {
+                max_attempts: 3,
+                base_delay_ms: 200,
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// ProvisioningSagaError - Provisioning saga specific errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for ProvisioningSagaError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure (retryable)
+            Self::ProvisioningFailed { .. } => ErrorCategory::Infrastructure,
+            Self::RegistrationFailed { .. } => ErrorCategory::Infrastructure,
+            Self::BootstrapTokenGenerationFailed => ErrorCategory::Infrastructure,
+            Self::CleanupFailed { .. } => ErrorCategory::Infrastructure,
+
+            // Domain (compensate, don't retry)
+            Self::ProviderNotFound { .. } => ErrorCategory::Domain,
+            Self::ProviderCapacityExceeded { .. } => ErrorCategory::Domain,
+            Self::WorkerAlreadyExists { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::ProvisioningFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 2000,
+                },
+            },
+            Self::RegistrationFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 1000,
+                },
+            },
+            _ => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::ProvisioningFailed { .. } => Some(RetryConfig {
+                max_attempts: 2,
+                base_delay_ms: 2000,
+            }),
+            Self::RegistrationFailed { .. } => Some(RetryConfig {
+                max_attempts: 2,
+                base_delay_ms: 1000,
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// RecoverySagaError - Recovery saga specific errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for RecoverySagaError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure (retryable)
+            Self::RecoveryFailed { .. } => ErrorCategory::Infrastructure,
+            Self::NewWorkerProvisioningFailed { .. } => ErrorCategory::Infrastructure,
+            Self::TransferFailed { .. } => ErrorCategory::Infrastructure,
+            Self::TerminationFailed { .. } => ErrorCategory::Infrastructure,
+
+            // Domain (compensate, don't retry)
+            Self::WorkerNotFound { .. } => ErrorCategory::Domain,
+            Self::JobNotFound { .. } => ErrorCategory::Domain,
+            Self::RecoveryNotPossible { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::RecoveryFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 3000,
+                },
+            },
+            Self::TransferFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 1500,
+                },
+            },
+            _ => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::RecoveryFailed { .. } => Some(RetryConfig {
+                max_attempts: 2,
+                base_delay_ms: 3000,
+            }),
+            Self::NewWorkerProvisioningFailed { .. } => Some(RetryConfig {
+                max_attempts: 2,
+                base_delay_ms: 2000,
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// CancellationSagaError - Cancellation saga specific errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for CancellationSagaError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure (retryable)
+            Self::WorkerNotificationFailed { .. } => ErrorCategory::Infrastructure,
+            Self::StateUpdateFailed { .. } => ErrorCategory::Infrastructure,
+            Self::WorkerReleaseFailed { .. } => ErrorCategory::Infrastructure,
+            Self::EventPublishingFailed { .. } => ErrorCategory::Infrastructure,
+
+            // Domain (compensate, don't retry)
+            Self::JobNotCancellable { .. } => ErrorCategory::Domain,
+            Self::JobNotFound { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::WorkerNotificationFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 500,
+                },
+            },
+            Self::EventPublishingFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 200,
+                },
+            },
+            _ => default_behavior(self.category()),
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// TimeoutSagaError - Timeout saga specific errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for TimeoutSagaError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure (retryable)
+            Self::TimeoutDetectionFailed { .. } => ErrorCategory::Infrastructure,
+            Self::WorkerTerminationFailed { .. } => ErrorCategory::Infrastructure,
+            Self::StateUpdateFailed { .. } => ErrorCategory::Infrastructure,
+
+            // Domain (compensate, don't retry)
+            Self::JobNotFound { .. } => ErrorCategory::Domain,
+            Self::TimeoutHandlingNotPossible { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::TimeoutDetectionFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 500,
+                },
+            },
+            Self::WorkerTerminationFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 1000,
+                },
+            },
+            _ => default_behavior(self.category()),
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// CleanupSagaError - Cleanup saga specific errors
+// ----------------------------------------------------------------------------
+
+impl ClassifiedError for CleanupSagaError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure (retryable)
+            Self::IdentifyOrphanedJobsFailed { .. } => ErrorCategory::Infrastructure,
+            Self::IdentifyUnhealthyWorkersFailed { .. } => ErrorCategory::Infrastructure,
+            Self::ResetOrphanedJobFailed { .. } => ErrorCategory::Infrastructure,
+            Self::MetricsPublishingFailed { .. } => ErrorCategory::Infrastructure,
+
+            // Domain (compensate, don't retry)
+            Self::PartialCleanup { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::IdentifyOrphanedJobsFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 2000,
+                },
+            },
+            Self::ResetOrphanedJobFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 500,
+                },
+            },
+            _ => default_behavior(self.category()),
+        }
+    }
+}
+
+// ============================================================================
 // Core Saga Errors
 // ============================================================================
 

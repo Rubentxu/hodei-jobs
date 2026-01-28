@@ -163,6 +163,7 @@ pub trait CommandBus: Debug + Send + Sync {
 pub mod bus;
 pub mod erased;
 pub mod error;
+pub mod error_bridge;
 pub mod handler;
 pub mod idempotency;
 pub mod jobs;
@@ -175,6 +176,7 @@ pub use erased::{
     DynCommandBus, ErasedCommandBus, ErasedCommandBusExt, InMemoryErasedCommandBus, dispatch_erased,
 };
 pub use error::{CommandError, CommandResult};
+pub use error_bridge::{BridgeError, BridgeResult, ErrorBridge, ErrorBridgeConfig};
 pub use handler::HandlerBox;
 pub use idempotency::{IdempotencyChecker, InMemoryIdempotencyChecker};
 pub use jobs::{

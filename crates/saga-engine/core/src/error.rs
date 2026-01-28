@@ -2,7 +2,10 @@
 //! # Error Types
 //!
 //! Central error types for saga-engine with rich context for debugging.
+//! Also includes error classification for saga error handling (retry vs compensate).
 //!
+
+pub mod classification;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -328,3 +331,9 @@ mod tests {
         assert_eq!(error3.get_context("field"), Some("email"));
     }
 }
+
+// Re-export classification module
+pub use classification::{
+    ClassifiedError, ErrorBehavior, ErrorBehaviorWithConfig, ErrorCategory, ErrorDecision,
+    ErrorStats, ExecutionError, ExecutionResult, RetryConfig, RetryOnceConfig, default_behavior,
+};

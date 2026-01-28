@@ -5,7 +5,9 @@
 pub mod aggregate;
 pub mod coordination;
 pub mod templates;
+pub mod upcasting;
 
 pub use aggregate::*;
 pub use coordination::*;
 pub use templates::*;
+pub use upcasting::*;

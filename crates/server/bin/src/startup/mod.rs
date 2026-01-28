@@ -513,6 +513,7 @@ pub async fn run(config: StartupConfig) -> anyhow::Result<AppState> {
     let wf_init_result = initialize_workflow_engine(
         saga_engine.clone(),
         wf_config,
+        None, // Use default snapshot strategy config
         Some(command_bus.clone()),
         Some(worker_provisioning.clone()),
     )

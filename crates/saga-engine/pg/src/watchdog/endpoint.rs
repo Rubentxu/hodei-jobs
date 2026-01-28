@@ -175,8 +175,8 @@ impl HealthEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::watchdog::health_check::HealthStatus;
     use crate::watchdog::aggregator::ReadinessCheck;
+    use crate::watchdog::health_check::HealthStatus;
 
     #[tokio::test]
     async fn test_health_endpoint_get_health() {
@@ -229,7 +229,19 @@ mod tests {
         let aggregator = Arc::new(HealthAggregator::new());
         let endpoint = HealthEndpoint::new(aggregator.clone());
 
-        // No data -> operational
+        // Empty aggregator has Unknown status, which is not operational
+        // This is intentional: a newly started system without health data is not considered ready
+        let response = endpoint.get_liveness().await;
+        assert!(!response.alive); // Unknown status is not alive
+
+        // Simulate system start by setting initial status to Healthy
+        aggregator
+            .update_component_health(
+                "System".to_string(),
+                crate::watchdog::health_check::HealthInfo::new("System", HealthStatus::Healthy),
+            )
+            .await;
+
         let response = endpoint.get_liveness().await;
         assert!(response.alive);
 

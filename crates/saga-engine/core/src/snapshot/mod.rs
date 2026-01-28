@@ -9,6 +9,14 @@
 //! beginning. With snapshots, we only replay events after the last snapshot,
 //! significantly reducing replay time.
 //!
+//! # Adaptive Snapshot Strategy
+//!
+//! The module provides [`SnapshotStrategy`] for flexible snapshot policies:
+//! - Count-based: snapshot every N events
+//! - Time-based: snapshot every N minutes
+//! - Event-based: snapshot at specific event types
+//! - Adaptive: combine count and time thresholds
+//!
 //! ```ignore
 /// // Without snapshot: O(n) events
 /// let events = event_store.get_history(saga_id).await?;
@@ -26,6 +34,123 @@ use super::port::event_store::EventStore;
 use super::port::event_store::EventStoreError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Strategy for determining when to take snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotStrategy {
+    /// Snapshot every N events
+    CountBased { events: u64 },
+
+    /// Snapshot every N minutes of execution time
+    TimeBased { minutes: u64 },
+
+    /// Snapshot at specific event types (checkpoints)
+    EventBased { events: &'static [&'static str] },
+
+    /// No automatic snapshots
+    Disabled,
+
+    /// Adaptive: snapshot when either condition is met
+    Adaptive { max_events: u64, max_minutes: u64 },
+}
+
+impl Default for SnapshotStrategy {
+    fn default() -> Self {
+        // Conservative default: adaptive with reasonable limits
+        Self::Adaptive {
+            max_events: 100,
+            max_minutes: 60,
+        }
+    }
+}
+
+impl SnapshotStrategy {
+    /// Check if this strategy is disabled
+    #[inline]
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+
+    /// Check if a snapshot should be taken based on event count
+    #[inline]
+    pub fn should_snapshot_by_count(&self, events_since_last: u64) -> bool {
+        match self {
+            Self::CountBased { events } => events_since_last >= *events,
+            Self::Adaptive { max_events, .. } => events_since_last >= *max_events,
+            _ => false,
+        }
+    }
+
+    /// Check if a snapshot should be taken based on time elapsed
+    #[inline]
+    pub fn should_snapshot_by_time(&self, elapsed: Duration) -> bool {
+        match self {
+            Self::TimeBased { minutes } => elapsed >= Duration::from_secs(*minutes * 60),
+            Self::Adaptive { max_minutes, .. } => elapsed >= Duration::from_secs(*max_minutes * 60),
+            _ => false,
+        }
+    }
+
+    /// Check if a snapshot should be taken based on event type
+    #[inline]
+    pub fn should_snapshot_by_event(&self, event_type: &str) -> bool {
+        match self {
+            Self::EventBased { events } => events.contains(&event_type),
+            _ => false,
+        }
+    }
+
+    /// Combined check: should snapshot based on all applicable criteria
+    pub fn should_snapshot(
+        &self,
+        events_since_last: u64,
+        elapsed: Duration,
+        event_type: &str,
+    ) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::CountBased { .. } => self.should_snapshot_by_count(events_since_last),
+            Self::TimeBased { .. } => self.should_snapshot_by_time(elapsed),
+            Self::EventBased { .. } => self.should_snapshot_by_event(event_type),
+            Self::Adaptive { .. } => {
+                self.should_snapshot_by_count(events_since_last)
+                    || self.should_snapshot_by_time(elapsed)
+            }
+        }
+    }
+}
+
+/// Snapshot strategy recommendation based on saga characteristics
+impl SnapshotStrategy {
+    /// Get recommended strategy for short sagas (< 10 steps)
+    pub fn for_short_saga() -> Self {
+        Self::Disabled
+    }
+
+    /// Get recommended strategy for medium sagas (10-50 steps)
+    pub fn for_medium_saga() -> Self {
+        Self::CountBased { events: 20 }
+    }
+
+    /// Get recommended strategy for long sagas (50-200 steps)
+    pub fn for_long_saga() -> Self {
+        Self::Adaptive {
+            max_events: 100,
+            max_minutes: 60,
+        }
+    }
+
+    /// Get recommended strategy for very long sagas (> 200 steps)
+    pub fn for_very_long_saga() -> Self {
+        Self::CountBased { events: 50 }
+    }
+
+    /// Get recommended strategy for I/O-heavy sagas
+    pub fn for_io_heavy_saga() -> Self {
+        Self::TimeBased { minutes: 30 }
+    }
+}
 
 /// Configuration for snapshot behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]

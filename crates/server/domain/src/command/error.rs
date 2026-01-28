@@ -4,6 +4,11 @@
 
 use thiserror::Error;
 
+use saga_engine_core::error::{
+    ClassifiedError, ErrorBehaviorWithConfig, ErrorCategory, RetryConfig, RetryOnceConfig,
+    default_behavior,
+};
+
 /// Error types for command execution
 ///
 /// These errors represent different failure modes that can occur
@@ -198,6 +203,68 @@ impl CommandError {
             _ => Self::Transient {
                 message: self.to_string(),
             },
+        }
+    }
+}
+
+// ============================================================================
+// ClassifiedError Implementation (Saga Engine V4.1)
+// ============================================================================
+
+impl ClassifiedError for CommandError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure errors (retryable)
+            Self::Timeout { .. } => ErrorCategory::TransientDomain,
+            Self::ChannelClosed => ErrorCategory::Infrastructure,
+            Self::Transient { .. } => ErrorCategory::Infrastructure,
+            Self::HandlerError { .. } => ErrorCategory::Infrastructure,
+            Self::ExecutionFailed { .. } => ErrorCategory::Infrastructure,
+            Self::OutboxError { .. } => ErrorCategory::Infrastructure,
+            Self::HandlerPanicked { .. } => ErrorCategory::Fatal,
+
+            // Validation errors (don't retry)
+            Self::ValidationFailed { .. } => ErrorCategory::Validation,
+
+            // Domain errors (compensate, don't retry)
+            Self::HandlerNotFound { .. } => ErrorCategory::Domain,
+            Self::NotFound { .. } => ErrorCategory::Domain,
+            Self::PermissionDenied { .. } => ErrorCategory::Domain,
+            Self::IdempotencyConflict { .. } => ErrorCategory::Domain,
+            Self::TypeMismatch { .. } => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::Timeout { duration, .. } => ErrorBehaviorWithConfig::RetryOnce {
+                config: RetryOnceConfig {
+                    delay_ms: duration.as_millis() as u64,
+                },
+            },
+            Self::ChannelClosed => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 3,
+                    base_delay_ms: 1000,
+                },
+            },
+            Self::HandlerPanicked { .. } => ErrorBehaviorWithConfig::Fail,
+            Self::TypeMismatch { .. } => ErrorBehaviorWithConfig::Fail,
+            _ => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::HandlerError { .. } => Some(RetryConfig {
+                max_attempts: 3,
+                base_delay_ms: 500,
+            }),
+            Self::OutboxError { .. } => Some(RetryConfig {
+                max_attempts: 3,
+                base_delay_ms: 200,
+            }),
+            _ => None,
         }
     }
 }

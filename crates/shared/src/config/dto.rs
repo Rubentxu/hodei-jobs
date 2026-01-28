@@ -310,10 +310,10 @@ mod tests {
         let vars = dto.to_env_vars();
 
         assert!(vars.contains(&("HODEI_WORKER_ID".to_string(), "worker-123".to_string())));
-        assert!(vars.contains(&(
-            "HODEI_SERVER_ADDRESS".to_string(),
-            "http://server:9090".to_string()
-        )));
+        // Worker receives hostname only (protocol and port are separate)
+        assert!(vars.contains(&("HODEI_SERVER_ADDRESS".to_string(), "server".to_string())));
+        assert!(vars.contains(&("HODEI_SERVER_PROTOCOL".to_string(), "http".to_string())));
+        assert!(vars.contains(&("HODEI_SERVER_PORT".to_string(), "9090".to_string())));
         assert!(vars.contains(&("HODEI_OTP_TOKEN".to_string(), "otp-token-456".to_string())));
     }
 
@@ -368,10 +368,10 @@ mod tests {
         let map = dto.to_env_map();
 
         assert_eq!(map.get("HODEI_WORKER_ID"), Some(&"worker-123".to_string()));
-        assert_eq!(
-            map.get("HODEI_SERVER_ADDRESS"),
-            Some(&"http://server:9090".to_string())
-        );
+        // Worker receives hostname only (protocol and port are separate env vars)
+        assert_eq!(map.get("HODEI_SERVER_ADDRESS"), Some(&"server".to_string()));
+        assert_eq!(map.get("HODEI_SERVER_PROTOCOL"), Some(&"http".to_string()));
+        assert_eq!(map.get("HODEI_SERVER_PORT"), Some(&"9090".to_string()));
     }
 
     #[test]

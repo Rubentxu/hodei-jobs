@@ -10,29 +10,14 @@
 //! - Activities are dispatched to NATS for async execution
 //! - State is persisted in PostgreSQL EventStore
 //! - Timers are managed for timeout handling
+//! - Snapshots are managed for efficient replay
 //!
 //! Without these activity consumers, the saga engine will dispatch activities
 //! to NATS but no one will execute them, causing workflows to hang indefinitely.
 //!
 
-use hodei_server_domain::command::DynCommandBus;
-use hodei_server_domain::event_bus::EventBus;
-use hodei_server_domain::jobs::JobRepository;
-use hodei_server_domain::outbox::OutboxRepository;
-use hodei_server_domain::providers::ProviderConfigRepository;
-use hodei_server_domain::workers::WorkerRegistry;
-use saga_engine_core::activity_registry::ActivityRegistry;
-use saga_engine_core::saga_engine::{SagaEngine, SagaEngineConfig};
-use saga_engine_core::worker::{Worker, WorkerConfig};
-use saga_engine_core::workflow::registry::WorkflowRegistry;
-use saga_engine_nats::NatsTaskQueue;
-use saga_engine_pg::{PostgresEventStore, PostgresTimerStore};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
-
 use crate::saga::bridge::CommandBusJobExecutionPort;
+use crate::saga::snapshot_manager::{SnapshotManagerApp, WorkflowType};
 use crate::saga::workflows::JobExecutionPort;
 use crate::saga::workflows::execution_durable::{
     CollectResultActivity, DispatchJobActivity, ExecutionWorkflow, ValidateJobActivity,
@@ -42,6 +27,23 @@ use crate::saga::workflows::provisioning_durable::{
     ValidateWorkerSpecActivity,
 };
 use crate::workers::provisioning::WorkerProvisioningService;
+use hodei_server_domain::command::DynCommandBus;
+use hodei_server_domain::event_bus::EventBus;
+use hodei_server_domain::jobs::JobRepository;
+use hodei_server_domain::outbox::OutboxRepository;
+use hodei_server_domain::providers::ProviderConfigRepository;
+use hodei_server_domain::workers::WorkerRegistry;
+use saga_engine_core::activity_registry::ActivityRegistry;
+use saga_engine_core::saga_engine::{SagaEngine, SagaEngineConfig};
+use saga_engine_core::snapshot::{SnapshotConfig, SnapshotStrategy};
+use saga_engine_core::worker::{Worker, WorkerConfig};
+use saga_engine_core::workflow::registry::WorkflowRegistry;
+use saga_engine_nats::NatsTaskQueue;
+use saga_engine_pg::{PostgresEventStore, PostgresTimerStore};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tracing::{debug, error, info, warn};
 
 // =============================================================================
 // Workflow Engine Configuration
@@ -82,6 +84,34 @@ pub struct WorkflowEngineInitResult {
     pub execution_consumer: Option<Worker<PostgresEventStore, NatsTaskQueue, PostgresTimerStore>>,
     pub activity_registry: Arc<ActivityRegistry>,
     pub workflow_registry: Arc<WorkflowRegistry>,
+    pub snapshot_manager: Option<Arc<SnapshotManagerApp<PostgresEventStore>>>,
+}
+
+/// Configuration for snapshot strategy
+#[derive(Debug, Clone)]
+pub struct SnapshotStrategyConfig {
+    /// Strategy for provisioning workflows
+    pub provisioning_strategy: SnapshotStrategy,
+    /// Strategy for execution workflows
+    pub execution_strategy: SnapshotStrategy,
+    /// Snapshot interval (events)
+    pub snapshot_interval: u64,
+    /// Maximum snapshots to retain
+    pub max_snapshots: u32,
+    /// Enable checksum verification
+    pub enable_checksum: bool,
+}
+
+impl Default for SnapshotStrategyConfig {
+    fn default() -> Self {
+        Self {
+            provisioning_strategy: SnapshotStrategy::for_medium_saga(),
+            execution_strategy: SnapshotStrategy::for_medium_saga(),
+            snapshot_interval: 50,
+            max_snapshots: 10,
+            enable_checksum: true,
+        }
+    }
 }
 
 /// Initialize the workflow engine with proper registries
@@ -89,10 +119,12 @@ pub struct WorkflowEngineInitResult {
 /// This function creates and configures:
 /// 1. ActivityRegistry - Registers all activity implementations
 /// 2. WorkflowRegistry - Registers all workflow definitions
-/// 3. Activity Consumers - One per task queue (provisioning, execution)
+/// 3. SnapshotManager - Manages snapshots for efficient workflow replay
+/// 4. Activity Consumers - One per task queue (provisioning, execution)
 pub async fn initialize_workflow_engine(
     saga_engine: Arc<SagaEngine<PostgresEventStore, NatsTaskQueue, PostgresTimerStore>>,
     config: WorkflowEngineConfig,
+    snapshot_config: Option<SnapshotStrategyConfig>,
     command_bus: Option<DynCommandBus>,
     provisioning_service: Option<Arc<dyn WorkerProvisioningService>>,
 ) -> WorkflowEngineInitResult {
@@ -101,6 +133,11 @@ pub async fn initialize_workflow_engine(
     // Create registries
     let activity_registry = Arc::new(ActivityRegistry::new());
     let workflow_registry = Arc::new(WorkflowRegistry::new());
+
+    // Initialize snapshot manager if enabled
+    let snapshot_strategy_config = snapshot_config.unwrap_or_default();
+    let snapshot_manager =
+        create_snapshot_manager(saga_engine.event_store.clone(), &snapshot_strategy_config);
 
     // Create execution port if command_bus is provided
     // DEBT-006: CommandBusJobExecutionPort now requires CommandBus (not Optional)
@@ -136,14 +173,14 @@ pub async fn initialize_workflow_engine(
 
     // Create activity consumers
     let provisioning_consumer = if config.provisioning_worker_enabled {
-        let config = WorkerConfig::new()
+        let worker_config = WorkerConfig::new()
             .with_consumer_name("saga-provisioning-worker".to_string())
             .with_queue_group("saga-workers".to_string())
             .with_max_concurrent(config.max_concurrent)
             .with_poll_interval(Duration::from_millis(config.poll_interval_ms));
 
         let worker = Worker::new(
-            config,
+            worker_config,
             saga_engine.clone(),
             activity_registry.clone(),
             workflow_registry.clone(),
@@ -155,14 +192,14 @@ pub async fn initialize_workflow_engine(
     };
 
     let execution_consumer = if config.execution_worker_enabled {
-        let config = WorkerConfig::new()
+        let worker_config = WorkerConfig::new()
             .with_consumer_name("saga-execution-worker".to_string())
             .with_queue_group("saga-workers".to_string())
             .with_max_concurrent(config.max_concurrent)
             .with_poll_interval(Duration::from_millis(config.poll_interval_ms));
 
         let worker = Worker::new(
-            config,
+            worker_config,
             saga_engine.clone(),
             activity_registry.clone(),
             workflow_registry.clone(),
@@ -183,7 +220,46 @@ pub async fn initialize_workflow_engine(
         execution_consumer,
         activity_registry,
         workflow_registry,
+        snapshot_manager,
     }
+}
+
+/// Create a snapshot manager based on configuration
+fn create_snapshot_manager(
+    event_store: Arc<PostgresEventStore>,
+    config: &SnapshotStrategyConfig,
+) -> Option<Arc<SnapshotManagerApp<PostgresEventStore>>> {
+    // Only create if at least one strategy is not disabled
+    let provisioning_disabled = config.provisioning_strategy.is_disabled();
+    let execution_disabled = config.execution_strategy.is_disabled();
+
+    if provisioning_disabled && execution_disabled {
+        debug!("Snapshot strategy disabled for all workflows");
+        return None;
+    }
+
+    let snapshot_config = SnapshotConfig::new(
+        config.snapshot_interval,
+        config.max_snapshots,
+        config.enable_checksum,
+    );
+
+    // For now, use the execution strategy as the default
+    // In a more sophisticated implementation, we'd have separate managers per workflow type
+    let strategy = if !execution_disabled {
+        config.execution_strategy.clone()
+    } else {
+        config.provisioning_strategy.clone()
+    };
+
+    let manager = SnapshotManagerApp::with_strategy(event_store, strategy, snapshot_config);
+
+    debug!(
+        "✓ Snapshot manager created with strategy: {:?}",
+        manager.strategy()
+    );
+
+    Some(Arc::new(manager))
 }
 
 /// Start all workflow engine activity consumers in background tasks

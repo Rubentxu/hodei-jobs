@@ -17,6 +17,7 @@
 //! - [`update`](update) - Workflow update events
 //! - [`search_attribute`](search_attribute) - Search attribute events
 //! - [`nexus`](nexus) - Nexus events
+//! - [`upcasting`](upcasting) - Event schema evolution
 
 pub mod activity;
 pub mod child_workflow;
@@ -29,6 +30,7 @@ pub mod side_effect;
 pub mod signal;
 pub mod snapshot;
 pub mod timer;
+pub mod upcasting;
 pub mod update;
 pub mod workflow;
 

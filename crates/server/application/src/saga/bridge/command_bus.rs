@@ -7,7 +7,9 @@
 /// and saga-engine v4.0 workflow activities.
 use async_trait::async_trait;
 use hodei_server_domain::command::erased::dispatch_erased;
+use hodei_server_domain::command::error_bridge::{ErrorBridge, ErrorBridgeConfig};
 use hodei_server_domain::command::{Command, CommandError, CommandHandler, DynCommandBus};
+use saga_engine_core::error::{ClassifiedError, ErrorDecision, ExecutionError};
 use saga_engine_core::workflow::Activity;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
@@ -31,6 +33,8 @@ pub enum CommandBusActivityError {
 pub struct CommandBusActivity<C: Command> {
     /// The command bus for dispatching commands
     command_bus: Arc<DynCommandBus>,
+    /// Error bridge for saga integration
+    error_bridge: Arc<ErrorBridge>,
     /// Marker for command type
     _phantom: PhantomData<C>,
 }
@@ -46,8 +50,36 @@ impl<C: Command> CommandBusActivity<C> {
     pub fn new(command_bus: Arc<DynCommandBus>) -> Self {
         Self {
             command_bus,
+            error_bridge: Arc::new(ErrorBridge::new()),
             _phantom: PhantomData,
         }
+    }
+
+    /// Create with custom error bridge configuration
+    pub fn with_error_bridge(
+        command_bus: Arc<DynCommandBus>,
+        error_bridge: Arc<ErrorBridge>,
+    ) -> Self {
+        Self {
+            command_bus,
+            error_bridge,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Get reference to error bridge for saga decision making
+    pub fn error_bridge(&self) -> &Arc<ErrorBridge> {
+        &self.error_bridge
+    }
+
+    /// Determine if command should be retried based on error classification
+    pub fn should_retry(&self, error: &CommandError) -> ErrorDecision {
+        self.error_bridge.classify_command_error(error)
+    }
+
+    /// Wrap command error in ExecutionError for saga engine
+    pub fn wrap_error(&self, error: CommandError) -> ExecutionError<CommandError> {
+        ExecutionError::new(error)
     }
 }
 

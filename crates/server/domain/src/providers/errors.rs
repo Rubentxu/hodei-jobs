@@ -6,6 +6,11 @@
 use std::time::Duration;
 use thiserror::Error;
 
+use saga_engine_core::error::{
+    ClassifiedError, ErrorBehaviorWithConfig, ErrorCategory, RetryConfig, RetryOnceConfig,
+    default_behavior,
+};
+
 use crate::shared_kernel::{DomainError, ProviderId};
 use crate::workers::ProviderType;
 
@@ -550,6 +555,129 @@ impl InitializationSummary {
             self.warnings.len(),
             self.duration_ms
         )
+    }
+}
+
+// ============================================================================
+// ClassifiedError Implementation (Saga Engine V4.1)
+// ============================================================================
+
+impl ClassifiedError for ProviderConnectionError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure errors (retryable)
+            Self::Network(_) => ErrorCategory::Infrastructure,
+            Self::Timeout { .. } => ErrorCategory::TransientDomain,
+            Self::ApiError(_) => ErrorCategory::Infrastructure,
+            Self::Unreachable(_) => ErrorCategory::Infrastructure,
+            Self::Unknown(_) => ErrorCategory::Infrastructure,
+
+            // Validation errors (don't retry)
+            Self::Configuration(_) => ErrorCategory::Validation,
+            Self::Authentication(_) => ErrorCategory::Domain,
+            Self::Authorization(_) => ErrorCategory::Domain,
+            Self::ResourceExhausted(_) => ErrorCategory::Domain,
+            Self::TlsError(_) => ErrorCategory::Domain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::Timeout { timeout, .. } => ErrorBehaviorWithConfig::RetryOnce {
+                config: RetryOnceConfig {
+                    delay_ms: *timeout * 1000,
+                },
+            },
+            Self::Network(_) => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 3,
+                    base_delay_ms: 1000,
+                },
+            },
+            Self::Unreachable(_) => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 3,
+                    base_delay_ms: 2000,
+                },
+            },
+            Self::ApiError(_) => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 1000,
+                },
+            },
+            Self::Configuration(_) => ErrorBehaviorWithConfig::Fail,
+            Self::Authentication(_) => ErrorBehaviorWithConfig::SkipToCompensation,
+            Self::Authorization(_) => ErrorBehaviorWithConfig::SkipToCompensation,
+            Self::ResourceExhausted(_) => ErrorBehaviorWithConfig::ManualIntervention,
+            Self::TlsError(_) => ErrorBehaviorWithConfig::Fail,
+            Self::Unknown(_) => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::Network(_) => Some(RetryConfig {
+                max_attempts: 3,
+                base_delay_ms: 1000,
+            }),
+            Self::ApiError(_) => Some(RetryConfig {
+                max_attempts: 2,
+                base_delay_ms: 1000,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl ClassifiedError for ProviderInitializationError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Infrastructure errors (retryable)
+            Self::ConnectionFailed { .. } => ErrorCategory::Infrastructure,
+            Self::InitializationTimeout { .. } => ErrorCategory::TransientDomain,
+            Self::UnexpectedError { .. } => ErrorCategory::Infrastructure,
+
+            // Domain errors (compensate, don't retry)
+            Self::NoActiveProviders { .. } => ErrorCategory::Domain,
+            Self::ProviderNotFound { .. } => ErrorCategory::Domain,
+            Self::InvalidConfiguration { .. } => ErrorCategory::Domain,
+            Self::RbacValidationFailed { .. } => ErrorCategory::Domain,
+            Self::ValidationWarnings { .. } => ErrorCategory::TransientDomain,
+        }
+    }
+
+    fn behavior(&self) -> ErrorBehaviorWithConfig {
+        match self {
+            Self::ConnectionFailed { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 2,
+                    base_delay_ms: 2000,
+                },
+            },
+            Self::InitializationTimeout { .. } => ErrorBehaviorWithConfig::RetryOnce {
+                config: RetryOnceConfig { delay_ms: 5000 },
+            },
+            Self::ValidationWarnings { .. } => ErrorBehaviorWithConfig::Retry {
+                config: RetryConfig {
+                    max_attempts: 1,
+                    base_delay_ms: 500,
+                },
+            },
+            Self::NoActiveProviders { .. } => ErrorBehaviorWithConfig::Fail,
+            Self::InvalidConfiguration { .. } => ErrorBehaviorWithConfig::Fail,
+            _ => default_behavior(self.category()),
+        }
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        match self {
+            Self::ConnectionFailed { .. } => Some(RetryConfig {
+                max_attempts: 2,
+                base_delay_ms: 2000,
+            }),
+            _ => None,
+        }
     }
 }
 
