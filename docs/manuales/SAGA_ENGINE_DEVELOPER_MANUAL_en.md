@@ -166,11 +166,11 @@ flowchart TB
     end
     
     subgraph "With Durable Execution"
-        F[Task 1] --> G[Record: "Completed Task 1"]
+        F[Task 1] --> G[Record: Completed Task 1]
         G --> H[Task 2]
-        H --> I[Record: "Completed Task 2"]
+        H --> I[Record: Completed Task 2]
         I --> J[Server restart]
-        J --> K[Read: "I'm on Task 3"]
+        J --> K[Read: I'm on Task 3]
         K --> L[Continue from Task 3]
     end
 ```
@@ -446,8 +446,7 @@ classDiagram
     
     note right of Order
         You can only access OrderItem
-        through Order
-        (OrderItem doesn't exist alone)
+        through Order (doesn't exist alone)
     end note
 ```
 

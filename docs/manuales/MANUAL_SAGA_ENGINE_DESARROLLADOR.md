@@ -166,11 +166,11 @@ flowchart TB
     end
     
     subgraph "Con Durable Execution"
-        F[Tarea 1] --> G[Grabar: "Terminé Tarea 1"]
+        F[Tarea 1] --> G[Grabar: Terminé Tarea 1]
         G --> H[Tarea 2]
-        H --> I[Grabar: "Terminé Tarea 2"]
+        H --> I[Grabar: Terminé Tarea 2]
         I --> J[Reinicio del servidor]
-        J --> K[Leer: "Estoy en Tarea 3"]
+        J --> K[Leer: Estoy en Tarea 3]
         K --> L[Continuar desde Tarea 3]
     end
 ```
@@ -391,18 +391,18 @@ DDD te ayuda a hablar el mismo idioma que los expertos del dominio:
 flowchart TB
     subgraph "E-Commerce Platform"
         subgraph "Sales Bounded Context"
-            O[Order<br/>"Una orden tiene items y un total"]
-            P[Payment<br/>"Un pago tiene estado y monto"]
+            O[Order<br/>Una orden tiene items y total]
+            P[Payment<br/>Un pago tiene estado y monto]
         end
         
         subgraph "Inventory Bounded Context"
-            I[Inventory<br/>"El inventario tiene stock"]
-            R[Reservation<br/>"Una reserva bloquea stock"]
+            I[Inventory<br/>El inventario tiene stock]
+            R[Reservation<br/>Una reserva bloquea stock]
         end
         
         subgraph "Shipping Bounded Context"
-            S[Shipment<br/>"Un envío tiene tracking"]
-            C[Carrier<br/>"El carrier entrega el paquete"]
+            S[Shipment<br/>Un envío tiene tracking]
+            C[Carrier<br/>El carrier entrega el paquete]
         end
     end
     
@@ -446,8 +446,7 @@ classDiagram
     
     note right of Order
         Solo puedes acceder a OrderItem
-        a través de Order
-        (OrderItem no existe solo)
+        a través de Order (no existe solo)
     end note
 ```
 
