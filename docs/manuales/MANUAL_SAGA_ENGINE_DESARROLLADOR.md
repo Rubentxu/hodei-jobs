@@ -444,10 +444,7 @@ classDiagram
     Order "1" --> "*" OrderItem : contains
     Order "1" --> "1" Payment : has
     
-    note right of Order
-        Solo puedes acceder a OrderItem
-        a través de Order (no existe solo)
-    end note
+    note right of Order : Solo puedes acceder a OrderItem a través de Order (no existe solo)
 ```
 
 ### 4.4 Value Objects (Objetos de Valor)
